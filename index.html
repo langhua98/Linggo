@@ -160,21 +160,21 @@
   <!-- book rows -->
   <div class="lib-scroll" id="lib-scroll">
     <div class="lib-level" id="lib-level-0">
-      <div class="lib-level-head">
+      <div class="lib-level-head lv-g">
         <h3>🟢 入门级</h3>
         <span class="lib-level-badge badge-g">词汇量 2000 以下</span>
       </div>
       <div class="lib-row" id="lib-row-0"></div>
     </div>
     <div class="lib-level" id="lib-level-1">
-      <div class="lib-level-head">
+      <div class="lib-level-head lv-y">
         <h3>🟡 中级</h3>
         <span class="lib-level-badge badge-y">词汇量 3000–5000</span>
       </div>
       <div class="lib-row" id="lib-row-1"></div>
     </div>
     <div class="lib-level" id="lib-level-2">
-      <div class="lib-level-head">
+      <div class="lib-level-head lv-r">
         <h3>🔴 进阶</h3>
         <span class="lib-level-badge badge-r">词汇量 5000 以上</span>
       </div>
@@ -186,21 +186,26 @@
 
 <!-- LANDING -->
 <div id="landing">
+  <img src="icon.png" class="landing-logo" alt="Linggo">
   <h1>Linggo</h1>
-  <p class="sub">导入 TXT 文件，或从书库挑选经典原著。朗读 · 查词 · 翻译 · 生词本。</p>
+  <p class="landing-tagline">Read · Learn · Grow</p>
+  <p class="sub">经典英文原著，边读边学</p>
+  <button id="lib-open-btn">📚 进入书库</button>
+  <div class="or">或上传本地 TXT 文件</div>
   <div id="drop-zone">
     <div class="dz-icon">📄</div>
-    <h3>点击选择 或 拖入 TXT 文件</h3>
-    <p>UTF-8 编码 · 最大 50MB</p>
+    <div class="dz-text">
+      <h3>点击选择 或 拖入文件</h3>
+      <p>UTF-8 编码 · 最大 50MB</p>
+    </div>
   </div>
-  <p class="or">— 或 —</p>
-  <button id="lib-open-btn">📚 从书库选书</button>
   <div class="features">
-    <div class="feat"><span>🔊</span>逐句朗读</div>
-    <div class="feat"><span>📖</span>单词查询</div>
-    <div class="feat"><span>🌐</span>句子翻译</div>
-    <div class="feat"><span>⭐</span>生词本</div>
-    <div class="feat"><span>💾</span>进度保存</div>
+    <div class="feat"><span class="feat-icon">🔊</span><span>逐句朗读</span></div>
+    <div class="feat"><span class="feat-icon">📖</span><span>单词查询</span></div>
+    <div class="feat"><span class="feat-icon">🌐</span><span>句子翻译</span></div>
+    <div class="feat"><span class="feat-icon">⭐</span><span>生词本</span></div>
+    <div class="feat"><span class="feat-icon">🃏</span><span>闪卡背诵</span></div>
+    <div class="feat"><span class="feat-icon">💾</span><span>进度保存</span></div>
   </div>
   <input type="file" id="file-input" accept=".txt">
 </div>
