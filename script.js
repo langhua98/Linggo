@@ -426,10 +426,11 @@ function buildCard(book){
   div.className = 'bk';
   div._book = book;
   const [c1,c2] = book.pal;
+  const hasIsbn = book.isbn && book.isbn !== 'null';
   div.innerHTML = `
     <div class="bk-cover">
-      <img src="${coverUrl(book.isbn)}" alt="${book.t}" loading="lazy">
-      <div class="bk-cover-fallback" style="display:none;background:linear-gradient(145deg,${c1},${c2})">
+      ${hasIsbn ? `<img src="${coverUrl(book.isbn)}" alt="${book.t}" loading="lazy">` : ''}
+      <div class="bk-cover-fallback" style="${hasIsbn?'display:none;':'display:flex;'}background:linear-gradient(145deg,${c1},${c2})">
         <div class="bk-fb-title">${book.t}</div>
         <div class="bk-fb-author">${book.a.split(' ').pop()}</div>
         <div class="bk-fb-deco"></div>
@@ -439,10 +440,11 @@ function buildCard(book){
     <div class="bk-author">${book.a}</div>
     <div class="bk-action"></div>`;
 
-  // cover fallback on error
-  const img = div.querySelector('img');
-  const fb  = div.querySelector('.bk-cover-fallback');
-  img.onerror = () => { img.style.display='none'; fb.style.display='flex'; };
+  if(hasIsbn){
+    const img = div.querySelector('img');
+    const fb  = div.querySelector('.bk-cover-fallback');
+    img.onerror = () => { img.style.display='none'; fb.style.display='flex'; };
+  }
 
   // check local cache, set initial button state
   setCardAction(div, 'init');
