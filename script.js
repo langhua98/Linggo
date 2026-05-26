@@ -358,6 +358,7 @@ let libCat = 'all', libQuery = '';
 
 // ── Cover URL
 function coverUrl(isbn){ return `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`; }
+function gbCoverUrl(id){ return `https://www.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`; }
 
 // ── CORS proxies with real progress tracking
 const CORS_PROXIES = [
@@ -427,10 +428,13 @@ function buildCard(book){
   div._book = book;
   const [c1,c2] = book.pal;
   const hasIsbn = book.isbn && book.isbn !== 'null';
+  const imgSrc  = hasIsbn ? coverUrl(book.isbn)
+                : book._gbId ? gbCoverUrl(book._gbId)
+                : null;
   div.innerHTML = `
     <div class="bk-cover">
-      ${hasIsbn ? `<img src="${coverUrl(book.isbn)}" alt="${book.t}" loading="lazy">` : ''}
-      <div class="bk-cover-fallback" style="${hasIsbn?'display:none;':'display:flex;'}background:linear-gradient(145deg,${c1},${c2})">
+      ${imgSrc ? `<img src="${imgSrc}" alt="${book.t}" loading="lazy">` : ''}
+      <div class="bk-cover-fallback" style="${imgSrc?'display:none;':'display:flex;'}background:linear-gradient(145deg,${c1},${c2})">
         <div class="bk-fb-title">${book.t}</div>
         <div class="bk-fb-author">${book.a.split(' ').pop()}</div>
         <div class="bk-fb-deco"></div>
@@ -440,7 +444,7 @@ function buildCard(book){
     <div class="bk-author">${book.a}</div>
     <div class="bk-action"></div>`;
 
-  if(hasIsbn){
+  if(imgSrc){
     const img = div.querySelector('img');
     const fb  = div.querySelector('.bk-cover-fallback');
     img.onerror = () => { img.style.display='none'; fb.style.display='flex'; };
@@ -2158,6 +2162,11 @@ function gbFormatAuthor(name){
   return p.length === 2 ? p[1] + ' ' + p[0] : name;
 }
 
+function injectGbId(b){
+  if(b._gbId) return b;
+  const m = b.url && b.url.match(/\/files\/(\d+)\//);
+  return {...b, _gbId: m ? parseInt(m[1]) : null};
+}
 function loadLocalUserBooks(){
   try{ return JSON.parse(localStorage.getItem('my_books') || '[]'); }catch(e){ return []; }
 }
@@ -2169,11 +2178,15 @@ async function loadUserBooks(){
   if(currentUser){
     try{
       const rows = await SB.selectUserBooks(currentUser.id);
-      userBooks = rows.map(r => ({
-        _id: r.id, t: r.title, a: r.author, y: r.year,
-        url: r.url, mark: r.mark || 'Chapter', isbn: r.isbn,
-        pal: r.pal || GB_PALS[0], cat: r.cat || ['classic'], _mine: true
-      }));
+      userBooks = rows.map(r => {
+        const m = r.url && r.url.match(/\/files\/(\d+)\//);
+        return {
+          _id: r.id, t: r.title, a: r.author, y: r.year,
+          url: r.url, mark: r.mark || 'Chapter', isbn: r.isbn,
+          pal: r.pal || GB_PALS[0], cat: r.cat || ['classic'],
+          _mine: true, _gbId: m ? parseInt(m[1]) : null
+        };
+      });
       // 迁移本地书到云端
       const local = loadLocalUserBooks();
       for(const lb of local){
@@ -2182,20 +2195,24 @@ async function loadUserBooks(){
         }
       }
       saveLocalUserBooks([]);
-    }catch(e){ userBooks = loadLocalUserBooks(); }
+    }catch(e){ userBooks = loadLocalUserBooks().map(injectGbId); }
   } else {
-    userBooks = loadLocalUserBooks();
+    userBooks = loadLocalUserBooks().map(injectGbId);
   }
   renderUserBooks();
 }
 
 async function addUserBook(gbBook, skipRender){
   const pal = GB_PALS[Math.floor(Math.random() * GB_PALS.length)];
+  // Extract Gutenberg ID from URL for cover image
+  const gbIdMatch = gbBook.url && gbBook.url.match(/\/files\/(\d+)\//);
+  const gbId = gbBook._gbId || (gbIdMatch ? parseInt(gbIdMatch[1]) : null);
   const book = {
     t: gbBook.t, a: gbBook.a, y: gbBook.y || 0,
     url: gbBook.url, mark: gbBook.mark || 'Chapter',
     isbn: gbBook.isbn || null, pal: gbBook.pal || pal,
-    cat: gbBook.cat || ['classic'], _mine: true
+    cat: gbBook.cat || ['classic'], _mine: true,
+    _gbId: gbId
   };
   if(currentUser){
     try{
