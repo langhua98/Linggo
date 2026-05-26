@@ -2663,12 +2663,54 @@ function showTL(sp, txt){
   const tl = document.createElement('span');
   tl.className = 'tl-line'; tl.textContent = txt; sp.after(tl);
 }
-async function translate(txt){
-  try{
-    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(txt.slice(0,500))}&langpair=en|zh`);
+// Translation cache: avoid re-fetching same sentences within session
+const TRANS_CACHE = (() => {
+  let mem = {};
+  try { mem = JSON.parse(sessionStorage.getItem('tl_cache') || '{}'); } catch(e) {}
+  return {
+    get: k => mem[k],
+    set: (k, v) => { mem[k] = v; try { sessionStorage.setItem('tl_cache', JSON.stringify(mem)); } catch(e) {} }
+  };
+})();
+
+function fetchTimed(url, ms = 6000) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(tid));
+}
+
+async function translate(txt) {
+  const cacheKey = txt.slice(0, 120);
+  const hit = TRANS_CACHE.get(cacheKey);
+  if (hit) return hit;
+
+  const q = encodeURIComponent(txt.slice(0, 500));
+
+  // Source 1: Google Translate (unofficial, most reliable)
+  try {
+    const r = await fetchTimed(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${q}`);
     const d = await r.json();
-    if(d.responseStatus === 200) return d.responseData.translatedText;
-  }catch(e){}
+    const result = d[0]?.map(s => s?.[0] || '').join('').trim();
+    if (result) { TRANS_CACHE.set(cacheKey, result); return result; }
+  } catch(e) {}
+
+  // Source 2: MyMemory
+  try {
+    const r = await fetchTimed(`https://api.mymemory.translated.net/get?q=${q}&langpair=en|zh`);
+    const d = await r.json();
+    if (d.responseStatus === 200 && d.responseData?.translatedText) {
+      const result = d.responseData.translatedText;
+      TRANS_CACHE.set(cacheKey, result); return result;
+    }
+  } catch(e) {}
+
+  // Source 3: Lingva (open-source Google Translate frontend)
+  try {
+    const r = await fetchTimed(`https://lingva.ml/api/v1/en/zh/${encodeURIComponent(txt.slice(0, 300))}`);
+    const d = await r.json();
+    if (d.translation) { TRANS_CACHE.set(cacheKey, d.translation); return d.translation; }
+  } catch(e) {}
+
   return '[翻译失败，请检查网络]';
 }
 
