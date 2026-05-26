@@ -140,28 +140,23 @@
       </svg>
       <input id="lib-search" type="text" placeholder="搜索书名、作者…">
     </div>
-    <button id="lib-add-btn" title="从 Gutenberg 搜索添加">＋</button>
-    <button id="lib-filter-btn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14">
-        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-      </svg>
-      全部
-    </button>
-    <div class="lib-filter-popup" id="lib-filter-popup">
-      <button class="fcat on" data-cat="all">全部</button>
-      <button class="fcat" data-cat="classic">经典</button>
-      <button class="fcat" data-cat="mystery">推理</button>
-      <button class="fcat" data-cat="adventure">冒险</button>
-      <button class="fcat" data-cat="scifi">科幻</button>
-      <button class="fcat" data-cat="horror">恐怖</button>
-      <button class="fcat" data-cat="short">短篇</button>
-    </div>
+    <button id="lib-add-btn">搜索书籍</button>
     <button class="lib-close" id="lib-close">✕</button>
+  </div>
+  <!-- 分类标签栏 -->
+  <div class="lib-cats-bar">
+    <button class="lcat on" data-cat="all">全部</button>
+    <button class="lcat" data-cat="classic">经典</button>
+    <button class="lcat" data-cat="mystery">推理</button>
+    <button class="lcat" data-cat="adventure">冒险</button>
+    <button class="lcat" data-cat="scifi">科幻</button>
+    <button class="lcat" data-cat="horror">恐怖</button>
+    <button class="lcat" data-cat="short">短篇</button>
   </div>
   <!-- Gutenberg search panel -->
   <div id="gb-panel" style="display:none">
     <div class="gb-input-row">
-      <input id="gb-input" type="text" placeholder="输入英文书名或作者搜索 Gutenberg…">
+      <input id="gb-input" type="text" placeholder="输入英文书名或作者…">
       <button id="gb-search-btn">搜索</button>
     </div>
     <div id="gb-results"></div>

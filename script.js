@@ -497,16 +497,6 @@ function openBook(book, text){
   toast('《' + book.t + '》');
 }
 
-// ── Filter popup position (fixed, follows button)
-function positionFilterPopup(){
-  const btn  = document.getElementById('lib-filter-btn');
-  const pop  = document.getElementById('lib-filter-popup');
-  const rect = btn.getBoundingClientRect();
-  pop.style.top   = (rect.bottom + 6) + 'px';
-  pop.style.right = (window.innerWidth - rect.right) + 'px';
-  pop.style.left  = 'auto';
-}
-
 // ── Render library rows
 function renderLib(){
   BOOKS.forEach((level, li) => {
@@ -533,29 +523,11 @@ document.getElementById('lib-search').addEventListener('input', e => {
   libSearchTimer = setTimeout(() => { libQuery = e.target.value.trim(); renderLib(); }, 200);
 });
 
-// ── Category filter
-const filterBtn = document.getElementById('lib-filter-btn');
-const filterPop = document.getElementById('lib-filter-popup');
-filterBtn.addEventListener('click', e => {
-  e.stopPropagation();
-  const isOpen = filterPop.classList.toggle('open');
-  filterBtn.classList.toggle('active', isOpen);
-  if(isOpen) positionFilterPopup();
-});
-document.addEventListener('click', () => {
-  filterPop.classList.remove('open');
-  filterBtn.classList.remove('active');
-});
-filterPop.addEventListener('click', e => e.stopPropagation());
-
-document.querySelectorAll('.fcat').forEach(btn => {
+// ── Category tab bar
+document.querySelectorAll('.lcat').forEach(btn => {
   btn.addEventListener('click', () => {
     libCat = btn.dataset.cat;
-    document.querySelectorAll('.fcat').forEach(b => b.classList.toggle('on', b === btn));
-    const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`;
-    filterBtn.innerHTML = icon + ' ' + CAT_LABELS[libCat];
-    filterPop.classList.remove('open');
-    filterBtn.classList.remove('active');
+    document.querySelectorAll('.lcat').forEach(b => b.classList.toggle('on', b === btn));
     renderLib();
   });
 });
