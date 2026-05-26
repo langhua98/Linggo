@@ -261,6 +261,9 @@ body{
 .gb-add-btn:hover{opacity:.85;}
 .gb-add-btn:disabled{background:var(--border);color:var(--text-3);cursor:default;}
 .gb-empty{padding:16px 4px;font-size:13px;color:var(--text-3);text-align:center;}
+.gb-count{font-size:12px;color:var(--text-3);padding:2px 4px 8px;}
+.gb-cats{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;}
+.gb-cat{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--accent-2);color:var(--accent);font-weight:700;}
 /* ── 我的书架 ── */
 .lv-mine{background:linear-gradient(90deg,rgba(253,230,138,.5) 0%,transparent 100%);border-left:4px solid #F59E0B;}
 .night .lv-mine{background:linear-gradient(90deg,rgba(120,90,20,.45) 0%,transparent 100%);}

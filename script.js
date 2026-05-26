@@ -223,6 +223,188 @@ const BOOKS = [
   ],
 ];
 
+// ── Local Gutenberg catalog for offline search
+// format: [id, title, author, year, [categories], markText]
+const CATALOG = [
+  // ── Mark Twain
+  [74,"The Adventures of Tom Sawyer","Mark Twain",1876,["classic","adventure"],"CHAPTER I"],
+  [76,"Adventures of Huckleberry Finn","Mark Twain",1884,["classic","adventure"],"CHAPTER I."],
+  [86,"A Connecticut Yankee in King Arthur's Court","Mark Twain",1889,["classic","adventure","fantasy"],"A Word of Explanation"],
+  [91,"Pudd'nhead Wilson","Mark Twain",1894,["classic","mystery"],"Chapter 1"],
+  [102,"The Prince and the Pauper","Mark Twain",1881,["classic","adventure"],"PART FIRST"],
+  [245,"Life on the Mississippi","Mark Twain",1883,["classic","adventure"],"Chapter 1"],
+  [1837,"The Innocents Abroad","Mark Twain",1869,["classic","adventure"],"Chapter 1"],
+  // ── Arthur Conan Doyle
+  [244,"A Study in Scarlet","Arthur Conan Doyle",1887,["mystery"],"PART I"],
+  [1661,"The Adventures of Sherlock Holmes","Arthur Conan Doyle",1892,["mystery"],"ADVENTURE I."],
+  [2097,"The Sign of Four","Arthur Conan Doyle",1890,["mystery"],"Chapter 1"],
+  [834,"The Memoirs of Sherlock Holmes","Arthur Conan Doyle",1893,["mystery"],"Adventure I"],
+  [2350,"The Return of Sherlock Holmes","Arthur Conan Doyle",1905,["mystery"],"Adventure I"],
+  [2852,"The Hound of the Baskervilles","Arthur Conan Doyle",1902,["mystery"],"Mr. Sherlock Holmes"],
+  [108,"The Valley of Fear","Arthur Conan Doyle",1915,["mystery"],"Part I"],
+  [1268,"His Last Bow","Arthur Conan Doyle",1917,["mystery"],"Adventure I"],
+  // ── Jane Austen
+  [1342,"Pride and Prejudice","Jane Austen",1813,["classic"],"Chapter 1"],
+  [158,"Emma","Jane Austen",1815,["classic"],"Chapter I"],
+  [161,"Sense and Sensibility","Jane Austen",1811,["classic"],"Chapter 1"],
+  [105,"Persuasion","Jane Austen",1817,["classic"],"Sir Walter Elliot"],
+  [141,"Mansfield Park","Jane Austen",1814,["classic"],"Chapter 1"],
+  [121,"Northanger Abbey","Jane Austen",1817,["classic","horror"],"Chapter 1"],
+  // ── Charles Dickens
+  [730,"Oliver Twist","Charles Dickens",1837,["classic"],"Among other public buildings"],
+  [766,"David Copperfield","Charles Dickens",1850,["classic"],"Whether I shall turn"],
+  [98,"A Tale of Two Cities","Charles Dickens",1859,["classic"],"It was the best of times"],
+  [1400,"Great Expectations","Charles Dickens",1861,["classic"],"My father's family name"],
+  [1023,"Bleak House","Charles Dickens",1853,["classic"],"London."],
+  [917,"Hard Times","Charles Dickens",1854,["classic"],"CHAPTER I"],
+  [700,"The Pickwick Papers","Charles Dickens",1836,["classic"],"Chapter 1"],
+  [821,"The Old Curiosity Shop","Charles Dickens",1841,["classic"],"Chapter 1"],
+  // ── H. G. Wells
+  [35,"The Time Machine","H. G. Wells",1895,["scifi"],"Introduction"],
+  [36,"The War of the Worlds","H. G. Wells",1898,["scifi"],"No one would have believed"],
+  [159,"The Island of Doctor Moreau","H. G. Wells",1896,["scifi","horror"],"Introduction"],
+  [5230,"The Invisible Man","H. G. Wells",1897,["scifi","horror"],"The stranger came early"],
+  [718,"When the Sleeper Wakes","H. G. Wells",1899,["scifi"],"Insomnia"],
+  // ── Jules Verne
+  [164,"Twenty Thousand Leagues Under the Sea","Jules Verne",1870,["adventure","scifi"],"The year 1866"],
+  [103,"Around the World in 80 Days","Jules Verne",1872,["adventure"],"IN WHICH"],
+  [1260,"The Mysterious Island","Jules Verne",1874,["adventure","scifi"],"Chapter 1"],
+  // ── Jack London
+  [215,"The Call of the Wild","Jack London",1903,["classic","adventure"],"Buck did not read"],
+  [910,"White Fang","Jack London",1906,["classic","adventure"],"Dark spruce forest"],
+  [1743,"The Sea-Wolf","Jack London",1904,["adventure"],"Chapter I"],
+  [1125,"Martin Eden","Jack London",1909,["classic"],"Chapter One"],
+  // ── Brontë Sisters
+  [1260,"Jane Eyre","Charlotte Brontë",1847,["classic"],"There was no possibility"],
+  [768,"Wuthering Heights","Emily Brontë",1847,["classic","horror"],"1801"],
+  [969,"Villette","Charlotte Brontë",1853,["classic"],"Chapter I"],
+  [226,"Shirley","Charlotte Brontë",1849,["classic"],"Chapter I"],
+  // ── Horror & Gothic
+  [345,"Dracula","Bram Stoker",1897,["horror"],"3 May."],
+  [84,"Frankenstein","Mary Shelley",1818,["scifi","horror"],"Letter 1"],
+  [43,"Strange Case of Dr Jekyll and Mr Hyde","R. L. Stevenson",1886,["classic","horror"],"Story of the Door"],
+  [174,"The Picture of Dorian Gray","Oscar Wilde",1890,["classic","horror"],"The studio was filled"],
+  [209,"The Turn of the Screw","Henry James",1898,["classic","horror"],"The story had held us"],
+  [2005,"The House of the Seven Gables","Nathaniel Hawthorne",1851,["classic","horror"],"Chapter I"],
+  // ── Adventure & Travel
+  [120,"Treasure Island","R. L. Stevenson",1883,["adventure"],"PART ONE"],
+  [421,"Kidnapped","R. L. Stevenson",1886,["adventure","classic"],"I will begin"],
+  [521,"Robinson Crusoe","Daniel Defoe",1719,["classic","adventure"],"I was born in the Year"],
+  [829,"Gulliver's Travels","Jonathan Swift",1726,["classic","fantasy","adventure"],"CHAPTER I"],
+  [160,"The Scarlet Pimpernel","Baroness Orczy",1905,["adventure","classic"],"Chapter 1"],
+  // ── Alexandre Dumas
+  [1184,"The Count of Monte Cristo","Alexandre Dumas",1844,["adventure","classic"],"Chapter 1"],
+  [1257,"The Three Musketeers","Alexandre Dumas",1844,["adventure","classic"],"Chapter I"],
+  [10007,"Twenty Years After","Alexandre Dumas",1845,["adventure","classic"],"Chapter 1"],
+  // ── Russian Literature
+  [2554,"Crime and Punishment","Fyodor Dostoevsky",1866,["classic"],"PART I"],
+  [28054,"The Brothers Karamazov","Fyodor Dostoevsky",1880,["classic"],"PART I"],
+  [1399,"Anna Karenina","Leo Tolstoy",1877,["classic"],"All happy families"],
+  [2600,"War and Peace","Leo Tolstoy",1869,["classic"],"Well, Prince"],
+  // ── American Classics
+  [25344,"The Scarlet Letter","Nathaniel Hawthorne",1850,["classic"],"THE PRISON-DOOR"],
+  [2701,"Moby-Dick","Herman Melville",1851,["classic"],"Call me Ishmael"],
+  [64317,"The Great Gatsby","F. Scott Fitzgerald",1925,["classic"],"In my younger"],
+  [203,"Uncle Tom's Cabin","Harriet Beecher Stowe",1852,["classic"],"Chapter I"],
+  [73,"The Red Badge of Courage","Stephen Crane",1895,["classic","adventure"],"Chapter 1"],
+  [432,"The Awakening","Kate Chopin",1899,["classic"],"Chapter I"],
+  [205,"Walden","Henry David Thoreau",1854,["classic"],"ECONOMY"],
+  [142,"The Autobiography of Benjamin Franklin","Benjamin Franklin",1791,["classic"],"Twyford"],
+  // ── Henry James
+  [2833,"The Portrait of a Lady","Henry James",1881,["classic"],"Under certain circumstances"],
+  [526,"The American","Henry James",1877,["classic"],"Chapter I"],
+  // ── Children & Family
+  [11,"Alice's Adventures in Wonderland","Lewis Carroll",1865,["classic","fantasy"],"CHAPTER I."],
+  [55,"The Wonderful Wizard of Oz","L. Frank Baum",1900,["classic","fantasy"],"Chapter I."],
+  [16,"Peter Pan","J. M. Barrie",1911,["classic","fantasy"],"Chapter 1"],
+  [113,"The Secret Garden","Frances H. Burnett",1911,["classic"],"There is no one left"],
+  [271,"Black Beauty","Anna Sewell",1877,["classic"],"My Early Home"],
+  [289,"The Wind in the Willows","Kenneth Grahame",1908,["classic","fantasy"],"The Mole had been working"],
+  [236,"The Jungle Book","Rudyard Kipling",1894,["classic","adventure"],"Mowgli's Brothers"],
+  [514,"Little Women","Louisa May Alcott",1868,["classic"],"Christmas won't be"],
+  [45,"Anne of Green Gables","L. M. Montgomery",1908,["classic"],"Mrs. Rachel Lynde lived"],
+  [1450,"Pollyanna","Eleanor H. Porter",1913,["classic"],"Miss Polly Harrington"],
+  [1448,"Heidi","Johanna Spyri",1881,["classic"],"The sun had just"],
+  [1874,"The Railway Children","E. Nesbit",1906,["classic","adventure"],"The beginning of things"],
+  [805,"The Adventures of Pinocchio","Carlo Collodi",1883,["classic","fantasy"],"Chapter 1"],
+  [2591,"Grimm's Fairy Tales","Brothers Grimm",1812,["classic","fantasy"],"THE GOLDEN BIRD"],
+  [19033,"Andersen's Fairy Tales","Hans Christian Andersen",1835,["classic","fantasy"],"THE TINDER-BOX"],
+  [1080,"The Story of My Life","Helen Keller",1903,["classic"],"Chapter I"],
+  // ── Short Stories
+  [2776,"O. Henry Short Stories","O. Henry",1906,["classic","short"],"THE GIFT OF THE MAGI"],
+  // ── Victorian & British
+  [145,"Middlemarch","George Eliot",1871,["classic"],"Miss Brooke"],
+  [599,"Vanity Fair","W. M. Thackeray",1848,["classic"],"While the present century"],
+  [110,"Tess of the d'Urbervilles","Thomas Hardy",1891,["classic"],"Phase the First"],
+  // ── French Literature
+  [135,"Les Misérables","Victor Hugo",1862,["classic"],"M. Myriel"],
+  // ── Drama & Philosophy
+  [2542,"A Doll's House","Henrik Ibsen",1879,["classic"],"ACT I"],
+  [1220,"The Prince","Niccolò Machiavelli",1532,["classic"],"Chapter I"],
+  [2680,"Meditations","Marcus Aurelius",180,["classic"],"Book One"],
+  [1497,"The Republic","Plato",380,["classic"],"Chapter I"],
+  // ── Epic Poetry
+  [1727,"The Odyssey","Homer",800,["classic","adventure","fantasy"],"Tell me, O muse"],
+  [6130,"The Iliad","Homer",800,["classic","adventure"],"Sing, O goddess"],
+  [26,"Paradise Lost","John Milton",1667,["classic"],"BOOK I"],
+  // ── Early 20th Century
+  [4300,"Ulysses","James Joyce",1922,["classic"],"Stately, plump"],
+  [5200,"The Metamorphosis","Franz Kafka",1915,["classic","scifi"],"One morning"],
+];
+  [86,"A Connecticut Yankee in King Arthur's Court","Mark Twain",1889,["classic","fantasy","adventure"],"A Word of Explanation"],
+  [2591,"Grimm's Fairy Tales","Brothers Grimm",1812,["classic","fantasy"],"THE GOLDEN BIRD"],
+  [805,"The Adventures of Pinocchio","Carlo Collodi",1883,["classic","fantasy"],"Chapter 1"],
+  [245,"Life on the Mississippi","Mark Twain",1883,["classic","adventure"],"Chapter 1"],
+  [91,"Pudd'nhead Wilson","Mark Twain",1894,["classic","mystery"],"Chapter 1"],
+  [1837,"The Innocents Abroad","Mark Twain",1869,["classic","adventure"],"Chapter 1"],
+  [19033,"Andersen's Fairy Tales","Hans Christian Andersen",1835,["classic","fantasy"],"The Tinder-Box"],
+  // ── 中级
+  [141,"Mansfield Park","Jane Austen",1814,["classic"],"Chapter 1"],
+  [121,"Northanger Abbey","Jane Austen",1817,["classic","horror"],"Chapter 1"],
+  [834,"The Memoirs of Sherlock Holmes","Arthur Conan Doyle",1893,["mystery"],"Adventure I"],
+  [2350,"The Return of Sherlock Holmes","Arthur Conan Doyle",1905,["mystery"],"Adventure I"],
+  [108,"The Valley of Fear","Arthur Conan Doyle",1915,["mystery"],"Part I"],
+  [1268,"His Last Bow","Arthur Conan Doyle",1917,["mystery"],"Adventure I"],
+  [159,"The Island of Doctor Moreau","H. G. Wells",1896,["scifi","horror"],"Introduction"],
+  [37,"The War in the Air","H. G. Wells",1908,["scifi","adventure"],"Chapter the First"],
+  [718,"When the Sleeper Wakes","H. G. Wells",1899,["scifi"],"Insomnia"],
+  [917,"Hard Times","Charles Dickens",1854,["classic"],"CHAPTER I"],
+  [700,"The Pickwick Papers","Charles Dickens",1836,["classic"],"Chapter 1"],
+  [821,"The Old Curiosity Shop","Charles Dickens",1841,["classic"],"Chapter 1"],
+  [203,"Uncle Tom's Cabin","Harriet Beecher Stowe",1852,["classic"],"Chapter I"],
+  [25344,"The Scarlet Letter","Nathaniel Hawthorne",1850,["classic"],"THE PRISON-DOOR"],
+  [2005,"The House of the Seven Gables","Nathaniel Hawthorne",1851,["classic","horror"],"Chapter I"],
+  [73,"The Red Badge of Courage","Stephen Crane",1895,["classic","adventure"],"Chapter 1"],
+  [432,"The Awakening","Kate Chopin",1899,["classic"],"Chapter I"],
+  [160,"The Scarlet Pimpernel","Baroness Orczy",1905,["adventure","classic"],"Chapter 1"],
+  [829,"Gulliver's Travels","Jonathan Swift",1726,["classic","fantasy","adventure"],"CHAPTER I"],
+  [1743,"The Sea-Wolf","Jack London",1904,["adventure"],"Chapter I"],
+  [1125,"Martin Eden","Jack London",1909,["classic"],"Chapter One"],
+  [1727,"The Odyssey","Homer",800,["classic","adventure","fantasy"],"Tell me, O muse"],
+  [6130,"The Iliad","Homer",800,["classic","adventure"],"Sing, O goddess"],
+  [1080,"The Story of My Life","Helen Keller",1903,["classic"],"Chapter I"],
+  [142,"The Autobiography of Benjamin Franklin","Benjamin Franklin",1791,["classic"],"Twyford, at the Bishop"],
+  [2542,"A Doll's House","Henrik Ibsen",1879,["classic"],"ACT I"],
+  [1232,"The Scarlet Pimpernel","Baroness Orczy",1905,["adventure"],"Chapter 1"],
+  [969,"Villette","Charlotte Brontë",1853,["classic"],"Chapter I"],
+  [226,"Shirley","Charlotte Brontë",1849,["classic"],"Chapter I"],
+  [2148,"The Mayor of Casterbridge","Thomas Hardy",1886,["classic"],"Chapter 1"],
+  [110,"Tess of the d'Urbervilles","Thomas Hardy",1891,["classic"],"Phase the First"],
+  [4300,"Ulysses","James Joyce",1922,["classic"],"Stately, plump Buck"],
+  [2833,"The Portrait of a Lady","Henry James",1881,["classic"],"Under certain circumstances"],
+  [209,"The Turn of the Screw","Henry James",1898,["classic","horror"],"The story had held us"],
+  [526,"The American","Henry James",1877,["classic"],"Chapter I"],
+  [26,"Paradise Lost","John Milton",1667,["classic"],"BOOK I"],
+  [1220,"The Prince","Niccolò Machiavelli",1532,["classic"],"Chapter I"],
+  [2680,"Meditations","Marcus Aurelius",180,["classic"],"Book One"],
+  [1497,"The Republic","Plato",380,["classic"],"Chapter I"],
+  [1184,"The Count of Monte Cristo","Alexandre Dumas",1844,["adventure","classic"],"Chapter 1"],
+  [10007,"Twenty Years After","Alexandre Dumas",1845,["adventure","classic"],"Chapter 1"],
+  [1260,"Jane Eyre","Charlotte Brontë",1847,["classic"],"There was no possibility"],
+  [768,"Wuthering Heights","Emily Brontë",1847,["classic","horror"],"1801"],
+  [996,"Don Quixote","Miguel de Cervantes",1605,["classic","adventure","fantasy"],"Chapter I"],
+];
+
 // Category labels
 const CAT_LABELS = {all:'全部',classic:'经典',mystery:'推理',adventure:'冒险',scifi:'科幻',horror:'恐怖',short:'短篇'};
 let libCat = 'all', libQuery = '';
@@ -2151,64 +2333,109 @@ function renderUserBooks(){
 }
 
 // ── Gutenberg 搜索
-async function searchGutenberg(q){
-  const res = document.getElementById('gb-results');
-  res.innerHTML = '<div class="gb-empty">搜索中…</div>';
-  try{
-    const url = `https://gutendex.com/books/?search=${encodeURIComponent(q)}&languages=en&mime_type=text%2Fplain`;
-    const r = await fetchTimed(url, 10000);
-    const d = await r.json();
-    if(!d.results?.length){ res.innerHTML = '<div class="gb-empty">没有找到结果，换个关键词试试</div>'; return; }
-    res.innerHTML = '';
-    d.results.slice(0, 15).forEach(item => {
-      const txtUrl = item.formats['text/plain; charset=utf-8'] || item.formats['text/plain'] || '';
-      if(!txtUrl) return;
-      const authorName = item.authors[0] ? gbFormatAuthor(item.authors[0].name) : '佚名';
-      const year = item.authors[0]?.birth_year || 0;
-      const alreadyAdded = userBooks.some(b => b.url === txtUrl) ||
-        BOOKS.flat().some(b => b.url === txtUrl);
-      const el = document.createElement('div');
-      el.className = 'gb-item';
-      el.innerHTML = `
-        <div class="gb-item-info">
-          <div class="gb-item-title">${item.title}</div>
-          <div class="gb-item-meta">${authorName}${year ? ' · ' + year : ''}</div>
-        </div>
-        <button class="gb-add-btn" ${alreadyAdded ? 'disabled' : ''}>${alreadyAdded ? '已添加' : '+ 添加'}</button>`;
-      el.querySelector('.gb-add-btn').addEventListener('click', async function(){
-        this.disabled = true; this.textContent = '添加中…';
-        const ok = await addUserBook({
-          t: item.title, a: authorName, y: year, url: txtUrl,
-          mark: 'Chapter', isbn: null, cat: ['classic']
-        });
-        this.textContent = ok ? '已添加' : '失败';
-      });
-      res.appendChild(el);
-    });
-  }catch(e){
-    res.innerHTML = '<div class="gb-empty">搜索失败，请检查网络</div>';
-  }
+// ── 本地书目搜索（离线、即时、评分排序）
+function norm(s){
+  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
 }
 
-// ── Gutenberg 搜索面板事件
+function localSearch(q){
+  const qn = norm(q.trim());
+  if(!qn) return [];
+  const words = qn.split(/\s+/).filter(w => w.length > 0);
+
+  // 合并内置书库 + CATALOG（去重）
+  const builtinUrls = new Set(BOOKS.flat().map(b => b.url));
+  const catalogPool = CATALOG.map(([id,t,a,y,cat,mark]) => ({
+    t, a, y, cat, mark: mark || 'Chapter', isbn: null,
+    url: `https://www.gutenberg.org/files/${id}/${id}-0.txt`,
+    pal: GB_PALS[id % GB_PALS.length], _gbId: id
+  })).filter(b => !builtinUrls.has(b.url));
+
+  const pool = [
+    ...BOOKS.flat().map(b => ({...b, _builtin:true})),
+    ...catalogPool
+  ];
+
+  function scoreBook(b){
+    const tl = norm(b.t), al = norm(b.a);
+    if(tl === qn) return 1000;
+    let s = 0;
+    if(tl.startsWith(qn)) s += 80;
+    else if(tl.includes(qn)) s += 50;
+    const tHits = words.filter(w => tl.includes(w)).length;
+    const aHits = words.filter(w => al.includes(w)).length;
+    if(tHits === words.length && words.length > 1) s += 40;
+    s += tHits * 15;
+    if(aHits === words.length) s += 20;
+    s += aHits * 8;
+    return s;
+  }
+
+  return pool
+    .map(b => ({b, s: scoreBook(b)}))
+    .filter(({s}) => s > 0)
+    .sort((a,b) => b.s - a.s)
+    .slice(0, 30)
+    .map(({b}) => b);
+}
+
+function renderSearchResults(results){
+  const res = document.getElementById('gb-results');
+  if(!results.length){
+    res.innerHTML = '<div class="gb-empty">没有找到结果，换个关键词试试</div>';
+    return;
+  }
+  res.innerHTML = `<div class="gb-count">找到 ${results.length} 本</div>`;
+  results.forEach(book => {
+    const isBuiltin = !!book._builtin;
+    const isAdded   = userBooks.some(b => b.url === book.url);
+    const disabled  = isBuiltin || isAdded;
+    const btnText   = isBuiltin ? '已内置' : isAdded ? '已添加' : '+ 添加';
+    const catTags   = (book.cat||[]).map(c =>
+      `<span class="gb-cat">${CAT_LABELS[c]||c}</span>`).join('');
+    const el = document.createElement('div');
+    el.className = 'gb-item';
+    el.innerHTML = `
+      <div class="gb-item-info">
+        <div class="gb-item-title">${book.t}</div>
+        <div class="gb-item-meta">${book.a}${book.y ? ' · ' + book.y : ''}</div>
+        <div class="gb-cats">${catTags}</div>
+      </div>
+      <button class="gb-add-btn"${disabled?' disabled':''}>${btnText}</button>`;
+    if(!disabled){
+      el.querySelector('.gb-add-btn').addEventListener('click', async function(){
+        this.disabled = true; this.textContent = '添加中…';
+        const ok = await addUserBook(book);
+        this.textContent = ok ? '已添加' : '失败';
+      });
+    }
+    res.appendChild(el);
+  });
+}
+
+// ── 搜索面板事件
 const gbPanel  = document.getElementById('gb-panel');
 const gbAddBtn = document.getElementById('lib-add-btn');
 const gbInput  = document.getElementById('gb-input');
 const gbSearch = document.getElementById('gb-search-btn');
 
+let gbTimer;
+function triggerSearch(){
+  clearTimeout(gbTimer);
+  const q = gbInput.value.trim();
+  if(!q){ document.getElementById('gb-results').innerHTML = ''; return; }
+  gbTimer = setTimeout(() => renderSearchResults(localSearch(q)), 120);
+}
+
 gbAddBtn.addEventListener('click', () => {
   const open = gbPanel.style.display === 'none';
   gbPanel.style.display = open ? '' : 'none';
   gbAddBtn.classList.toggle('active', open);
-  if(open) gbInput.focus();
+  if(open){ gbInput.focus(); triggerSearch(); }
 });
-gbSearch.addEventListener('click', () => {
-  const q = gbInput.value.trim();
-  if(q) searchGutenberg(q);
-});
-gbInput.addEventListener('keydown', e => {
-  if(e.key === 'Enter'){ const q = gbInput.value.trim(); if(q) searchGutenberg(q); }
-});
+gbInput.addEventListener('input', triggerSearch);
+gbSearch.addEventListener('click', triggerSearch);
+gbInput.addEventListener('keydown', e => { if(e.key==='Enter') triggerSearch(); });
 
 // ── UI helpers
 function setAuthUI(user){
