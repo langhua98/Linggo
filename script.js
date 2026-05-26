@@ -2016,11 +2016,199 @@ const SB = (() => {
 
     async rpc(fn) {
       return req(`/rest/v1/rpc/${fn}`, { method: 'POST', body: '{}' });
+    },
+
+    async selectUserBooks(userId) {
+      return req(`/rest/v1/user_books?user_id=eq.${userId}&order=added_at.asc&select=id,title,author,year,url,mark,isbn,pal,cat`);
+    },
+
+    async insertUserBook(row) {
+      return req('/rest/v1/user_books', {
+        method: 'POST',
+        headers: { 'Prefer': 'return=representation' },
+        body: JSON.stringify(row)
+      });
+    },
+
+    async deleteUserBook(id) {
+      return req(`/rest/v1/user_books?id=eq.${id}`, { method: 'DELETE' });
     }
   };
 })();
 
 let currentUser = null;
+
+// ══════════════════════════════════════════
+//  我的书架
+// ══════════════════════════════════════════
+let userBooks = [];
+
+const GB_PALS = [
+  ["#7B6CF6","#B794F4"],["#48BB78","#F6E05E"],["#F6AD55","#FC8181"],
+  ["#63B3ED","#2B6CB0"],["#F687B3","#B83280"],["#68D391","#276749"],
+  ["#ECC94B","#C05621"],["#76E4F7","#0987A0"],["#FC8181","#9AE6B4"],
+  ["#C53030","#1A202C"],["#2C5282","#81E6D9"],["#B7791F","#1A202C"]
+];
+
+function gbFormatAuthor(name){
+  const p = name.split(', ');
+  return p.length === 2 ? p[1] + ' ' + p[0] : name;
+}
+
+function loadLocalUserBooks(){
+  try{ return JSON.parse(localStorage.getItem('my_books') || '[]'); }catch(e){ return []; }
+}
+function saveLocalUserBooks(books){
+  try{ localStorage.setItem('my_books', JSON.stringify(books)); }catch(e){}
+}
+
+async function loadUserBooks(){
+  if(currentUser){
+    try{
+      const rows = await SB.selectUserBooks(currentUser.id);
+      userBooks = rows.map(r => ({
+        _id: r.id, t: r.title, a: r.author, y: r.year,
+        url: r.url, mark: r.mark || 'Chapter', isbn: r.isbn,
+        pal: r.pal || GB_PALS[0], cat: r.cat || ['classic'], _mine: true
+      }));
+      // 迁移本地书到云端
+      const local = loadLocalUserBooks();
+      for(const lb of local){
+        if(!userBooks.some(b => b.url === lb.url)){
+          await addUserBook(lb, true);
+        }
+      }
+      saveLocalUserBooks([]);
+    }catch(e){ userBooks = loadLocalUserBooks(); }
+  } else {
+    userBooks = loadLocalUserBooks();
+  }
+  renderUserBooks();
+}
+
+async function addUserBook(gbBook, skipRender){
+  const pal = GB_PALS[Math.floor(Math.random() * GB_PALS.length)];
+  const book = {
+    t: gbBook.t, a: gbBook.a, y: gbBook.y || 0,
+    url: gbBook.url, mark: gbBook.mark || 'Chapter',
+    isbn: gbBook.isbn || null, pal: gbBook.pal || pal,
+    cat: gbBook.cat || ['classic'], _mine: true
+  };
+  if(currentUser){
+    try{
+      const rows = await SB.insertUserBook({
+        user_id: currentUser.id,
+        title: book.t, author: book.a, year: book.y,
+        url: book.url, mark: book.mark,
+        isbn: book.isbn, pal: book.pal, cat: book.cat
+      });
+      book._id = rows[0]?.id;
+    }catch(e){ console.error('保存书架失败', e); return false; }
+  } else {
+    book._id = Date.now() + Math.random().toString(36).slice(2);
+    const local = loadLocalUserBooks();
+    local.push({...book});
+    saveLocalUserBooks(local);
+  }
+  userBooks.push(book);
+  if(!skipRender) renderUserBooks();
+  return true;
+}
+
+async function removeUserBook(book){
+  userBooks = userBooks.filter(b => b !== book);
+  if(currentUser && book._id){
+    try{ await SB.deleteUserBook(book._id); }catch(e){}
+  } else {
+    const local = loadLocalUserBooks().filter(b => b._id !== book._id && b.url !== book.url);
+    saveLocalUserBooks(local);
+  }
+  renderUserBooks();
+}
+
+function renderUserBooks(){
+  const section = document.getElementById('lib-level-mine');
+  const row = document.getElementById('lib-row-mine');
+  const badge = document.getElementById('mine-count');
+  row.innerHTML = '';
+  if(userBooks.length === 0){ section.style.display = 'none'; return; }
+  section.style.display = '';
+  badge.textContent = userBooks.length + ' 本';
+  userBooks.forEach(book => {
+    const card = buildCard(book);
+    // 加删除按钮
+    const rm = document.createElement('button');
+    rm.className = 'bk-remove';
+    rm.title = '从书架移除';
+    rm.textContent = '✕';
+    rm.addEventListener('click', e => {
+      e.stopPropagation();
+      if(confirm(`从书架移除《${book.t}》？`)) removeUserBook(book);
+    });
+    card.querySelector('.bk-cover').appendChild(rm);
+    row.appendChild(card);
+  });
+}
+
+// ── Gutenberg 搜索
+async function searchGutenberg(q){
+  const res = document.getElementById('gb-results');
+  res.innerHTML = '<div class="gb-empty">搜索中…</div>';
+  try{
+    const url = `https://gutendex.com/books/?search=${encodeURIComponent(q)}&languages=en&mime_type=text%2Fplain`;
+    const r = await fetchTimed(url, 10000);
+    const d = await r.json();
+    if(!d.results?.length){ res.innerHTML = '<div class="gb-empty">没有找到结果，换个关键词试试</div>'; return; }
+    res.innerHTML = '';
+    d.results.slice(0, 15).forEach(item => {
+      const txtUrl = item.formats['text/plain; charset=utf-8'] || item.formats['text/plain'] || '';
+      if(!txtUrl) return;
+      const authorName = item.authors[0] ? gbFormatAuthor(item.authors[0].name) : '佚名';
+      const year = item.authors[0]?.birth_year || 0;
+      const alreadyAdded = userBooks.some(b => b.url === txtUrl) ||
+        BOOKS.flat().some(b => b.url === txtUrl);
+      const el = document.createElement('div');
+      el.className = 'gb-item';
+      el.innerHTML = `
+        <div class="gb-item-info">
+          <div class="gb-item-title">${item.title}</div>
+          <div class="gb-item-meta">${authorName}${year ? ' · ' + year : ''}</div>
+        </div>
+        <button class="gb-add-btn" ${alreadyAdded ? 'disabled' : ''}>${alreadyAdded ? '已添加' : '+ 添加'}</button>`;
+      el.querySelector('.gb-add-btn').addEventListener('click', async function(){
+        this.disabled = true; this.textContent = '添加中…';
+        const ok = await addUserBook({
+          t: item.title, a: authorName, y: year, url: txtUrl,
+          mark: 'Chapter', isbn: null, cat: ['classic']
+        });
+        this.textContent = ok ? '已添加' : '失败';
+      });
+      res.appendChild(el);
+    });
+  }catch(e){
+    res.innerHTML = '<div class="gb-empty">搜索失败，请检查网络</div>';
+  }
+}
+
+// ── Gutenberg 搜索面板事件
+const gbPanel  = document.getElementById('gb-panel');
+const gbAddBtn = document.getElementById('lib-add-btn');
+const gbInput  = document.getElementById('gb-input');
+const gbSearch = document.getElementById('gb-search-btn');
+
+gbAddBtn.addEventListener('click', () => {
+  const open = gbPanel.style.display === 'none';
+  gbPanel.style.display = open ? '' : 'none';
+  gbAddBtn.classList.toggle('active', open);
+  if(open) gbInput.focus();
+});
+gbSearch.addEventListener('click', () => {
+  const q = gbInput.value.trim();
+  if(q) searchGutenberg(q);
+});
+gbInput.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ const q = gbInput.value.trim(); if(q) searchGutenberg(q); }
+});
 
 // ── UI helpers
 function setAuthUI(user){
@@ -2132,6 +2320,7 @@ document.getElementById('auth-submit').addEventListener('click', async ()=>{
     } else {
       toast('登录成功');
       await syncVocab();
+      await loadUserBooks();
     }
   }catch(e){
     const msg = e.message || '操作失败';
@@ -2177,6 +2366,8 @@ document.getElementById('um-logout').addEventListener('click', async ()=>{
   setAuthUI(null);
   userMenu.classList.remove('open');
   toast('已退出登录');
+  userBooks = [];
+  renderUserBooks();
 });
 
 // ── 页面加载时恢复 session + 记录访问
@@ -2185,6 +2376,7 @@ document.getElementById('um-logout').addEventListener('click', async ()=>{
     const user = await SB.restoreSession();
     if(user) setAuthUI(user);
   } catch(e) { console.warn('session restore:', e.message); }
+  await loadUserBooks();
   SB.rpc('record_visit').catch(()=>{});
 })();
 

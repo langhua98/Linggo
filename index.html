@@ -140,6 +140,7 @@
       </svg>
       <input id="lib-search" type="text" placeholder="搜索书名、作者…">
     </div>
+    <button id="lib-add-btn" title="从 Gutenberg 搜索添加">＋</button>
     <button id="lib-filter-btn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14">
         <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
@@ -157,8 +158,23 @@
     </div>
     <button class="lib-close" id="lib-close">✕</button>
   </div>
+  <!-- Gutenberg search panel -->
+  <div id="gb-panel" style="display:none">
+    <div class="gb-input-row">
+      <input id="gb-input" type="text" placeholder="输入英文书名或作者搜索 Gutenberg…">
+      <button id="gb-search-btn">搜索</button>
+    </div>
+    <div id="gb-results"></div>
+  </div>
   <!-- book rows -->
   <div class="lib-scroll" id="lib-scroll">
+    <div class="lib-level" id="lib-level-mine" style="display:none">
+      <div class="lib-level-head lv-mine">
+        <h3>⭐ 我的书架</h3>
+        <span class="lib-level-badge badge-mine" id="mine-count">0 本</span>
+      </div>
+      <div class="lib-row" id="lib-row-mine"></div>
+    </div>
     <div class="lib-level" id="lib-level-0">
       <div class="lib-level-head lv-g">
         <h3>🟢 入门级</h3>

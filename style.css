@@ -194,6 +194,17 @@ body{
 }
 #lib-search:focus{border-color:var(--accent);}
 #lib-search::placeholder{color:var(--text-3);}
+#lib-add-btn{
+  flex-shrink:0;
+  width:42px;height:42px;
+  border:1.5px solid var(--accent);border-radius:12px;
+  background:var(--accent);color:#fff;cursor:pointer;
+  font-size:22px;font-weight:400;line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .15s;
+}
+#lib-add-btn:hover{opacity:.85;}
+#lib-add-btn.active{background:var(--accent-2);color:var(--accent);border-color:var(--accent);}
 #lib-filter-btn{
   flex-shrink:0;
   height:42px;padding:0 14px;
@@ -206,6 +217,65 @@ body{
 #lib-filter-btn:hover,#lib-filter-btn.active{
   border-color:var(--accent);color:var(--accent);background:var(--accent-2);
 }
+/* ── Gutenberg search panel ── */
+#gb-panel{
+  flex-shrink:0;
+  border-bottom:1px solid var(--border);
+  background:var(--surface);
+  padding:10px 16px 12px;
+  animation:fadeIn .15s ease;
+}
+.gb-input-row{display:flex;gap:8px;}
+#gb-input{
+  flex:1;padding:10px 14px;
+  border:1.5px solid var(--border);border-radius:12px;
+  background:var(--bg);color:var(--text);
+  font-family:'Nunito',sans-serif;font-size:14px;
+  outline:none;transition:border-color .15s;
+}
+#gb-input:focus{border-color:var(--accent);}
+#gb-search-btn{
+  padding:0 18px;height:42px;
+  background:var(--accent);color:#fff;border:none;
+  border-radius:12px;font-size:14px;font-weight:700;
+  font-family:'Nunito',sans-serif;cursor:pointer;
+  white-space:nowrap;transition:opacity .15s;
+}
+#gb-search-btn:hover{opacity:.85;}
+#gb-results{margin-top:10px;max-height:260px;overflow-y:auto;}
+.gb-item{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 4px;border-bottom:1px solid var(--border);
+}
+.gb-item:last-child{border-bottom:none;}
+.gb-item-info{flex:1;min-width:0;}
+.gb-item-title{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.gb-item-meta{font-size:12px;color:var(--text-3);margin-top:2px;}
+.gb-add-btn{
+  flex-shrink:0;padding:5px 14px;
+  background:var(--accent);color:#fff;border:none;
+  border-radius:20px;font-size:12px;font-weight:700;
+  font-family:'Nunito',sans-serif;cursor:pointer;
+  transition:opacity .15s;white-space:nowrap;
+}
+.gb-add-btn:hover{opacity:.85;}
+.gb-add-btn:disabled{background:var(--border);color:var(--text-3);cursor:default;}
+.gb-empty{padding:16px 4px;font-size:13px;color:var(--text-3);text-align:center;}
+/* ── 我的书架 ── */
+.lv-mine{background:linear-gradient(90deg,rgba(253,230,138,.5) 0%,transparent 100%);border-left:4px solid #F59E0B;}
+.night .lv-mine{background:linear-gradient(90deg,rgba(120,90,20,.45) 0%,transparent 100%);}
+.badge-mine{background:#FEF3C7;color:#92400E;}
+.night .badge-mine{background:#78350F;color:#FDE68A;}
+.bk-remove{
+  position:absolute;top:6px;right:6px;
+  width:24px;height:24px;border-radius:50%;
+  background:rgba(0,0,0,.45);color:#fff;
+  border:none;cursor:pointer;font-size:14px;line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  opacity:0;transition:opacity .15s;z-index:2;
+}
+.bk:hover .bk-remove{opacity:1;}
+.bk-cover{position:relative;}
 .lib-filter-popup{
   display:none;
   position:fixed;
