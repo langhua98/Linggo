@@ -1,0 +1,2136 @@
+// ═══════════════════════════════════════════
+//  INDEXED DB — book cache
+// ═══════════════════════════════════════════
+const IDB_NAME = 'ReadEN', IDB_VER = 1, IDB_STORE = 'books';
+function openIDB(){
+  return new Promise((res,rej)=>{
+    const r = indexedDB.open(IDB_NAME, IDB_VER);
+    r.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE,{keyPath:'url'});
+    r.onsuccess = e => res(e.target.result);
+    r.onerror   = ()=> rej(r.error);
+  });
+}
+async function idbSave(url, text){
+  const db = await openIDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).put({url, text, ts:Date.now()});
+    tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
+  });
+}
+async function idbGet(url){
+  const db = await openIDB();
+  return new Promise((res,rej)=>{
+    const tx  = db.transaction(IDB_STORE,'readonly');
+    const req = tx.objectStore(IDB_STORE).get(url);
+    req.onsuccess = ()=> res(req.result?.text||null);
+    req.onerror   = ()=> rej(req.error);
+  });
+}
+async function idbHas(url){
+  const db = await openIDB();
+  return new Promise((res,rej)=>{
+    const tx  = db.transaction(IDB_STORE,'readonly');
+    const req = tx.objectStore(IDB_STORE).count(url);
+    req.onsuccess = ()=> res(req.result > 0);
+    req.onerror   = ()=> rej(req.error);
+  });
+}
+
+// ═══════════════════════════════════════════
+//  BOOK DATA
+// ═══════════════════════════════════════════
+const BOOKS = [
+  // ── 🟢 BEGINNER ──
+  [
+    {t:"Alice's Adventures in Wonderland",a:"Lewis Carroll",y:1865,cat:["classic","fantasy"],
+     url:"https://www.gutenberg.org/files/11/11-0.txt",mark:"CHAPTER I.",
+     isbn:"9780141439761",pal:["#7B6CF6","#B794F4"]},
+    {t:"The Wonderful Wizard of Oz",a:"L. Frank Baum",y:1900,cat:["classic","fantasy"],
+     url:"https://www.gutenberg.org/files/55/55-0.txt",mark:"Chapter I.",
+     isbn:"9780147514011",pal:["#48BB78","#F6E05E"]},
+    {t:"The Adventures of Tom Sawyer",a:"Mark Twain",y:1876,cat:["classic","adventure"],
+     url:"https://www.gutenberg.org/files/74/74-0.txt",mark:"CHAPTER I",
+     isbn:"9780143039600",pal:["#F6AD55","#FC8181"]},
+    {t:"The Jungle Book",a:"Rudyard Kipling",y:1894,cat:["classic","adventure"],
+     url:"https://www.gutenberg.org/files/236/236-0.txt",mark:"Mowgli's Brothers",
+     isbn:"9780142437889",pal:["#68D391","#276749"]},
+    {t:"Adventures of Huckleberry Finn",a:"Mark Twain",y:1884,cat:["classic","adventure"],
+     url:"https://www.gutenberg.org/files/76/76-0.txt",mark:"CHAPTER I.",
+     isbn:"9780486280615",pal:["#63B3ED","#2B6CB0"]},
+    {t:"The Secret Garden",a:"Frances H. Burnett",y:1911,cat:["classic"],
+     url:"https://www.gutenberg.org/files/113/113-0.txt",mark:"There is no one left",
+     isbn:"9780142437056",pal:["#FC8181","#9AE6B4"]},
+    {t:"Black Beauty",a:"Anna Sewell",y:1877,cat:["classic"],
+     url:"https://www.gutenberg.org/files/271/271-0.txt",mark:"My Early Home",
+     isbn:"9780141321486",pal:["#2D3748","#718096"]},
+    {t:"O. Henry Short Stories",a:"O. Henry",y:1906,cat:["classic","short"],
+     url:"https://www.gutenberg.org/files/2776/2776.txt",mark:"THE GIFT OF THE MAGI",
+     isbn:"9780486270616",pal:["#ECC94B","#C05621"]},
+    {t:"Peter Pan",a:"J. M. Barrie",y:1911,cat:["classic","fantasy"],
+     url:"https://www.gutenberg.org/files/16/16-0.txt",mark:"Chapter 1",
+     isbn:"9780141321134",pal:["#76E4F7","#0987A0"]},
+    {t:"The Railway Children",a:"E. Nesbit",y:1906,cat:["classic","adventure"],
+     url:"https://www.gutenberg.org/files/1874/1874-0.txt",mark:"The beginning of things",
+     isbn:"9780140367652",pal:["#F687B3","#B83280"]},
+  ],
+  // ── 🟡 INTERMEDIATE ──
+  [
+    {t:"A Study in Scarlet",a:"Arthur Conan Doyle",y:1887,cat:["mystery"],
+     url:"https://www.gutenberg.org/files/244/244-0.txt",mark:"PART I",
+     isbn:"9780140439083",pal:["#2D3748","#E53E3E"]},
+    {t:"The Adventures of Sherlock Holmes",a:"Arthur Conan Doyle",y:1892,cat:["mystery"],
+     url:"https://www.gutenberg.org/files/1661/1661-0.txt",mark:"ADVENTURE I.",
+     isbn:"9780140437713",pal:["#1A202C","#90CDF4"]},
+    {t:"Pride and Prejudice",a:"Jane Austen",y:1813,cat:["classic"],
+     url:"https://www.gutenberg.org/files/1342/1342-0.txt",mark:"Chapter 1",
+     isbn:"9780141439518",pal:["#FEB2B2","#9B2C2C"]},
+    {t:"The Picture of Dorian Gray",a:"Oscar Wilde",y:1890,cat:["classic","horror"],
+     url:"https://www.gutenberg.org/files/174/174-0.txt",mark:"The studio was filled",
+     isbn:"9780141439570",pal:["#9F7AEA","#553C9A"]},
+    {t:"The Great Gatsby",a:"F. Scott Fitzgerald",y:1925,cat:["classic"],
+     url:"https://www.gutenberg.org/files/64317/64317-0.txt",mark:"In my younger",
+     isbn:"9780743273565",pal:["#F6E05E","#744210"]},
+    {t:"Treasure Island",a:"Robert Louis Stevenson",y:1883,cat:["adventure"],
+     url:"https://www.gutenberg.org/files/120/120-0.txt",mark:"PART ONE",
+     isbn:"9780141321073",pal:["#F6AD55","#2D3748"]},
+    {t:"The Time Machine",a:"H. G. Wells",y:1895,cat:["scifi"],
+     url:"https://www.gutenberg.org/files/35/35-0.txt",mark:"Introduction",
+     isbn:"9780141439976",pal:["#4299E1","#1A202C"]},
+    {t:"Strange Case of Dr Jekyll and Mr Hyde",a:"R. L. Stevenson",y:1886,cat:["horror","classic"],
+     url:"https://www.gutenberg.org/files/43/43-0.txt",mark:"Story of the Door",
+     isbn:"9780141439648",pal:["#718096","#1A202C"]},
+    {t:"Dracula",a:"Bram Stoker",y:1897,cat:["horror"],
+     url:"https://www.gutenberg.org/files/345/345-0.txt",mark:"3 May.",
+     isbn:"9780141439846",pal:["#C53030","#1A202C"]},
+    {t:"Frankenstein",a:"Mary Shelley",y:1818,cat:["scifi","horror"],
+     url:"https://www.gutenberg.org/files/84/84-0.txt",mark:"Letter 1",
+     isbn:"9780141439471",pal:["#2C5282","#E2E8F0"]},
+    {t:"Around the World in 80 Days",a:"Jules Verne",y:1872,cat:["adventure"],
+     url:"https://www.gutenberg.org/files/103/103-0.txt",mark:"IN WHICH",
+     isbn:"9780140449068",pal:["#F6AD55","#276749"]},
+    {t:"Sense and Sensibility",a:"Jane Austen",y:1811,cat:["classic"],
+     url:"https://www.gutenberg.org/files/161/161-0.txt",mark:"Chapter 1",
+     isbn:"9780141439662",pal:["#FEB2B2","#744210"]},
+    {t:"Emma",a:"Jane Austen",y:1815,cat:["classic"],
+     url:"https://www.gutenberg.org/files/158/158-0.txt",mark:"Chapter I",
+     isbn:"9780141439587",pal:["#9AE6B4","#276749"]},
+    {t:"The Sign of Four",a:"Arthur Conan Doyle",y:1890,cat:["mystery"],
+     url:"https://www.gutenberg.org/files/2097/2097-0.txt",mark:"Chapter 1",
+     isbn:"9780192835192",pal:["#ECC94B","#1A202C"]},
+    {t:"The Count of Monte Cristo",a:"Alexandre Dumas",y:1844,cat:["adventure","classic"],
+     url:"https://www.gutenberg.org/files/1184/1184-0.txt",mark:"Chapter 1",
+     isbn:"9780140449266",pal:["#2D3748","#ECC94B"]},
+    {t:"The Three Musketeers",a:"Alexandre Dumas",y:1844,cat:["adventure","classic"],
+     url:"https://www.gutenberg.org/files/1257/1257-0.txt",mark:"Chapter I",
+     isbn:"9780140440379",pal:["#C05621","#1A202C"]},
+  ],
+  // ── 🔴 ADVANCED ──
+  [
+    {t:"Moby-Dick",a:"Herman Melville",y:1851,cat:["classic"],
+     url:"https://www.gutenberg.org/files/2701/2701-0.txt",mark:"Call me Ishmael",
+     isbn:"9780142437247",pal:["#2B6CB0","#1A202C"]},
+    {t:"Jane Eyre",a:"Charlotte Brontë",y:1847,cat:["classic"],
+     url:"https://www.gutenberg.org/files/1260/1260-0.txt",mark:"There was no possibility",
+     isbn:"9780141441146",pal:["#C05621","#744210"]},
+    {t:"A Tale of Two Cities",a:"Charles Dickens",y:1859,cat:["classic"],
+     url:"https://www.gutenberg.org/files/98/98-0.txt",mark:"It was the best of times",
+     isbn:"9780141439600",pal:["#C53030","#1A202C"]},
+    {t:"Wuthering Heights",a:"Emily Brontë",y:1847,cat:["classic","horror"],
+     url:"https://www.gutenberg.org/files/768/768-0.txt",mark:"1801",
+     isbn:"9780141439556",pal:["#4A5568","#E2E8F0"]},
+    {t:"Great Expectations",a:"Charles Dickens",y:1861,cat:["classic"],
+     url:"https://www.gutenberg.org/files/1400/1400-0.txt",mark:"My father's family name",
+     isbn:"9780141439563",pal:["#276749","#F6E05E"]},
+    {t:"Walden",a:"Henry David Thoreau",y:1854,cat:["classic"],
+     url:"https://www.gutenberg.org/files/205/205-0.txt",mark:"ECONOMY",
+     isbn:"9780691096124",pal:["#276749","#C6F6D5"]},
+    {t:"The Metamorphosis",a:"Franz Kafka",y:1915,cat:["classic","scifi"],
+     url:"https://www.gutenberg.org/files/5200/5200-0.txt",mark:"One morning",
+     isbn:"9780141184128",pal:["#718096","#2D3748"]},
+    {t:"Crime and Punishment",a:"Fyodor Dostoevsky",y:1866,cat:["classic"],
+     url:"https://www.gutenberg.org/files/2554/2554-0.txt",mark:"PART I",
+     isbn:"9780140449136",pal:["#C53030","#744210"]},
+    {t:"Middlemarch",a:"George Eliot",y:1871,cat:["classic"],
+     url:"https://www.gutenberg.org/files/145/145-0.txt",mark:"Miss Brooke",
+     isbn:"9780141439549",pal:["#B7791F","#FEFCBF"]},
+    {t:"The Brothers Karamazov",a:"Fyodor Dostoevsky",y:1880,cat:["classic"],
+     url:"https://www.gutenberg.org/files/28054/28054-0.txt",mark:"PART I",
+     isbn:"9780374528379",pal:["#2C5282","#ECC94B"]},
+  ],
+];
+
+// Category labels
+const CAT_LABELS = {all:'全部',classic:'经典',mystery:'推理',adventure:'冒险',scifi:'科幻',horror:'恐怖',short:'短篇'};
+let libCat = 'all', libQuery = '';
+
+// ── Cover URL
+function coverUrl(isbn){ return `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`; }
+
+// ── CORS proxies with real progress tracking
+const CORS_PROXIES = [
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+];
+
+async function fetchWithProgress(rawUrl, onProgress){
+  for(const mk of CORS_PROXIES){
+    try{
+      const ctrl = new AbortController();
+      const tid  = setTimeout(()=>ctrl.abort(), 20000);
+      const resp = await fetch(mk(rawUrl), {signal:ctrl.signal});
+      clearTimeout(tid);
+      if(!resp.ok) continue;
+      const total  = parseInt(resp.headers.get('content-length')||'0');
+      const reader = resp.body.getReader();
+      const chunks = []; let got = 0;
+      while(true){
+        const {done,value} = await reader.read();
+        if(done) break;
+        chunks.push(value); got += value.length;
+        const pct = total > 0 ? Math.round(got/total*100) : Math.min(90, Math.round(got/5000));
+        onProgress(pct);
+      }
+      onProgress(100);
+      const buf = new Uint8Array(got); let pos=0;
+      for(const c of chunks){ buf.set(c,pos); pos+=c.length; }
+      return new TextDecoder('utf-8').decode(buf);
+    }catch(e){ console.warn('proxy fail',e); }
+  }
+  throw new Error('all proxies failed');
+}
+
+// ── Card state manager
+function setCardAction(cardEl, state, pct){
+  const el = cardEl.querySelector('.bk-action');
+  if(!el) return;
+  if(state === 'ready'){
+    el.innerHTML = '<button class="bk-btn">开始阅读</button>';
+    el.querySelector('button').addEventListener('click', e => {
+      e.stopPropagation();
+      loadBook(cardEl._book, cardEl);
+    });
+  } else if(state === 'cached'){
+    el.innerHTML = '<button class="bk-btn bk-btn-cached">继续阅读 ›</button>';
+    el.querySelector('button').addEventListener('click', e => {
+      e.stopPropagation();
+      loadBook(cardEl._book, cardEl);
+    });
+  } else if(state === 'downloading'){
+    const p = (typeof pct === 'number' && pct > 0) ? pct : 0;
+    el.innerHTML = `
+      <div class="bk-prog-wrap"><div class="bk-prog-bar" style="width:${p}%"></div></div>
+      <span class="bk-prog-label">${p > 0 ? p+'%' : '连接中…'}</span>`;
+  } else {
+    // init / checking
+    el.innerHTML = '<div class="bk-btn-ghost">检查中…</div>';
+  }
+}
+
+// ── Build single book card
+function buildCard(book){
+  const div = document.createElement('div');
+  div.className = 'bk';
+  div._book = book;
+  const [c1,c2] = book.pal;
+  div.innerHTML = `
+    <div class="bk-cover">
+      <img src="${coverUrl(book.isbn)}" alt="${book.t}" loading="lazy">
+      <div class="bk-cover-fallback" style="display:none;background:linear-gradient(145deg,${c1},${c2})">
+        <div class="bk-fb-title">${book.t}</div>
+        <div class="bk-fb-author">${book.a.split(' ').pop()}</div>
+        <div class="bk-fb-deco"></div>
+      </div>
+    </div>
+    <div class="bk-title">${book.t}</div>
+    <div class="bk-author">${book.a}</div>
+    <div class="bk-action"></div>`;
+
+  // cover fallback on error
+  const img = div.querySelector('img');
+  const fb  = div.querySelector('.bk-cover-fallback');
+  img.onerror = () => { img.style.display='none'; fb.style.display='flex'; };
+
+  // check local cache, set initial button state
+  setCardAction(div, 'init');
+  idbHas(book.url).then(has => setCardAction(div, has ? 'cached' : 'ready'));
+
+  return div;
+}
+
+// ── Load book: try cache first, then download
+async function loadBook(book, cardEl){
+  // 1. Try local IndexedDB cache
+  try{
+    const cached = await idbGet(book.url);
+    if(cached){
+      openBook(book, cached);
+      return;
+    }
+  }catch(e){}
+
+  // 2. Download with real-time progress
+  setCardAction(cardEl, 'downloading', 0);
+  try{
+    let txt = await fetchWithProgress(book.url, pct => {
+      setCardAction(cardEl, 'downloading', pct);
+    });
+    // Strip Gutenberg boilerplate
+    const si = txt.indexOf(book.mark);
+    if(si > 0) txt = txt.substring(si);
+    for(const m of ['*** END OF','***END OF','End of Project Gutenberg']){
+      const ei = txt.indexOf(m);
+      if(ei > 500){ txt = txt.substring(0,ei); break; }
+    }
+    // Save locally
+    await idbSave(book.url, txt);
+    setCardAction(cardEl, 'cached');
+    openBook(book, txt);
+  }catch(e){
+    setCardAction(cardEl, 'ready');
+    document.getElementById('err-dl').href = book.url;
+    document.getElementById('err-modal').classList.add('vis');
+  }
+}
+
+// ── Open book in reader
+function openBook(book, text){
+  S.fileName = book.t;
+  document.getElementById('filename').textContent = book.t;
+  loadProg();
+  document.getElementById('library').classList.remove('open');
+  document.getElementById('overlay').classList.remove('vis');
+  buildReader(text);
+  toast('《' + book.t + '》');
+}
+
+// ── Filter popup position (fixed, follows button)
+function positionFilterPopup(){
+  const btn  = document.getElementById('lib-filter-btn');
+  const pop  = document.getElementById('lib-filter-popup');
+  const rect = btn.getBoundingClientRect();
+  pop.style.top   = (rect.bottom + 6) + 'px';
+  pop.style.right = (window.innerWidth - rect.right) + 'px';
+  pop.style.left  = 'auto';
+}
+
+// ── Render library rows
+function renderLib(){
+  BOOKS.forEach((level, li) => {
+    const row = document.getElementById(`lib-row-${li}`);
+    if(!row) return;
+    row.innerHTML = '';
+    const filtered = level.filter(b => {
+      const catOk = libCat === 'all' || b.cat.includes(libCat);
+      const q     = libQuery.toLowerCase();
+      const qOk   = !q || b.t.toLowerCase().includes(q) || b.a.toLowerCase().includes(q);
+      return catOk && qOk;
+    });
+    filtered.forEach(b => row.appendChild(buildCard(b)));
+    document.getElementById(`lib-level-${li}`).style.display = filtered.length ? '' : 'none';
+  });
+  const any = [0,1,2].some(i => document.getElementById(`lib-level-${i}`).style.display !== 'none');
+  document.getElementById('lib-empty').style.display = any ? 'none' : '';
+}
+
+// ── Search
+let libSearchTimer;
+document.getElementById('lib-search').addEventListener('input', e => {
+  clearTimeout(libSearchTimer);
+  libSearchTimer = setTimeout(() => { libQuery = e.target.value.trim(); renderLib(); }, 200);
+});
+
+// ── Category filter
+const filterBtn = document.getElementById('lib-filter-btn');
+const filterPop = document.getElementById('lib-filter-popup');
+filterBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  const isOpen = filterPop.classList.toggle('open');
+  filterBtn.classList.toggle('active', isOpen);
+  if(isOpen) positionFilterPopup();
+});
+document.addEventListener('click', () => {
+  filterPop.classList.remove('open');
+  filterBtn.classList.remove('active');
+});
+filterPop.addEventListener('click', e => e.stopPropagation());
+
+document.querySelectorAll('.fcat').forEach(btn => {
+  btn.addEventListener('click', () => {
+    libCat = btn.dataset.cat;
+    document.querySelectorAll('.fcat').forEach(b => b.classList.toggle('on', b === btn));
+    const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`;
+    filterBtn.innerHTML = icon + ' ' + CAT_LABELS[libCat];
+    filterPop.classList.remove('open');
+    filterBtn.classList.remove('active');
+    renderLib();
+  });
+});
+
+// ── Library open/close
+document.getElementById('lib-tbtn').addEventListener('click', () => {
+  document.getElementById('library').classList.toggle('open');
+});
+document.getElementById('lib-open-btn').addEventListener('click', () => {
+  document.getElementById('library').classList.add('open');
+});
+document.getElementById('lib-close').addEventListener('click', () => {
+  document.getElementById('library').classList.remove('open');
+});
+
+renderLib();
+
+document.getElementById('err-close').addEventListener('click',()=> document.getElementById('err-modal').classList.remove('vis'));
+
+// ═══════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════
+const S = {
+  sents:[], idx:0,
+  playing:false, paused:false,
+  speed:1.0, accentUS:true,
+  mode:'normal', fontSize:18,
+  lineHeight:2.05, textAlign:'left',
+  vocab:[], fileName:'',
+  srchHits:[], srchIdx:0, srchOpen:false,
+  night:false, trans:{},
+  curWordEl:null, curWordData:null,
+  selectedVoice:null, savedWords:new Set(),
+  chapters:[],  // { title, sentIdx, el }
+};
+const synth = window.speechSynthesis;
+let resumeTimer = null;
+
+function startResumeTimer(){
+  stopResumeTimer();
+  resumeTimer = setInterval(()=>{
+    if(synth.speaking && !synth.paused){ synth.pause(); synth.resume(); }
+  }, 14000);
+}
+function stopResumeTimer(){ clearInterval(resumeTimer); resumeTimer = null; }
+
+// ═══════════════════════════════════════════
+//  PERSIST (localStorage)
+// ═══════════════════════════════════════════
+function saveProg(){
+  if(!S.fileName) return;
+  localStorage.setItem('rdr_'+S.fileName, JSON.stringify({
+    idx:S.idx, speed:S.speed,
+    fontSize:S.fontSize, night:S.night,
+    accentUS:S.accentUS, mode:S.mode,
+    lineHeight:S.lineHeight, textAlign:S.textAlign,
+  }));
+  localStorage.setItem('vocab', JSON.stringify(S.vocab));
+}
+function loadProg(){
+  const raw = localStorage.getItem('rdr_'+S.fileName);
+  if(raw){
+    const d = JSON.parse(raw);
+    S.idx        = d.idx        || 0;
+    S.speed      = d.speed      || 1.0;
+    S.fontSize   = d.fontSize   || 18;
+    S.night      = !!d.night;
+    S.accentUS   = d.accentUS !== undefined ? d.accentUS : true;
+    S.mode       = d.mode       || 'normal';
+    S.lineHeight = d.lineHeight || 2.05;
+    S.textAlign  = d.textAlign  || 'left';
+  }
+  const v = localStorage.getItem('vocab');
+  if(v) S.vocab = JSON.parse(v);
+}
+function restoreProg(){
+  if(S.idx > 0 && S.idx < S.sents.length){
+    setTimeout(()=>{ jump(S.idx); toast(`已恢复到 ${Math.round(S.idx/S.sents.length*100)}% 进度`); }, 400);
+  }
+}
+
+// ═══════════════════════════════════════════
+//  VOICES
+// ═══════════════════════════════════════════
+let allVoices = [];
+function qualityScore(v){
+  const n = v.name.toLowerCase();
+  if(n.includes('siri'))     return 10;
+  if(n.includes('enhanced')) return 9;
+  if(n.includes('premium'))  return 8;
+  if(n.includes('natural'))  return 5;
+  if(n.includes('compact'))  return 0;
+  return 3;
+}
+function cleanVoiceName(v){
+  return v.name
+    .replace(/com\.apple\.voice\.(enhanced|compact|premium)\./,'')
+    .replace('com.apple.ttsbundle.','')
+    .replace('com.apple.eloquence.','')
+    .replace(/^en[-_][A-Z]{2}[-_]/,'')
+    .replace(/ \(.*?\)/,'').trim();
+}
+const BLOCK = /albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|fred|good news|hysterical|jester|junior|organ|pipe organ|princess|ralph|superstar|trinoids|whisper|wobble|zarvox/i;
+
+function populateVoices(){
+  allVoices = synth.getVoices();
+  const enVoices = allVoices
+    .filter(v => v.lang.startsWith('en') && !BLOCK.test(v.name))
+    .sort((a,b)=>{
+      const au = a.lang==='en-US'?1:0, bu = b.lang==='en-US'?1:0;
+      if(au!==bu) return bu-au;
+      return qualityScore(b)-qualityScore(a);
+    });
+  if(!enVoices.length) return;
+  const sel = document.getElementById('sb-voice-select');
+  if(!sel) return;
+  sel.innerHTML = '';
+  enVoices.forEach(v=>{
+    const o = document.createElement('option');
+    o.value = v.name;
+    const flag = v.lang==='en-US'?'🇺🇸':v.lang==='en-GB'?'🇬🇧':'🌐';
+    o.textContent = flag+' '+cleanVoiceName(v);
+    sel.appendChild(o);
+  });
+  const saved = localStorage.getItem('selectedVoice');
+  const savedVoice = saved && enVoices.find(v=>v.name===saved);
+  if(savedVoice){ sel.value=savedVoice.name; S.selectedVoice=savedVoice; }
+  else{
+    S.selectedVoice = enVoices[0];
+    sel.value = enVoices[0].name;
+    localStorage.setItem('selectedVoice', enVoices[0].name);
+  }
+}
+document.getElementById('sb-voice-select').addEventListener('change', function(){
+  S.selectedVoice = allVoices.find(v=>v.name===this.value)||null;
+  localStorage.setItem('selectedVoice', this.value);
+});
+document.getElementById('sb-voice-preview').addEventListener('click', ()=>{
+  const u = new SpeechSynthesisUtterance('Hello! This is a voice preview.');
+  u.rate = S.speed;
+  if(S.selectedVoice) u.voice = S.selectedVoice;
+  synth.cancel(); synth.speak(u);
+});
+synth.onvoiceschanged = ()=>{ populateVoices(); };
+populateVoices();
+
+// ═══════════════════════════════════════════
+//  FILE LOADING (from local TXT upload)
+// ═══════════════════════════════════════════
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+dropZone.addEventListener('click', ()=>fileInput.click());
+fileInput.addEventListener('change', e=>{ if(e.target.files[0]) readFile(e.target.files[0]); });
+dropZone.addEventListener('dragover', e=>{ e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', ()=>dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e=>{
+  e.preventDefault(); dropZone.classList.remove('drag');
+  const f=e.dataTransfer.files[0];
+  if(f&&f.name.endsWith('.txt')) readFile(f);
+  else toast('请上传 .txt 格式文件');
+});
+function readFile(f){
+  S.fileName=f.name;
+  document.getElementById('filename').textContent=f.name;
+  const r=new FileReader();
+  r.onload=e=>{ loadProg(); buildReader(e.target.result); };
+  r.readAsText(f,'UTF-8');
+}
+
+// load vocab from localStorage on init
+const _sv = localStorage.getItem('vocab');
+if(_sv) try{ S.vocab=JSON.parse(_sv); }catch(e){}
+
+// ═══════════════════════════════════════════
+//  BUILD READER  —  chunked render + delegation
+// ═══════════════════════════════════════════
+function splitSents(txt){
+  // Step 1: split on sentence-ending punctuation (.!?) and semicolons
+  const raw = txt.match(/[^.!?;]+[.!?;]+['""\u201d]?\s*|[^.!?;]+$/g) || [txt];
+
+  // Step 2: further split any chunk longer than 160 chars at a comma
+  const MAX = 160;
+  const result = [];
+  for(const chunk of raw){
+    const s = chunk.trim();
+    if(!s) continue;
+    if(s.length <= MAX){ result.push(s); continue; }
+    // Find best comma split point near the middle
+    const mid = Math.floor(s.length / 2);
+    let best = -1, bestDist = Infinity;
+    let i = s.indexOf(',');
+    while(i !== -1){
+      const dist = Math.abs(i - mid);
+      if(dist < bestDist){ bestDist = dist; best = i; }
+      i = s.indexOf(',', i + 1);
+    }
+    if(best > 20 && best < s.length - 20){
+      result.push(s.slice(0, best + 1).trim());
+      result.push(s.slice(best + 1).trim());
+    } else {
+      result.push(s);
+    }
+  }
+  return result.filter(s => s.length > 2);
+}
+
+// Detect chapter heading — checks ANY sentence, not just standalone paragraphs
+function isHeading(text){
+  const t = text.trim();
+  if(!t || t.length > 90) return false;
+  // Common keyword-based headings (most reliable, covers all Gutenberg formats)
+  // NOTE: deliberately NOT checking trailing punctuation — "CHAPTER I." ends with "."
+  if(/^(chapter|part|section|prologue|epilogue|book|preface|introduction|appendix|interlude|afterword|act\s|adventure|story|tale|letter|volume)/i.test(t)) return true;
+  // Standalone Roman numerals  e.g. "I.", "XII", "IV."
+  if(/^[IVXLCDM]+\.?\s*$/i.test(t) && t.length <= 10) return true;
+  // Standalone Arabic numbers  e.g. "1.", "12"
+  if(/^\d+\.?\s*$/.test(t) && t.length <= 5) return true;
+  return false;
+}
+
+// Build one paragraph element.
+// Now checks if FIRST sentence is a heading (not just single-sentence paragraphs).
+// Returns DocumentFragment (may contain heading div + para div) or plain Element.
+function buildPara(ss, startIdx){
+  if(isHeading(ss[0])){
+    const frag = document.createDocumentFragment();
+
+    // Heading element
+    const h = document.createElement('div');
+    h.className = 'para-heading';
+    h.textContent = ss[0];
+    S.chapters.push({ title: ss[0], sentIdx: startIdx, el: h });
+    // Hidden sent span so TTS can start from this heading
+    const hsp = document.createElement('span');
+    hsp.className = 'sent'; hsp.dataset.i = startIdx;
+    hsp.style.display = 'none';
+    hsp.textContent = ss[0];
+    h.appendChild(hsp);
+    frag.appendChild(h);
+
+    // Remaining sentences as a normal paragraph (sub-title or first para)
+    if(ss.length > 1){
+      const pEl = document.createElement('div');
+      pEl.className = 'para';
+      ss.slice(1).forEach((s, j) => {
+        const sp = document.createElement('span');
+        sp.className = 'sent';
+        sp.dataset.i = startIdx + 1 + j;
+        sp.textContent = s + ' ';
+        pEl.appendChild(sp);
+      });
+      frag.appendChild(pEl);
+    }
+    return frag;
+  }
+
+  // Normal paragraph
+  const pEl = document.createElement('div');
+  pEl.className = 'para';
+  ss.forEach((s, j) => {
+    const sp = document.createElement('span');
+    sp.className = 'sent';
+    sp.dataset.i = startIdx + j;
+    sp.textContent = s + ' ';
+    pEl.appendChild(sp);
+  });
+  return pEl;
+}
+
+// Inject word spans into a sentence on demand (lazy)
+function injectWords(sp){
+  if (sp.dataset.words) return;
+  sp.dataset.words = '1';
+  const i   = +sp.dataset.i;
+  const raw = S.sents[i];
+  const frag = document.createDocumentFragment();
+  let charPos = 0;
+
+  const parts = raw.split(/(\s+)/);
+  parts.forEach(part => {
+    if (/^\s+$/.test(part)) {
+      frag.appendChild(document.createTextNode(part));
+      charPos += part.length;
+    } else {
+      const m = part.match(/^([^a-zA-Z']*)([a-zA-Z']+)([^a-zA-Z']*)$/);
+      if (m) {
+        if (m[1]) { frag.appendChild(document.createTextNode(m[1])); charPos += m[1].length; }
+        const w = document.createElement('span');
+        w.className = 'word';
+        const clean = m[2].toLowerCase().replace(/^'+|'+$/g,'');
+        w.dataset.w = clean;
+        w.dataset.charStart = charPos; // ← char offset within sentence
+        w.textContent = m[2];
+        if (S.savedWords.has(clean)) w.classList.add('saved');
+        frag.appendChild(w);
+        charPos += m[2].length;
+        if (m[3]) { frag.appendChild(document.createTextNode(m[3])); charPos += m[3].length; }
+      } else {
+        frag.appendChild(document.createTextNode(part));
+        charPos += part.length;
+      }
+    }
+  });
+  frag.appendChild(document.createTextNode(' '));
+  sp.textContent = '';
+  sp.appendChild(frag);
+}
+
+// ═══════════════════════════════════════════
+//  INTERACTION
+//  单击单词       → 查词弹窗
+//  长按句子 500ms → 从这句开始播放
+// ═══════════════════════════════════════════
+const area = document.getElementById('content');
+let pressTimer = null;
+let pressFired = false;
+let touchActive = false; // distinguish touch vs mouse
+
+// ── MOBILE (touch) ──────────────────────────
+// Non-passive touchstart: e.preventDefault() blocks iOS long-press menu
+area.addEventListener('touchstart', function(e){
+  const sentEl = e.target.closest('.sent');
+  if(!sentEl) return;
+
+  e.preventDefault(); // ← blocks browser text-selection callout
+  touchActive = true;
+  injectWords(sentEl);
+
+  pressFired = false;
+  clearTimeout(pressTimer);
+
+  const wordEl = e.target.closest('.word');
+  if(!wordEl){
+    // Long press on sentence (not a word) → play from here
+    pressTimer = setTimeout(()=>{
+      pressFired = true;
+      const i = +sentEl.dataset.i;
+      synth.cancel(); stopResumeTimer();
+      S.paused = false; S.playing = false; setIcon(false);
+      S.idx = i; jump(i); playCurrent();
+    }, 500);
+  } else {
+    // Long press on a word → jump to its sentence and play
+    pressTimer = setTimeout(()=>{
+      pressFired = true;
+      const i = +sentEl.dataset.i;
+      synth.cancel(); stopResumeTimer();
+      S.paused = false; S.playing = false; setIcon(false);
+      S.idx = i; jump(i); playCurrent();
+    }, 500);
+  }
+}, { passive: false }); // ← must be non-passive to call preventDefault
+
+area.addEventListener('touchmove', ()=>{
+  clearTimeout(pressTimer); // cancel long-press if finger moves (scroll)
+}, { passive: true });
+
+area.addEventListener('touchend', function(e){
+  clearTimeout(pressTimer);
+  touchActive = true;
+  if(!pressFired){
+    // 用 elementFromPoint 而非 e.target：
+    // touchstart 时 injectWords 重写了 DOM，e.target 还是旧的 .sent 节点，
+    // elementFromPoint 拿到的才是重写后实际在手指下的 .word span
+    const touch = e.changedTouches[0];
+    const sentEl = e.target.closest('.sent');
+    if(sentEl) injectWords(sentEl);
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const wordEl = el?.closest('.word');
+    if(wordEl) onWordClick(wordEl).catch(()=>{});
+  }
+  pressFired = false;
+  setTimeout(()=>{ touchActive = false; }, 300);
+}, { passive: true });
+
+area.addEventListener('touchcancel', ()=>{
+  clearTimeout(pressTimer); pressFired = false;
+}, { passive: true });
+
+// ── DESKTOP (mouse) ──────────────────────────
+area.addEventListener('mousedown', e=>{
+  if(touchActive) return;
+  const sentEl = e.target.closest('.sent');
+  if(sentEl) injectWords(sentEl);
+
+  pressFired = false;
+  clearTimeout(pressTimer);
+  const wordEl = e.target.closest('.word');
+  if(sentEl && !wordEl){
+    pressTimer = setTimeout(()=>{
+      pressFired = true;
+      const i = +sentEl.dataset.i;
+      synth.cancel(); stopResumeTimer();
+      S.paused = false; S.playing = false; setIcon(false);
+      S.idx = i; jump(i); playCurrent();
+    }, 500);
+  } else if(sentEl && wordEl){
+    // Long press on word → jump to its sentence
+    pressTimer = setTimeout(()=>{
+      pressFired = true;
+      const i = +sentEl.dataset.i;
+      synth.cancel(); stopResumeTimer();
+      S.paused = false; S.playing = false; setIcon(false);
+      S.idx = i; jump(i); playCurrent();
+    }, 500);
+  }
+});
+area.addEventListener('mouseup',   ()=> clearTimeout(pressTimer));
+area.addEventListener('mousemove', ()=> clearTimeout(pressTimer));
+
+area.addEventListener('click', e=>{
+  if(touchActive || pressFired){ pressFired = false; return; }
+  const wordEl = e.target.closest('.word');
+  if(wordEl) onWordClick(wordEl).catch(()=>{});
+});
+
+// Desktop hover → inject words
+area.addEventListener('mouseover', e=>{
+  const sentEl = e.target.closest('.sent');
+  if(sentEl) injectWords(sentEl);
+});
+
+// Block browser context menu and text selection
+area.addEventListener('contextmenu', e=> e.preventDefault());
+area.addEventListener('selectstart',  e=> e.preventDefault());
+
+
+
+
+function buildReader(raw){
+  const paras = raw.split(/\n\s*\n/).map(p => p.replace(/\s+/g,' ').trim()).filter(p => p.length > 10);
+  S.sents = []; S.trans = {}; S.chapters = [];
+  S.savedWords = new Set(S.vocab.map(v => v.word));
+  area.innerHTML = '';
+
+  // Parse ALL sentences first (fast, no DOM)
+  const paraGroups = [];
+  paras.forEach(para => {
+    const ss = splitSents(para);
+    if (!ss.length) return;
+    const startIdx = S.sents.length;
+    ss.forEach(s => S.sents.push(s));
+    paraGroups.push({ ss, startIdx });
+  });
+
+  // Render in chunks of 30 paragraphs using setTimeout
+  // so the browser doesn't freeze on large books
+  const CHUNK = 30;
+  let rendered = 0;
+
+  function renderChunk() {
+    const end = Math.min(rendered + CHUNK, paraGroups.length);
+    const frag = document.createDocumentFragment();
+    for (let i = rendered; i < end; i++) {
+      frag.appendChild(buildPara(paraGroups[i].ss, paraGroups[i].startIdx));
+    }
+    area.appendChild(frag);
+    rendered = end;
+    if (rendered < paraGroups.length) {
+      setTimeout(renderChunk, 0); // yield to browser between chunks
+    } else {
+      // All done — restore position + show chapter button if chapters found
+      restoreProg();
+      renderChapters();
+      const chapBtn = document.getElementById('chap-tbtn');
+      chapBtn.style.display = S.chapters.length ? '' : 'none';
+    }
+  }
+
+  applyFont(); applyNight(); applyLineHeight(); applyTextAlign();
+  document.getElementById('landing').style.display = 'none';
+  document.getElementById('reader').style.display = 'block';
+  document.getElementById('player').style.display = 'block';
+  document.getElementById('pct-badge').style.display = '';
+  applySpeed(S.speed);   renderVoc();
+
+  renderChunk(); // start chunked rendering
+}
+
+// ═══════════════════════════════════════════
+//  CHAPTER TOC
+// ═══════════════════════════════════════════
+function renderChapters(){
+  const list = document.getElementById('chap-list');
+  if(!S.chapters.length){
+    list.innerHTML = '<div class="chap-empty">本书未检测到章节标题。<br>支持 Chapter / Part / I. 等格式。</div>';
+    return;
+  }
+  list.innerHTML = S.chapters.map((c,i) => `
+    <div class="chap-item" data-i="${i}">
+      <span class="chap-num">${i+1}</span>
+      <span class="chap-name">${c.title}</span>
+    </div>`).join('');
+  list.querySelectorAll('.chap-item').forEach(item => {
+    item.addEventListener('click', ()=>{
+      const c = S.chapters[+item.dataset.i];
+      if(!c) return;
+      // Jump to sentence and scroll heading into view
+      jump(c.sentIdx);
+      setTimeout(()=> c.el.scrollIntoView({behavior:'smooth', block:'start'}), 80);
+      closeChapPanel();
+    });
+  });
+}
+function openChapPanel(){
+  document.getElementById('chap-panel').classList.add('open');
+  document.getElementById('overlay').classList.add('vis');
+  // Highlight current chapter
+  const list = document.getElementById('chap-list');
+  list.querySelectorAll('.chap-item').forEach((item,i) => {
+    const c = S.chapters[i];
+    const next = S.chapters[i+1];
+    const active = c && S.idx >= c.sentIdx && (!next || S.idx < next.sentIdx);
+    item.classList.toggle('cur', active);
+    if(active) item.scrollIntoView({block:'nearest'});
+  });
+}
+function closeChapPanel(){
+  document.getElementById('chap-panel').classList.remove('open');
+  document.getElementById('overlay').classList.remove('vis');
+}
+document.getElementById('chap-tbtn').addEventListener('click', openChapPanel);
+document.getElementById('chap-close').addEventListener('click', closeChapPanel);
+
+// ═══════════════════════════════════════════
+//  SENTENCE TRANSLATE (called from sidebar or future button)
+// ═══════════════════════════════════════════
+
+async function onSentTranslate(i, sp){
+  if (S.mode === 'immersive') return;
+  injectWords(sp);
+  const nx = sp.nextElementSibling;
+  if (nx && nx.classList.contains('tl-line')){ nx.remove(); return; }
+  if (S.trans[i]){ showTL(sp, S.trans[i]); return; }
+  const tl = document.createElement('span');
+  tl.className = 'tl-line'; tl.textContent = '翻译中…'; sp.after(tl);
+  const res = await translate(S.sents[i]);
+  S.trans[i] = res; tl.textContent = res;
+}
+function showTL(sp, txt){
+  const tl = document.createElement('span');
+  tl.className = 'tl-line'; tl.textContent = txt; sp.after(tl);
+}
+// Translation cache: avoid re-fetching same sentences within session
+const TRANS_CACHE = (() => {
+  let mem = {};
+  try { mem = JSON.parse(sessionStorage.getItem('tl_cache') || '{}'); } catch(e) {}
+  return {
+    get: k => mem[k],
+    set: (k, v) => { mem[k] = v; try { sessionStorage.setItem('tl_cache', JSON.stringify(mem)); } catch(e) {} }
+  };
+})();
+
+function fetchTimed(url, ms = 6000) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(tid));
+}
+
+async function translate(txt) {
+  const cacheKey = txt.slice(0, 120);
+  const hit = TRANS_CACHE.get(cacheKey);
+  if (hit) return hit;
+
+  const q = encodeURIComponent(txt.slice(0, 500));
+
+  // Source 1: Google Translate (unofficial, most reliable)
+  try {
+    const r = await fetchTimed(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${q}`);
+    const d = await r.json();
+    const result = d[0]?.map(s => s?.[0] || '').join('').trim();
+    if (result) { TRANS_CACHE.set(cacheKey, result); return result; }
+  } catch(e) {}
+
+  // Source 2: MyMemory
+  try {
+    const r = await fetchTimed(`https://api.mymemory.translated.net/get?q=${q}&langpair=en|zh`);
+    const d = await r.json();
+    if (d.responseStatus === 200 && d.responseData?.translatedText) {
+      const result = d.responseData.translatedText;
+      TRANS_CACHE.set(cacheKey, result); return result;
+    }
+  } catch(e) {}
+
+  // Source 3: Lingva (open-source Google Translate frontend)
+  try {
+    const r = await fetchTimed(`https://lingva.ml/api/v1/en/zh/${encodeURIComponent(txt.slice(0, 300))}`);
+    const d = await r.json();
+    if (d.translation) { TRANS_CACHE.set(cacheKey, d.translation); return d.translation; }
+  } catch(e) {}
+
+  return '[翻译失败，请检查网络]';
+}
+
+// ═══════════════════════════════════════════
+//  WORD CLICK → DICTIONARY  (dynamic popup)
+// ═══════════════════════════════════════════
+const wpop = document.getElementById('wpop');
+
+const POS_ZH = {
+  noun:'名词', verb:'动词', adjective:'形容词', adverb:'副词',
+  pronoun:'代词', preposition:'介词', conjunction:'连词',
+  interjection:'感叹词', article:'冠词', determiner:'限定词',
+};
+
+function positionPopup(wordEl){
+  const rect    = wordEl.getBoundingClientRect();
+  const vh      = window.innerHeight;
+  const GAP     = 38;
+  const TOPBAR  = 54;
+  const playerH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--player-h')) || 196;
+  wpop.style.top    = 'auto';
+  wpop.style.bottom = 'auto';
+  if(rect.top < vh * 0.52){
+    // word in upper half → popup below
+    const below = rect.bottom + GAP;
+    const max   = vh - playerH - 16;
+    wpop.style.top = Math.min(below, max - 260) + 'px';
+    wpop.classList.replace('from-above','from-below');
+    wpop.classList.add('from-below');
+  } else {
+    // word in lower half → popup above
+    const above = vh - rect.top + GAP;
+    const max   = vh - TOPBAR - 16;
+    wpop.style.bottom = Math.min(above, max - 260) + 'px';
+    wpop.classList.replace('from-below','from-above');
+    wpop.classList.add('from-above');
+  }
+}
+
+async function onWordClick(el){
+  const word = el.dataset.w.replace(/[^a-z]/g,'');
+  if(!word || word.length < 2) return;
+
+  document.querySelectorAll('.word.active').forEach(w => w.classList.remove('active'));
+  el.classList.add('active');
+
+  S.curWordEl   = el;
+  const sentEl  = el.closest('.sent');
+  const sentText = sentEl ? S.sents[+sentEl.dataset.i] || '' : '';
+  S.curWordData = { word, sent: sentText, sentIdx: sentEl ? +sentEl.dataset.i : -1 };
+
+  // header
+  document.getElementById('wp-word').textContent = word;
+  document.getElementById('wp-ph').textContent   = '';
+  const posEl = document.getElementById('wp-pos');
+  posEl.style.display = 'none';
+
+  // meaning placeholder
+  const meaningEl = document.getElementById('wp-meaning');
+  meaningEl.textContent = '…';
+  meaningEl.className   = 'wp-meaning loading';
+
+  // context excerpt from current playing sentence
+  const isPlaying = S.playing || S.paused;
+  const ctxIdx    = isPlaying ? S.idx : S.curWordData.sentIdx;
+  const ctxFull   = (S.sents[ctxIdx] || sentText).trim();
+  const esc       = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matchPos  = ctxFull.search(new RegExp('\\b' + esc + '\\b', 'i'));
+  const WIN = 110;
+  let excerpt = ctxFull;
+  if(ctxFull.length > WIN){
+    const center = matchPos >= 0 ? matchPos : Math.floor(ctxFull.length/2);
+    let s = Math.max(0, center - WIN/2);
+    let e = Math.min(ctxFull.length, s + WIN);
+    s = Math.max(0, e - WIN);
+    while(s > 0 && ctxFull[s] !== ' ') s--;
+    while(e < ctxFull.length && ctxFull[e] !== ' ') e++;
+    excerpt = (s>0?'…':'') + ctxFull.slice(s,e).trim() + (e<ctxFull.length?'…':'');
+  }
+  document.getElementById('wp-context').innerHTML =
+    excerpt.replace(new RegExp('\\b('+esc+')\\b','gi'),'<strong>$1</strong>');
+
+  // position then show
+  positionPopup(el);
+  wpop.classList.add('vis');
+
+  // async: dictionary → POS + meaning in Chinese
+  try{
+    const r = await fetch(
+      'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)
+    );
+    if(!r.ok) throw new Error('dict ' + r.status);
+    const entry = (await r.json())[0];
+
+    const ph = entry.phonetics?.find(p => p.text)?.text || '';
+    const au = entry.phonetics?.find(p => p.audio?.length > 0)?.audio || '';
+    document.getElementById('wp-ph').textContent = ph;
+    wpop._audio = au;
+
+    const rawPos = entry.meanings?.[0]?.partOfSpeech || '';
+    const zhPos  = POS_ZH[rawPos] || rawPos;
+    if(zhPos){ posEl.textContent = zhPos; posEl.style.display = ''; }
+
+    const enDef = entry.meanings?.[0]?.definitions?.[0]?.definition || '';
+    wpop._meaning = enDef;
+    const src = enDef || word;
+    const zh  = await translate(src);
+    if(document.getElementById('wp-word').textContent === word){
+      meaningEl.textContent = zh;
+      meaningEl.className   = 'wp-meaning';
+      wpop._meaning = zh;
+    }
+  }catch{
+    meaningEl.textContent = '—';
+    meaningEl.className   = 'wp-meaning';
+  }
+}
+
+document.getElementById('wp-close').addEventListener('click', () => {
+  wpop.classList.remove('vis');
+  document.querySelectorAll('.word.active').forEach(w => w.classList.remove('active'));
+});
+document.getElementById('wp-spk').addEventListener('click', () => {
+  const w = document.getElementById('wp-word').textContent;
+  if(wpop._audio) new Audio(wpop._audio).play().catch(() => speakWord(w));
+  else speakWord(w);
+});
+document.getElementById('wp-copy').addEventListener('click', () => {
+  const word = document.getElementById('wp-word').textContent;
+  navigator.clipboard?.writeText(word).then(()=> toast(`已复制 "${word}"`)).catch(()=> toast('复制失败'));
+});
+document.getElementById('wp-learn').addEventListener('click', () => {
+  const word = S.curWordData?.word; if(!word) return;
+  addVocab(word, wpop._meaning||'');
+  toast('「'+word+'」已加入生词本');
+  wpop.classList.remove('vis');
+  document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
+});
+document.getElementById('wp-play').addEventListener('click', () => {
+  const w = document.getElementById('wp-word').textContent;
+  if(wpop._audio) new Audio(wpop._audio).play().catch(()=> speakWord(w));
+  else speakWord(w);
+});
+document.addEventListener('click', e => {
+  if(!wpop.contains(e.target) && !e.target.classList.contains('word')){
+    wpop.classList.remove('vis');
+    document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
+  }
+});
+function speakWord(w){
+  const u = new SpeechSynthesisUtterance(w);
+  u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
+  synth.cancel(); synth.speak(u);
+}
+
+// ═══════════════════════════════════════════
+//  VOCAB
+// ═══════════════════════════════════════════
+function addVocab(word, meaning){
+  if(!word||word.length<2||S.vocab.some(v=>v.word===word)) return;
+  const item = {word, meaning, sent:S.curWordData?.sent||'', time:Date.now()};
+  S.vocab.push(item);
+  S.savedWords.add(word);
+  area.querySelectorAll(`.word[data-w="${word}"]`).forEach(el=>el.classList.add('saved'));
+  renderVoc(); saveProg(); toast(`已收藏 "${word}"`);
+  cloudAddVocab(item); // 云端同步（静默）
+}
+function renderVoc(){
+  const list=document.getElementById('voc-list');
+  document.getElementById('voc-ct').textContent=S.vocab.length+' 词';
+  if(!S.vocab.length){
+    list.innerHTML='<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;">点击单词后点「收藏」<br>或长按单词快速添加</div>';
+    return;
+  }
+  list.innerHTML=S.vocab.map((v,i)=>`
+    <div class="vi">
+      <div class="vi-w">${v.word}</div>
+      ${v.meaning?`<div class="vi-m">${v.meaning.slice(0,80)}</div>`:''}
+      ${v.sent?`<div class="vi-s">${v.sent.trim().slice(0,100)}…</div>`:''}
+      <div class="vi-row">
+        <span class="vi-d">${new Date(v.time).toLocaleDateString('zh-CN')}</span>
+        <button class="vi-del" data-i="${i}">🗑</button>
+      </div>
+    </div>`).join('');
+  list.querySelectorAll('.vi-del').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const i=+btn.dataset.i, w=S.vocab[i].word;
+      S.vocab.splice(i,1);
+      document.querySelectorAll(`.word[data-w="${w}"]`).forEach(el=>el.classList.remove('saved'));
+      cloudDeleteVocab(w); // 云端同步（静默）
+      renderVoc(); saveProg();
+    });
+  });
+}
+document.getElementById('voc-tbtn').addEventListener('click',()=>{ document.getElementById('voc').classList.add('open'); document.getElementById('overlay').classList.add('vis'); });
+document.getElementById('voc-close').addEventListener('click',closeVoc);
+document.getElementById('overlay').addEventListener('click', ()=>{
+  closeVoc();
+  closeSidebar();
+  closeChapPanel();
+});
+function closeVoc(){ document.getElementById('voc').classList.remove('open'); document.getElementById('overlay').classList.remove('vis'); closeSidebar(); }
+document.getElementById('exp-txt').addEventListener('click',()=>dl('vocab.txt',S.vocab.map(v=>`${v.word}\t${v.meaning}`).join('\n'),'text/plain'));
+document.getElementById('exp-json').addEventListener('click',()=>dl('vocab.json',JSON.stringify(S.vocab,null,2),'application/json'));
+function dl(name,content,type){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([content],{type})); a.download=name; a.click();
+}
+
+// ═══════════════════════════════════════════
+//  TTS  —  paragraph chunks, no gaps
+// ═══════════════════════════════════════════
+function jump(i){
+  document.querySelectorAll('.sent.playing').forEach(el=>el.classList.remove('playing'));
+  clearTtsWord();
+  S.idx = i;
+  const el = document.querySelector(`.sent[data-i="${i}"]`);
+  if(el){
+    el.classList.add('playing');
+    // Inject words so highlighting works
+    injectWords(el);
+    el.scrollIntoView({behavior:'smooth', block:'center'});
+  }
+  document.getElementById('sent-preview-text').textContent = S.sents[i] || '';
+  updateProg(); saveProg();
+}
+
+// Build a chunk: join sentences into one utterance, track char offsets per sentence
+function buildChunk(startIdx){
+  const MAX_CHARS = 300; // keep chunks short for responsiveness
+  const offsets = []; // char position where each sentence starts
+  const parts = [];
+  let pos = 0, i = startIdx;
+  while(i < S.sents.length){
+    const s = S.sents[i];
+    if(parts.length > 0 && pos + s.length > MAX_CHARS) break;
+    offsets.push(pos);
+    parts.push(s);
+    pos += s.length + 1;
+    i++;
+  }
+  return { text: parts.join(' '), offsets, endIdx: i, startIdx };
+}
+
+function getVoice(){
+  if(S.selectedVoice) return S.selectedVoice;
+  const lang = S.accentUS ? 'en-US' : 'en-GB';
+  return synth.getVoices()
+    .filter(v => v.lang === lang || v.lang.startsWith('en'))
+    .sort((a,b) => qualityScore(b) - qualityScore(a))[0] || null;
+}
+
+function playChunk(chunk){
+  const u = new SpeechSynthesisUtterance(chunk.text);
+  u.lang  = S.accentUS ? 'en-US' : 'en-GB';
+  u.rate  = S.speed;
+  u.pitch = 1;
+  const v = getVoice(); if(v) u.voice = v;
+
+  let boundaryFired = false; // detect iOS no-onboundary fallback
+
+  u.onboundary = e => {
+    if(e.name !== 'word') return;
+    boundaryFired = true;
+
+    // 1. Which sentence in the chunk?
+    let si = 0;
+    for(let k = chunk.offsets.length - 1; k >= 0; k--){
+      if(e.charIndex >= chunk.offsets[k]){ si = k; break; }
+    }
+    const globalIdx = chunk.startIdx + si;
+    if(globalIdx !== S.idx) jump(globalIdx);
+
+    // 2. Char position within this sentence
+    const sentCharIdx = e.charIndex - chunk.offsets[si];
+
+    // 3. Highlight that word in DOM
+    const sentEl = document.querySelector(`.sent[data-i="${globalIdx}"]`);
+    if(sentEl){
+      injectWords(sentEl); // ensure spans exist
+      highlightWordAt(sentEl, sentCharIdx);
+    }
+  };
+
+  u.onend = () => {
+    stopResumeTimer();
+    clearTtsWord();
+    if(chunk.endIdx < S.sents.length){
+      S.idx = chunk.endIdx;
+      const next = buildChunk(S.idx);
+      jump(S.idx);
+      startResumeTimer();
+      synth.speak(makeUtterance(next));
+    } else {
+      S.playing = false; S.paused = false; setIcon(false);
+    }
+  };
+  u.onerror = e => {
+    if(e.error === 'interrupted') return;
+    stopResumeTimer(); clearTtsWord();
+    S.playing = false; S.paused = false; setIcon(false);
+  };
+  return u;
+}
+
+// ── TTS word highlight helpers
+function clearTtsWord(){
+  document.querySelectorAll('.word.tts-word').forEach(w => w.classList.remove('tts-word'));
+}
+
+function highlightWordAt(sentEl, charIdx){
+  clearTtsWord();
+  const words = sentEl.querySelectorAll('.word[data-char-start]');
+  let best = null;
+  for(const w of words){
+    const start = +w.dataset.charStart;
+    const end   = start + w.textContent.length;
+    if(charIdx >= start && charIdx < end){ best = w; break; }
+    if(start <= charIdx) best = w; // closest word before charIdx
+  }
+  if(best){
+    best.classList.add('tts-word');
+    // Subtle scroll — only if word is outside viewport
+    const rect = best.getBoundingClientRect();
+    if(rect.bottom > window.innerHeight - 180 || rect.top < 60){
+      best.scrollIntoView({ behavior:'smooth', block:'center' });
+    }
+  }
+}
+
+function makeUtterance(chunk){ return playChunk(chunk); }
+
+function playCurrent(){
+  if(!S.sents.length) return;
+  synth.cancel(); stopResumeTimer();
+  S.paused = false;
+  const chunk = buildChunk(S.idx);
+  jump(S.idx);
+  S.playing = true; setIcon(true); startResumeTimer();
+  synth.speak(playChunk(chunk));
+}
+
+function togglePlay(){
+  if(S.playing && !S.paused){
+    synth.pause(); S.paused = true; S.playing = false;
+    stopResumeTimer(); setIcon(false);
+  } else if(S.paused){
+    synth.resume(); S.paused = false; S.playing = true;
+    startResumeTimer(); setIcon(true);
+  } else {
+    playCurrent();
+  }
+}
+
+function setIcon(playing){
+  document.getElementById('play-ico').outerHTML = playing
+    ? `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><rect x="5" y="3" width="5" height="18" rx="1"/><rect x="14" y="3" width="5" height="18" rx="1"/></svg>`
+    : `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><polygon points="6 3 20 12 6 21"/></svg>`;
+}
+
+document.getElementById('play-btn').addEventListener('click', togglePlay);
+
+document.getElementById('prev-btn').addEventListener('click',()=>{
+  if(S.idx>0){ S.idx--; jump(S.idx); if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); } }
+});
+document.getElementById('next-btn').addEventListener('click',()=>{
+  if(S.idx<S.sents.length-1){ S.idx++; jump(S.idx); if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); } }
+});
+
+// ── SPEED: single button + popup
+const speedWrap = document.getElementById('speed-wrap');
+const speedBtn  = document.getElementById('speed-btn');
+const speedPop  = document.getElementById('speed-popup');
+
+speedBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  const open = speedPop.classList.toggle('open');
+  speedBtn.classList.toggle('active', open);
+});
+document.addEventListener('click', () => {
+  speedPop.classList.remove('open');
+  speedBtn.classList.remove('active');
+});
+speedPop.addEventListener('click', e => e.stopPropagation());
+
+document.querySelectorAll('.spill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    applySpeed(+btn.dataset.s);
+    speedPop.classList.remove('open');
+    speedBtn.classList.remove('active');
+    if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); }
+  });
+});
+
+function applySpeed(s){
+  S.speed = s;
+  speedBtn.textContent = s + 'x';
+  document.querySelectorAll('.spill').forEach(b => b.classList.toggle('on', +b.dataset.s === s));
+  saveProg();
+}
+
+// ── ACCENT
+
+// ── PROGRESS BAR
+document.getElementById('prog-wrap').addEventListener('click', e=>{
+  const pct=e.offsetX/e.currentTarget.offsetWidth;
+  S.idx=Math.max(0,Math.min(Math.floor(pct*S.sents.length),S.sents.length-1));
+  jump(S.idx);
+  if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); }
+});
+function updateProg(){
+  const pct=S.sents.length?(S.idx/S.sents.length)*100:0;
+  document.getElementById('prog-fill').style.width=pct.toFixed(1)+'%';
+  document.getElementById('prog-pct').textContent=Math.round(pct)+'%';
+  document.getElementById('pct-badge').textContent=Math.round(pct)+'%';
+}
+function restoreProg(){
+  if(S.idx>0&&S.idx<S.sents.length){
+    setTimeout(()=>{ jump(S.idx); toast(`已恢复 ${Math.round(S.idx/S.sents.length*100)}% 进度`); },400);
+  }
+}
+
+// ═══════════════════════════════════════════
+//  SEARCH
+// ═══════════════════════════════════════════
+document.getElementById('srch-tbtn').addEventListener('click',()=>{
+  S.srchOpen=!S.srchOpen;
+  document.getElementById('search-bar').classList.toggle('vis',S.srchOpen);
+  if(S.srchOpen) document.getElementById('search-in').focus(); else clearSrch();
+});
+document.getElementById('s-close').addEventListener('click',()=>{
+  document.getElementById('search-bar').classList.remove('vis'); S.srchOpen=false; clearSrch();
+});
+let srchTimer;
+document.getElementById('search-in').addEventListener('input', e=>{
+  clearTimeout(srchTimer); srchTimer=setTimeout(()=>doSearch(e.target.value.trim()),180);
+});
+document.getElementById('s-prev').addEventListener('click',()=>navSrch(-1));
+document.getElementById('s-next').addEventListener('click',()=>navSrch(1));
+function doSearch(q){
+  clearSrch(false); if(!q||q.length<2){ updSrchCt(); return; }
+  const re=new RegExp(esc(q),'gi'); S.srchHits=[];
+  document.querySelectorAll('.word').forEach(w=>{ if(re.test(w.textContent)){ w.classList.add('sh'); S.srchHits.push(w); } re.lastIndex=0; });
+  S.srchIdx=0; if(S.srchHits.length) goMatch(0); updSrchCt();
+}
+function navSrch(d){ if(!S.srchHits.length) return; S.srchIdx=(S.srchIdx+d+S.srchHits.length)%S.srchHits.length; goMatch(S.srchIdx); updSrchCt(); }
+function goMatch(i){ S.srchHits.forEach(m=>m.classList.remove('cur')); const el=S.srchHits[i]; if(el){ el.classList.add('cur'); el.scrollIntoView({behavior:'smooth',block:'center'}); } }
+function clearSrch(ri=true){ document.querySelectorAll('.sh').forEach(el=>el.classList.remove('sh','cur')); S.srchHits=[]; if(ri) document.getElementById('search-in').value=''; updSrchCt(); }
+function updSrchCt(){ document.getElementById('search-ct').textContent=S.srchHits.length?`${S.srchIdx+1}/${S.srchHits.length}`:'0/0'; }
+function esc(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+
+// ═══════════════════════════════════════════
+//  SETTINGS / MODES
+// ═══════════════════════════════════════════
+// ── SIDEBAR
+const sidebar = document.getElementById('sidebar');
+document.getElementById('set-tbtn').addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('vis', sidebar.classList.contains('open'));
+});
+document.getElementById('sb-close').addEventListener('click', closeSidebar);
+function closeSidebar(){
+  sidebar.classList.remove('open');
+  document.getElementById('overlay').classList.remove('vis');
+}
+
+// Font size
+document.getElementById('sb-font-range').addEventListener('input', e => {
+  S.fontSize = +e.target.value; applyFont(); saveProg();
+});
+function applyFont(){
+  document.getElementById('sb-font-range').value = S.fontSize;
+  document.querySelectorAll('.sent').forEach(el => el.style.fontSize = S.fontSize + 'px');
+}
+
+// Line height
+document.querySelectorAll('.sb-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    S.lineHeight = +btn.dataset.lh;
+    document.querySelectorAll('.sb-pill').forEach(b => b.classList.toggle('on', b === btn));
+    applyLineHeight(); saveProg();
+  });
+});
+function applyLineHeight(){
+  const lh = S.lineHeight || 2.05;
+  document.querySelectorAll('.sent').forEach(el => el.style.lineHeight = lh);
+  document.querySelectorAll('.sb-pill').forEach(b => b.classList.toggle('on', +b.dataset.lh === lh));
+}
+
+// Text align
+document.querySelectorAll('.sb-align-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    S.textAlign = btn.dataset.align;
+    document.querySelectorAll('.sb-align-btn').forEach(b => b.classList.toggle('on', b === btn));
+    applyTextAlign(); saveProg();
+  });
+});
+function applyTextAlign(){
+  const ta = S.textAlign || 'left';
+  document.getElementById('content').style.textAlign = ta;
+  document.querySelectorAll('.sb-align-btn').forEach(b => b.classList.toggle('on', b.dataset.align === ta));
+}
+
+// Night mode
+const nightToggle = document.getElementById('night-toggle');
+document.getElementById('night-btn').addEventListener('click', () => { S.night=!S.night; applyNight(); saveProg(); });
+nightToggle.addEventListener('click', () => { S.night=!S.night; applyNight(); saveProg(); });
+function applyNight(){
+  document.body.classList.toggle('night', S.night);
+  nightToggle.classList.toggle('on', S.night);
+}
+
+// Modes
+document.querySelectorAll('.sb-mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    S.mode = btn.dataset.mode; applyMode(); updMbtns(); saveProg();
+  });
+});
+function applyMode(){
+  document.querySelectorAll('.word').forEach(w => w.classList.remove('w-blur'));
+  document.querySelectorAll('.tl-line').forEach(el => { el.style.display = S.mode==='immersive' ? 'none' : ''; });
+  if(S.mode === 'vocab'){
+    document.querySelectorAll('.word').forEach(w => { if(Math.random()<.35) w.classList.add('w-blur'); });
+  }
+}
+function updMbtns(){
+  document.querySelectorAll('.sb-mode-btn').forEach(b => b.classList.toggle('on', b.dataset.mode === S.mode));
+}
+
+// ═══════════════════════════════════════════
+//  FLASHCARD SYSTEM — SRS + Swipe + Animations
+// ═══════════════════════════════════════════
+const SRS_INTERVALS = { again: 10*60*1000, hard: 86400000, good: 3*86400000, easy: 7*86400000 };
+const FC_CACHE = new Map(); // word → { phonetic, audio, pos, enDef }
+
+let fcDeck    = [];
+let fcIdx     = 0;
+let fcFlipped = false;
+let fcCounts  = { again:0, hard:0, good:0, easy:0 };
+let fcTotal   = 0;
+let fcSRS     = {};   // word → { nextReview, interval }
+
+function loadSRS(){
+  try{ fcSRS = JSON.parse(localStorage.getItem('fc_srs')||'{}'); }catch(e){ fcSRS={}; }
+}
+function saveSRS(){
+  localStorage.setItem('fc_srs', JSON.stringify(fcSRS));
+}
+
+function openFlashcard(){
+  if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
+  loadSRS();
+  closeVoc();
+
+  // Build deck: due cards first, then new cards, shuffled within each group
+  const now = Date.now();
+  const due = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview <= now);
+  const newW = S.vocab.filter(v => !fcSRS[v.word]);
+  const later = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview > now);
+
+  // Shuffle each group
+  const shuffle = arr => [...arr].sort(()=>Math.random()-.5);
+  fcDeck = [...shuffle(due), ...shuffle(newW), ...shuffle(later)];
+  fcIdx  = 0; fcFlipped = false;
+  fcCounts = {again:0,hard:0,good:0,easy:0};
+  fcTotal  = fcDeck.length;
+
+  const fc = document.getElementById('flashcard');
+  fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
+  fc.classList.add('open');
+  document.getElementById('fc-title').textContent = `生词本背诵 · ${fcTotal}词`;
+  showFcCard(true);
+}
+
+async function showFcCard(instant){
+  if(fcIdx >= fcDeck.length){ showFcResult(); return; }
+  const v = fcDeck[fcIdx];
+  fcFlipped = false;
+
+  const card    = document.getElementById('fc-card');
+  const ratings = document.getElementById('fc-ratings');
+
+  // Animate out (unless instant first card)
+  // ✅ Only use opacity — never write style.transform here,
+  //    so that .fc-card.flipped { transform: rotateY(180deg) } always wins
+  if(!instant){
+    card.style.transition = 'opacity .15s ease';
+    card.style.opacity    = '0';
+    card.style.transform  = '';   // clear any leftover swipe transform first
+    await new Promise(r=>setTimeout(r,160));
+  }
+
+  // Reset flip & ratings
+  card.style.transition = '';
+  card.style.transform  = '';   // ensure CSS class is sole transform owner
+  card.classList.remove('flipped','shake');
+  ratings.classList.remove('show');
+  document.getElementById('fc-fb-front').classList.remove('show');
+  document.getElementById('fc-fb-back').classList.remove('show');
+
+  // Fill front
+  document.getElementById('fc-word').textContent     = v.word;
+  document.getElementById('fc-ph-front').textContent = '';
+  document.getElementById('fc-badge-row').innerHTML  = '';
+
+  // Star button
+  const starBtn = document.getElementById('fc-star');
+  starBtn.classList.toggle('starred', S.vocab.some(x=>x.word===v.word));
+
+  // Fill back
+  document.getElementById('fc-back-word-txt').textContent = v.word;
+  document.getElementById('fc-meaning').textContent = v.meaning || '—';
+  document.getElementById('fc-ph-back').textContent  = '';
+  document.getElementById('fc-en-def').textContent   = '';
+  document.getElementById('fc-sent').textContent     = v.sent ? v.sent.trim().slice(0,150) : '';
+
+  // Progress
+  const pct = fcTotal ? (fcIdx/fcTotal)*100 : 0;
+  document.getElementById('fc-prog-fill').style.width = pct+'%';
+  document.getElementById('fc-count').textContent = fcIdx+'/'+fcTotal;
+
+  // Fade in — opacity only; transform is 100% owned by CSS class
+  card.style.transition = 'opacity .22s ease';
+  card.style.opacity    = '1';
+
+  // Fetch dictionary data (async, non-blocking)
+  fetchFcWord(v.word);
+}
+
+async function fetchFcWord(word){
+  if(FC_CACHE.has(word)){
+    applyFcCache(word, FC_CACHE.get(word)); return;
+  }
+  try{
+    const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if(!r.ok) throw new Error('dict ' + r.status);
+    const e = (await r.json())[0];
+    const ph    = e.phonetics?.find(p=>p.text)?.text||'';
+    const audio = e.phonetics?.find(p=>p.audio?.length>0)?.audio||'';
+    const pos   = e.meanings?.[0]?.partOfSpeech||'';
+    const enDef = e.meanings?.[0]?.definitions?.[0]?.definition||'';
+    const data  = {ph,audio,pos,enDef};
+    FC_CACHE.set(word, data);
+    applyFcCache(word, data);
+  }catch(e){}
+}
+
+function applyFcCache(word, data){
+  // Only apply if still showing same word
+  if(document.getElementById('fc-word').textContent !== word) return;
+  if(data.ph){
+    document.getElementById('fc-ph-front').textContent = data.ph;
+    document.getElementById('fc-ph-back').textContent  = data.ph;
+  }
+  if(data.pos){
+    const badge = document.createElement('span');
+    badge.className = 'fc-badge fc-badge-pos';
+    badge.textContent = data.pos;
+    document.getElementById('fc-badge-row').appendChild(badge);
+  }
+  if(data.enDef)
+    document.getElementById('fc-en-def').textContent = data.enDef;
+}
+
+function flipFcCard(){
+  const card    = document.getElementById('fc-card');
+  const ratings = document.getElementById('fc-ratings');
+  fcFlipped = !fcFlipped;
+  card.classList.toggle('flipped', fcFlipped);
+  if(fcFlipped){
+    // 翻到背面：280ms 后显示评级按钮
+    setTimeout(()=> ratings.classList.add('show'), 280);
+  } else {
+    // 翻回正面：立刻隐藏评级按钮
+    ratings.classList.remove('show');
+  }
+}
+
+function rateFcCard(rating){
+  if(!fcFlipped) return;
+  const v   = fcDeck[fcIdx];
+  const now = Date.now();
+  const interval = SRS_INTERVALS[rating];
+
+  // Update SRS data
+  fcSRS[v.word] = { nextReview: now + interval, interval, lastRating: rating };
+  saveSRS();
+  fcCounts[rating]++;
+
+  // Feedback animation
+  const isBad = rating === 'again' || rating === 'hard';
+  const scene = document.getElementById('fc-card').closest('.fc-scene');
+  if(isBad){
+    // Shake the scene wrapper — never touch card's own transform
+    scene.classList.add('shake');
+    scene.addEventListener('animationend', ()=> scene.classList.remove('shake'), {once:true});
+    const fb = document.getElementById('fc-fb-back');
+    fb.textContent = '✗'; fb.style.background = 'rgba(220,38,38,.12)';
+    fb.classList.add('show');
+  } else {
+    const fb = document.getElementById('fc-fb-back');
+    fb.textContent = rating==='easy'?'★':'✓';
+    fb.style.background = rating==='easy'?'rgba(37,99,235,.1)':'rgba(5,150,105,.1)';
+    fb.classList.add('show');
+  }
+
+  setTimeout(()=> { fcIdx++; showFcCard(false); }, isBad ? 420 : 340);
+}
+
+function showFcResult(){
+  document.getElementById('flashcard').classList.remove('open');
+  document.getElementById('flashcard').style.display = 'none';
+  const res = document.getElementById('fc-result');
+  res.style.display = 'flex'; res.classList.add('open');
+
+  const total = fcCounts.again+fcCounts.hard+fcCounts.good+fcCounts.easy;
+  const known = fcCounts.good+fcCounts.easy;
+  const pct   = total ? Math.round(known/total*100) : 0;
+
+  const emoji = pct>=80?'🎉':pct>=50?'💪':'📚';
+  document.getElementById('fc-res-emoji').textContent = emoji;
+  document.getElementById('fc-res-sub').textContent   = `掌握率 ${pct}%`;
+  document.getElementById('fc-res-stats').innerHTML = `
+    <div class="fc-stat" style="background:#FEE2E2">
+      <div class="fc-stat-n" style="color:#DC2626">${fcCounts.again}</div>
+      <div class="fc-stat-l" style="color:#DC2626">Again</div>
+    </div>
+    <div class="fc-stat" style="background:#FEF3C7">
+      <div class="fc-stat-n" style="color:#D97706">${fcCounts.hard}</div>
+      <div class="fc-stat-l" style="color:#D97706">Hard</div>
+    </div>
+    <div class="fc-stat" style="background:#D1FAE5">
+      <div class="fc-stat-n" style="color:#059669">${fcCounts.good}</div>
+      <div class="fc-stat-l" style="color:#059669">Good</div>
+    </div>
+    <div class="fc-stat" style="background:#DBEAFE">
+      <div class="fc-stat-n" style="color:#2563EB">${fcCounts.easy}</div>
+      <div class="fc-stat-l" style="color:#2563EB">Easy</div>
+    </div>`;
+}
+
+function closeFcAll(){
+  document.getElementById('flashcard').classList.remove('open');
+  document.getElementById('flashcard').style.display = 'none';
+  document.getElementById('fc-result').classList.remove('open');
+  document.getElementById('fc-result').style.display = 'none';
+}
+
+// ── Card swipe gesture
+(()=>{
+  const card   = document.getElementById('fc-card');
+  let sx=0, sy=0, dx=0, moving=false;
+
+  card.addEventListener('touchstart', e=>{
+    sx=e.touches[0].clientX; sy=e.touches[0].clientY;
+    dx=0; moving=false;
+    card.style.transition='none';
+  },{passive:true});
+
+  card.addEventListener('touchmove', e=>{
+    dx=e.touches[0].clientX-sx;
+    const dy=e.touches[0].clientY-sy;
+    if(Math.abs(dx)<Math.abs(dy) && !moving) return; // vertical scroll
+    moving=true;
+    const rot=dx*0.04;
+    card.style.transform=`translateX(${dx}px) rotate(${rot}deg)`;
+  },{passive:true});
+
+  card.addEventListener('touchend', (e)=>{
+    if(!moving){
+      // Tapped a button inside the card → don't flip
+      if(e.target.closest('button')) return;
+      card.style.transition='';
+      card.style.transform='';
+      flipFcCard(); return;
+    }
+    if(Math.abs(dx)>100 && fcFlipped){
+      // Swipe off screen — animate the scene wrapper sideways, not the card itself
+      const dir = dx>0?1:-1;
+      const scn = card.closest('.fc-scene');
+      scn.style.transition = 'transform .25s ease, opacity .25s ease';
+      scn.style.transform  = `translateX(${dir*110}%)`;
+      scn.style.opacity    = '0';
+      const rating = dx>0?'good':'again';
+      setTimeout(()=>{
+        // reset scene position silently before next card renders
+        scn.style.transition='none';
+        scn.style.transform='';
+        scn.style.opacity='1';
+        // rateFcCard 需要 fcFlipped=true 才能执行，showFcCard 会自动重置
+        rateFcCard(rating);
+      }, 270);
+    } else {
+      // Snap back — restore position, then clear inline so CSS class controls it
+      card.style.transition='transform .35s cubic-bezier(.34,1.4,.64,1), opacity .2s';
+      card.style.transform = fcFlipped ? 'rotateY(180deg)' : '';
+      card.style.opacity='1';
+      setTimeout(()=>{
+        card.style.transition = '';
+        card.style.transform  = ''; // hand full control back to .fc-card.flipped
+      }, 380);
+    }
+  },{passive:true});
+
+  // Desktop click to flip
+  card.addEventListener('click', (e)=>{
+    if(e.target.closest('button')) return; // 点播放/收藏按钮不翻转
+    if(window.matchMedia('(pointer:fine)').matches) flipFcCard();
+  });
+})();
+
+// ── Button listeners
+document.getElementById('voc-flash-btn').addEventListener('click', openFlashcard);
+document.getElementById('fc-exit').addEventListener('click', closeFcAll);
+document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
+document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
+document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('good'));
+document.getElementById('fc-easy') .addEventListener('click', ()=>rateFcCard('easy'));
+
+document.getElementById('fc-spk').addEventListener('click', e=>{
+  e.stopPropagation();
+  const w=document.getElementById('fc-word').textContent;
+  const d=FC_CACHE.get(w);
+  if(d?.audio) new Audio(d.audio).play().catch(()=>speakWord(w));
+  else speakWord(w);
+});
+document.getElementById('fc-spk-back').addEventListener('click', e=>{
+  e.stopPropagation();
+  const w=document.getElementById('fc-word').textContent;
+  const d=FC_CACHE.get(w);
+  if(d?.audio) new Audio(d.audio).play().catch(()=>speakWord(w));
+  else speakWord(w);
+});
+document.getElementById('fc-star').addEventListener('click', e=>{
+  e.stopPropagation();
+  const v=fcDeck[fcIdx];
+  if(!v) return;
+  const inV=S.vocab.some(x=>x.word===v.word);
+  if(inV){ S.vocab.splice(S.vocab.findIndex(x=>x.word===v.word),1); }
+  else   { addVocab(v.word, v.meaning||''); }
+  e.currentTarget.classList.toggle('starred',!inV);
+});
+
+document.getElementById('fc-res-again').addEventListener('click', ()=>{
+  document.getElementById('fc-result').classList.remove('open');
+  document.getElementById('fc-result').style.display='none';
+  openFlashcard();
+});
+document.getElementById('fc-res-back').addEventListener('click', ()=>{
+  closeFcAll();
+  document.getElementById('voc').classList.add('open');
+  document.getElementById('overlay').classList.add('vis');
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e=>{
+  if(!document.getElementById('flashcard').classList.contains('open')) return;
+  if(e.code==='Space'||e.code==='ArrowUp'){ e.preventDefault(); flipFcCard(); }
+  if(e.key==='1') rateFcCard('again');
+  if(e.key==='2') rateFcCard('hard');
+  if(e.key==='3') rateFcCard('good');
+  if(e.key==='4') rateFcCard('easy');
+  if(e.key==='Escape') closeFcAll();
+});
+
+
+// ═══════════════════════════════════════════
+//  TOAST
+// ═══════════════════════════════════════════
+let tTimer;
+function toast(msg){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(tTimer); tTimer=setTimeout(()=>el.classList.remove('show'),2300);
+}
+
+// ── KEYBOARD (reader)
+document.addEventListener('keydown', e=>{
+  if(e.target.tagName==='INPUT') return;
+  // 闪卡打开时，所有按键交由闪卡自己的 keydown 处理
+  if(document.getElementById('flashcard').classList.contains('open')) return;
+  if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
+  if(e.code==='ArrowRight') document.getElementById('next-btn').click();
+  if(e.code==='ArrowLeft') document.getElementById('prev-btn').click();
+  if(e.key==='Escape'){
+    wpop.classList.remove('vis');
+    document.getElementById('library').classList.remove('open');
+    document.getElementById('err-modal').classList.remove('vis');
+    closeSidebar();
+    closeVoc();
+  }
+});
+
+// ═══════════════════════════════════════════
+//  SUPABASE — 轻量客户端（无 SDK，纯 fetch）
+// ═══════════════════════════════════════════
+const SB = (() => {
+  const BASE = 'https://ueskojxtupmxwolzxdxa.supabase.co';
+  const KEY  = 'sb_publishable_-hbkl0aTVPGCfSL8rk6WPQ_mzGQ52O-';
+  let tok = null;
+
+  function h(extra = {}) {
+    return {
+      'apikey': KEY,
+      'Content-Type': 'application/json',
+      ...(tok ? { 'Authorization': 'Bearer ' + tok } : {}),
+      ...extra
+    };
+  }
+
+  async function req(path, opts = {}) {
+    const extra = opts.headers || {};
+    delete opts.headers;
+    const r = await fetch(BASE + path, { ...opts, headers: h(extra) });
+    const text = await r.text();
+    const d = text ? JSON.parse(text) : {};
+    if (!r.ok) throw new Error(d.error_description || d.message || d.msg || '请求失败 ' + r.status);
+    return d;
+  }
+
+  return {
+    get accessToken(){ return tok; },
+
+    async signIn(email, password) {
+      const d = await req('/auth/v1/token?grant_type=password', {
+        method: 'POST', body: JSON.stringify({ email, password })
+      });
+      tok = d.access_token;
+      localStorage.setItem('sb_tok', tok);
+      localStorage.setItem('sb_ref', d.refresh_token || '');
+      return d.user;
+    },
+
+    async signUp(email, password) {
+      const d = await req('/auth/v1/signup', {
+        method: 'POST', body: JSON.stringify({ email, password })
+      });
+      if (d.access_token) {
+        tok = d.access_token;
+        localStorage.setItem('sb_tok', tok);
+        localStorage.setItem('sb_ref', d.refresh_token || '');
+      }
+      return d.user || d;
+    },
+
+    async signOut() {
+      try { await req('/auth/v1/logout', { method: 'POST' }); } catch(e) {}
+      tok = null;
+      localStorage.removeItem('sb_tok');
+      localStorage.removeItem('sb_ref');
+    },
+
+    async restoreSession() {
+      const saved = localStorage.getItem('sb_tok');
+      if (!saved) return null;
+      try {
+        tok = saved;
+        return await req('/auth/v1/user');
+      } catch(e) {
+        // 尝试 refresh token
+        const ref = localStorage.getItem('sb_ref');
+        if (!ref) { tok = null; localStorage.removeItem('sb_tok'); return null; }
+        try {
+          const d = await req('/auth/v1/token?grant_type=refresh_token', {
+            method: 'POST', body: JSON.stringify({ refresh_token: ref })
+          });
+          tok = d.access_token;
+          localStorage.setItem('sb_tok', tok);
+          localStorage.setItem('sb_ref', d.refresh_token || '');
+          return d.user;
+        } catch(e2) {
+          tok = null;
+          localStorage.removeItem('sb_tok'); localStorage.removeItem('sb_ref');
+          return null;
+        }
+      }
+    },
+
+    async selectVocab(userId) {
+      return req(`/rest/v1/vocab?user_id=eq.${userId}&order=time.asc&select=word,meaning,sent,time`);
+    },
+
+    async upsertVocab(rows) {
+      return req('/rest/v1/vocab', {
+        method: 'POST',
+        headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(rows)
+      });
+    },
+
+    async deleteVocab(userId, word) {
+      return req(`/rest/v1/vocab?user_id=eq.${userId}&word=eq.${encodeURIComponent(word)}`, {
+        method: 'DELETE'
+      });
+    },
+
+    async rpc(fn) {
+      return req(`/rest/v1/rpc/${fn}`, { method: 'POST', body: '{}' });
+    }
+  };
+})();
+
+let currentUser = null;
+
+// ── UI helpers
+function setAuthUI(user){
+  currentUser = user;
+  const loginBtn = document.getElementById('login-btn');
+  const userBtn  = document.getElementById('user-btn');
+  if(user){
+    loginBtn.style.display = 'none';
+    userBtn.style.display  = '';
+    // Show initials
+    const initials = (user.email||'?')[0].toUpperCase();
+    userBtn.textContent = initials;
+    document.getElementById('um-email').textContent = user.email;
+  } else {
+    loginBtn.style.display = '';
+    userBtn.style.display  = 'none';
+  }
+}
+
+// ── Sync: pull from Supabase then push local orphans
+async function syncVocab(){
+  if(!currentUser) return;
+  try{
+    const data = await SB.selectVocab(currentUser.id);
+    const cloudWords = new Set(data.map(r => r.word));
+    let added = 0;
+    for(const row of data){
+      if(!S.vocab.some(v => v.word === row.word)){
+        S.vocab.push({ word:row.word, meaning:row.meaning||'', sent:row.sent||'', time:row.time||Date.now() });
+        S.savedWords.add(row.word);
+        added++;
+      }
+    }
+    const localOnly = S.vocab.filter(v => !cloudWords.has(v.word));
+    if(localOnly.length){
+      await SB.upsertVocab(localOnly.map(v => ({
+        user_id: currentUser.id, word:v.word, meaning:v.meaning, sent:v.sent, time:v.time
+      })));
+    }
+    saveProg(); renderVoc();
+    toast(`同步完成，共 ${S.vocab.length} 词`);
+  }catch(e){
+    console.error('sync error', e);
+    toast('同步失败：' + e.message);
+  }
+}
+
+// ── Cloud add / delete (called alongside local ops)
+async function cloudAddVocab(item){
+  if(!currentUser) return;
+  await SB.upsertVocab([{ user_id: currentUser.id, word:item.word, meaning:item.meaning, sent:item.sent, time:item.time }])
+    .catch(e => console.warn('cloud add failed', e));
+}
+async function cloudDeleteVocab(word){
+  if(!currentUser) return;
+  await SB.deleteVocab(currentUser.id, word)
+    .catch(e => console.warn('cloud delete failed', e));
+}
+
+// ── Auth modal logic
+let authMode = 'login';
+
+document.querySelectorAll('.auth-tab').forEach(btn => {
+  btn.addEventListener('click', ()=>{
+    authMode = btn.dataset.tab;
+    document.querySelectorAll('.auth-tab').forEach(b => b.classList.toggle('on', b === btn));
+    document.getElementById('auth-submit').textContent = authMode === 'login' ? '登录' : '注册';
+    document.getElementById('auth-err').textContent = '';
+    document.getElementById('auth-pass').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
+  });
+});
+
+document.getElementById('login-btn').addEventListener('click', ()=>{
+  document.getElementById('auth-modal').classList.add('open');
+  document.getElementById('auth-email').focus();
+});
+document.getElementById('auth-close').addEventListener('click', ()=>{
+  document.getElementById('auth-modal').classList.remove('open');
+});
+document.getElementById('auth-modal').addEventListener('click', e=>{
+  if(e.target === document.getElementById('auth-modal'))
+    document.getElementById('auth-modal').classList.remove('open');
+});
+
+document.getElementById('auth-submit').addEventListener('click', async ()=>{
+  const email = document.getElementById('auth-email').value.trim();
+  const pass  = document.getElementById('auth-pass').value;
+  const errEl = document.getElementById('auth-err');
+  const btn   = document.getElementById('auth-submit');
+
+  if(!email || !pass){ errEl.textContent = '请填写邮箱和密码'; return; }
+  if(pass.length < 8){ errEl.textContent = '密码至少 8 位'; return; }
+
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+  errEl.textContent = '';
+
+  try{
+    let user;
+    if(authMode === 'login'){
+      user = await SB.signIn(email, pass);
+    } else {
+      user = await SB.signUp(email, pass);
+    }
+    setAuthUI(user);
+    document.getElementById('auth-modal').classList.remove('open');
+    if(authMode === 'register'){
+      toast('注册成功！请查收验证邮件（如有）');
+    } else {
+      toast('登录成功');
+      await syncVocab();
+    }
+  }catch(e){
+    const msg = e.message || '操作失败';
+    errEl.textContent =
+      msg.includes('Invalid login') ? '邮箱或密码错误' :
+      msg.includes('already registered') ? '该邮箱已注册，请直接登录' :
+      msg.includes('Email not confirmed') ? '请先验证邮箱' : msg;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = authMode === 'login' ? '登录' : '注册';
+  }
+});
+
+// Enter key submits
+['auth-email','auth-pass'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if(e.key === 'Enter') document.getElementById('auth-submit').click();
+  });
+});
+
+// ── User menu
+const userBtn  = document.getElementById('user-btn');
+const userMenu = document.getElementById('user-menu');
+userBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  const open = userMenu.classList.toggle('open');
+  if(open){
+    const rect = userBtn.getBoundingClientRect();
+    userMenu.style.top   = (rect.bottom + 6) + 'px';
+    userMenu.style.right = (window.innerWidth - rect.right) + 'px';
+  }
+});
+document.addEventListener('click', () => userMenu.classList.remove('open'));
+userMenu.addEventListener('click', e => e.stopPropagation());
+
+document.getElementById('um-sync').addEventListener('click', async ()=>{
+  userMenu.classList.remove('open');
+  toast('同步中…');
+  await syncVocab();
+});
+document.getElementById('um-logout').addEventListener('click', async ()=>{
+  await SB.signOut();
+  setAuthUI(null);
+  userMenu.classList.remove('open');
+  toast('已退出登录');
+});
+
+// ── 页面加载时恢复 session + 记录访问
+(async () => {
+  try {
+    const user = await SB.restoreSession();
+    if(user) setAuthUI(user);
+  } catch(e) { console.warn('session restore:', e.message); }
+  SB.rpc('record_visit').catch(()=>{});
+})();
+
+// ── 全局兜底：防止任何 unhandled rejection 显示为 "Script error."
+window.addEventListener('unhandledrejection', e => {
+  console.warn('Unhandled rejection:', e.reason);
+  e.preventDefault();
+});
+
+// ── INIT
+const sv=localStorage.getItem('vocab');
+if(sv) S.vocab=JSON.parse(sv);
