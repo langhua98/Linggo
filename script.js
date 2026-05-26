@@ -2134,3 +2134,11 @@ window.addEventListener('unhandledrejection', e => {
 // ── INIT
 const sv=localStorage.getItem('vocab');
 if(sv) S.vocab=JSON.parse(sv);
+
+// ── PWA: register service worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/Linggo/sw.js', { scope: '/Linggo/' })
+      .catch(() => {});
+  });
+}
