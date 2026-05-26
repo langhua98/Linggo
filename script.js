@@ -351,59 +351,6 @@ const CATALOG = [
   [4300,"Ulysses","James Joyce",1922,["classic"],"Stately, plump"],
   [5200,"The Metamorphosis","Franz Kafka",1915,["classic","scifi"],"One morning"],
 ];
-  [86,"A Connecticut Yankee in King Arthur's Court","Mark Twain",1889,["classic","fantasy","adventure"],"A Word of Explanation"],
-  [2591,"Grimm's Fairy Tales","Brothers Grimm",1812,["classic","fantasy"],"THE GOLDEN BIRD"],
-  [805,"The Adventures of Pinocchio","Carlo Collodi",1883,["classic","fantasy"],"Chapter 1"],
-  [245,"Life on the Mississippi","Mark Twain",1883,["classic","adventure"],"Chapter 1"],
-  [91,"Pudd'nhead Wilson","Mark Twain",1894,["classic","mystery"],"Chapter 1"],
-  [1837,"The Innocents Abroad","Mark Twain",1869,["classic","adventure"],"Chapter 1"],
-  [19033,"Andersen's Fairy Tales","Hans Christian Andersen",1835,["classic","fantasy"],"The Tinder-Box"],
-  // ── 中级
-  [141,"Mansfield Park","Jane Austen",1814,["classic"],"Chapter 1"],
-  [121,"Northanger Abbey","Jane Austen",1817,["classic","horror"],"Chapter 1"],
-  [834,"The Memoirs of Sherlock Holmes","Arthur Conan Doyle",1893,["mystery"],"Adventure I"],
-  [2350,"The Return of Sherlock Holmes","Arthur Conan Doyle",1905,["mystery"],"Adventure I"],
-  [108,"The Valley of Fear","Arthur Conan Doyle",1915,["mystery"],"Part I"],
-  [1268,"His Last Bow","Arthur Conan Doyle",1917,["mystery"],"Adventure I"],
-  [159,"The Island of Doctor Moreau","H. G. Wells",1896,["scifi","horror"],"Introduction"],
-  [37,"The War in the Air","H. G. Wells",1908,["scifi","adventure"],"Chapter the First"],
-  [718,"When the Sleeper Wakes","H. G. Wells",1899,["scifi"],"Insomnia"],
-  [917,"Hard Times","Charles Dickens",1854,["classic"],"CHAPTER I"],
-  [700,"The Pickwick Papers","Charles Dickens",1836,["classic"],"Chapter 1"],
-  [821,"The Old Curiosity Shop","Charles Dickens",1841,["classic"],"Chapter 1"],
-  [203,"Uncle Tom's Cabin","Harriet Beecher Stowe",1852,["classic"],"Chapter I"],
-  [25344,"The Scarlet Letter","Nathaniel Hawthorne",1850,["classic"],"THE PRISON-DOOR"],
-  [2005,"The House of the Seven Gables","Nathaniel Hawthorne",1851,["classic","horror"],"Chapter I"],
-  [73,"The Red Badge of Courage","Stephen Crane",1895,["classic","adventure"],"Chapter 1"],
-  [432,"The Awakening","Kate Chopin",1899,["classic"],"Chapter I"],
-  [160,"The Scarlet Pimpernel","Baroness Orczy",1905,["adventure","classic"],"Chapter 1"],
-  [829,"Gulliver's Travels","Jonathan Swift",1726,["classic","fantasy","adventure"],"CHAPTER I"],
-  [1743,"The Sea-Wolf","Jack London",1904,["adventure"],"Chapter I"],
-  [1125,"Martin Eden","Jack London",1909,["classic"],"Chapter One"],
-  [1727,"The Odyssey","Homer",800,["classic","adventure","fantasy"],"Tell me, O muse"],
-  [6130,"The Iliad","Homer",800,["classic","adventure"],"Sing, O goddess"],
-  [1080,"The Story of My Life","Helen Keller",1903,["classic"],"Chapter I"],
-  [142,"The Autobiography of Benjamin Franklin","Benjamin Franklin",1791,["classic"],"Twyford, at the Bishop"],
-  [2542,"A Doll's House","Henrik Ibsen",1879,["classic"],"ACT I"],
-  [1232,"The Scarlet Pimpernel","Baroness Orczy",1905,["adventure"],"Chapter 1"],
-  [969,"Villette","Charlotte Brontë",1853,["classic"],"Chapter I"],
-  [226,"Shirley","Charlotte Brontë",1849,["classic"],"Chapter I"],
-  [2148,"The Mayor of Casterbridge","Thomas Hardy",1886,["classic"],"Chapter 1"],
-  [110,"Tess of the d'Urbervilles","Thomas Hardy",1891,["classic"],"Phase the First"],
-  [4300,"Ulysses","James Joyce",1922,["classic"],"Stately, plump Buck"],
-  [2833,"The Portrait of a Lady","Henry James",1881,["classic"],"Under certain circumstances"],
-  [209,"The Turn of the Screw","Henry James",1898,["classic","horror"],"The story had held us"],
-  [526,"The American","Henry James",1877,["classic"],"Chapter I"],
-  [26,"Paradise Lost","John Milton",1667,["classic"],"BOOK I"],
-  [1220,"The Prince","Niccolò Machiavelli",1532,["classic"],"Chapter I"],
-  [2680,"Meditations","Marcus Aurelius",180,["classic"],"Book One"],
-  [1497,"The Republic","Plato",380,["classic"],"Chapter I"],
-  [1184,"The Count of Monte Cristo","Alexandre Dumas",1844,["adventure","classic"],"Chapter 1"],
-  [10007,"Twenty Years After","Alexandre Dumas",1845,["adventure","classic"],"Chapter 1"],
-  [1260,"Jane Eyre","Charlotte Brontë",1847,["classic"],"There was no possibility"],
-  [768,"Wuthering Heights","Emily Brontë",1847,["classic","horror"],"1801"],
-  [996,"Don Quixote","Miguel de Cervantes",1605,["classic","adventure","fantasy"],"Chapter I"],
-];
 
 // Category labels
 const CAT_LABELS = {all:'全部',classic:'经典',mystery:'推理',adventure:'冒险',scifi:'科幻',horror:'恐怖',short:'短篇'};
@@ -2335,7 +2282,7 @@ function renderUserBooks(){
 // ── Gutenberg 搜索
 // ── 本地书目搜索（离线、即时、评分排序）
 function norm(s){
-  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 }
 
 function localSearch(q){
