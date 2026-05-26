@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linggo Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Lora:wght@600&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#F7F4EF;--surface:#fff;--border:rgba(0,0,0,.08);
+  --text:#1C1917;--text-2:#78716C;--text-3:#A8A29E;
+  --accent:#2563EB;--accent-2:#EFF6FF;
+  --green:#16A34A;--green-2:#DCFCE7;
+  --purple:#7C3AED;--purple-2:#EDE9FE;
+  --orange:#EA580C;--orange-2:#FFF7ED;
+  --r:14px;
+}
+body{
+  font-family:'Nunito',sans-serif;
+  background:var(--bg);color:var(--text);
+  min-height:100vh;
+}
+
+/* ── PASSWORD GATE ── */
+#gate{
+  display:flex;align-items:center;justify-content:center;
+  min-height:100vh;padding:24px;
+}
+.gate-box{
+  background:var(--surface);border-radius:24px;
+  padding:40px 32px;width:100%;max-width:360px;
+  box-shadow:0 8px 40px rgba(0,0,0,.12);
+  border:1px solid var(--border);
+  text-align:center;
+}
+.gate-logo{
+  font-family:'Lora',serif;font-size:28px;font-weight:600;
+  color:var(--accent);margin-bottom:4px;
+}
+.gate-sub{font-size:13px;color:var(--text-3);margin-bottom:28px;}
+.gate-box input{
+  width:100%;height:46px;padding:0 16px;
+  border:1.5px solid var(--border);border-radius:12px;
+  background:var(--bg);color:var(--text);
+  font-family:'Nunito',sans-serif;font-size:15px;
+  outline:none;margin-bottom:14px;
+  transition:border-color .15s;text-align:center;letter-spacing:.1em;
+}
+.gate-box input:focus{border-color:var(--accent);}
+.gate-box button{
+  width:100%;height:46px;border:none;border-radius:12px;
+  background:var(--accent);color:#fff;
+  font-family:'Nunito',sans-serif;font-size:15px;font-weight:700;
+  cursor:pointer;transition:opacity .15s;
+}
+.gate-box button:hover{opacity:.88;}
+#gate-err{font-size:12px;color:#ef4444;margin-top:10px;min-height:18px;}
+
+/* ── MAIN DASHBOARD ── */
+#dash{display:none;}
+
+/* topbar */
+.adm-top{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 24px;height:58px;
+  display:flex;align-items:center;gap:12px;
+  position:sticky;top:0;z-index:10;
+  box-shadow:0 1px 8px rgba(0,0,0,.06);
+}
+.adm-logo{
+  font-family:'Lora',serif;font-size:18px;font-weight:600;color:var(--accent);
+}
+.adm-badge{
+  font-size:11px;font-weight:700;
+  background:var(--accent-2);color:var(--accent);
+  border-radius:6px;padding:2px 8px;
+}
+.adm-right{margin-left:auto;display:flex;align-items:center;gap:10px;}
+#last-updated{font-size:12px;color:var(--text-3);}
+#refresh-btn{
+  height:32px;padding:0 14px;
+  border:1.5px solid var(--border);border-radius:8px;
+  background:none;color:var(--text-2);cursor:pointer;
+  font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+  transition:all .15s;
+}
+#refresh-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-2);}
+#logout-btn{
+  height:32px;padding:0 14px;
+  border:none;border-radius:8px;
+  background:#FEE2E2;color:#C53030;cursor:pointer;
+  font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+  transition:opacity .15s;
+}
+#logout-btn:hover{opacity:.8;}
+
+/* content */
+.adm-body{
+  max-width:900px;margin:0 auto;
+  padding:28px 20px 60px;
+}
+.section-title{
+  font-family:'Lora',serif;font-size:16px;font-weight:600;
+  color:var(--text);margin-bottom:14px;
+}
+
+/* stat cards */
+.stat-grid{
+  display:grid;grid-template-columns:repeat(2,1fr);
+  gap:12px;margin-bottom:28px;
+}
+@media(min-width:600px){
+  .stat-grid{grid-template-columns:repeat(4,1fr);}
+}
+.stat-card{
+  background:var(--surface);border-radius:var(--r);
+  padding:18px 16px;border:1px solid var(--border);
+  box-shadow:0 1px 4px rgba(0,0,0,.05);
+}
+.stat-icon{font-size:22px;margin-bottom:8px;}
+.stat-val{
+  font-size:32px;font-weight:800;font-family:'Nunito',sans-serif;
+  line-height:1;margin-bottom:4px;
+}
+.stat-label{font-size:12px;font-weight:600;color:var(--text-3);}
+
+/* chart */
+.chart-card{
+  background:var(--surface);border-radius:var(--r);
+  padding:20px;border:1px solid var(--border);
+  box-shadow:0 1px 4px rgba(0,0,0,.05);
+  margin-bottom:28px;
+}
+.chart-head{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:20px;
+}
+.chart-head h3{font-size:14px;font-weight:700;color:var(--text);}
+.chart-legend{font-size:11px;color:var(--text-3);}
+#visit-chart{width:100%;height:160px;position:relative;}
+.chart-bars{
+  display:flex;align-items:flex-end;gap:3px;
+  height:130px;padding-bottom:24px;
+}
+.bar-wrap{
+  flex:1;display:flex;flex-direction:column;align-items:center;
+  gap:4px;height:100%;justify-content:flex-end;position:relative;
+}
+.bar{
+  width:100%;border-radius:4px 4px 0 0;
+  background:var(--accent);opacity:.75;
+  transition:opacity .15s, height .4s cubic-bezier(.4,0,.2,1);
+  min-height:2px;
+  position:relative;
+}
+.bar:hover{opacity:1;}
+.bar-tip{
+  display:none;
+  position:absolute;bottom:calc(100% + 6px);left:50%;
+  transform:translateX(-50%);
+  background:var(--text);color:#fff;
+  font-size:11px;font-weight:700;border-radius:6px;
+  padding:3px 7px;white-space:nowrap;z-index:5;
+}
+.bar:hover .bar-tip{display:block;}
+.bar-date{
+  font-size:9px;color:var(--text-3);
+  position:absolute;bottom:0;
+  white-space:nowrap;
+}
+.chart-empty{
+  height:130px;display:flex;align-items:center;justify-content:center;
+  color:var(--text-3);font-size:13px;
+}
+
+/* today highlight */
+.bar.today{background:var(--accent);opacity:1;}
+.bar.today .bar-date{color:var(--accent);font-weight:700;}
+
+/* loading skeleton */
+.skeleton{
+  background:linear-gradient(90deg,var(--border) 25%,rgba(0,0,0,.04) 50%,var(--border) 75%);
+  background-size:200% 100%;
+  animation:shimmer 1.5s infinite;
+  border-radius:8px;
+}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* info row */
+.info-card{
+  background:var(--surface);border-radius:var(--r);
+  padding:16px 20px;border:1px solid var(--border);
+  display:flex;align-items:center;gap:12px;
+  font-size:13px;color:var(--text-2);
+}
+.info-card svg{width:18px;height:18px;flex-shrink:0;color:var(--accent);}
+</style>
+</head>
+<body>
+
+<!-- PASSWORD GATE -->
+<div id="gate">
+  <div class="gate-box">
+    <div class="gate-logo">Linggo</div>
+    <div class="gate-sub">后台管理系统</div>
+    <input type="password" id="gate-pwd" placeholder="输入管理密码" autocomplete="off">
+    <button id="gate-btn">进入后台</button>
+    <div id="gate-err"></div>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dash">
+  <!-- Topbar -->
+  <div class="adm-top">
+    <span class="adm-logo">Linggo</span>
+    <span class="adm-badge">Admin</span>
+    <div class="adm-right">
+      <span id="last-updated"></span>
+      <button id="refresh-btn">↻ 刷新</button>
+      <button id="logout-btn">退出</button>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div class="adm-body">
+
+    <!-- Stat Cards -->
+    <div class="section-title">📊 数据总览</div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon">👤</div>
+        <div class="stat-val" id="s-users" style="color:var(--accent)">—</div>
+        <div class="stat-label">活跃用户数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📖</div>
+        <div class="stat-val" id="s-vocab" style="color:var(--purple)">—</div>
+        <div class="stat-label">生词条目总数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📅</div>
+        <div class="stat-val" id="s-today" style="color:var(--green)">—</div>
+        <div class="stat-label">今日访问量</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🌐</div>
+        <div class="stat-val" id="s-total" style="color:var(--orange)">—</div>
+        <div class="stat-label">累计访问量</div>
+      </div>
+    </div>
+
+    <!-- Visit Chart -->
+    <div class="chart-card">
+      <div class="chart-head">
+        <h3>📈 近 30 天访问趋势</h3>
+        <span class="chart-legend" id="chart-legend"></span>
+      </div>
+      <div id="visit-chart">
+        <div class="chart-empty" id="chart-empty">加载中…</div>
+        <div class="chart-bars" id="chart-bars" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Info -->
+    <div class="info-card">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      数据来自 Supabase，每次刷新获取最新统计。访客数据按天聚合，单用户多次刷新只计一次/天。
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── CONFIG
+const SB_URL  = 'https://ueskojxtupmxwolzxdxa.supabase.co';
+const SB_KEY  = 'sb_publishable_-hbkl0aTVPGCfSL8rk6WPQ_mzGQ52O-';
+// 修改这里设置你的管理密码
+const ADMIN_PASSWORD = 'linggo2025';
+
+const sb = window.supabase.createClient(SB_URL, SB_KEY);
+
+// ── GATE
+const GATE_KEY = 'linggo_admin_ok';
+
+function checkGate(){
+  return sessionStorage.getItem(GATE_KEY) === '1';
+}
+
+document.getElementById('gate-btn').addEventListener('click', login);
+document.getElementById('gate-pwd').addEventListener('keydown', e => {
+  if(e.key === 'Enter') login();
+});
+
+function login(){
+  const pwd = document.getElementById('gate-pwd').value;
+  if(pwd === ADMIN_PASSWORD){
+    sessionStorage.setItem(GATE_KEY, '1');
+    showDash();
+  } else {
+    document.getElementById('gate-err').textContent = '密码错误';
+    document.getElementById('gate-pwd').value = '';
+    document.getElementById('gate-pwd').focus();
+  }
+}
+
+function showDash(){
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('dash').style.display  = 'block';
+  loadStats();
+}
+
+if(checkGate()) showDash();
+
+// ── LOGOUT
+document.getElementById('logout-btn').addEventListener('click', ()=>{
+  sessionStorage.removeItem(GATE_KEY);
+  location.reload();
+});
+
+// ── REFRESH
+document.getElementById('refresh-btn').addEventListener('click', loadStats);
+
+// ── LOAD STATS
+async function loadStats(){
+  const btn = document.getElementById('refresh-btn');
+  btn.textContent = '加载中…'; btn.disabled = true;
+
+  try{
+    const { data, error } = await sb.rpc('get_admin_stats');
+    if(error) throw error;
+
+    document.getElementById('s-users').textContent = data.unique_users ?? '—';
+    document.getElementById('s-vocab').textContent = data.total_vocab  ?? '—';
+    document.getElementById('s-today').textContent = data.today_visits ?? '—';
+    document.getElementById('s-total').textContent = data.total_visits ?? '—';
+
+    renderChart(data.daily_visits || []);
+
+    const now = new Date().toLocaleTimeString('zh-CN');
+    document.getElementById('last-updated').textContent = `更新于 ${now}`;
+  }catch(e){
+    console.error(e);
+    document.getElementById('chart-empty').textContent = '加载失败：' + (e.message || '请检查网络');
+  }finally{
+    btn.textContent = '↻ 刷新'; btn.disabled = false;
+  }
+}
+
+// ── RENDER CHART
+function renderChart(rows){
+  const empty  = document.getElementById('chart-empty');
+  const barsEl = document.getElementById('chart-bars');
+
+  if(!rows || !rows.length){
+    empty.textContent = '暂无访问数据';
+    empty.style.display = 'flex';
+    barsEl.style.display = 'none';
+    return;
+  }
+
+  // Sort ascending
+  rows.sort((a,b) => a.date < b.date ? -1 : 1);
+
+  const max = Math.max(...rows.map(r => r.count), 1);
+  const today = new Date().toISOString().slice(0,10);
+
+  barsEl.innerHTML = '';
+  rows.forEach(row => {
+    const pct = Math.max((row.count / max) * 100, 2);
+    const isToday = row.date === today;
+    const label = row.date.slice(5); // MM-DD
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bar-wrap';
+
+    const bar = document.createElement('div');
+    bar.className = 'bar' + (isToday ? ' today' : '');
+    bar.style.height = pct + '%';
+
+    const tip = document.createElement('div');
+    tip.className = 'bar-tip';
+    tip.textContent = `${row.date}: ${row.count}次`;
+    bar.appendChild(tip);
+
+    const dateEl = document.createElement('div');
+    dateEl.className = 'bar-date';
+    // Only show label for some bars to avoid crowding
+    if(rows.length <= 14 || rows.indexOf(row) % 3 === 0 || isToday){
+      dateEl.textContent = isToday ? '今天' : label;
+    }
+    if(isToday) dateEl.style.color = 'var(--accent)';
+
+    wrap.appendChild(bar);
+    wrap.appendChild(dateEl);
+    barsEl.appendChild(wrap);
+  });
+
+  const total = rows.reduce((s,r)=>s+r.count,0);
+  document.getElementById('chart-legend').textContent =
+    `近 ${rows.length} 天共 ${total} 次访问`;
+
+  empty.style.display = 'none';
+  barsEl.style.display = 'flex';
+}
+</script>
+</body>
+</html>
