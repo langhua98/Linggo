@@ -1264,7 +1264,7 @@ body{
 #prog-pct{ font-size:11px;font-weight:700;color:var(--text-3);width:28px;text-align:right; }
 /* ── controls — prev/play/next + speed all on one row ── */
 .ctrl-row{
-  display:flex;align-items:center;justify-content:center;
+  display:flex;align-items:center;justify-content:space-evenly;
   gap:0;margin-bottom:6px;
 }
 .cbtn{
@@ -1278,7 +1278,7 @@ body{
 .cbtn:active{ transform:scale(.88); }
 .cbtn svg{ width:24px;height:24px; }
 #play-btn{
-  width:64px;height:64px;margin:0 16px;
+  width:52px;height:52px;margin:0;
   background:var(--accent);color:#fff;
   border:none;border-radius:50%;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
@@ -1287,16 +1287,17 @@ body{
 }
 #play-btn:hover{ opacity:.88;transform:scale(1.04); }
 #play-btn:active{ transform:scale(.94); }
-#play-btn svg{ width:28px;height:28px; }
+#play-btn svg{ width:24px;height:24px; }
 /* ── bottom utility row ── */
 .util-row{ display:flex;align-items:center;gap:8px; }
-/* speed — now lives inside ctrl-row, pushed to left via margin-right:auto */
-.speed-wrap{ position:relative;flex-shrink:0;margin-right:auto; }
+/* speed — same size as other ctrl-row buttons */
+.speed-wrap{ position:relative;flex-shrink:0; }
 #speed-btn{
-  height:32px;padding:0 14px;
-  border:1.5px solid var(--border);border-radius:8px;
+  width:52px;height:52px;padding:0;
+  border:1.5px solid var(--border);border-radius:50%;
   background:none;color:var(--text);cursor:pointer;
-  font-size:13px;font-weight:700;font-family:'Nunito',sans-serif;
+  font-size:12px;font-weight:700;font-family:'Nunito',sans-serif;
+  display:flex;align-items:center;justify-content:center;
   transition:all .15s;
 }
 #speed-btn:hover,#speed-btn.active{
@@ -1328,8 +1329,15 @@ body{
   .book-grid{grid-template-columns:repeat(2,1fr);}
   #content{padding-left:16px;padding-right:16px;}
   .cbtn{width:46px;height:46px;}
-  #play-btn{width:56px;height:56px;}
+  #play-btn{width:46px;height:46px;}
+  #speed-btn{width:46px;height:46px;font-size:11px;}
   .spill{font-size:11px;}
+}
+@media(max-width:420px){
+  .tbtn{width:36px;height:36px;}
+  .tbtn svg{width:18px;height:18px;}
+  .logo{font-size:15px;margin-right:2px;}
+  #login-btn{padding:0 8px;font-size:11px;}
 }
 @media(max-width:380px){
   .book-grid{grid-template-columns:1fr;}
@@ -3016,8 +3024,8 @@ function togglePlay(){
 
 function setIcon(playing){
   document.getElementById('play-ico').outerHTML = playing
-    ? `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><rect x="5" y="3" width="5" height="18" rx="1"/><rect x="14" y="3" width="5" height="18" rx="1"/></svg>`
-    : `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><polygon points="6 3 20 12 6 21"/></svg>`;
+    ? `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><rect x="5" y="3" width="5" height="18" rx="1"/><rect x="14" y="3" width="5" height="18" rx="1"/></svg>`
+    : `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><polygon points="6 3 20 12 6 21"/></svg>`;
 }
 
 document.getElementById('play-btn').addEventListener('click', togglePlay);
