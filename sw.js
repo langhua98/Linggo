@@ -4,7 +4,10 @@ const SHELL = [
   '/Linggo/index.html',
   '/Linggo/style.css',
   '/Linggo/script.js',
-  '/Linggo/icon.svg',
+  '/Linggo/icon.png',
+  '/Linggo/icon-192.png',
+  '/Linggo/icon-512.png',
+  '/Linggo/apple-touch-icon.png',
   '/Linggo/manifest.json',
 ];
 
