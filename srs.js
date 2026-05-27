@@ -213,6 +213,7 @@ async function fetchFcWord(word, skipPh=false){
     const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
     if(!r.ok) throw new Error('dict ' + r.status);
     const e = (await r.json())[0];
+    if(!e) throw new Error('no entry');
     const ph     = e.phonetics?.find(p=>p.text)?.text||'';
     const audioSrc = e.phonetics?.find(p=>p.audio?.length>0)?.audio||'';
     const pos    = e.meanings?.[0]?.partOfSpeech||'';

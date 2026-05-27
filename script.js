@@ -1401,32 +1401,33 @@ function renderVoc(){
     ? `${filtered.length}/${S.vocab.length} 词`
     : S.vocab.length + ' 词';
   if(!filtered.length){
-    list.innerHTML = q
-      ? `<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;">未找到「${q}」</div>`
-      : '<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;">点击单词后点「收藏」<br>或长按单词快速添加</div>';
+    const empty = document.createElement('div');
+    empty.style.cssText = 'text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;';
+    empty.textContent = q ? `未找到「${q}」` : '';
+    if(!q) empty.innerHTML = '点击单词后点「收藏」<br>或长按单词快速添加';
+    list.innerHTML = ''; list.appendChild(empty);
     return;
   }
   const show = filtered.slice(0, VOC_PAGE);
-  list.innerHTML = show.map(v => {
-    const realIdx = S.vocab.indexOf(v);
-    return `
+  list.innerHTML = show.map(v => `
     <div class="vi">
       <div class="vi-w">${v.word}</div>
       ${v.meaning ? `<div class="vi-m">${v.meaning.slice(0,80)}</div>` : ''}
       ${v.sent ? `<div class="vi-s">${v.sent.trim().slice(0,100)}…</div>` : ''}
       <div class="vi-row">
         <span class="vi-d">${new Date(v.time).toLocaleDateString('zh-CN')}</span>
-        <button class="vi-del" data-i="${realIdx}">🗑</button>
+        <button class="vi-del" data-w="${v.word}">🗑</button>
       </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
   if(filtered.length > VOC_PAGE){
     list.innerHTML += `<div style="text-align:center;padding:10px;color:var(--text-3);font-size:12px;">共 ${filtered.length} 词，已显示前 ${VOC_PAGE} 条，输入搜索可快速定位</div>`;
   }
   list.querySelectorAll('.vi-del').forEach(btn => {
     btn.addEventListener('click', () => {
-      const i = +btn.dataset.i, w = S.vocab[i].word;
-      S.vocab.splice(i, 1);
+      const w = btn.dataset.w;
+      const idx = S.vocab.findIndex(x => x.word === w);
+      if(idx === -1) return;
+      S.vocab.splice(idx, 1);
       document.querySelectorAll(`.word[data-w="${w}"]`).forEach(el => el.classList.remove('saved'));
       cloudDeleteVocab(w);
       renderVoc(); saveProg();
@@ -2191,7 +2192,11 @@ document.getElementById('um-logout').addEventListener('click', async ()=>{
 (async () => {
   try {
     const user = await SB.restoreSession();
-    if(user) setAuthUI(user);
+    if(user){
+      setAuthUI(user);
+      if(typeof window._syncFcSRS === 'function') window._syncFcSRS();
+      if(typeof window._syncVpProgress === 'function') window._syncVpProgress();
+    }
   } catch(e) { console.warn('session restore:', e.message); }
   await loadUserBooks();
   SB.rpc('record_visit').catch(()=>{});

@@ -32,9 +32,11 @@ const SB = (() => {
       const d = await req('/auth/v1/token?grant_type=password', {
         method: 'POST', body: JSON.stringify({ email, password })
       });
-      tok = d.access_token;
-      localStorage.setItem('sb_tok', tok);
-      localStorage.setItem('sb_ref', d.refresh_token || '');
+      if (d.access_token) {
+        tok = d.access_token;
+        localStorage.setItem('sb_tok', tok);
+        localStorage.setItem('sb_ref', d.refresh_token || '');
+      }
       return d.user;
     },
 
@@ -157,8 +159,6 @@ const SB = (() => {
           word,
           status: (data.interval||0) >= 7*86400000 ? 'known' : 'learning',
           next_review: new Date(data.nextReview).toISOString(),
-          correct_count: 0,
-          wrong_count: 0,
           interval_ms: data.interval || 0,
           last_seen: new Date().toISOString()
         }])
