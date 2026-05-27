@@ -1901,8 +1901,23 @@ async function showFcCard(instant){
   card.style.transition = 'opacity .22s ease';
   card.style.opacity    = '1';
 
+  // Auto-play pronunciation after card animates in
+  setTimeout(() => autoPlayFcWord(v.word), 350);
+
   // Fetch dictionary data (async, fills audio/enDef; won't override bundled phonetic if v.ph exists)
   fetchFcWord(v.word, !!v.ph);
+}
+
+function autoPlayFcWord(word){
+  // Only play if this word is still the current card
+  if(document.getElementById('fc-word').textContent !== word) return;
+  const cached = FC_CACHE.get(word);
+  if(cached?.audio){
+    const a = new Audio(cached.audio);
+    a.play().catch(() => speakWord(word));
+  } else {
+    speakWord(word);
+  }
 }
 
 async function fetchFcWord(word, skipPh=false){
@@ -2065,6 +2080,7 @@ function closeFcAll(){
     dx=e.touches[0].clientX-sx;
     const dy=e.touches[0].clientY-sy;
     if(Math.abs(dx)<Math.abs(dy) && !moving) return; // vertical scroll
+    if(Math.abs(dx) < 10 && !moving) return; // ignore tiny jitter, treat as tap
     moving=true;
     const rot=dx*0.04;
     card.style.transform=`translateX(${dx}px) rotate(${rot}deg)`;
