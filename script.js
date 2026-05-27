@@ -1752,13 +1752,33 @@ function updMbtns(){
 const SRS_INTERVALS = { again: 10*60*1000, hard: 86400000, good: 3*86400000, easy: 7*86400000 };
 const FC_CACHE = new Map(); // word → { phonetic, audio, pos, enDef }
 
-let fcDeck    = [];
-let fcIdx     = 0;
-let fcFlipped = false;
-let fcCounts  = { again:0, hard:0, good:0, easy:0 };
-let fcTotal   = 0;
-let fcSRS     = {};   // word → { nextReview, interval }
-let fcMode    = 'book'; // 'book' | 'deck'
+let fcDeck      = [];
+let fcIdx       = 0;
+let fcFlipped   = false;
+let fcCounts    = { again:0, hard:0, good:0, easy:0 };
+let fcTotal     = 0;
+let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排）
+let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
+let fcSRS       = {};  // word → { nextReview, interval }
+let fcMode      = 'book'; // 'book' | 'deck'
+
+// ── 动态间隔计算（类 Anki：间隔随正确次数成倍增长）
+function calcNextInterval(rating, prevInterval){
+  if(rating === 'again') return SRS_INTERVALS.again;
+  if(rating === 'hard')  return Math.round(Math.max(SRS_INTERVALS.hard, (prevInterval || SRS_INTERVALS.hard)  * 1.2));
+  if(rating === 'good')  return Math.round(Math.max(SRS_INTERVALS.good, (prevInterval || SRS_INTERVALS.good)  * 2.5));
+  if(rating === 'easy')  return Math.round(Math.max(SRS_INTERVALS.easy, (prevInterval || SRS_INTERVALS.easy)  * 4.0));
+  return SRS_INTERVALS.good;
+}
+function fmtInterval(ms){
+  const m = Math.round(ms/60000);
+  if(m < 60)   return m + '分钟';
+  const h = Math.round(ms/3600000);
+  if(h < 24)   return h + '小时';
+  const d = Math.round(ms/86400000);
+  if(d < 30)   return d + '天';
+  return Math.round(d/30) + '个月';
+}
 
 // ── Vocab deck progress
 let vpProgress = {};  // word → { nextReview, correct, wrong }
@@ -1810,7 +1830,9 @@ function openFlashcard(){
   fcDeck = [...shuffle(due), ...shuffle(newW), ...shuffle(later)];
   fcIdx  = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0,easy:0};
-  fcTotal  = fcDeck.length;
+  fcTotal     = fcDeck.length;
+  fcOrigTotal = fcDeck.length;
+  fcDoneCount = 0;
 
   const fc = document.getElementById('flashcard');
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
@@ -1862,9 +1884,18 @@ async function showFcCard(instant){
   document.getElementById('fc-sent').textContent     = v.sent ? v.sent.trim().slice(0,150) : '';
 
   // Progress
-  const pct = fcTotal ? (fcIdx/fcTotal)*100 : 0;
+  const pct = fcOrigTotal ? (fcDoneCount/fcOrigTotal)*100 : 0;
   document.getElementById('fc-prog-fill').style.width = pct+'%';
-  document.getElementById('fc-count').textContent = fcIdx+'/'+fcTotal;
+  document.getElementById('fc-count').textContent = fcDoneCount+'/'+fcOrigTotal;
+
+  // 动态更新评分按钮的时间标签
+  const _prevIv = fcMode==='deck'
+    ? (vpProgress[v.word]?.interval || 0)
+    : (fcSRS[v.word]?.interval || 0);
+  document.querySelector('#fc-again .fc-rbtn-time').textContent = fmtInterval(SRS_INTERVALS.again);
+  document.querySelector('#fc-hard .fc-rbtn-time').textContent  = fmtInterval(calcNextInterval('hard', _prevIv));
+  document.querySelector('#fc-good .fc-rbtn-time').textContent  = fmtInterval(calcNextInterval('good', _prevIv));
+  document.querySelector('#fc-easy .fc-rbtn-time').textContent  = fmtInterval(calcNextInterval('easy', _prevIv));
 
   // Fade in — opacity only; transform is 100% owned by CSS class
   card.style.transition = 'opacity .22s ease';
@@ -1927,12 +1958,18 @@ function rateFcCard(rating){
   if(!fcFlipped) return;
   const v   = fcDeck[fcIdx];
   const now = Date.now();
-  const interval = SRS_INTERVALS[rating];
+
+  // 动态间隔（基于上次间隔成倍增长）
+  const prevInterval = fcMode==='deck'
+    ? (vpProgress[v.word]?.interval || 0)
+    : (fcSRS[v.word]?.interval || 0);
+  const interval = calcNextInterval(rating, prevInterval);
 
   if(fcMode === 'deck'){
-    const prev = vpProgress[v.word] || { correct:0, wrong:0 };
+    const prev = vpProgress[v.word] || { correct:0, wrong:0, interval:0 };
     vpProgress[v.word] = {
       nextReview: now + interval,
+      interval,
       correct: prev.correct + (rating !== 'again' ? 1 : 0),
       wrong:   prev.wrong   + (rating === 'again' ? 1 : 0)
     };
@@ -1943,6 +1980,15 @@ function rateFcCard(rating){
     saveSRS();
   }
   fcCounts[rating]++;
+
+  // Again：把卡片重新插入本轮靠后的位置（2~4 张之后）
+  if(rating === 'again'){
+    const offset = 2 + Math.floor(Math.random() * 3);
+    const reinsert = Math.min(fcIdx + 1 + offset, fcDeck.length);
+    fcDeck.splice(reinsert, 0, {...v});
+  } else {
+    fcDoneCount++;
+  }
 
   // Feedback animation
   const isBad = rating === 'again' || rating === 'hard';
@@ -2144,11 +2190,16 @@ function closeVocabPanel(){
 
 function updateVpStats(){
   const wordList = vpDeck === 'cet4' ? (typeof CET4 !== 'undefined' ? CET4 : []) : [];
+  const total = wordList.length;
   const now = Date.now();
-  const newCount = wordList.filter(w => !vpProgress[w.w]).length;
-  const dueCount = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now).length;
+  const newCount     = wordList.filter(w => !vpProgress[w.w]).length;
+  const dueCount     = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now).length;
+  const masteredCount= wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].correct >= 3).length;
+  const pct = total > 0 ? Math.round(masteredCount / total * 100) : 0;
   const el = document.getElementById('cet4-progress');
-  if(el) el.textContent = `新词 ${newCount} · 待复习 ${dueCount}`;
+  if(el) el.innerHTML =
+    `新词 ${newCount} · 待复习 ${dueCount}<br>` +
+    `<span style="color:var(--green-2,#16A34A);font-weight:700">已掌握 ${masteredCount}/${total}（${pct}%）</span>`;
 }
 
 function startDeckSession(){
@@ -2163,7 +2214,9 @@ function startDeckSession(){
   fcDeck  = pool.slice(0, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
   fcIdx   = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0,easy:0};
-  fcTotal = fcDeck.length;
+  fcTotal     = fcDeck.length;
+  fcOrigTotal = fcDeck.length;
+  fcDoneCount = 0;
   fcMode  = 'deck';
 
   if(!fcDeck.length){ toast('今日没有待复习单词，明天再来！'); return; }
