@@ -7,6 +7,7 @@ const SHELL = [
   '/Linggo/script.js',
   '/Linggo/srs.js',
   '/Linggo/cet4.js',
+  '/Linggo/cet6.js',
   '/Linggo/ogden850.js',
   '/Linggo/icon.png',
   '/Linggo/icon-192.png',
