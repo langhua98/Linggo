@@ -1000,6 +1000,30 @@ body{
   50%{box-shadow:0 0 0 6px rgba(37,99,235,.08),0 4px 20px rgba(37,99,235,.30);}
 }
 
+/* ── front face: word + phonetic + badge */
+.fc-word{
+  font-family:'Lora',serif;
+  font-size:clamp(46px,13vw,72px);
+  font-weight:700;color:var(--text);
+  text-align:center;line-height:1.1;
+  margin-bottom:12px;letter-spacing:-.01em;
+}
+.fc-ph-front{
+  font-size:17px;color:var(--text-3);
+  font-family:'Nunito',sans-serif;
+  margin-bottom:14px;min-height:22px;
+  letter-spacing:.03em;
+}
+.fc-badge-row{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;}
+.fc-badge{
+  padding:4px 12px;border-radius:20px;
+  font-size:12px;font-weight:700;
+  font-family:'Nunito',sans-serif;letter-spacing:.04em;
+}
+.fc-badge-pos{background:var(--accent-2);color:var(--accent);}
+.fc-badge-lvl{background:#F3F4F6;color:#6B7280;}
+.night .fc-badge-lvl{background:#374151;color:#9CA3AF;}
+
 /* back face */
 .fc-back-body{
   flex:1;display:flex;flex-direction:column;
@@ -1036,38 +1060,57 @@ body{
 /* ── rating buttons */
 .fc-ratings{
   flex-shrink:0;
-  padding:8px 16px max(16px,env(safe-area-inset-bottom));
-  display:grid;
-  grid-template-columns:repeat(4,1fr);
-  gap:8px;
-  opacity:0;
-  pointer-events:none;
-  transform:translateY(12px);
+  padding:10px 12px max(18px,env(safe-area-inset-bottom));
+  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;
+  opacity:0;pointer-events:none;transform:translateY(14px);
   transition:opacity .3s ease,transform .3s ease;
 }
 .fc-ratings.show{opacity:1;pointer-events:auto;transform:none;}
 .fc-rbtn{
-  height:66px;border:none;border-radius:18px;
-  cursor:pointer;
+  height:84px;border:none;border-radius:22px;
+  cursor:pointer;padding:0 4px;
   display:flex;flex-direction:column;
-  align-items:center;justify-content:center;gap:2px;
-  transition:transform .15s cubic-bezier(.34,1.4,.64,1),box-shadow .15s;
-  -webkit-tap-highlight-color:transparent;
-  user-select:none;
+  align-items:center;justify-content:center;gap:4px;
+  transition:transform .2s cubic-bezier(.34,1.56,.64,1), box-shadow .2s;
+  -webkit-tap-highlight-color:transparent;user-select:none;
+  box-shadow:0 2px 8px rgba(0,0,0,.08);
 }
-.fc-rbtn:hover{transform:translateY(-3px);box-shadow:0 8px 20px rgba(0,0,0,.12);}
-.fc-rbtn:active{transform:scale(.9);box-shadow:none;}
-.fc-rbtn-icon{font-size:20px;line-height:1;}
-.fc-rbtn-label{font-size:12px;font-weight:800;font-family:'Nunito',sans-serif;}
-.fc-rbtn-time{font-size:10px;font-weight:600;opacity:.75;font-family:'Nunito',sans-serif;}
-.fc-r-again{background:#FEE2E2;color:#DC2626;}
-.fc-r-hard {background:#FEF3C7;color:#D97706;}
-.fc-r-good {background:#D1FAE5;color:#059669;}
-.fc-r-easy {background:#DBEAFE;color:#2563EB;}
-.night .fc-r-again{background:#7F1D1D;color:#FCA5A5;}
-.night .fc-r-hard {background:#78350F;color:#FDE68A;}
-.night .fc-r-good {background:#064E3B;color:#6EE7B7;}
-.night .fc-r-easy {background:#1E3A8A;color:#93C5FD;}
+.fc-rbtn:active{transform:scale(.88);box-shadow:none;}
+.fc-rbtn-icon{
+  width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+}
+.fc-rbtn-icon svg{width:26px;height:26px;}
+.fc-rbtn-label{font-size:13px;font-weight:800;font-family:'Nunito',sans-serif;line-height:1;}
+.fc-rbtn-time{font-size:11px;font-weight:600;font-family:'Nunito',sans-serif;opacity:.72;line-height:1;}
+/* Again — red */
+.fc-r-again{
+  background:linear-gradient(160deg,#FEE2E2 0%,#FECACA 100%);
+  color:#DC2626;
+  box-shadow:0 3px 12px rgba(220,38,38,.18);
+}
+/* Hard — amber */
+.fc-r-hard{
+  background:linear-gradient(160deg,#FEF3C7 0%,#FDE68A 100%);
+  color:#D97706;
+  box-shadow:0 3px 12px rgba(217,119,6,.16);
+}
+/* Good — emerald */
+.fc-r-good{
+  background:linear-gradient(160deg,#D1FAE5 0%,#A7F3D0 100%);
+  color:#059669;
+  box-shadow:0 3px 12px rgba(5,150,105,.16);
+}
+/* Easy — blue */
+.fc-r-easy{
+  background:linear-gradient(160deg,#DBEAFE 0%,#BFDBFE 100%);
+  color:#2563EB;
+  box-shadow:0 3px 12px rgba(37,99,235,.18);
+}
+/* night */
+.night .fc-r-again{background:linear-gradient(160deg,#7F1D1D,#991B1B);color:#FCA5A5;box-shadow:0 3px 12px rgba(220,38,38,.25);}
+.night .fc-r-hard {background:linear-gradient(160deg,#78350F,#92400E);color:#FDE68A;box-shadow:0 3px 12px rgba(217,119,6,.22);}
+.night .fc-r-good {background:linear-gradient(160deg,#064E3B,#065F46);color:#6EE7B7;box-shadow:0 3px 12px rgba(5,150,105,.22);}
+.night .fc-r-easy {background:linear-gradient(160deg,#1E3A8A,#1D4ED8);color:#93C5FD;box-shadow:0 3px 12px rgba(37,99,235,.28);}
 
 /* ── feedback overlays */
 .fc-feedback{
