@@ -1844,6 +1844,7 @@ function openFlashcard(){
   fcTotal     = fcDeck.length;
   fcOrigTotal = fcDeck.length;
   fcDoneCount = 0;
+  fcMode = 'book'; // 确保不被上一次词库练习的 'deck' 状态污染
 
   const fc = document.getElementById('flashcard');
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
