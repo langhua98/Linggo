@@ -125,14 +125,14 @@ body{
 #lib-open-btn:hover{opacity:.92;transform:translateY(-2px);}
 #deck-open-btn{
   flex:1;
-  background:var(--surface);color:var(--accent);
-  border:2px solid var(--accent);
+  background:linear-gradient(135deg,#7C3AED,#A78BFA);color:#fff;border:none;
   border-radius:14px;padding:15px 20px;
   font-size:15px;font-weight:700;cursor:pointer;
   font-family:'Nunito',sans-serif;
-  transition:background .15s,transform .15s;
+  transition:opacity .15s,transform .15s,box-shadow .15s;
+  box-shadow:0 6px 20px rgba(124,58,237,0.30);
 }
-#deck-open-btn:hover{background:var(--accent-2);transform:translateY(-2px);}
+#deck-open-btn:hover{opacity:.92;transform:translateY(-2px);}
 .or{
   width:min(340px,88vw);
   display:flex;align-items:center;gap:10px;
