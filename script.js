@@ -362,8 +362,9 @@ function gbCoverUrl(id){ return `https://www.gutenberg.org/cache/epub/${id}/pg${
 
 // ── CORS proxies with real progress tracking
 const CORS_PROXIES = [
-  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  u => u,  // 直连（Gutenberg 支持 CORS，国外网络优先）
   u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
 ];
 
@@ -415,6 +416,10 @@ function setCardAction(cardEl, state, pct){
     el.innerHTML = `
       <div class="bk-prog-wrap"><div class="bk-prog-bar" style="width:${p}%"></div></div>
       <span class="bk-prog-label">${p > 0 ? p+'%' : '连接中…'}</span>`;
+  } else if(state === 'error'){
+    // pct = book.url here
+    el.innerHTML = `<a class="bk-btn bk-btn-err" href="${pct}" target="_blank" title="网络加载失败，点击直接下载 TXT">↓ 下载</a>`;
+    el.querySelector('a').addEventListener('click', e => e.stopPropagation());
   } else {
     // init / checking
     el.innerHTML = '<div class="bk-btn-ghost">检查中…</div>';
@@ -486,9 +491,7 @@ async function loadBook(book, cardEl){
     setCardAction(cardEl, 'cached');
     openBook(book, txt);
   }catch(e){
-    setCardAction(cardEl, 'ready');
-    document.getElementById('err-dl').href = book.url;
-    document.getElementById('err-modal').classList.add('vis');
+    setCardAction(cardEl, 'error', book.url);
   }
 }
 

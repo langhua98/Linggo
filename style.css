@@ -474,6 +474,11 @@ body{
   background:var(--accent);color:#fff;border-color:var(--accent);
 }
 .bk-btn-cached:hover{background:#1d4ed8;}
+.bk-btn-err{
+  background:#FEF2F2;color:#DC2626;border-color:#FCA5A5;
+  text-decoration:none;font-size:11px;
+}
+.bk-btn-err:hover{background:#FEE2E2;}
 .bk-btn-ghost{
   color:var(--text-3);border-color:transparent;
   font-size:11px;cursor:default;text-align:center;
