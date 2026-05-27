@@ -945,6 +945,7 @@ body{
   box-shadow:0 6px 28px var(--shadow);
   display:flex;flex-direction:column;
   overflow:hidden;
+  will-change:transform;
 }
 .fc-back-face{transform:rotateY(180deg);}
 
@@ -961,8 +962,7 @@ body{
 /* 浮动圆形按钮（星标 & 播放） */
 .fc-icon-btn{
   width:52px;height:52px;border:none;
-  background:rgba(255,255,255,0.72);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  background:rgba(255,255,255,0.92);
   border-radius:50%;cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   transition:transform .18s cubic-bezier(.34,1.56,.64,1), box-shadow .18s;
@@ -970,7 +970,7 @@ body{
   color:var(--text-2);flex-shrink:0;
 }
 .night .fc-icon-btn{
-  background:rgba(40,40,48,0.72);
+  background:rgba(36,36,44,0.92);
   box-shadow:0 4px 16px rgba(0,0,0,.32), 0 1px 4px rgba(0,0,0,.18);
 }
 .fc-icon-btn:active{transform:scale(.84);}
