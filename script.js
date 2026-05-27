@@ -1391,6 +1391,7 @@ function addVocab(word, meaning){
   cloudAddVocab(item); // 云端同步（静默）
 }
 const VOC_PAGE = 100; // 单次最多渲染条数
+function _esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function renderVoc(){
   const q = (document.getElementById('voc-search')?.value || '').trim().toLowerCase();
   const list = document.getElementById('voc-list');
@@ -1411,12 +1412,12 @@ function renderVoc(){
   const show = filtered.slice(0, VOC_PAGE);
   list.innerHTML = show.map(v => `
     <div class="vi">
-      <div class="vi-w">${v.word}</div>
-      ${v.meaning ? `<div class="vi-m">${v.meaning.slice(0,80)}</div>` : ''}
-      ${v.sent ? `<div class="vi-s">${v.sent.trim().slice(0,100)}…</div>` : ''}
+      <div class="vi-w">${_esc(v.word)}</div>
+      ${v.meaning ? `<div class="vi-m">${_esc(v.meaning.slice(0,80))}</div>` : ''}
+      ${v.sent ? `<div class="vi-s">${_esc(v.sent.trim().slice(0,100))}…</div>` : ''}
       <div class="vi-row">
         <span class="vi-d">${new Date(v.time).toLocaleDateString('zh-CN')}</span>
-        <button class="vi-del" data-w="${v.word}">🗑</button>
+        <button class="vi-del" data-w="${_esc(v.word)}">🗑</button>
       </div>
     </div>`).join('');
   if(filtered.length > VOC_PAGE){
