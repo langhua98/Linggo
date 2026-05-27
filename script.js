@@ -554,7 +554,6 @@ document.getElementById('lib-close').addEventListener('click', () => {
 
 renderLib();
 
-document.getElementById('err-close').addEventListener('click',()=> document.getElementById('err-modal').classList.remove('vis'));
 
 // ═══════════════════════════════════════════
 //  STATE
@@ -2140,7 +2139,7 @@ document.addEventListener('keydown', e=>{
   if(e.key==='Escape'){
     wpop.classList.remove('vis');
     document.getElementById('library').classList.remove('open');
-    document.getElementById('err-modal').classList.remove('vis');
+
     closeSidebar();
     closeVoc();
   }
