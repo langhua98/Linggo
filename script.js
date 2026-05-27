@@ -788,6 +788,7 @@ dropZone.addEventListener('drop', e=>{
   else toast('请上传 .txt 格式文件');
 });
 function readFile(f){
+  if(f.size > 50 * 1024 * 1024){ toast('文件过大，请上传 50MB 以内的 TXT 文件'); return; }
   S.fileName=f.name;
   document.getElementById('filename').textContent=f.name;
   const r=new FileReader();
@@ -1750,6 +1751,11 @@ function updMbtns(){
 //  FLASHCARD SYSTEM — SRS + Swipe + Animations
 // ═══════════════════════════════════════════
 const SRS_INTERVALS = { again: 10*60*1000, hard: 86400000, good: 3*86400000, easy: 7*86400000 };
+function shuffle(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
 const FC_CACHE = new Map(); // word → { ph, audioSrc, audioEl, pos, enDef }；FIFO 上限 200
 const FC_CACHE_MAX = 200;
 
@@ -1802,10 +1808,16 @@ async function syncVpFromSupabase(deck){
     saveVpProgress(deck);
   }catch(e){}
 }
+let _vpSyncWarnShown = false;
 async function pushVpWord(deck, word){
   if(!currentUser) return;
-  const p = vpProgress[word] || { nextReview: Date.now(), correct: 0, wrong: 0 };
-  try{ await SB.upsertVocabProgress(currentUser.id, deck, word, p); }catch(e){}
+  const p = vpProgress[word] || { nextReview: Date.now(), correct: 0, wrong: 0, interval: 0 };
+  try{
+    await SB.upsertVocabProgress(currentUser.id, deck, word, p);
+  }catch(e){
+    console.warn('pushVpWord failed:', e);
+    if(!_vpSyncWarnShown){ _vpSyncWarnShown=true; toast('云端同步失败，进度已保存在本地'); }
+  }
 }
 
 function loadSRS(){
@@ -1826,8 +1838,6 @@ function openFlashcard(){
   const newW = S.vocab.filter(v => !fcSRS[v.word]);
   const later = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview > now);
 
-  // Shuffle each group
-  const shuffle = arr => [...arr].sort(()=>Math.random()-.5);
   fcDeck = [...shuffle(due), ...shuffle(newW), ...shuffle(later)];
   fcIdx  = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0,easy:0};
@@ -1998,7 +2008,8 @@ function speakWordFc(w){
 function flipFcCard(){
   const card    = document.getElementById('fc-card');
   const ratings = document.getElementById('fc-ratings');
-  card.style.transition = ''; // 清除 touchstart 残留的 'none'，交回 CSS 过渡控制
+  // 清除 showFcCard fade-in 遗留的 opacity transition，交回 CSS 翻转过渡
+  card.style.transition = '';
   card.style.transform  = '';
   fcFlipped = !fcFlipped;
   card.classList.toggle('flipped', fcFlipped);
@@ -2108,63 +2119,55 @@ function closeFcAll(){
 }
 
 // ── Card swipe gesture
+// 拖拽位移施加在 .fc-scene 上，card 本身只做 rotateY 翻转，互不干扰
 (()=>{
-  const card   = document.getElementById('fc-card');
+  const card = document.getElementById('fc-card');
   let sx=0, sy=0, dx=0, moving=false;
 
   card.addEventListener('touchstart', e=>{
     sx=e.touches[0].clientX; sy=e.touches[0].clientY;
     dx=0; moving=false;
-    card.style.transition='none';
+    card.closest('.fc-scene').style.transition='none';
   },{passive:true});
 
   card.addEventListener('touchmove', e=>{
     dx=e.touches[0].clientX-sx;
     const dy=e.touches[0].clientY-sy;
-    if(Math.abs(dx)<Math.abs(dy) && !moving) return; // vertical scroll
-    if(Math.abs(dx) < 10 && !moving) return; // ignore tiny jitter, treat as tap
+    if(Math.abs(dx)<Math.abs(dy) && !moving) return;
+    if(Math.abs(dx)<10 && !moving) return;
     moving=true;
-    const rot=dx*0.04;
-    card.style.transform=`translateX(${dx}px) rotate(${rot}deg)`;
+    card.closest('.fc-scene').style.transform=`translateX(${dx}px) rotate(${dx*0.03}deg)`;
   },{passive:true});
 
   card.addEventListener('touchend', (e)=>{
+    const scn = card.closest('.fc-scene');
     if(!moving){
-      // Tapped a button inside the card → don't flip
+      scn.style.transition='';
       if(e.target.closest('button')) return;
-      card.style.transition='';
-      card.style.transform='';
       flipFcCard(); return;
     }
     if(Math.abs(dx)>100 && fcFlipped){
-      // Swipe off screen — animate the scene wrapper sideways, not the card itself
+      // 滑出屏幕：scene 飞走
       const dir = dx>0?1:-1;
-      const scn = card.closest('.fc-scene');
-      scn.style.transition = 'transform .25s ease, opacity .25s ease';
-      scn.style.transform  = `translateX(${dir*110}%)`;
-      scn.style.opacity    = '0';
+      scn.style.transition='transform .25s ease, opacity .25s ease';
+      scn.style.transform =`translateX(${dir*110}%)`;
+      scn.style.opacity   ='0';
       const rating = dx>0?'good':'again';
       setTimeout(()=>{
-        // reset scene position silently before next card renders
         scn.style.transition='none';
         scn.style.transform='';
         scn.style.opacity='1';
-        // rateFcCard 需要 fcFlipped=true 才能执行，showFcCard 会自动重置
         rateFcCard(rating);
       }, 270);
     } else {
-      // Snap back — restore position, then clear inline so CSS class controls it
-      card.style.transition='transform .35s cubic-bezier(.34,1.4,.64,1), opacity .2s';
-      card.style.transform = fcFlipped ? 'rotateY(180deg)' : '';
-      card.style.opacity='1';
-      setTimeout(()=>{
-        card.style.transition = '';
-        card.style.transform  = ''; // hand full control back to .fc-card.flipped
-      }, 380);
+      // 回弹：scene 归位即可，card 的 rotateY 由 CSS class 全程控制，无需修改
+      scn.style.transition='transform .35s cubic-bezier(.34,1.4,.64,1)';
+      scn.style.transform='';
+      setTimeout(()=>{ scn.style.transition=''; }, 380);
     }
   },{passive:true});
 
-  // Desktop click to flip (exclude buttons)
+  // 桌面端点击翻转（排除按钮）
   card.addEventListener('click', (e)=>{
     if(e.target.closest('button')) return;
     if(window.matchMedia('(pointer:fine)').matches) flipFcCard();
@@ -2294,12 +2297,12 @@ function updateVpStats(){
 }
 
 function startDeckSession(){
+  _vpSyncWarnShown = false;
   const wordList = getDeckWordList(vpDeck);
   if(!wordList.length){ toast('词库加载失败'); return; }
   const now = Date.now();
   const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
   const newW = wordList.filter(w => !vpProgress[w.w]);
-  const shuffle = arr => [...arr].sort(()=>Math.random()-.5);
   const pool = [...shuffle(due), ...shuffle(newW)];
 
   fcDeck  = pool.slice(0, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
