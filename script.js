@@ -1901,27 +1901,16 @@ async function showFcCard(instant){
   card.style.transition = 'opacity .22s ease';
   card.style.opacity    = '1';
 
-  // Auto-play pronunciation after card animates in
-  setTimeout(() => autoPlayFcWord(v.word), 350);
+  // 记录卡片展示时间，fetchFcWord 完成后再触发自动播放
+  fcCardShowTime = Date.now();
+  fcAutoPlay = true;
 
-  // Fetch dictionary data (async, fills audio/enDef; won't override bundled phonetic if v.ph exists)
+  // Fetch dictionary data (async; also pre-buffers audio element)
   fetchFcWord(v.word, !!v.ph);
 }
 
-function autoPlayFcWord(word){
-  if(document.getElementById('fc-word').textContent !== word) return;
-  const btn = document.getElementById('fc-spk');
-  const cached = FC_CACHE.get(word);
-  btn.classList.add('spk-active');
-  const done = () => btn.classList.remove('spk-active');
-  if(cached?.audio){
-    const a = new Audio(cached.audio);
-    a.onended = done; a.onerror = done;
-    a.play().catch(() => { speakWord(word); done(); });
-  } else {
-    speakWord(word); setTimeout(done, 1200);
-  }
-}
+let fcCardShowTime = 0;
+let fcAutoPlay    = false;
 
 async function fetchFcWord(word, skipPh=false){
   if(FC_CACHE.has(word)){
@@ -1931,18 +1920,31 @@ async function fetchFcWord(word, skipPh=false){
     const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
     if(!r.ok) throw new Error('dict ' + r.status);
     const e = (await r.json())[0];
-    const ph    = e.phonetics?.find(p=>p.text)?.text||'';
-    const audio = e.phonetics?.find(p=>p.audio?.length>0)?.audio||'';
-    const pos   = e.meanings?.[0]?.partOfSpeech||'';
-    const enDef = e.meanings?.[0]?.definitions?.[0]?.definition||'';
-    const data  = {ph,audio,pos,enDef};
+    const ph     = e.phonetics?.find(p=>p.text)?.text||'';
+    const audioSrc = e.phonetics?.find(p=>p.audio?.length>0)?.audio||'';
+    const pos    = e.meanings?.[0]?.partOfSpeech||'';
+    const enDef  = e.meanings?.[0]?.definitions?.[0]?.definition||'';
+    // 预缓冲音频，消除点击时的加载延迟
+    let audioEl = null;
+    if(audioSrc){
+      audioEl = new Audio(audioSrc);
+      audioEl.preload = 'auto';
+      audioEl.load();
+    }
+    const data = {ph, audioSrc, audioEl, pos, enDef};
     FC_CACHE.set(word, data);
     applyFcCache(word, data, skipPh);
-  }catch(e){}
+  }catch(e){
+    // 网络失败：直接用 TTS 自动播放
+    if(fcAutoPlay && document.getElementById('fc-word').textContent === word){
+      fcAutoPlay = false;
+      const delay = Math.max(0, 320 - (Date.now() - fcCardShowTime));
+      setTimeout(() => fireFcPlay(word, null), delay);
+    }
+  }
 }
 
 function applyFcCache(word, data, skipPh=false){
-  // Only apply if still showing same word
   if(document.getElementById('fc-word').textContent !== word) return;
   if(data.ph && !skipPh){
     document.getElementById('fc-ph-front').textContent = data.ph;
@@ -1956,6 +1958,37 @@ function applyFcCache(word, data, skipPh=false){
   }
   if(data.enDef)
     document.getElementById('fc-en-def').textContent = data.enDef;
+
+  // 自动播放：等动画完成后触发（至少距卡片出现 320ms）
+  if(fcAutoPlay){
+    fcAutoPlay = false;
+    const delay = Math.max(0, 320 - (Date.now() - fcCardShowTime));
+    setTimeout(() => fireFcPlay(word, data), delay);
+  }
+}
+
+// 统一播放函数：优先用预缓冲 Audio，否则用固定 TTS 音源
+function fireFcPlay(word, data){
+  if(document.getElementById('fc-word').textContent !== word) return;
+  const btn = document.getElementById('fc-spk');
+  btn.classList.add('spk-active');
+  const done = () => btn.classList.remove('spk-active');
+  if(data?.audioEl){
+    data.audioEl.currentTime = 0;
+    data.audioEl.onended = done; data.audioEl.onerror = done;
+    data.audioEl.play().catch(() => { speakWordFc(word); done(); });
+  } else {
+    speakWordFc(word); setTimeout(done, 1200);
+  }
+}
+
+// TTS 播放：固定使用用户选定音源，不随机漂移
+function speakWordFc(w){
+  const u = new SpeechSynthesisUtterance(w);
+  u.lang = S.accentUS ? 'en-US' : 'en-GB';
+  u.rate = 0.85;
+  const v = getVoice(); if(v) u.voice = v;
+  synth.cancel(); synth.speak(u);
 }
 
 function flipFcCard(){
@@ -2151,12 +2184,13 @@ function playFcAudio(btn){
   const d = FC_CACHE.get(w);
   btn.classList.add('spk-active');
   const done = () => btn.classList.remove('spk-active');
-  if(d?.audio){
-    const a = new Audio(d.audio);
-    a.onended = done; a.onerror = done;
-    a.play().catch(()=>{ speakWord(w); done(); });
+  if(d?.audioEl){
+    // 使用预缓冲 Audio 对象，无网络延迟
+    d.audioEl.currentTime = 0;
+    d.audioEl.onended = done; d.audioEl.onerror = done;
+    d.audioEl.play().catch(() => { speakWordFc(w); done(); });
   } else {
-    speakWord(w); setTimeout(done, 1200);
+    speakWordFc(w); setTimeout(done, 1200);
   }
 }
 document.getElementById('fc-spk').addEventListener('click', e=>{
@@ -2164,10 +2198,7 @@ document.getElementById('fc-spk').addEventListener('click', e=>{
 });
 document.getElementById('fc-spk-back').addEventListener('click', e=>{
   e.stopPropagation();
-  const w=document.getElementById('fc-word').textContent;
-  const d=FC_CACHE.get(w);
-  if(d?.audio) new Audio(d.audio).play().catch(()=>speakWord(w));
-  else speakWord(w);
+  playFcAudio(e.currentTarget);
 });
 document.getElementById('fc-star').addEventListener('click', e=>{
   e.stopPropagation();
