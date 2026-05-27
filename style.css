@@ -1452,3 +1452,94 @@ body{
 @media(max-width:380px){
   .book-grid{grid-template-columns:1fr;}
 }
+
+/* ── VOCAB DECK PANEL ── */
+#vocab-panel{
+  display:none;
+  position:fixed;inset:0;z-index:90;
+  background:var(--bg);
+  padding:54px 0 0;
+  overflow-y:auto;
+  animation:slideUp .25s ease;
+}
+.vp-head{
+  display:flex;align-items:center;gap:12px;
+  padding:16px 20px;
+}
+.vp-title{
+  font-family:'Lora',serif;font-size:20px;font-weight:600;
+  color:var(--text);
+}
+.vp-decks{
+  padding:0 16px;
+  display:flex;flex-direction:column;gap:12px;
+  margin-bottom:24px;
+}
+.vp-deck{
+  display:flex;align-items:center;gap:14px;
+  background:var(--surface);
+  border:2px solid var(--border);
+  border-radius:var(--r-md);
+  padding:16px;
+  cursor:pointer;
+  transition:border-color .15s,box-shadow .15s;
+}
+.vp-deck.on{
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-2);
+}
+.vp-deck.vp-deck-soon{
+  opacity:.5;pointer-events:none;
+}
+.vp-dk-badge{
+  width:56px;height:56px;
+  border-radius:var(--r-sm);
+  background:linear-gradient(135deg,#2563EB,#60A5FA);
+  color:#fff;font-weight:700;font-size:13px;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;
+}
+.vp-badge-6{
+  background:linear-gradient(135deg,#7C3AED,#A78BFA);
+}
+.vp-dk-info{flex:1;min-width:0;}
+.vp-dk-name{font-weight:600;font-size:15px;color:var(--text);margin-bottom:4px;}
+.vp-dk-sub{font-size:12px;color:var(--text-2);}
+.vp-dk-check{
+  color:var(--accent);font-size:20px;
+  opacity:0;transition:opacity .15s;
+}
+.vp-deck.on .vp-dk-check{opacity:1;}
+.vp-session{
+  padding:0 20px 20px;
+}
+.vp-session-label{
+  font-size:13px;font-weight:600;color:var(--text-2);
+  margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;
+}
+.vp-session-btns{
+  display:flex;gap:10px;
+}
+.vp-nb{
+  flex:1;padding:10px 0;
+  border:2px solid var(--border);border-radius:var(--r-sm);
+  background:var(--surface);color:var(--text);
+  font-size:14px;font-weight:600;cursor:pointer;
+  transition:border-color .15s,background .15s,color .15s;
+}
+.vp-nb.on{
+  border-color:var(--accent);background:var(--accent-2);color:var(--accent);
+}
+.vp-start-btn{
+  display:block;
+  margin:0 16px 32px;
+  width:calc(100% - 32px);
+  padding:16px;
+  background:linear-gradient(135deg,#2563EB,#1D4ED8);
+  color:#fff;border:none;border-radius:var(--r-md);
+  font-size:16px;font-weight:700;cursor:pointer;
+  letter-spacing:.02em;
+  box-shadow:var(--shadow-md);
+  transition:opacity .15s;
+}
+.vp-start-btn:hover{opacity:.9;}

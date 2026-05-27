@@ -1666,6 +1666,34 @@ let fcFlipped = false;
 let fcCounts  = { again:0, hard:0, good:0, easy:0 };
 let fcTotal   = 0;
 let fcSRS     = {};   // word → { nextReview, interval }
+let fcMode    = 'book'; // 'book' | 'deck'
+
+// ── Vocab deck progress
+let vpProgress = {};  // word → { nextReview, correct, wrong }
+let vpDeck     = 'cet4';
+let vpCount    = 10;
+
+function loadVpProgress(deck){
+  try{ vpProgress = JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ vpProgress={}; }
+}
+function saveVpProgress(deck){
+  localStorage.setItem('vp_'+deck, JSON.stringify(vpProgress));
+}
+async function syncVpFromSupabase(deck){
+  if(!currentUser) return;
+  try{
+    const rows = await SB.selectVocabProgress(currentUser.id, deck);
+    rows.forEach(r=>{
+      vpProgress[r.word] = { nextReview: new Date(r.next_review).getTime(), correct: r.correct_count||0, wrong: r.wrong_count||0 };
+    });
+    saveVpProgress(deck);
+  }catch(e){}
+}
+async function pushVpWord(deck, word){
+  if(!currentUser) return;
+  const p = vpProgress[word] || { nextReview: Date.now(), correct: 0, wrong: 0 };
+  try{ await SB.upsertVocabProgress(currentUser.id, deck, word, p); }catch(e){}
+}
 
 function loadSRS(){
   try{ fcSRS = JSON.parse(localStorage.getItem('fc_srs')||'{}'); }catch(e){ fcSRS={}; }
@@ -1727,7 +1755,7 @@ async function showFcCard(instant){
 
   // Fill front
   document.getElementById('fc-word').textContent     = v.word;
-  document.getElementById('fc-ph-front').textContent = '';
+  document.getElementById('fc-ph-front').textContent = v.ph || '';
   document.getElementById('fc-badge-row').innerHTML  = '';
 
   // Star button
@@ -1737,7 +1765,7 @@ async function showFcCard(instant){
   // Fill back
   document.getElementById('fc-back-word-txt').textContent = v.word;
   document.getElementById('fc-meaning').textContent = v.meaning || '—';
-  document.getElementById('fc-ph-back').textContent  = '';
+  document.getElementById('fc-ph-back').textContent  = v.ph || '';
   document.getElementById('fc-en-def').textContent   = '';
   document.getElementById('fc-sent').textContent     = v.sent ? v.sent.trim().slice(0,150) : '';
 
@@ -1750,13 +1778,13 @@ async function showFcCard(instant){
   card.style.transition = 'opacity .22s ease';
   card.style.opacity    = '1';
 
-  // Fetch dictionary data (async, non-blocking)
-  fetchFcWord(v.word);
+  // Fetch dictionary data (async, fills audio/enDef; won't override bundled phonetic if v.ph exists)
+  fetchFcWord(v.word, !!v.ph);
 }
 
-async function fetchFcWord(word){
+async function fetchFcWord(word, skipPh=false){
   if(FC_CACHE.has(word)){
-    applyFcCache(word, FC_CACHE.get(word)); return;
+    applyFcCache(word, FC_CACHE.get(word), skipPh); return;
   }
   try{
     const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
@@ -1768,14 +1796,14 @@ async function fetchFcWord(word){
     const enDef = e.meanings?.[0]?.definitions?.[0]?.definition||'';
     const data  = {ph,audio,pos,enDef};
     FC_CACHE.set(word, data);
-    applyFcCache(word, data);
+    applyFcCache(word, data, skipPh);
   }catch(e){}
 }
 
-function applyFcCache(word, data){
+function applyFcCache(word, data, skipPh=false){
   // Only apply if still showing same word
   if(document.getElementById('fc-word').textContent !== word) return;
-  if(data.ph){
+  if(data.ph && !skipPh){
     document.getElementById('fc-ph-front').textContent = data.ph;
     document.getElementById('fc-ph-back').textContent  = data.ph;
   }
@@ -1809,9 +1837,19 @@ function rateFcCard(rating){
   const now = Date.now();
   const interval = SRS_INTERVALS[rating];
 
-  // Update SRS data
-  fcSRS[v.word] = { nextReview: now + interval, interval, lastRating: rating };
-  saveSRS();
+  if(fcMode === 'deck'){
+    const prev = vpProgress[v.word] || { correct:0, wrong:0 };
+    vpProgress[v.word] = {
+      nextReview: now + interval,
+      correct: prev.correct + (rating !== 'again' ? 1 : 0),
+      wrong:   prev.wrong   + (rating === 'again' ? 1 : 0)
+    };
+    saveVpProgress(vpDeck);
+    pushVpWord(vpDeck, v.word);
+  } else {
+    fcSRS[v.word] = { nextReview: now + interval, interval, lastRating: rating };
+    saveSRS();
+  }
   fcCounts[rating]++;
 
   // Feedback animation
@@ -1871,6 +1909,7 @@ function closeFcAll(){
   document.getElementById('flashcard').style.display = 'none';
   document.getElementById('fc-result').classList.remove('open');
   document.getElementById('fc-result').style.display = 'none';
+  if(fcMode === 'deck') openVocabPanel();
 }
 
 // ── Card swipe gesture
@@ -1971,12 +2010,15 @@ document.getElementById('fc-star').addEventListener('click', e=>{
 document.getElementById('fc-res-again').addEventListener('click', ()=>{
   document.getElementById('fc-result').classList.remove('open');
   document.getElementById('fc-result').style.display='none';
-  openFlashcard();
+  if(fcMode === 'deck') startDeckSession();
+  else openFlashcard();
 });
 document.getElementById('fc-res-back').addEventListener('click', ()=>{
   closeFcAll();
-  document.getElementById('voc').classList.add('open');
-  document.getElementById('overlay').classList.add('vis');
+  if(fcMode !== 'deck'){
+    document.getElementById('voc').classList.add('open');
+    document.getElementById('overlay').classList.add('vis');
+  }
 });
 
 // Keyboard shortcuts
@@ -1990,6 +2032,96 @@ document.addEventListener('keydown', e=>{
   if(e.key==='Escape') closeFcAll();
 });
 
+
+// ═══════════════════════════════════════════
+//  VOCAB DECK PANEL
+// ═══════════════════════════════════════════
+function openVocabPanel(){
+  loadVpProgress(vpDeck);
+  updateVpStats();
+  document.getElementById('vocab-panel').style.display = '';
+  document.getElementById('landing').style.display = 'none';
+  document.getElementById('library').style.display = 'none';
+  closeSidebar();
+}
+
+function closeVocabPanel(){
+  document.getElementById('vocab-panel').style.display = 'none';
+  document.getElementById('landing').style.display = '';
+}
+
+function updateVpStats(){
+  const wordList = vpDeck === 'cet4' ? (typeof CET4 !== 'undefined' ? CET4 : []) : [];
+  const now = Date.now();
+  const newCount = wordList.filter(w => !vpProgress[w.w]).length;
+  const dueCount = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now).length;
+  const el = document.getElementById('cet4-progress');
+  if(el) el.textContent = `新词 ${newCount} · 待复习 ${dueCount}`;
+}
+
+function startDeckSession(){
+  const wordList = vpDeck === 'cet4' ? (typeof CET4 !== 'undefined' ? CET4 : []) : [];
+  if(!wordList.length){ toast('词库加载失败'); return; }
+  const now = Date.now();
+  const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
+  const newW = wordList.filter(w => !vpProgress[w.w]);
+  const shuffle = arr => [...arr].sort(()=>Math.random()-.5);
+  const pool = [...shuffle(due), ...shuffle(newW)];
+
+  fcDeck  = pool.slice(0, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
+  fcIdx   = 0; fcFlipped = false;
+  fcCounts = {again:0,hard:0,good:0,easy:0};
+  fcTotal = fcDeck.length;
+  fcMode  = 'deck';
+
+  if(!fcDeck.length){ toast('今日没有待复习单词，明天再来！'); return; }
+
+  document.getElementById('vocab-panel').style.display = 'none';
+  const fc = document.getElementById('flashcard');
+  fc.style.display = '';
+  fc.classList.add('open');
+  document.getElementById('fc-title').textContent = `${vpDeck.toUpperCase()} · ${fcTotal} 词`;
+  document.getElementById('fc-res-back').textContent = '返回词库';
+  showFcCard(true);
+}
+
+// ── Vocab panel event listeners
+document.getElementById('deck-tbtn').addEventListener('click', ()=>{
+  const vp = document.getElementById('vocab-panel');
+  if(vp.style.display === 'none' || !vp.style.display){
+    openVocabPanel();
+  } else {
+    closeVocabPanel();
+  }
+});
+document.getElementById('vp-close').addEventListener('click', closeVocabPanel);
+document.getElementById('vp-start').addEventListener('click', startDeckSession);
+
+// Deck selector
+document.querySelectorAll('.vp-deck:not(.vp-deck-soon)').forEach(el=>{
+  el.addEventListener('click', ()=>{
+    document.querySelectorAll('.vp-deck').forEach(d=>d.classList.remove('on'));
+    el.classList.add('on');
+    vpDeck = el.dataset.deck;
+    loadVpProgress(vpDeck);
+    updateVpStats();
+  });
+});
+
+// Session count selector
+document.querySelectorAll('.vp-nb').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.vp-nb').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+    vpCount = parseInt(btn.dataset.n, 10);
+  });
+});
+
+// Sync from Supabase on login
+window._syncVpProgress = async function(){
+  await syncVpFromSupabase(vpDeck);
+  if(document.getElementById('vocab-panel').style.display !== 'none') updateVpStats();
+};
 
 // ═══════════════════════════════════════════
 //  TOAST
@@ -2139,6 +2271,27 @@ const SB = (() => {
 
     async deleteUserBook(id) {
       return req(`/rest/v1/user_books?id=eq.${id}`, { method: 'DELETE' });
+    },
+
+    async selectVocabProgress(userId, deck) {
+      return req(`/rest/v1/vocab_progress?user_id=eq.${userId}&deck=eq.${deck}&select=word,next_review,correct_count,wrong_count`);
+    },
+
+    async upsertVocabProgress(userId, deck, word, data) {
+      return req('/rest/v1/vocab_progress', {
+        method: 'POST',
+        headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify([{
+          user_id: userId,
+          deck,
+          word,
+          status: data.correct > 3 ? 'known' : 'learning',
+          next_review: new Date(data.nextReview).toISOString(),
+          correct_count: data.correct,
+          wrong_count: data.wrong,
+          last_seen: new Date().toISOString()
+        }])
+      });
     }
   };
 })();

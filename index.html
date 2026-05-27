@@ -40,6 +40,10 @@
   <button class="tbtn" id="night-btn" title="夜间">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
   </button>
+  <!-- 词库按钮 -->
+  <button class="tbtn" id="deck-tbtn" title="词库学习">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="7" height="18" rx="1"/><rect x="9" y="3" width="7" height="18" rx="1"/><rect x="16" y="3" width="7" height="18" rx="1"/></svg>
+  </button>
   <!-- 未登录显示登录按钮，登录后显示头像 -->
   <button id="login-btn">登录</button>
   <button id="user-btn" style="display:none"></button>
@@ -440,6 +444,41 @@
 </div>
 
 
+<!-- VOCAB DECK PANEL -->
+<div id="vocab-panel">
+  <div class="vp-head">
+    <button class="fc-back-btn" id="vp-close">←</button>
+    <h2 class="vp-title">词库学习</h2>
+  </div>
+  <div class="vp-decks">
+    <div class="vp-deck on" data-deck="cet4">
+      <div class="vp-dk-badge">CET-4</div>
+      <div class="vp-dk-info">
+        <div class="vp-dk-name">大学英语四级词汇</div>
+        <div class="vp-dk-sub" id="cet4-progress">加载中…</div>
+      </div>
+      <div class="vp-dk-check">✓</div>
+    </div>
+    <div class="vp-deck vp-deck-soon">
+      <div class="vp-dk-badge vp-badge-6">CET-6</div>
+      <div class="vp-dk-info">
+        <div class="vp-dk-name">大学英语六级词汇</div>
+        <div class="vp-dk-sub">即将推出</div>
+      </div>
+    </div>
+  </div>
+  <div class="vp-session">
+    <div class="vp-session-label">本次背</div>
+    <div class="vp-session-btns">
+      <button class="vp-nb on" data-n="10">10 词</button>
+      <button class="vp-nb" data-n="20">20 词</button>
+      <button class="vp-nb" data-n="50">50 词</button>
+    </div>
+  </div>
+  <button class="vp-start-btn" id="vp-start">开始背单词 →</button>
+</div>
+
+<script src="cet4.js"></script>
 <script src="script.js"></script>
 </body>
 </html>
