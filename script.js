@@ -1750,7 +1750,8 @@ function updMbtns(){
 //  FLASHCARD SYSTEM — SRS + Swipe + Animations
 // ═══════════════════════════════════════════
 const SRS_INTERVALS = { again: 10*60*1000, hard: 86400000, good: 3*86400000, easy: 7*86400000 };
-const FC_CACHE = new Map(); // word → { phonetic, audio, pos, enDef }
+const FC_CACHE = new Map(); // word → { ph, audioSrc, audioEl, pos, enDef }；FIFO 上限 200
+const FC_CACHE_MAX = 200;
 
 let fcDeck      = [];
 let fcIdx       = 0;
@@ -1796,7 +1797,7 @@ async function syncVpFromSupabase(deck){
   try{
     const rows = await SB.selectVocabProgress(currentUser.id, deck);
     rows.forEach(r=>{
-      vpProgress[r.word] = { nextReview: new Date(r.next_review).getTime(), correct: r.correct_count||0, wrong: r.wrong_count||0 };
+      vpProgress[r.word] = { nextReview: new Date(r.next_review).getTime(), correct: r.correct_count||0, wrong: r.wrong_count||0, interval: r.interval_ms||0 };
     });
     saveVpProgress(deck);
   }catch(e){}
@@ -1934,6 +1935,7 @@ async function fetchFcWord(word, skipPh=false){
     }
     const data = {ph, audioSrc, audioEl, pos, enDef};
     FC_CACHE.set(word, data);
+    if(FC_CACHE.size > FC_CACHE_MAX) FC_CACHE.delete(FC_CACHE.keys().next().value);
     applyFcCache(word, data, skipPh);
   }catch(e){
     // 网络失败：直接用 TTS 自动播放
@@ -2277,9 +2279,10 @@ function updateVpStats(){
       try{ return JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ return {}; }
     })();
     const newCount       = wordList.filter(w => !prog[w.w]).length;
-    const dueCount       = wordList.filter(w => prog[w.w] && prog[w.w].nextReview <= now).length;
-    const scheduledCount = wordList.filter(w => prog[w.w] && prog[w.w].nextReview > now && (prog[w.w].correct||0) < 3).length;
-    const masteredCount  = wordList.filter(w => prog[w.w] && prog[w.w].correct >= 3).length;
+    // 互斥分类：mastered 优先，due/scheduled 只算未掌握词
+    const masteredCount  = wordList.filter(w => prog[w.w] && (prog[w.w].correct||0) >= 3).length;
+    const dueCount       = wordList.filter(w => prog[w.w] && (prog[w.w].correct||0) < 3 && prog[w.w].nextReview <= now).length;
+    const scheduledCount = wordList.filter(w => prog[w.w] && (prog[w.w].correct||0) < 3 && prog[w.w].nextReview > now).length;
     const pct = total > 0 ? Math.round(masteredCount / total * 100) : 0;
     const elId = deck + '-progress';
     const el = document.getElementById(elId);
@@ -2501,7 +2504,7 @@ const SB = (() => {
     },
 
     async selectVocabProgress(userId, deck) {
-      return req(`/rest/v1/vocab_progress?user_id=eq.${userId}&deck=eq.${deck}&select=word,next_review,correct_count,wrong_count`);
+      return req(`/rest/v1/vocab_progress?user_id=eq.${userId}&deck=eq.${deck}&select=word,next_review,correct_count,wrong_count,interval_ms`);
     },
 
     async upsertVocabProgress(userId, deck, word, data) {
@@ -2512,10 +2515,11 @@ const SB = (() => {
           user_id: userId,
           deck,
           word,
-          status: data.correct > 3 ? 'known' : 'learning',
+          status: (data.correct||0) >= 3 ? 'known' : 'learning',
           next_review: new Date(data.nextReview).toISOString(),
-          correct_count: data.correct,
-          wrong_count: data.wrong,
+          correct_count: data.correct||0,
+          wrong_count: data.wrong||0,
+          interval_ms: data.interval||0,
           last_seen: new Date().toISOString()
         }])
       });
