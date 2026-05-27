@@ -1,10 +1,11 @@
-const CACHE = 'linggo-v7';
+const CACHE = 'linggo-v8';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
   '/Linggo/style.css',
   '/Linggo/script.js',
   '/Linggo/cet4.js',
+  '/Linggo/cet6.js',
   '/Linggo/ogden850.js',
   '/Linggo/icon.png',
   '/Linggo/icon-192.png',

@@ -2206,13 +2206,14 @@ function closeVocabPanel(){
 
 function getDeckWordList(deck){
   if(deck === 'cet4')  return typeof CET4     !== 'undefined' ? CET4     : [];
+  if(deck === 'cet6')  return typeof CET6     !== 'undefined' ? CET6     : [];
   if(deck === 'ogden') return typeof OGDEN850 !== 'undefined' ? OGDEN850 : [];
   return [];
 }
 
 function updateVpStats(){
   const now = Date.now();
-  ['cet4','ogden'].forEach(deck => {
+  ['cet4','cet6','ogden'].forEach(deck => {
     const wordList = getDeckWordList(deck);
     const total    = wordList.length;
     const prog = deck === vpDeck ? vpProgress : (() => {
@@ -2222,7 +2223,7 @@ function updateVpStats(){
     const dueCount      = wordList.filter(w => prog[w.w] && prog[w.w].nextReview <= now).length;
     const masteredCount = wordList.filter(w => prog[w.w] && prog[w.w].correct >= 3).length;
     const pct = total > 0 ? Math.round(masteredCount / total * 100) : 0;
-    const elId = deck === 'cet4' ? 'cet4-progress' : 'ogden-progress';
+    const elId = deck + '-progress';
     const el = document.getElementById(elId);
     if(el) el.innerHTML =
       `新词 ${newCount} · 待复习 ${dueCount}<br>` +
@@ -2253,7 +2254,7 @@ function startDeckSession(){
   const fc = document.getElementById('flashcard');
   fc.style.display = '';
   fc.classList.add('open');
-  const deckLabel = vpDeck === 'ogden' ? 'Ogden 850' : vpDeck.toUpperCase();
+  const deckLabel = vpDeck === 'ogden' ? 'Ogden 850' : vpDeck.toUpperCase().replace('CET','CET-');
   document.getElementById('fc-title').textContent = `${deckLabel} · ${fcTotal} 词`;
   document.getElementById('fc-res-back').textContent = '返回词库';
   showFcCard(true);
