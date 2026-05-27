@@ -1649,3 +1649,38 @@ body{
   transition:opacity .15s;
 }
 .vp-start-btn:hover{opacity:.9;}
+
+/* ── STREAK BADGE */
+.vp-streak{
+  margin-left:auto;
+  display:none; /* JS 控制显示 */
+  align-items:center;gap:4px;
+  background:linear-gradient(135deg,#f97316,#ef4444);
+  color:#fff;border-radius:20px;
+  padding:5px 11px 5px 9px;
+  font-family:'Nunito',sans-serif;font-size:13px;font-weight:700;
+  box-shadow:0 2px 8px rgba(239,68,68,.35);
+  flex-shrink:0;
+}
+.vp-streak.show{display:flex;}
+#vp-streak-n{font-size:16px;font-weight:900;line-height:1;}
+.vp-streak-label{font-size:12px;opacity:.9;}
+
+/* ── DECK PROGRESS BAR */
+.vp-dk-bar{
+  height:4px;border-radius:2px;
+  background:var(--border);
+  margin-top:8px;overflow:hidden;
+}
+.vp-dk-bar-fill{
+  height:100%;border-radius:2px;
+  background:linear-gradient(90deg,#2563EB,#60A5FA);
+  width:0%;
+  transition:width .7s cubic-bezier(.4,0,.2,1);
+}
+.vp-deck[data-deck="cet6"] .vp-dk-bar-fill{
+  background:linear-gradient(90deg,#7C3AED,#A78BFA);
+}
+.vp-deck[data-deck="ogden"] .vp-dk-bar-fill{
+  background:linear-gradient(90deg,#0891B2,#67E8F9);
+}

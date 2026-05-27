@@ -2025,6 +2025,7 @@ function flipFcCard(){
 
 function rateFcCard(rating){
   if(!fcFlipped) return;
+  markStudiedToday();
   const v   = fcDeck[fcIdx];
   const now = Date.now();
 
@@ -2256,6 +2257,7 @@ document.addEventListener('keydown', e=>{
 function openVocabPanel(){
   loadVpProgress(vpDeck);
   updateVpStats();
+  updateStreakUI();
   document.getElementById('vocab-panel').style.display = 'block';
   document.getElementById('landing').style.display = 'none';
   document.getElementById('library').classList.remove('open');
@@ -2265,6 +2267,31 @@ function openVocabPanel(){
 function closeVocabPanel(){
   document.getElementById('vocab-panel').style.display = 'none';
   document.getElementById('landing').style.display = '';
+}
+
+// ── STREAK
+function loadStreak(){
+  try{ return JSON.parse(localStorage.getItem('linggo_streak')||'{}'); }catch(e){ return {}; }
+}
+function markStudiedToday(){
+  const today = new Date().toISOString().slice(0,10);
+  const s = loadStreak();
+  if(s.lastDate === today) return;
+  const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
+  const count = s.lastDate === yesterday ? (s.count||0)+1 : 1;
+  localStorage.setItem('linggo_streak', JSON.stringify({ lastDate:today, count }));
+  updateStreakUI();
+}
+function updateStreakUI(){
+  const s = loadStreak();
+  const el = document.getElementById('vp-streak');
+  if(!el) return;
+  if(s.count >= 1){
+    document.getElementById('vp-streak-n').textContent = s.count;
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+  }
 }
 
 function getDeckWordList(deck){
@@ -2294,6 +2321,8 @@ function updateVpStats(){
     if(el) el.innerHTML =
       `新词 ${newCount}${scheduledStr} · 待复习 ${dueCount}<br>` +
       `<span style="color:var(--green-2,#16A34A);font-weight:700">已掌握 ${masteredCount}/${total}（${pct}%）</span>`;
+    const barEl = document.getElementById(deck+'-bar');
+    if(barEl) barEl.style.width = pct + '%';
   });
 }
 
