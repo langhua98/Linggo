@@ -2761,10 +2761,11 @@ function setAuthUI(user){
   if(user){
     loginBtn.style.display = 'none';
     userBtn.style.display  = '';
-    // Show initials
     const initials = (user.email||'?')[0].toUpperCase();
     userBtn.textContent = initials;
-    document.getElementById('um-email').textContent = user.email;
+    document.getElementById('um-avatar').textContent = initials;
+    document.getElementById('um-name').textContent   = (user.email||'').split('@')[0];
+    document.getElementById('um-email').textContent  = user.email;
   } else {
     loginBtn.style.display = '';
     userBtn.style.display  = 'none';
@@ -2884,30 +2885,32 @@ document.getElementById('auth-submit').addEventListener('click', async ()=>{
   });
 });
 
-// ── User menu
-const userBtn  = document.getElementById('user-btn');
-const userMenu = document.getElementById('user-menu');
-userBtn.addEventListener('click', e => {
-  e.stopPropagation();
-  const open = userMenu.classList.toggle('open');
-  if(open){
-    const rect = userBtn.getBoundingClientRect();
-    userMenu.style.top   = (rect.bottom + 6) + 'px';
-    userMenu.style.right = (window.innerWidth - rect.right) + 'px';
-  }
-});
-document.addEventListener('click', () => userMenu.classList.remove('open'));
-userMenu.addEventListener('click', e => e.stopPropagation());
+// ── User menu (bottom sheet)
+const userBtn      = document.getElementById('user-btn');
+const userMenu     = document.getElementById('user-menu');
+const userMenuOvl  = document.getElementById('user-menu-overlay');
+
+function openUserMenu(){
+  userMenu.classList.add('open');
+  userMenuOvl.classList.add('open');
+}
+function closeUserMenu(){
+  userMenu.classList.remove('open');
+  userMenuOvl.classList.remove('open');
+}
+
+userBtn.addEventListener('click', e => { e.stopPropagation(); openUserMenu(); });
+userMenuOvl.addEventListener('click', closeUserMenu);
 
 document.getElementById('um-sync').addEventListener('click', async ()=>{
-  userMenu.classList.remove('open');
+  closeUserMenu();
   toast('同步中…');
   await syncVocab();
 });
 document.getElementById('um-logout').addEventListener('click', async ()=>{
   await SB.signOut();
   setAuthUI(null);
-  userMenu.classList.remove('open');
+  closeUserMenu();
   toast('已退出登录');
   userBooks = [];
   renderUserBooks();

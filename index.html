@@ -43,11 +43,36 @@
   <!-- 未登录显示登录按钮，登录后显示头像 -->
   <button id="login-btn">登录</button>
   <button id="user-btn" style="display:none"></button>
-  <div id="user-menu">
-    <div class="um-email" id="um-email"></div>
-    <button class="umitem" id="um-sync">☁ 同步生词本</button>
-    <button class="umitem danger" id="um-logout">退出登录</button>
+</div>
+
+<!-- 用户菜单底部卡片 -->
+<div id="user-menu-overlay"></div>
+<div id="user-menu">
+  <div class="um-handle"></div>
+  <div class="um-header">
+    <div class="um-avatar" id="um-avatar"></div>
+    <div class="um-info">
+      <div class="um-name" id="um-name"></div>
+      <div class="um-email" id="um-email"></div>
+    </div>
   </div>
+  <div class="um-divider"></div>
+  <button class="umitem" id="um-sync">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+      <path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/>
+    </svg>
+    同步生词本
+  </button>
+  <div class="um-divider"></div>
+  <button class="umitem danger" id="um-logout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+      <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+    </svg>
+    退出登录
+  </button>
+  <div class="um-safe"></div>
 </div>
 
 <!-- SEARCH -->
