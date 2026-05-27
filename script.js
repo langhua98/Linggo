@@ -2039,9 +2039,9 @@ document.addEventListener('keydown', e=>{
 function openVocabPanel(){
   loadVpProgress(vpDeck);
   updateVpStats();
-  document.getElementById('vocab-panel').style.display = '';
+  document.getElementById('vocab-panel').style.display = 'block';
   document.getElementById('landing').style.display = 'none';
-  document.getElementById('library').style.display = 'none';
+  document.getElementById('library').classList.remove('open');
   closeSidebar();
 }
 
@@ -2086,14 +2086,7 @@ function startDeckSession(){
 }
 
 // ── Vocab panel event listeners
-document.getElementById('deck-tbtn').addEventListener('click', ()=>{
-  const vp = document.getElementById('vocab-panel');
-  if(vp.style.display === 'none' || !vp.style.display){
-    openVocabPanel();
-  } else {
-    closeVocabPanel();
-  }
-});
+document.getElementById('deck-open-btn').addEventListener('click', openVocabPanel);
 document.getElementById('vp-close').addEventListener('click', closeVocabPanel);
 document.getElementById('vp-start').addEventListener('click', startDeckSession);
 

@@ -40,10 +40,6 @@
   <button class="tbtn" id="night-btn" title="夜间">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
   </button>
-  <!-- 词库按钮 -->
-  <button class="tbtn" id="deck-tbtn" title="词库学习">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="7" height="18" rx="1"/><rect x="9" y="3" width="7" height="18" rx="1"/><rect x="16" y="3" width="7" height="18" rx="1"/></svg>
-  </button>
   <!-- 未登录显示登录按钮，登录后显示头像 -->
   <button id="login-btn">登录</button>
   <button id="user-btn" style="display:none"></button>
@@ -205,7 +201,10 @@
   <h1>Linggo</h1>
   <p class="landing-tagline">Read · Learn · Grow</p>
   <p class="sub">经典英文原著，边读边学</p>
-  <button id="lib-open-btn">📚 进入书库</button>
+  <div class="landing-btns">
+    <button id="lib-open-btn">📚 进入书库</button>
+    <button id="deck-open-btn">📝 背单词</button>
+  </div>
   <div class="or">或上传本地 TXT 文件</div>
   <div id="drop-zone">
     <div class="dz-icon">📄</div>
