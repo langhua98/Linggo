@@ -1909,14 +1909,17 @@ async function showFcCard(instant){
 }
 
 function autoPlayFcWord(word){
-  // Only play if this word is still the current card
   if(document.getElementById('fc-word').textContent !== word) return;
+  const btn = document.getElementById('fc-spk');
   const cached = FC_CACHE.get(word);
+  btn.classList.add('spk-active');
+  const done = () => btn.classList.remove('spk-active');
   if(cached?.audio){
     const a = new Audio(cached.audio);
-    a.play().catch(() => speakWord(word));
+    a.onended = done; a.onerror = done;
+    a.play().catch(() => { speakWord(word); done(); });
   } else {
-    speakWord(word);
+    speakWord(word); setTimeout(done, 1200);
   }
 }
 
@@ -2122,12 +2125,18 @@ function closeFcAll(){
     }
   },{passive:true});
 
-  // Desktop click to flip
+  // Desktop click to flip (exclude buttons)
   card.addEventListener('click', (e)=>{
-    if(e.target.closest('button')) return; // 点播放/收藏按钮不翻转
+    if(e.target.closest('button')) return;
     if(window.matchMedia('(pointer:fine)').matches) flipFcCard();
   });
 })();
+
+// 翻转胶囊按钮
+document.getElementById('fc-flip-cta').addEventListener('click', (e)=>{
+  e.stopPropagation();
+  flipFcCard();
+});
 
 // ── Button listeners
 document.getElementById('voc-flash-btn').addEventListener('click', openFlashcard);
@@ -2137,12 +2146,21 @@ document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('ha
 document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('good'));
 document.getElementById('fc-easy') .addEventListener('click', ()=>rateFcCard('easy'));
 
+function playFcAudio(btn){
+  const w = document.getElementById('fc-word').textContent;
+  const d = FC_CACHE.get(w);
+  btn.classList.add('spk-active');
+  const done = () => btn.classList.remove('spk-active');
+  if(d?.audio){
+    const a = new Audio(d.audio);
+    a.onended = done; a.onerror = done;
+    a.play().catch(()=>{ speakWord(w); done(); });
+  } else {
+    speakWord(w); setTimeout(done, 1200);
+  }
+}
 document.getElementById('fc-spk').addEventListener('click', e=>{
-  e.stopPropagation();
-  const w=document.getElementById('fc-word').textContent;
-  const d=FC_CACHE.get(w);
-  if(d?.audio) new Audio(d.audio).play().catch(()=>speakWord(w));
-  else speakWord(w);
+  e.stopPropagation(); playFcAudio(e.currentTarget);
 });
 document.getElementById('fc-spk-back').addEventListener('click', e=>{
   e.stopPropagation();
