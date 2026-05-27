@@ -80,6 +80,32 @@ function loadSRS(){
 function saveSRS(){
   localStorage.setItem('fc_srs', JSON.stringify(fcSRS));
 }
+async function syncFcSRSFromSupabase(){
+  if(!currentUser) return;
+  loadSRS();
+  try{
+    const rows = await SB.selectFcSRS(currentUser.id);
+    rows.forEach(r => {
+      const cloudNext = new Date(r.next_review).getTime();
+      if(!isNaN(cloudNext)){
+        const local = fcSRS[r.word];
+        // 取云端与本地中较新的 nextReview
+        if(!local || cloudNext > local.nextReview){
+          fcSRS[r.word] = { nextReview: cloudNext, interval: r.interval_ms || 0 };
+        }
+      }
+    });
+    saveSRS();
+  }catch(e){}
+}
+async function pushFcSRSWord(word){
+  if(!currentUser) return;
+  const data = fcSRS[word];
+  if(!data) return;
+  try{ await SB.upsertFcSRS(currentUser.id, word, data); }
+  catch(e){ console.warn('pushFcSRS failed:', e); }
+}
+window._syncFcSRS = syncFcSRSFromSupabase;
 
 function openFlashcard(){
   if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
@@ -302,14 +328,17 @@ function rateFcCard(rating){
   } else {
     fcSRS[v.word] = { nextReview: now + interval, interval, lastRating: rating };
     saveSRS();
+    pushFcSRSWord(v.word);
   }
   fcCounts[rating]++;
 
-  // Again：把卡片重新插入本轮靠后的位置（2~4 张之后）
+  // Again：把卡片重新插入本轮靠后的位置（2~4 张之后）；最多扩充至原始牌组的 3 倍防无限增长
   if(rating === 'again'){
-    const offset = 2 + Math.floor(Math.random() * 3);
-    const reinsert = Math.min(fcIdx + 1 + offset, fcDeck.length);
-    fcDeck.splice(reinsert, 0, {...v});
+    if(fcDeck.length < fcOrigTotal * 3){
+      const offset = 2 + Math.floor(Math.random() * 3);
+      const reinsert = Math.min(fcIdx + 1 + offset, fcDeck.length);
+      fcDeck.splice(reinsert, 0, {...v});
+    }
   } else {
     fcDoneCount++;
   }

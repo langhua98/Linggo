@@ -1175,7 +1175,12 @@ const TRANS_CACHE = (() => {
   try { mem = JSON.parse(sessionStorage.getItem('tl_cache') || '{}'); } catch(e) {}
   return {
     get: k => mem[k],
-    set: (k, v) => { mem[k] = v; try { sessionStorage.setItem('tl_cache', JSON.stringify(mem)); } catch(e) {} }
+    set: (k, v) => {
+      const keys = Object.keys(mem);
+      if(keys.length >= 300) delete mem[keys[0]]; // FIFO 上限 300 条
+      mem[k] = v;
+      try { sessionStorage.setItem('tl_cache', JSON.stringify(mem)); } catch(e) {}
+    }
   };
 })();
 
@@ -1310,6 +1315,7 @@ async function onWordClick(el){
     );
     if(!r.ok) throw new Error('dict ' + r.status);
     const entry = (await r.json())[0];
+    if(!entry) throw new Error('no entry');
 
     const ph = entry.phonetics?.find(p => p.text)?.text || '';
     const au = entry.phonetics?.find(p => p.audio?.length > 0)?.audio || '';
@@ -1384,35 +1390,52 @@ function addVocab(word, meaning){
   renderVoc(); saveProg(); toast(`已收藏 "${word}"`);
   cloudAddVocab(item); // 云端同步（静默）
 }
+const VOC_PAGE = 100; // 单次最多渲染条数
 function renderVoc(){
-  const list=document.getElementById('voc-list');
-  document.getElementById('voc-ct').textContent=S.vocab.length+' 词';
-  if(!S.vocab.length){
-    list.innerHTML='<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;">点击单词后点「收藏」<br>或长按单词快速添加</div>';
+  const q = (document.getElementById('voc-search')?.value || '').trim().toLowerCase();
+  const list = document.getElementById('voc-list');
+  const filtered = q
+    ? S.vocab.filter(v => v.word.toLowerCase().includes(q) || (v.meaning||'').toLowerCase().includes(q))
+    : S.vocab;
+  document.getElementById('voc-ct').textContent = q
+    ? `${filtered.length}/${S.vocab.length} 词`
+    : S.vocab.length + ' 词';
+  if(!filtered.length){
+    list.innerHTML = q
+      ? `<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;">未找到「${q}」</div>`
+      : '<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px;">点击单词后点「收藏」<br>或长按单词快速添加</div>';
     return;
   }
-  list.innerHTML=S.vocab.map((v,i)=>`
+  const show = filtered.slice(0, VOC_PAGE);
+  list.innerHTML = show.map(v => {
+    const realIdx = S.vocab.indexOf(v);
+    return `
     <div class="vi">
       <div class="vi-w">${v.word}</div>
-      ${v.meaning?`<div class="vi-m">${v.meaning.slice(0,80)}</div>`:''}
-      ${v.sent?`<div class="vi-s">${v.sent.trim().slice(0,100)}…</div>`:''}
+      ${v.meaning ? `<div class="vi-m">${v.meaning.slice(0,80)}</div>` : ''}
+      ${v.sent ? `<div class="vi-s">${v.sent.trim().slice(0,100)}…</div>` : ''}
       <div class="vi-row">
         <span class="vi-d">${new Date(v.time).toLocaleDateString('zh-CN')}</span>
-        <button class="vi-del" data-i="${i}">🗑</button>
+        <button class="vi-del" data-i="${realIdx}">🗑</button>
       </div>
-    </div>`).join('');
-  list.querySelectorAll('.vi-del').forEach(btn=>{
-    btn.addEventListener('click',()=>{
-      const i=+btn.dataset.i, w=S.vocab[i].word;
-      S.vocab.splice(i,1);
-      document.querySelectorAll(`.word[data-w="${w}"]`).forEach(el=>el.classList.remove('saved'));
-      cloudDeleteVocab(w); // 云端同步（静默）
+    </div>`;
+  }).join('');
+  if(filtered.length > VOC_PAGE){
+    list.innerHTML += `<div style="text-align:center;padding:10px;color:var(--text-3);font-size:12px;">共 ${filtered.length} 词，已显示前 ${VOC_PAGE} 条，输入搜索可快速定位</div>`;
+  }
+  list.querySelectorAll('.vi-del').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = +btn.dataset.i, w = S.vocab[i].word;
+      S.vocab.splice(i, 1);
+      document.querySelectorAll(`.word[data-w="${w}"]`).forEach(el => el.classList.remove('saved'));
+      cloudDeleteVocab(w);
       renderVoc(); saveProg();
     });
   });
 }
-document.getElementById('voc-tbtn').addEventListener('click',()=>{ document.getElementById('voc').classList.add('open'); document.getElementById('overlay').classList.add('vis'); });
+document.getElementById('voc-tbtn').addEventListener('click',()=>{ document.getElementById('voc').classList.add('open'); document.getElementById('overlay').classList.add('vis'); renderVoc(); });
 document.getElementById('voc-close').addEventListener('click',closeVoc);
+document.getElementById('voc-search').addEventListener('input', renderVoc);
 document.getElementById('overlay').addEventListener('click', ()=>{
   closeVoc();
   closeSidebar();
@@ -2113,6 +2136,8 @@ document.getElementById('auth-submit').addEventListener('click', async ()=>{
       toast('登录成功');
       await syncVocab();
       await loadUserBooks();
+      if(typeof window._syncFcSRS === 'function') window._syncFcSRS();
+      if(typeof window._syncVpProgress === 'function') window._syncVpProgress();
     }
   }catch(e){
     const msg = e.message || '操作失败';
@@ -2177,6 +2202,10 @@ window.addEventListener('unhandledrejection', e => {
   console.warn('Unhandled rejection:', e.reason);
   e.preventDefault();
 });
+
+// ── 离线检测
+window.addEventListener('offline', () => toast('已离线，云端功能暂不可用'));
+window.addEventListener('online',  () => toast('网络已恢复'));
 
 // ── INIT
 const sv=localStorage.getItem('vocab');

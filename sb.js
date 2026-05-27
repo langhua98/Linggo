@@ -141,6 +141,28 @@ const SB = (() => {
           last_seen: new Date().toISOString()
         }])
       });
+    },
+
+    async selectFcSRS(userId) {
+      return req(`/rest/v1/vocab_progress?user_id=eq.${userId}&deck=eq.book&select=word,next_review,interval_ms`);
+    },
+
+    async upsertFcSRS(userId, word, data) {
+      return req('/rest/v1/vocab_progress', {
+        method: 'POST',
+        headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify([{
+          user_id: userId,
+          deck: 'book',
+          word,
+          status: (data.interval||0) >= 7*86400000 ? 'known' : 'learning',
+          next_review: new Date(data.nextReview).toISOString(),
+          correct_count: 0,
+          wrong_count: 0,
+          interval_ms: data.interval || 0,
+          last_seen: new Date().toISOString()
+        }])
+      });
     }
   };
 })();
