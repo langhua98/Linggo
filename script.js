@@ -1909,8 +1909,9 @@ async function showFcCard(instant){
   fetchFcWord(v.word, !!v.ph);
 }
 
-let fcCardShowTime = 0;
-let fcAutoPlay    = false;
+let fcCardShowTime  = 0;
+let fcAutoPlay     = false;
+let fcAutoPlayTimer = null;
 
 async function fetchFcWord(word, skipPh=false){
   if(FC_CACHE.has(word)){
@@ -1939,7 +1940,7 @@ async function fetchFcWord(word, skipPh=false){
     if(fcAutoPlay && document.getElementById('fc-word').textContent === word){
       fcAutoPlay = false;
       const delay = Math.max(0, 320 - (Date.now() - fcCardShowTime));
-      setTimeout(() => fireFcPlay(word, null), delay);
+      fcAutoPlayTimer = setTimeout(() => fireFcPlay(word, null), delay);
     }
   }
 }
@@ -1963,7 +1964,7 @@ function applyFcCache(word, data, skipPh=false){
   if(fcAutoPlay){
     fcAutoPlay = false;
     const delay = Math.max(0, 320 - (Date.now() - fcCardShowTime));
-    setTimeout(() => fireFcPlay(word, data), delay);
+    fcAutoPlayTimer = setTimeout(() => fireFcPlay(word, data), delay);
   }
 }
 
@@ -1994,6 +1995,8 @@ function speakWordFc(w){
 function flipFcCard(){
   const card    = document.getElementById('fc-card');
   const ratings = document.getElementById('fc-ratings');
+  card.style.transition = ''; // 清除 touchstart 残留的 'none'，交回 CSS 过渡控制
+  card.style.transform  = '';
   fcFlipped = !fcFlipped;
   card.classList.toggle('flipped', fcFlipped);
   if(fcFlipped){
@@ -2180,6 +2183,7 @@ document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('go
 document.getElementById('fc-easy') .addEventListener('click', ()=>rateFcCard('easy'));
 
 function playFcAudio(btn){
+  clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
   const w = document.getElementById('fc-word').textContent;
   const d = FC_CACHE.get(w);
   btn.classList.add('spk-active');
