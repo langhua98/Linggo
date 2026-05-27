@@ -1523,6 +1523,9 @@ body{
 .vp-badge-6{
   background:linear-gradient(135deg,#7C3AED,#A78BFA);
 }
+.vp-badge-og{
+  background:linear-gradient(135deg,#0891B2,#67E8F9);
+}
 .vp-dk-info{flex:1;min-width:0;}
 .vp-dk-name{font-weight:600;font-size:15px;color:var(--text);margin-bottom:4px;}
 .vp-dk-sub{font-size:12px;color:var(--text-2);}

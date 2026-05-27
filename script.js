@@ -2188,22 +2188,34 @@ function closeVocabPanel(){
   document.getElementById('landing').style.display = '';
 }
 
+function getDeckWordList(deck){
+  if(deck === 'cet4')  return typeof CET4     !== 'undefined' ? CET4     : [];
+  if(deck === 'ogden') return typeof OGDEN850 !== 'undefined' ? OGDEN850 : [];
+  return [];
+}
+
 function updateVpStats(){
-  const wordList = vpDeck === 'cet4' ? (typeof CET4 !== 'undefined' ? CET4 : []) : [];
-  const total = wordList.length;
   const now = Date.now();
-  const newCount     = wordList.filter(w => !vpProgress[w.w]).length;
-  const dueCount     = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now).length;
-  const masteredCount= wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].correct >= 3).length;
-  const pct = total > 0 ? Math.round(masteredCount / total * 100) : 0;
-  const el = document.getElementById('cet4-progress');
-  if(el) el.innerHTML =
-    `新词 ${newCount} · 待复习 ${dueCount}<br>` +
-    `<span style="color:var(--green-2,#16A34A);font-weight:700">已掌握 ${masteredCount}/${total}（${pct}%）</span>`;
+  ['cet4','ogden'].forEach(deck => {
+    const wordList = getDeckWordList(deck);
+    const total    = wordList.length;
+    const prog = deck === vpDeck ? vpProgress : (() => {
+      try{ return JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ return {}; }
+    })();
+    const newCount      = wordList.filter(w => !prog[w.w]).length;
+    const dueCount      = wordList.filter(w => prog[w.w] && prog[w.w].nextReview <= now).length;
+    const masteredCount = wordList.filter(w => prog[w.w] && prog[w.w].correct >= 3).length;
+    const pct = total > 0 ? Math.round(masteredCount / total * 100) : 0;
+    const elId = deck === 'cet4' ? 'cet4-progress' : 'ogden-progress';
+    const el = document.getElementById(elId);
+    if(el) el.innerHTML =
+      `新词 ${newCount} · 待复习 ${dueCount}<br>` +
+      `<span style="color:var(--green-2,#16A34A);font-weight:700">已掌握 ${masteredCount}/${total}（${pct}%）</span>`;
+  });
 }
 
 function startDeckSession(){
-  const wordList = vpDeck === 'cet4' ? (typeof CET4 !== 'undefined' ? CET4 : []) : [];
+  const wordList = getDeckWordList(vpDeck);
   if(!wordList.length){ toast('词库加载失败'); return; }
   const now = Date.now();
   const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
@@ -2225,7 +2237,8 @@ function startDeckSession(){
   const fc = document.getElementById('flashcard');
   fc.style.display = '';
   fc.classList.add('open');
-  document.getElementById('fc-title').textContent = `${vpDeck.toUpperCase()} · ${fcTotal} 词`;
+  const deckLabel = vpDeck === 'ogden' ? 'Ogden 850' : vpDeck.toUpperCase();
+  document.getElementById('fc-title').textContent = `${deckLabel} · ${fcTotal} 词`;
   document.getElementById('fc-res-back').textContent = '返回词库';
   showFcCard(true);
 }
@@ -2236,7 +2249,7 @@ document.getElementById('vp-close').addEventListener('click', closeVocabPanel);
 document.getElementById('vp-start').addEventListener('click', startDeckSession);
 
 // Deck selector
-document.querySelectorAll('.vp-deck:not(.vp-deck-soon)').forEach(el=>{
+document.querySelectorAll('.vp-deck').forEach(el=>{
   el.addEventListener('click', ()=>{
     document.querySelectorAll('.vp-deck').forEach(d=>d.classList.remove('on'));
     el.classList.add('on');

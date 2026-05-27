@@ -26,7 +26,7 @@ Linggo/
 ├── index.html      # 主应用 HTML（landing、library、reader、player 等所有视图）
 ├── style.css       # 外部样式表（2000+ 行，覆盖所有组件）
 ├── script.js       # 主应用逻辑（2500+ 行，所有 JS 功能）
-├── sw.js           # Service Worker（缓存版本 linggo-v3）
+├── sw.js           # Service Worker（缓存版本 linggo-v6）
 ├── manifest.json   # PWA 清单
 ├── admin.html      # 管理员后台（自包含，内嵌 CSS+JS）
 ├── icon.png        # 应用图标
@@ -48,7 +48,7 @@ Linggo/
 | 脚本 | 原生 JavaScript ES6+（外部 `script.js`） |
 | 后端 | Supabase（PostgreSQL + RLS + RPC） |
 | 本地存储 | IndexedDB（书籍文本缓存）+ localStorage（设置、生词、进度） |
-| PWA | Service Worker（cache-first，版本 `linggo-v3`） |
+| PWA | Service Worker（cache-first，版本 `linggo-v6`） |
 | 字体 | Google Fonts CDN（Lora 衬线、Nunito 无衬线） |
 | 封面来源 | Open Library API（ISBN）→ Gutenberg CDN → 渐变色兜底 |
 
@@ -321,7 +321,7 @@ user_id, deck, word, status, next_review, correct_count, wrong_count, last_seen
 ## Service Worker（sw.js）
 
 ```js
-const CACHE = 'linggo-v3';
+const CACHE = 'linggo-v6';
 const SHELL = ['/Linggo/', '/Linggo/index.html', '/Linggo/style.css',
                '/Linggo/script.js', '/Linggo/icon.png', ...];
 ```
