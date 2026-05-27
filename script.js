@@ -1968,16 +1968,17 @@ function applyFcCache(word, data, skipPh=false){
   }
 }
 
-// 统一播放函数：优先用预缓冲 Audio，否则用固定 TTS 音源
+// 统一播放函数：优先用预缓冲 Audio（readyState≥2 才用），否则 TTS
 function fireFcPlay(word, data){
   if(document.getElementById('fc-word').textContent !== word) return;
   const btn = document.getElementById('fc-spk');
   btn.classList.add('spk-active');
   const done = () => btn.classList.remove('spk-active');
-  if(data?.audioEl){
-    data.audioEl.currentTime = 0;
-    data.audioEl.onended = done; data.audioEl.onerror = done;
-    data.audioEl.play().catch(() => { speakWordFc(word); done(); });
+  const el = data?.audioEl;
+  if(el && el.readyState >= 2){
+    el.currentTime = 0;
+    el.onended = done; el.onerror = done;
+    el.play().catch(() => { speakWordFc(word); done(); });
   } else {
     speakWordFc(word); setTimeout(done, 1200);
   }
@@ -2184,15 +2185,18 @@ document.getElementById('fc-easy') .addEventListener('click', ()=>rateFcCard('ea
 
 function playFcAudio(btn){
   clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
+  fcAutoPlay = false; // 阻止 API 延迟返回后再次触发自动播放
   const w = document.getElementById('fc-word').textContent;
   const d = FC_CACHE.get(w);
   btn.classList.add('spk-active');
   const done = () => btn.classList.remove('spk-active');
-  if(d?.audioEl){
-    // 使用预缓冲 Audio 对象，无网络延迟
-    d.audioEl.currentTime = 0;
-    d.audioEl.onended = done; d.audioEl.onerror = done;
-    d.audioEl.play().catch(() => { speakWordFc(w); done(); });
+  const el = d?.audioEl;
+  // readyState >= 2：浏览器已缓冲足够数据，可立即播放；否则同步走 TTS
+  // 注意：TTS 必须在此同步调用（用户手势上下文），放入 .catch() 的异步回调 iOS 会静默拒绝
+  if(el && el.readyState >= 2){
+    el.currentTime = 0;
+    el.onended = done; el.onerror = done;
+    el.play().catch(() => { speakWordFc(w); done(); });
   } else {
     speakWordFc(w); setTimeout(done, 1200);
   }
