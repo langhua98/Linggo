@@ -2276,14 +2276,16 @@ function updateVpStats(){
     const prog = deck === vpDeck ? vpProgress : (() => {
       try{ return JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ return {}; }
     })();
-    const newCount      = wordList.filter(w => !prog[w.w]).length;
-    const dueCount      = wordList.filter(w => prog[w.w] && prog[w.w].nextReview <= now).length;
-    const masteredCount = wordList.filter(w => prog[w.w] && prog[w.w].correct >= 3).length;
+    const newCount       = wordList.filter(w => !prog[w.w]).length;
+    const dueCount       = wordList.filter(w => prog[w.w] && prog[w.w].nextReview <= now).length;
+    const scheduledCount = wordList.filter(w => prog[w.w] && prog[w.w].nextReview > now && (prog[w.w].correct||0) < 3).length;
+    const masteredCount  = wordList.filter(w => prog[w.w] && prog[w.w].correct >= 3).length;
     const pct = total > 0 ? Math.round(masteredCount / total * 100) : 0;
     const elId = deck + '-progress';
     const el = document.getElementById(elId);
+    const scheduledStr = scheduledCount > 0 ? ` · <span style="color:#f59e0b">学习中 ${scheduledCount}</span>` : '';
     if(el) el.innerHTML =
-      `新词 ${newCount} · 待复习 ${dueCount}<br>` +
+      `新词 ${newCount}${scheduledStr} · 待复习 ${dueCount}<br>` +
       `<span style="color:var(--green-2,#16A34A);font-weight:700">已掌握 ${masteredCount}/${total}（${pct}%）</span>`;
   });
 }
