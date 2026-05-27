@@ -1,0 +1,25 @@
+{
+  "name": "Linggo",
+  "short_name": "Linggo",
+  "description": "英文阅读助手 · 朗读 · 查词 · 生词本",
+  "start_url": "/Linggo/",
+  "scope": "/Linggo/",
+  "display": "standalone",
+  "background_color": "#F7F4EF",
+  "theme_color": "#2563EB",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
