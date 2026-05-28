@@ -618,12 +618,119 @@ function buildCard(book){
     img.onerror = () => { img.style.display='none'; fb.style.display='flex'; };
   }
 
+  // Tap cover → preview sheet
+  div.querySelector('.bk-cover').addEventListener('click', e => {
+    e.stopPropagation();
+    openBookPreview(book, div);
+  });
+
   // check local cache, set initial button state
   setCardAction(div, 'init');
   idbHas(book.url).then(has => setCardAction(div, has ? 'cached' : 'ready'));
 
   return div;
 }
+
+// ── Book Preview Sheet
+const PREVIEW_CACHE = new Map();
+let _previewBook = null;
+
+function openBookPreview(book, cardEl){
+  _previewBook = book;
+  const overlay = document.getElementById('book-prev-overlay');
+  const sheet   = document.getElementById('book-prev');
+
+  // Cover
+  const [c1,c2] = book.pal || ['#667eea','#764ba2'];
+  const fb  = document.getElementById('bprev-fb');
+  const img = document.getElementById('bprev-img');
+  fb.style.background = `linear-gradient(145deg,${c1},${c2})`;
+  fb.textContent = book.t;
+  const hasIsbn = book.isbn && book.isbn !== 'null' && book.isbn !== '';
+  const src = hasIsbn ? coverUrl(book.isbn).replace('-M.jpg','-L.jpg')
+            : book._gbId ? gbCoverUrl(book._gbId) : null;
+  if(src){
+    img.src = src; img.style.display='';  fb.style.display='none';
+    img.onerror = ()=>{ img.style.display='none'; fb.style.display='flex'; };
+  } else {
+    img.style.display='none'; fb.style.display='flex';
+  }
+
+  // Text info
+  document.getElementById('bprev-title').textContent = book.t;
+  document.getElementById('bprev-meta').textContent  =
+    `${book.a}${book.y ? ' · ' + book.y : ''}`;
+  document.getElementById('bprev-cats').innerHTML =
+    (book.cat||[]).map(c=>`<span class="bprev-cat">${CAT_LABELS[c]||c}</span>`).join('');
+  document.getElementById('bprev-desc').textContent = '加载简介中…';
+
+  // Read button wires to the original card's action
+  document.getElementById('bprev-read-btn').onclick = ()=>{
+    closeBookPreview();
+    loadBook(book, cardEl);
+  };
+
+  // Animate in
+  overlay.classList.add('vis');
+  sheet.classList.add('open');
+
+  fetchBookDesc(book);
+}
+
+function closeBookPreview(){
+  document.getElementById('book-prev-overlay').classList.remove('vis');
+  document.getElementById('book-prev').classList.remove('open');
+  _previewBook = null;
+}
+
+async function fetchBookDesc(book){
+  const key = book.url || book.t;
+  if(PREVIEW_CACHE.has(key)){
+    _setDesc(book, PREVIEW_CACHE.get(key)); return;
+  }
+  // Try direct title, then "(novel)" variant
+  for(const q of [book.t, book.t + ' (novel)']){
+    try{
+      const ctrl = new AbortController();
+      const tid  = setTimeout(()=>ctrl.abort(), 8000);
+      const resp = await fetch(
+        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(q.replace(/ /g,'_'))}`,
+        {signal:ctrl.signal}
+      );
+      clearTimeout(tid);
+      if(!resp.ok) continue;
+      const d = await resp.json();
+      if(d.type === 'standard' && d.extract){
+        let text = d.extract;
+        if(text.length > 360) text = text.slice(0, text.lastIndexOf(' ', 360)) + '…';
+        // Use Wikipedia thumbnail as cover if we have no image
+        if(d.thumbnail?.source){
+          const img = document.getElementById('bprev-img');
+          if(img.style.display === 'none'){
+            img.src = d.thumbnail.source;
+            img.style.display = '';
+            document.getElementById('bprev-fb').style.display = 'none';
+            img.onerror = ()=>{ img.style.display='none'; document.getElementById('bprev-fb').style.display='flex'; };
+          }
+        }
+        PREVIEW_CACHE.set(key, text);
+        _setDesc(book, text);
+        return;
+      }
+    }catch(e){}
+  }
+  const fallback = '暂无简介。';
+  PREVIEW_CACHE.set(key, fallback);
+  _setDesc(book, fallback);
+}
+
+function _setDesc(book, text){
+  if(_previewBook && (_previewBook.url===book.url || _previewBook.t===book.t)){
+    document.getElementById('bprev-desc').textContent = text;
+  }
+}
+
+document.getElementById('book-prev-overlay').addEventListener('click', closeBookPreview);
 
 // ── Load book: try cache first, then download
 async function loadBook(book, cardEl){

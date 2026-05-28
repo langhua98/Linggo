@@ -1724,3 +1724,49 @@ body{
 .vp-deck[data-deck="ogden"] .vp-dk-bar-fill{
   background:linear-gradient(90deg,#0891B2,#67E8F9);
 }
+
+/* ── BOOK PREVIEW SHEET ── */
+#book-prev-overlay{
+  position:fixed;inset:0;z-index:500;
+  background:rgba(0,0,0,.48);
+  opacity:0;visibility:hidden;
+  transition:opacity .3s,visibility .3s;
+}
+#book-prev-overlay.vis{opacity:1;visibility:visible;}
+#book-prev{
+  position:fixed;bottom:0;left:0;right:0;z-index:501;
+  background:var(--surface);border-radius:24px 24px 0 0;
+  box-shadow:var(--shadow-lg);
+  max-height:88vh;overflow-y:auto;
+  transform:translateY(110%);
+  transition:transform .34s cubic-bezier(.32,0,.15,1);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+#book-prev.open{transform:translateY(0);}
+.bprev-handle{width:36px;height:4px;border-radius:2px;background:var(--border);margin:12px auto 0;}
+.bprev-cover-wrap{
+  width:100%;height:200px;position:relative;overflow:hidden;
+  background:var(--bg);flex-shrink:0;
+}
+.bprev-cover-wrap img{width:100%;height:100%;object-fit:cover;object-position:top center;}
+.bprev-fb{
+  width:100%;height:100%;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Lora',serif;font-size:18px;font-weight:700;
+  color:#fff;text-align:center;padding:20px;line-height:1.4;
+}
+.bprev-body{padding:16px 20px 4px;}
+.bprev-title{font-family:'Lora',serif;font-size:20px;font-weight:700;color:var(--text);line-height:1.3;margin-bottom:4px;}
+.bprev-meta{font-size:13px;color:var(--text-3);margin-bottom:10px;}
+.bprev-cats{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;}
+.bprev-cat{font-size:11px;padding:3px 10px;border-radius:10px;background:var(--accent-2);color:var(--accent);font-weight:700;}
+.bprev-desc{font-size:14px;line-height:1.8;color:var(--text-2);min-height:60px;margin-bottom:4px;}
+.bprev-read-btn{
+  display:block;width:calc(100% - 40px);margin:12px 20px 20px;
+  padding:15px;border:none;border-radius:14px;
+  background:linear-gradient(135deg,#2563EB,#3b82f6);color:#fff;
+  font-size:15px;font-weight:700;font-family:'Nunito',sans-serif;
+  cursor:pointer;transition:opacity .15s;box-shadow:0 4px 14px rgba(37,99,235,.35);
+}
+.bprev-read-btn:hover{opacity:.9;}
+.bk-cover{cursor:pointer;}
