@@ -178,8 +178,12 @@
     <button class="lcat" data-cat="horror">恐怖</button>
     <button class="lcat" data-cat="short">短篇</button>
   </div>
-  <!-- Gutenberg search panel -->
+  <!-- Book search panel (Gutenberg + Standard Ebooks) -->
   <div id="gb-panel" style="display:none">
+    <div class="gb-tabs">
+      <button class="gb-tab on" data-src="gutenberg">Gutenberg</button>
+      <button class="gb-tab" data-src="se">Standard Ebooks</button>
+    </div>
     <div class="gb-input-row">
       <input id="gb-input" type="text" placeholder="输入英文书名或作者…">
       <button id="gb-search-btn">搜索</button>
@@ -215,6 +219,16 @@
         <span class="lib-level-badge badge-r">词汇量 5000 以上</span>
       </div>
       <div class="lib-row" id="lib-row-2"></div>
+    </div>
+    <!-- VOA Learning English -->
+    <div class="lib-level" id="lib-level-voa" style="display:none">
+      <div class="lib-level-head lv-voa">
+        <h3>📻 VOA 每日英语</h3>
+        <span class="lib-level-badge badge-voa">慢速英语 · 适合初中级</span>
+      </div>
+      <div class="voa-articles" id="voa-articles">
+        <div class="voa-loading">加载文章中…</div>
+      </div>
     </div>
     <div class="lib-empty" id="lib-empty" style="display:none">没有找到相关书籍</div>
   </div>
@@ -319,6 +333,9 @@
     <span id="voc-ct">0 词</span>
     <button class="voc-flash-btn" id="voc-flash-btn" title="闪卡背诵">🃏 背诵</button>
     <button class="voc-x" id="voc-close">✕</button>
+  </div>
+  <div class="voc-search-wrap">
+    <input type="text" id="voc-search" placeholder="搜索单词或释义…" autocomplete="off" spellcheck="false">
   </div>
   <div id="voc-list"></div>
   <div class="voc-foot">
@@ -550,6 +567,8 @@
 <script src="cet4.js"></script>
 <script src="cet6.js"></script>
 <script src="ogden850.js"></script>
+<script src="sb.js"></script>
 <script src="script.js"></script>
+<script src="srs.js"></script>
 </body>
 </html>
