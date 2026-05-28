@@ -2080,43 +2080,64 @@ function renderSearchResults(results){
   });
 }
 
-// ── VOA Learning English
+// ── 每日英语（Simple English Wikipedia，无需代理）
 let voaLoaded = false;
 
 async function loadVoaFeed(){
-  const feedUrl = 'https://learningenglish.voanews.com/?feed=rss2';
-  const voaEl   = document.getElementById('lib-level-voa');
-  for(const mk of CORS_PROXIES){
-    try{
-      const ctrl = new AbortController();
-      const tid  = setTimeout(()=>ctrl.abort(), 15000);
-      const resp = await fetch(mk(feedUrl),{signal:ctrl.signal});
-      clearTimeout(tid);
-      if(!resp.ok) continue;
-      const articles = parseVoaRSS(await resp.text());
-      if(articles.length){ renderVoaArticles(articles); voaEl.style.display=''; return; }
-    }catch(e){ console.warn('VOA feed fail',e); }
-  }
-  voaEl.style.display = 'none';
-}
-
-function getRssLink(item){
-  for(const n of item.childNodes){
-    if(n.nodeName==='link' && n.textContent?.trim()) return n.textContent.trim();
-  }
-  return item.querySelector('link')?.textContent?.trim() || '';
-}
-
-function parseVoaRSS(xmlText){
+  const voaEl = document.getElementById('lib-level-voa');
   try{
-    const doc = new DOMParser().parseFromString(xmlText,'text/xml');
-    return Array.from(doc.querySelectorAll('item')).slice(0,8).map(item =>({
-      t:    item.querySelector('title')?.textContent?.trim() || '',
-      url:  getRssLink(item),
-      date: (item.querySelector('pubDate')?.textContent||'').slice(0,16),
-      desc: (item.querySelector('description')?.textContent||'').replace(/<[^>]+>/g,'').slice(0,100).trim(),
-    })).filter(a => a.t && a.url);
-  }catch(e){ return []; }
+    const ctrl = new AbortController();
+    const tid  = setTimeout(()=>ctrl.abort(), 12000);
+    const resp = await fetch(
+      'https://simple.wikipedia.org/w/api.php?action=query&list=random&rnnamespace=0&rnlimit=8&format=json&origin=*',
+      {signal:ctrl.signal}
+    );
+    clearTimeout(tid);
+    if(!resp.ok) throw new Error('fetch failed');
+    const data  = await resp.json();
+    const pages = data.query?.random || [];
+    if(!pages.length) throw new Error('empty');
+    const articles = pages.map(p =>({
+      t:    p.title,
+      url:  `https://simple.wikipedia.org/wiki/${encodeURIComponent(p.title.replace(/ /g,'_'))}`,
+      date: 'Simple English Wikipedia',
+      desc: '',
+      _wiki: true,
+    }));
+    renderVoaArticles(articles);
+    voaEl.style.display = '';
+    // 异步补充摘要
+    articles.forEach((a,i) => fetchWikiSummary(a.t, i));
+  }catch(e){
+    console.warn('Wiki articles fail',e);
+    voaEl.style.display = 'none';
+  }
+}
+
+async function fetchWikiSummary(title, idx){
+  try{
+    const ctrl = new AbortController();
+    setTimeout(()=>ctrl.abort(), 8000);
+    const resp = await fetch(
+      `https://simple.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=extracts&exintro=1&exsentences=2&format=json&origin=*&explaintext=1`,
+      {signal:ctrl.signal}
+    );
+    if(!resp.ok) return;
+    const data = await resp.json();
+    const page = Object.values(data.query?.pages||{})[0];
+    const text = (page?.extract||'').slice(0,100).trim();
+    if(!text) return;
+    const items = document.querySelectorAll('.voa-item');
+    if(!items[idx]) return;
+    const info = items[idx].querySelector('.voa-item-info');
+    let descEl = items[idx].querySelector('.voa-item-desc');
+    if(!descEl && info){
+      descEl = document.createElement('div');
+      descEl.className = 'voa-item-desc';
+      info.appendChild(descEl);
+    }
+    if(descEl) descEl.textContent = text;
+  }catch(e){}
 }
 
 function renderVoaArticles(articles){
@@ -2129,7 +2150,6 @@ function renderVoaArticles(articles){
       <div class="voa-item-info">
         <div class="voa-item-title">${_esc(article.t)}</div>
         <div class="voa-item-date">${_esc(article.date)}</div>
-        ${article.desc?`<div class="voa-item-desc">${_esc(article.desc)}</div>`:''}
       </div>
       <button class="voa-read-btn">阅读</button>`;
     div.querySelector('.voa-read-btn').addEventListener('click', ()=> loadVoaArticle(article,div));
@@ -2143,26 +2163,28 @@ async function loadVoaArticle(article, itemEl){
   try{
     const cached = await idbGet(article.url);
     if(cached){
-      openBook({t:article.t,a:'VOA Learning English',url:article.url,pal:['#e74c3c','#c0392b']},cached);
+      openBook({t:article.t,a:'Simple English Wikipedia',url:article.url,pal:['#3498db','#2980b9']},cached);
       return;
     }
   }catch(e){}
-  for(const mk of CORS_PROXIES){
+  if(article._wiki){
     try{
       const ctrl = new AbortController();
-      const tid  = setTimeout(()=>ctrl.abort(), 20000);
-      const resp = await fetch(mk(article.url),{signal:ctrl.signal});
+      const tid  = setTimeout(()=>ctrl.abort(), 15000);
+      const resp = await fetch(
+        `https://simple.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(article.t)}&prop=extracts&format=json&origin=*&explaintext=1`,
+        {signal:ctrl.signal}
+      );
       clearTimeout(tid);
-      if(!resp.ok) continue;
-      const html = await resp.text();
-      const doc  = new DOMParser().parseFromString(html,'text/html');
-      doc.querySelectorAll('script,style,nav,header,footer,.share-tools,.media-block,.sidebar').forEach(el=>el.remove());
-      const body = doc.querySelector('.article-body,.body-block,article,main')||doc.body;
-      const txt  = (body?.textContent||'').replace(/\t/g,' ').replace(/ {3,}/g,'  ').replace(/\n{4,}/g,'\n\n\n').trim();
+      if(!resp.ok) throw new Error('fetch failed');
+      const data = await resp.json();
+      const page = Object.values(data.query?.pages||{})[0];
+      const txt  = (page?.extract||'').replace(/\n{4,}/g,'\n\n\n').trim();
+      if(!txt) throw new Error('empty');
       await idbSave(article.url, txt);
-      openBook({t:article.t,a:'VOA Learning English',url:article.url,pal:['#e74c3c','#c0392b']},txt);
+      openBook({t:article.t,a:'Simple English Wikipedia',url:article.url,pal:['#3498db','#2980b9']},txt);
       return;
-    }catch(e){ console.warn('VOA article fail',e); }
+    }catch(e){ console.warn('wiki article fail',e); }
   }
   btn.textContent='失败';
   toast('加载失败，请检查网络连接');
