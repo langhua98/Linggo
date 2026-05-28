@@ -442,6 +442,25 @@ const CATALOG = [
   [5200,"The Metamorphosis","Franz Kafka",1915,["classic","scifi"],"One morning"],
 ];
 
+// ── Standard Ebooks catalog (精校公版书，可加入书架)
+const SE_BOOKS = [
+  // ── Intermediate
+  { t:'The Moonstone',                 a:'Wilkie Collins',       y:1868, level:1, cat:['mystery'],             slug:'wilkie-collins/the-moonstone',                  mark:'I address these lines',      pal:['#fdf2e9','#d35400'], _se:true },
+  { t:'The Woman in White',            a:'Wilkie Collins',       y:1859, level:1, cat:['mystery','classic'],   slug:'wilkie-collins/the-woman-in-white',              mark:'This is the story',          pal:['#eaecee','#2c3e50'], _se:true },
+  { t:'The Innocence of Father Brown', a:'G.K. Chesterton',     y:1911, level:1, cat:['mystery','short'],     slug:'g-k-chesterton/the-innocence-of-father-brown',  mark:'The suburb of Saffron Park', pal:['#fdedec','#7b241c'], _se:true },
+  { t:'The Scarlet Pimpernel',         a:'Baroness Orczy',       y:1905, level:1, cat:['adventure','classic'], slug:'baroness-orczy/the-scarlet-pimpernel',           mark:'A surging, seething',        pal:['#fdedec','#922b21'], _se:true },
+  { t:'Tarzan of the Apes',            a:'Edgar Rice Burroughs', y:1912, level:1, cat:['adventure'],           slug:'edgar-rice-burroughs/tarzan-of-the-apes',        mark:'I had this story',           pal:['#d5f5e3','#1e8449'], _se:true },
+  { t:"King Solomon's Mines",          a:'H. Rider Haggard',     y:1885, level:1, cat:['adventure'],           slug:'h-rider-haggard/king-solomons-mines',            mark:'It is a curious thing',      pal:['#fef9e7','#b7950b'], _se:true },
+  { t:'The Red House Mystery',         a:'A.A. Milne',           y:1922, level:1, cat:['mystery'],             slug:'a-a-milne/the-red-house-mystery',                mark:'It is a fact',               pal:['#eaf2ff','#1a5276'], _se:true },
+  { t:'Ethan Frome',                   a:'Edith Wharton',        y:1911, level:1, cat:['classic'],             slug:'edith-wharton/ethan-frome',                      mark:'I had the story',            pal:['#d7dbdd','#2c3e50'], _se:true },
+  // ── Advanced
+  { t:'The Age of Innocence',          a:'Edith Wharton',        y:1920, level:2, cat:['classic'],             slug:'edith-wharton/the-age-of-innocence',             mark:'On a January evening',       pal:['#f4f6f7','#2c3e50'], _se:true },
+  { t:'My Ántonia',                    a:'Willa Cather',         y:1918, level:2, cat:['classic'],             slug:'willa-cather/my-antonia',                        mark:'I first heard',              pal:['#fef9e7','#7d6608'], _se:true },
+  { t:'The Portrait of a Lady',        a:'Henry James',          y:1881, level:2, cat:['classic'],             slug:'henry-james/the-portrait-of-a-lady',             mark:'Under certain circumstances', pal:['#f4f6f7','#2c3e50'], _se:true },
+  { t:'Howards End',                   a:'E.M. Forster',         y:1910, level:2, cat:['classic'],             slug:'e-m-forster/howards-end',                        mark:'One may as well begin',      pal:['#e8f8f5','#1a6b4a'], _se:true },
+];
+SE_BOOKS.forEach(b => { b.url = 'se://' + b.slug; b.isbn = ''; });
+
 // Category labels
 const CAT_LABELS = {all:'全部',classic:'经典',mystery:'推理',adventure:'冒险',scifi:'科幻',horror:'恐怖',short:'短篇'};
 let libCat = 'all', libQuery = '';
@@ -483,6 +502,60 @@ async function fetchWithProgress(rawUrl, onProgress){
     }catch(e){ console.warn('proxy fail',e); }
   }
   throw new Error('all proxies failed');
+}
+
+// ── Standard Ebooks: strip HTML to plain text
+function seHtmlToText(html){
+  const doc = new DOMParser().parseFromString(html,'text/html');
+  doc.querySelectorAll('nav,script,style').forEach(el => el.remove());
+  return (doc.body?.textContent||'')
+    .replace(/\t/g,' ').replace(/ {3,}/g,'  ').replace(/\n{4,}/g,'\n\n\n').trim();
+}
+
+// ── Fetch SE single-page book through CORS proxy
+async function fetchSEText(slug){
+  const url = `https://standardebooks.org/ebooks/${slug}/text/single-page`;
+  for(const mk of CORS_PROXIES){
+    try{
+      const ctrl = new AbortController();
+      const tid  = setTimeout(()=>ctrl.abort(), 60000);
+      const resp = await fetch(mk(url),{signal:ctrl.signal});
+      clearTimeout(tid);
+      if(!resp.ok) continue;
+      return seHtmlToText(await resp.text());
+    }catch(e){ console.warn('SE proxy fail',e); }
+  }
+  throw new Error('all proxies failed');
+}
+
+// ── Load SE book (fetch HTML → strip → IDB cache)
+async function loadSEBook(book, cardEl){
+  // slug is stored on the object when from SE_BOOKS; derive from url when restored from storage
+  const slug = book.slug || book.url.slice(5); // 'se://'.length === 5
+  try{
+    const cached = await idbGet(book.url);
+    if(cached){ openBook(book,cached); return; }
+  }catch(e){}
+
+  setCardAction(cardEl,'downloading',0);
+  let pct = 0;
+  const progTimer = setInterval(()=>{
+    pct = Math.min(90, pct+2);
+    setCardAction(cardEl,'downloading',pct);
+  },1500);
+
+  try{
+    let txt = await fetchSEText(slug);
+    clearInterval(progTimer);
+    const si = book.mark ? txt.indexOf(book.mark) : -1;
+    if(si > 0) txt = txt.substring(si);
+    await idbSave(book.url, txt);
+    setCardAction(cardEl,'cached');
+    openBook(book, txt);
+  }catch(e){
+    clearInterval(progTimer);
+    setCardAction(cardEl,'error',`https://standardebooks.org/ebooks/${slug}`);
+  }
 }
 
 // ── Card state manager
@@ -554,6 +627,7 @@ function buildCard(book){
 
 // ── Load book: try cache first, then download
 async function loadBook(book, cardEl){
+  if(book._se || book.url?.startsWith('se://')){ await loadSEBook(book,cardEl); return; }
   // 1. Try local IndexedDB cache
   try{
     const cached = await idbGet(book.url);
@@ -634,9 +708,11 @@ document.querySelectorAll('.lcat').forEach(btn => {
 // ── Library open/close
 document.getElementById('lib-tbtn').addEventListener('click', () => {
   document.getElementById('library').classList.toggle('open');
+  if(!voaLoaded){ voaLoaded=true; loadVoaFeed(); }
 });
 document.getElementById('lib-open-btn').addEventListener('click', () => {
   document.getElementById('library').classList.add('open');
+  if(!voaLoaded){ voaLoaded=true; loadVoaFeed(); }
 });
 document.getElementById('lib-close').addEventListener('click', () => {
   document.getElementById('library').classList.remove('open');
@@ -2003,18 +2079,122 @@ function renderSearchResults(results){
   });
 }
 
+// ── VOA Learning English
+let voaLoaded = false;
+
+async function loadVoaFeed(){
+  const feedUrl = 'https://learningenglish.voanews.com/?feed=rss2';
+  const voaEl   = document.getElementById('lib-level-voa');
+  for(const mk of CORS_PROXIES){
+    try{
+      const ctrl = new AbortController();
+      const tid  = setTimeout(()=>ctrl.abort(), 15000);
+      const resp = await fetch(mk(feedUrl),{signal:ctrl.signal});
+      clearTimeout(tid);
+      if(!resp.ok) continue;
+      const articles = parseVoaRSS(await resp.text());
+      if(articles.length){ renderVoaArticles(articles); voaEl.style.display=''; return; }
+    }catch(e){ console.warn('VOA feed fail',e); }
+  }
+  voaEl.style.display = 'none';
+}
+
+function getRssLink(item){
+  for(const n of item.childNodes){
+    if(n.nodeName==='link' && n.textContent?.trim()) return n.textContent.trim();
+  }
+  return item.querySelector('link')?.textContent?.trim() || '';
+}
+
+function parseVoaRSS(xmlText){
+  try{
+    const doc = new DOMParser().parseFromString(xmlText,'text/xml');
+    return Array.from(doc.querySelectorAll('item')).slice(0,8).map(item =>({
+      t:    item.querySelector('title')?.textContent?.trim() || '',
+      url:  getRssLink(item),
+      date: (item.querySelector('pubDate')?.textContent||'').slice(0,16),
+      desc: (item.querySelector('description')?.textContent||'').replace(/<[^>]+>/g,'').slice(0,100).trim(),
+    })).filter(a => a.t && a.url);
+  }catch(e){ return []; }
+}
+
+function renderVoaArticles(articles){
+  const el = document.getElementById('voa-articles');
+  el.innerHTML = '';
+  articles.forEach(article => {
+    const div = document.createElement('div');
+    div.className = 'voa-item';
+    div.innerHTML = `
+      <div class="voa-item-info">
+        <div class="voa-item-title">${_esc(article.t)}</div>
+        <div class="voa-item-date">${_esc(article.date)}</div>
+        ${article.desc?`<div class="voa-item-desc">${_esc(article.desc)}</div>`:''}
+      </div>
+      <button class="voa-read-btn">阅读</button>`;
+    div.querySelector('.voa-read-btn').addEventListener('click', ()=> loadVoaArticle(article,div));
+    el.appendChild(div);
+  });
+}
+
+async function loadVoaArticle(article, itemEl){
+  const btn = itemEl.querySelector('.voa-read-btn');
+  btn.textContent='加载中…'; btn.disabled=true;
+  try{
+    const cached = await idbGet(article.url);
+    if(cached){
+      openBook({t:article.t,a:'VOA Learning English',url:article.url,pal:['#e74c3c','#c0392b']},cached);
+      return;
+    }
+  }catch(e){}
+  for(const mk of CORS_PROXIES){
+    try{
+      const ctrl = new AbortController();
+      const tid  = setTimeout(()=>ctrl.abort(), 20000);
+      const resp = await fetch(mk(article.url),{signal:ctrl.signal});
+      clearTimeout(tid);
+      if(!resp.ok) continue;
+      const html = await resp.text();
+      const doc  = new DOMParser().parseFromString(html,'text/html');
+      doc.querySelectorAll('script,style,nav,header,footer,.share-tools,.media-block,.sidebar').forEach(el=>el.remove());
+      const body = doc.querySelector('.article-body,.body-block,article,main')||doc.body;
+      const txt  = (body?.textContent||'').replace(/\t/g,' ').replace(/ {3,}/g,'  ').replace(/\n{4,}/g,'\n\n\n').trim();
+      await idbSave(article.url, txt);
+      openBook({t:article.t,a:'VOA Learning English',url:article.url,pal:['#e74c3c','#c0392b']},txt);
+      return;
+    }catch(e){ console.warn('VOA article fail',e); }
+  }
+  btn.textContent='失败';
+  toast('加载失败，请检查网络连接');
+}
+
+// ── Standard Ebooks search
+function localSearchSE(q){
+  if(!q) return SE_BOOKS;
+  q = q.toLowerCase();
+  return SE_BOOKS.filter(b =>
+    b.t.toLowerCase().includes(q) ||
+    b.a.toLowerCase().includes(q) ||
+    b.cat.some(c => c.includes(q))
+  );
+}
+
 // ── 搜索面板事件
 const gbPanel  = document.getElementById('gb-panel');
 const gbAddBtn = document.getElementById('lib-add-btn');
 const gbInput  = document.getElementById('gb-input');
 const gbSearch = document.getElementById('gb-search-btn');
 
+let gbSrc = 'gutenberg'; // 'gutenberg' | 'se'
 let gbTimer;
 function triggerSearch(){
   clearTimeout(gbTimer);
   const q = gbInput.value.trim();
+  if(gbSrc === 'se'){
+    gbTimer = setTimeout(()=> renderSearchResults(localSearchSE(q)), 120);
+    return;
+  }
   if(!q){ document.getElementById('gb-results').innerHTML = ''; return; }
-  gbTimer = setTimeout(() => renderSearchResults(localSearch(q)), 120);
+  gbTimer = setTimeout(()=> renderSearchResults(localSearch(q)), 120);
 }
 
 gbAddBtn.addEventListener('click', () => {
@@ -2026,6 +2206,15 @@ gbAddBtn.addEventListener('click', () => {
 gbInput.addEventListener('input', triggerSearch);
 gbSearch.addEventListener('click', triggerSearch);
 gbInput.addEventListener('keydown', e => { if(e.key==='Enter') triggerSearch(); });
+
+document.querySelectorAll('.gb-tab').forEach(btn => {
+  btn.addEventListener('click', ()=>{
+    gbSrc = btn.dataset.src;
+    document.querySelectorAll('.gb-tab').forEach(b => b.classList.toggle('on', b===btn));
+    gbInput.placeholder = gbSrc==='se' ? '搜索 Standard Ebooks 书目…' : '输入英文书名或作者…';
+    triggerSearch();
+  });
+});
 
 // ── UI helpers
 function setAuthUI(user){
