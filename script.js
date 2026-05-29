@@ -812,6 +812,22 @@ document.querySelectorAll('.lcat').forEach(btn => {
   });
 });
 
+// ── Logo → return to landing
+document.getElementById('logo-btn').addEventListener('click', () => {
+  const reader = document.getElementById('reader');
+  const player = document.getElementById('player');
+  // Only act when reader is visible (user is reading)
+  if(reader.style.display === 'none' || !reader.style.display) return;
+  synth.cancel(); stopResumeTimer();
+  S.playing = false; S.paused = false; setIcon(false);
+  reader.style.display = 'none';
+  player.style.display = 'none';
+  document.getElementById('pct-badge').style.display = 'none';
+  document.getElementById('chap-tbtn').style.display = 'none';
+  document.getElementById('filename').textContent = '未加载';
+  document.getElementById('landing').style.display = '';
+});
+
 // ── Library open/close
 document.getElementById('lib-tbtn').addEventListener('click', () => {
   document.getElementById('library').classList.toggle('open');
