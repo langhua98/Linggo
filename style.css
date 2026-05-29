@@ -51,17 +51,17 @@ body{
 /* ── TOP BAR ── */
 #topbar{
   position:fixed;top:0;left:0;right:0;z-index:100;
-  height:62px;
+  height:64px;
   background:var(--player-bg);
   border-bottom:1px solid var(--border);
   backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   display:flex;align-items:center;
-  padding:0 8px 0 16px;
-  gap:2px;
+  padding:0 4px 0 16px;
+  gap:0;
 }
 .logo{
-  font-family:'Lora',serif;font-size:20px;font-weight:600;
-  color:var(--accent);margin-right:6px;white-space:nowrap;flex-shrink:0;
+  font-family:'Lora',serif;font-size:23px;font-weight:600;
+  color:var(--accent);margin-right:4px;white-space:nowrap;flex-shrink:0;
   cursor:pointer;user-select:none;
   transition:opacity .15s;
 }
@@ -76,13 +76,13 @@ body{
   flex-shrink:0;margin-right:4px;
 }
 .tbtn{
-  width:48px;height:48px;border:none;background:none;cursor:pointer;
+  width:46px;height:46px;border:none;background:none;cursor:pointer;
   color:var(--text-2);border-radius:var(--r-sm);
   display:flex;align-items:center;justify-content:center;
   transition:background .15s,color .15s;flex-shrink:0;
 }
 .tbtn:hover{background:var(--accent-2);color:var(--accent);}
-.tbtn svg{width:24px;height:24px;}
+.tbtn svg{width:26px;height:26px;}
 
 /* ── LANDING ── */
 #landing{
@@ -1589,9 +1589,6 @@ body{
   .spill{font-size:11px;}
 }
 @media(max-width:480px){
-  .tbtn{width:36px;height:36px;}
-  .tbtn svg{width:18px;height:18px;}
-  .logo{font-size:15px;margin-right:2px;}
   #night-btn{display:none;}
   #login-btn{padding:0 10px;font-size:12px;}
 }
