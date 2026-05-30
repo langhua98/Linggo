@@ -209,12 +209,21 @@ body{
 /* top bar: search + filter + close */
 .lib-topbar{
   flex-shrink:0;
-  padding:14px 16px 10px;
+  padding:10px 12px 10px 4px;
   background:var(--player-bg);
   border-bottom:1px solid var(--border);
   backdrop-filter:blur(20px);
-  display:flex;align-items:center;gap:10px;
+  display:flex;align-items:center;gap:8px;
 }
+.lib-back{
+  flex-shrink:0;width:44px;height:44px;
+  border:none;background:none;cursor:pointer;
+  color:var(--text-2);border-radius:var(--r-sm);
+  display:flex;align-items:center;justify-content:center;
+  transition:background .15s,color .15s;
+}
+.lib-back:hover{background:var(--accent-2);color:var(--accent);}
+.lib-back svg{width:24px;height:24px;}
 .lib-search-wrap{
   flex:1;position:relative;
   display:flex;align-items:center;
