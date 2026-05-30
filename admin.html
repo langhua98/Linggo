@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
 <title>Linggo 管理后台</title>
 <link href="https://fonts.googleapis.com/css2?family=Lora:wght@600&family=Nunito:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -145,17 +146,19 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);min-
 }
 .tbl-hd h3{font-size:13px;font-weight:700}
 .tbl-sub{font-size:11px;color:var(--text-3)}
-table{width:100%;border-collapse:collapse}
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;min-width:360px}
 th{
-  padding:10px 20px;text-align:left;font-size:11px;font-weight:700;color:var(--text-3);
+  padding:10px 16px;text-align:left;font-size:11px;font-weight:700;color:var(--text-3);
   background:var(--surface-2);border-bottom:1px solid var(--border);
-  letter-spacing:.05em;text-transform:uppercase
+  letter-spacing:.05em;text-transform:uppercase;white-space:nowrap
 }
-td{padding:11px 20px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-2)}
+td{padding:10px 16px;border-bottom:1px solid var(--border);font-size:13px;color:var(--text-2)}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--surface-2)}
 .td-em{color:var(--text);font-weight:600}
 .tag{display:inline-block;font-size:10px;font-weight:800;padding:2px 8px;border-radius:6px;letter-spacing:.04em}
+@media(max-width:480px){.col-date{display:none}}
 
 /* ── MINI STATS ── */
 .mini-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -261,12 +264,14 @@ tr:hover td{background:var(--surface-2)}
         <h3>用户列表</h3>
         <span class="tbl-sub">最近 8 名</span>
       </div>
+      <div class="tbl-wrap">
       <table>
-        <thead><tr><th>邮箱</th><th>注册时间</th><th>状态</th></tr></thead>
+        <thead><tr><th>邮箱</th><th class="col-date">注册时间</th><th>状态</th></tr></thead>
         <tbody id="u-tbody">
           <tr><td colspan="3" style="text-align:center;padding:24px;color:var(--text-3)">加载中…</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <div class="sec-hd">学习活动</div>
@@ -307,13 +312,20 @@ async function sha256(str){
 }
 
 async function callRpc(fn, params={}){
-  const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`,{
-    method:'POST',
-    headers:{'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY},
-    body:JSON.stringify(params)
-  });
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  return r.json();
+  const ctrl = new AbortController();
+  const tid = setTimeout(()=>ctrl.abort(), 10000);
+  try{
+    const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY},
+      body:JSON.stringify(params),
+      signal:ctrl.signal
+    });
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }finally{
+    clearTimeout(tid);
+  }
 }
 
 // ── GATE
@@ -321,9 +333,11 @@ function checkGate(){ return sessionStorage.getItem(GATE_KEY)==='1'; }
 document.getElementById('g-btn').onclick = doLogin;
 document.getElementById('g-pwd').onkeydown = e=>{ if(e.key==='Enter') doLogin(); };
 async function doLogin(){
+  const pwd = document.getElementById('g-pwd').value;
+  if(!pwd){ document.getElementById('g-err').textContent='请输入密码'; return; }
   const btn = document.getElementById('g-btn');
   btn.disabled = true; btn.textContent = '验证中…';
-  const hash = await sha256(document.getElementById('g-pwd').value);
+  const hash = await sha256(pwd);
   if(hash === ADMIN_HASH){
     sessionStorage.setItem(GATE_KEY,'1');
     showDash();
@@ -364,10 +378,17 @@ setInterval(()=>{
   setTimeout(()=>{ ts.style.opacity='1'; }, 350);
 }, 5*60*1000);
 
+function setRefBtn(loading){
+  const btn = document.getElementById('ref-btn');
+  btn.disabled = loading;
+  btn.innerHTML = loading
+    ? '⏳ <span class="tbtn-label">加载中</span>'
+    : '↻ <span class="tbtn-label">刷新</span>';
+}
+
 // ── LOAD
 async function loadStats(){
-  const btn = document.getElementById('ref-btn');
-  btn.textContent='加载中…'; btn.disabled=true;
+  setRefBtn(true);
   try{
     const d = await callRpc('get_admin_stats');
 
@@ -410,9 +431,17 @@ async function loadStats(){
     document.getElementById('ts').textContent = now+' 更新';
   }catch(e){
     console.error(e);
-    document.getElementById('v-empty').textContent='加载失败：'+e.message;
+    const msg = e.name==='AbortError' ? '请求超时，请检查网络' : ('加载失败：'+e.message);
+    ['v-empty','sg-empty'].forEach(id=>{
+      const el=document.getElementById(id);
+      el.textContent=msg; el.style.display='flex';
+    });
+    document.getElementById('v-bars').style.display='none';
+    document.getElementById('sg-bars').style.display='none';
+    document.getElementById('u-tbody').innerHTML=
+      `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--rose)">${msg}</td></tr>`;
   }finally{
-    btn.textContent='↻ 刷新'; btn.disabled=false;
+    setRefBtn(false);
   }
 }
 
@@ -477,7 +506,7 @@ function renderUsers(users){
     const d=new Date(u.created_at), isNew=now-d<7*864e5;
     return `<tr>
       <td><span class="td-em">${maskEmail(u.email)}</span></td>
-      <td>${d.toLocaleDateString('zh-CN',{year:'numeric',month:'short',day:'numeric'})}</td>
+      <td class="col-date">${d.toLocaleDateString('zh-CN',{year:'numeric',month:'short',day:'numeric'})}</td>
       <td>${isNew
         ?'<span class="tag" style="background:var(--green-d);color:var(--green)">新用户</span>'
         :'<span class="tag" style="background:var(--surface-2);color:var(--text-3)">正常</span>'
