@@ -838,7 +838,14 @@ function showSearchPanel(q){
   if(matches.length > 4){
     moreBtn.textContent = `查看全部 ${matches.length} 个结果 →`;
     moreBtn.style.display = '';
-    moreBtn.onclick = () => { hideSearchPanel(); libQuery = q; renderLib(); };
+    moreBtn.onclick = () => {
+      libSearchPanel.style.display = 'none';
+      libScrollEl.style.display    = '';
+      libLevelTabsEl.style.display = '';
+      libCatsBarEl.style.display   = '';
+      libQuery = q;
+      renderLib();
+    };
   } else {
     moreBtn.style.display = 'none';
   }
@@ -856,6 +863,29 @@ function hideSearchPanel(){
   renderLib();
 }
 
+function closeGbPanel(){
+  gbPanel.style.display = 'none';
+  document.querySelector('.gb-input-row').style.display = '';
+  document.querySelector('.gb-tabs').style.display = '';
+}
+
+function showGbFromSearch(src){
+  const q = libSearchEl.value.trim();
+  gbInput.value = q;
+  gbSrc = src;
+  document.querySelectorAll('.gb-tab').forEach(b =>
+    b.classList.toggle('on', b.dataset.src === src));
+  libSearchPanel.style.display = 'none';
+  libScrollEl.style.display    = 'none';
+  libLevelTabsEl.style.display = 'none';
+  libCatsBarEl.style.display   = 'none';
+  document.querySelector('.gb-input-row').style.display = 'none';
+  document.querySelector('.gb-tabs').style.display      = 'none';
+  gbPanel.style.display = '';
+  libSearchClear.style.display = '';
+  triggerSearch();
+}
+
 libSearchEl.addEventListener('input', e => {
   clearTimeout(libSearchTimer);
   const q = e.target.value.trim();
@@ -863,38 +893,18 @@ libSearchEl.addEventListener('input', e => {
   libSearchTimer = setTimeout(() => showSearchPanel(q), 200);
 });
 
-libSearchClear.addEventListener('click', hideSearchPanel);
+libSearchClear.addEventListener('click', () => {
+  if(gbPanel.style.display !== 'none'){
+    closeGbPanel();
+    const q = libSearchEl.value.trim();
+    if(q){ showSearchPanel(q); return; }
+  }
+  hideSearchPanel();
+});
 
 // Online search buttons
-document.getElementById('lsp-gb-btn').addEventListener('click', () => {
-  const q = libSearchEl.value.trim();
-  gbInput.value = q;
-  gbSrc = 'gutenberg';
-  document.querySelectorAll('.gb-tab').forEach(b =>
-    b.classList.toggle('on', b.dataset.src === 'gutenberg'));
-  libSearchPanel.style.display = 'none';
-  libScrollEl.style.display    = '';
-  libLevelTabsEl.style.display = '';
-  libCatsBarEl.style.display   = '';
-  gbPanel.style.display = '';
-  gbAddBtn.classList.add('active');
-  triggerSearch();
-});
-
-document.getElementById('lsp-se-btn').addEventListener('click', () => {
-  const q = libSearchEl.value.trim();
-  gbInput.value = q;
-  gbSrc = 'se';
-  document.querySelectorAll('.gb-tab').forEach(b =>
-    b.classList.toggle('on', b.dataset.src === 'se'));
-  libSearchPanel.style.display = 'none';
-  libScrollEl.style.display    = '';
-  libLevelTabsEl.style.display = '';
-  libCatsBarEl.style.display   = '';
-  gbPanel.style.display = '';
-  gbAddBtn.classList.add('active');
-  triggerSearch();
-});
+document.getElementById('lsp-gb-btn').addEventListener('click', () => showGbFromSearch('gutenberg'));
+document.getElementById('lsp-se-btn').addEventListener('click', () => showGbFromSearch('se'));
 
 // ── Category tab bar
 document.querySelectorAll('.lcat').forEach(btn => {
