@@ -358,7 +358,7 @@ const CATALOG = [
   // ── Jules Verne
   [164,"Twenty Thousand Leagues Under the Sea","Jules Verne",1870,["adventure","scifi"],"The year 1866"],
   [103,"Around the World in 80 Days","Jules Verne",1872,["adventure"],"IN WHICH"],
-  [1260,"The Mysterious Island","Jules Verne",1874,["adventure","scifi"],"Chapter 1"],
+  [1537,"The Mysterious Island","Jules Verne",1874,["adventure","scifi"],"Chapter 1"],
   // ── Jack London
   [215,"The Call of the Wild","Jack London",1903,["classic","adventure"],"Buck did not read"],
   [910,"White Fang","Jack London",1906,["classic","adventure"],"Dark spruce forest"],
@@ -595,7 +595,7 @@ function buildCard(book){
   const div = document.createElement('div');
   div.className = 'bk';
   div._book = book;
-  const [c1,c2] = book.pal;
+  const [c1,c2] = book.pal || ['#667eea','#764ba2'];
   const hasIsbn = book.isbn && book.isbn !== 'null';
   const imgSrc  = hasIsbn ? coverUrl(book.isbn)
                 : book._gbId ? gbCoverUrl(book._gbId)
@@ -763,8 +763,8 @@ async function loadBook(book, cardEl){
     setCardAction(cardEl, 'cached');
     openBook(book, txt);
   }catch(e){
-    setCardAction(cardEl, 'error', book.url);
-    if(!cardEl) toast('加载失败，请检查网络后重试');
+    if(cardEl) setCardAction(cardEl, 'error', book.url);
+    else toast('加载失败，请检查网络后重试');
   }
 }
 
@@ -1037,7 +1037,7 @@ function loadProg(){
     S.textAlign  = d.textAlign  || 'left';
   }
   const v = localStorage.getItem('vocab');
-  if(v) S.vocab = JSON.parse(v);
+  if(v) try{ S.vocab = JSON.parse(v); }catch(e){}
 }
 function restoreProg(){
   if(S.idx > 0 && S.idx < S.sents.length){
@@ -1730,7 +1730,8 @@ document.addEventListener('click', e => {
 function speakWord(w){
   const u = new SpeechSynthesisUtterance(w);
   u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
-  synth.cancel(); synth.speak(u);
+  if(!S.playing && !S.paused) synth.cancel();
+  synth.speak(u);
 }
 
 // ═══════════════════════════════════════════
@@ -2013,12 +2014,6 @@ function updateProg(){
   document.getElementById('prog-pct').textContent=Math.round(pct)+'%';
   document.getElementById('pct-badge').textContent=Math.round(pct)+'%';
 }
-function restoreProg(){
-  if(S.idx>0&&S.idx<S.sents.length){
-    setTimeout(()=>{ jump(S.idx); toast(`已恢复 ${Math.round(S.idx/S.sents.length*100)}% 进度`); },400);
-  }
-}
-
 // ═══════════════════════════════════════════
 //  SEARCH
 // ═══════════════════════════════════════════
@@ -2705,10 +2700,6 @@ window.addEventListener('unhandledrejection', e => {
 // ── 离线检测
 window.addEventListener('offline', () => toast('已离线，云端功能暂不可用'));
 window.addEventListener('online',  () => toast('网络已恢复'));
-
-// ── INIT
-const sv=localStorage.getItem('vocab');
-if(sv) S.vocab=JSON.parse(sv);
 
 // ── PWA: register service worker
 if ('serviceWorker' in navigator) {

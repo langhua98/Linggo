@@ -134,6 +134,7 @@ function openFlashcard(){
 }
 
 async function showFcCard(instant){
+  clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
   if(fcIdx >= fcDeck.length){ showFcResult(); return; }
   const v = fcDeck[fcIdx];
   fcFlipped = false;

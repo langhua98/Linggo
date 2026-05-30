@@ -15,6 +15,7 @@
   --shadow-sm:   0 1px 3px rgba(0,0,0,0.08);
   --shadow-md:   0 4px 16px rgba(0,0,0,0.10);
   --shadow-lg:   0 12px 40px rgba(0,0,0,0.13);
+  --shadow:      0 4px 16px rgba(0,0,0,0.10);
   --r-sm:        10px;
   --r-md:        16px;
   --r-lg:        24px;
@@ -36,6 +37,7 @@
   --shadow-sm:  0 1px 3px rgba(0,0,0,0.3);
   --shadow-md:  0 4px 16px rgba(0,0,0,0.4);
   --shadow-lg:  0 12px 40px rgba(0,0,0,0.5);
+  --shadow:     0 4px 16px rgba(0,0,0,0.4);
 }
 
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
