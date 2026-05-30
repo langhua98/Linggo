@@ -948,6 +948,17 @@ document.getElementById('lib-open-btn').addEventListener('click', () => {
   if(!voaLoaded){ voaLoaded=true; loadVoaFeed(); }
 });
 document.getElementById('lib-close').addEventListener('click', () => {
+  // Smart back: GB panel → search panel → book list → close library
+  if(gbPanel && gbPanel.style.display !== 'none'){
+    closeGbPanel();
+    const q = libSearchEl.value.trim();
+    if(q){ showSearchPanel(q); } else { hideSearchPanel(); }
+    return;
+  }
+  if(libSearchPanel.style.display !== 'none'){
+    hideSearchPanel();
+    return;
+  }
   document.getElementById('library').classList.remove('open');
 });
 
