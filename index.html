@@ -221,15 +221,20 @@
       <button class="lsp-online-btn" id="lsp-se-btn">搜索 →</button>
     </div>
   </div>
-  <!-- 分类标签栏 -->
+  <!-- 统一筛选栏 -->
   <div class="lib-cats-bar">
-    <button class="lcat on" data-cat="all">全部</button>
-    <button class="lcat" data-cat="classic">经典</button>
-    <button class="lcat" data-cat="mystery">推理</button>
-    <button class="lcat" data-cat="adventure">冒险</button>
-    <button class="lcat" data-cat="scifi">科幻</button>
-    <button class="lcat" data-cat="horror">恐怖</button>
-    <button class="lcat" data-cat="short">短篇</button>
+    <button class="lcat on" data-filter="all">全部</button>
+    <span class="lcat-sep"></span>
+    <button class="lcat lcat-lv" data-filter="lv-0">入门</button>
+    <button class="lcat lcat-lv" data-filter="lv-1">中级</button>
+    <button class="lcat lcat-lv" data-filter="lv-2">进阶</button>
+    <span class="lcat-sep"></span>
+    <button class="lcat" data-filter="classic">经典</button>
+    <button class="lcat" data-filter="mystery">推理</button>
+    <button class="lcat" data-filter="adventure">冒险</button>
+    <button class="lcat" data-filter="scifi">科幻</button>
+    <button class="lcat" data-filter="horror">恐怖</button>
+    <button class="lcat" data-filter="short">短篇</button>
   </div>
   <!-- Book search panel (Gutenberg + Standard Ebooks) -->
   <div id="gb-panel" style="display:none">
@@ -242,13 +247,6 @@
       <button id="gb-search-btn">搜索</button>
     </div>
     <div id="gb-results"></div>
-  </div>
-  <!-- level tabs -->
-  <div class="lib-level-tabs">
-    <button class="lv-tab on" data-lv="all">全部</button>
-    <button class="lv-tab" data-lv="0">入门</button>
-    <button class="lv-tab" data-lv="1">中级</button>
-    <button class="lv-tab" data-lv="2">进阶</button>
   </div>
   <!-- book rows -->
   <div class="lib-scroll" id="lib-scroll">

@@ -463,7 +463,7 @@ SE_BOOKS.forEach(b => { b.url = 'se://' + b.slug; b.isbn = ''; });
 
 // Category labels
 const CAT_LABELS = {all:'全部',classic:'经典',mystery:'推理',adventure:'冒险',scifi:'科幻',horror:'恐怖',short:'短篇'};
-let libCat = 'all', libQuery = '';
+let libFilter = 'all', libQuery = '';
 
 // ── Cover URL
 function coverUrl(isbn){ return `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`; }
@@ -785,8 +785,14 @@ function renderLib(){
     const row = document.getElementById(`lib-row-${li}`);
     if(!row) return;
     row.innerHTML = '';
+    // Level filter: hide entire section if not matching
+    if(libFilter.startsWith('lv-') && libFilter !== `lv-${li}`){
+      document.getElementById(`lib-level-${li}`).style.display = 'none';
+      return;
+    }
+    const cat = libFilter.startsWith('lv-') ? 'all' : libFilter;
     const filtered = level.filter(b => {
-      const catOk = libCat === 'all' || b.cat.includes(libCat);
+      const catOk = cat === 'all' || b.cat.includes(cat);
       const q     = libQuery.toLowerCase();
       const qOk   = !q || b.t.toLowerCase().includes(q) || b.a.toLowerCase().includes(q);
       return catOk && qOk;
@@ -803,15 +809,14 @@ let libSearchTimer;
 const libSearchEl    = document.getElementById('lib-search');
 const libSearchClear = document.getElementById('lib-search-clear');
 const libSearchPanel = document.getElementById('lib-search-panel');
-const libScrollEl    = document.getElementById('lib-scroll');
-const libLevelTabsEl = document.querySelector('.lib-level-tabs');
-const libCatsBarEl   = document.querySelector('.lib-cats-bar');
+const libScrollEl  = document.getElementById('lib-scroll');
+const libCatsBarEl = document.querySelector('.lib-cats-bar');
 const LEVEL_NAMES    = ['入门', '中级', '进阶'];
 
 function showSearchPanel(q){
   libSearchPanel.style.display = '';
   libScrollEl.style.display    = 'none';
-  libLevelTabsEl.style.display = 'none';
+  
   libCatsBarEl.style.display   = 'none';
   libSearchClear.style.display = '';
 
@@ -843,7 +848,7 @@ function showSearchPanel(q){
     moreBtn.onclick = () => {
       libSearchPanel.style.display = 'none';
       libScrollEl.style.display    = '';
-      libLevelTabsEl.style.display = '';
+      
       libCatsBarEl.style.display   = '';
       libQuery = q;
       renderLib();
@@ -857,7 +862,7 @@ function showSearchPanel(q){
 function hideSearchPanel(){
   libSearchPanel.style.display = 'none';
   libScrollEl.style.display    = '';
-  libLevelTabsEl.style.display = '';
+  
   libCatsBarEl.style.display   = '';
   libSearchClear.style.display = 'none';
   libSearchEl.value = '';
@@ -879,7 +884,7 @@ function showGbFromSearch(src){
     b.classList.toggle('on', b.dataset.src === src));
   libSearchPanel.style.display = 'none';
   libScrollEl.style.display    = 'none';
-  libLevelTabsEl.style.display = 'none';
+  
   libCatsBarEl.style.display   = 'none';
   document.querySelector('.gb-input-row').style.display = 'none';
   document.querySelector('.gb-tabs').style.display      = 'none';
@@ -908,10 +913,10 @@ libSearchClear.addEventListener('click', () => {
 document.getElementById('lsp-gb-btn').addEventListener('click', () => showGbFromSearch('gutenberg'));
 document.getElementById('lsp-se-btn').addEventListener('click', () => showGbFromSearch('se'));
 
-// ── Category tab bar
+// ── Unified filter bar (level + category)
 document.querySelectorAll('.lcat').forEach(btn => {
   btn.addEventListener('click', () => {
-    libCat = btn.dataset.cat;
+    libFilter = btn.dataset.filter;
     document.querySelectorAll('.lcat').forEach(b => b.classList.toggle('on', b === btn));
     renderLib();
   });
@@ -948,47 +953,6 @@ document.getElementById('lib-close').addEventListener('click', () => {
 
 renderLib();
 
-// ── Level tabs: click → scroll, scroll → highlight tab
-(function(){
-  const tabs = document.querySelectorAll('.lv-tab');
-  const levels = [
-    document.getElementById('lib-level-0'),
-    document.getElementById('lib-level-1'),
-    document.getElementById('lib-level-2'),
-  ];
-  const scroll = document.getElementById('lib-scroll');
-
-  // Click → smooth scroll to level
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      const lv = tab.dataset.lv;
-      if(lv === 'all'){
-        scroll.scrollTo({ top: 0, behavior: 'smooth' });
-      } else {
-        const el = document.getElementById('lib-level-' + lv);
-        if(el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-      tabs.forEach(t => t.classList.remove('on'));
-      tab.classList.add('on');
-    });
-  });
-
-  // Scroll → auto-highlight tab via IntersectionObserver
-  const obs = new IntersectionObserver(entries => {
-    entries.forEach(entry => {
-      if(entry.isIntersecting){
-        const id = entry.target.id; // e.g. lib-level-0
-        const lv = id.replace('lib-level-', '');
-        tabs.forEach(t => t.classList.remove('on'));
-        const active = document.querySelector(`.lv-tab[data-lv="${lv}"]`);
-        if(active) active.classList.add('on');
-        else document.querySelector('.lv-tab[data-lv="all"]').classList.add('on');
-      }
-    });
-  }, { root: scroll, threshold: 0.35 });
-
-  levels.forEach(el => { if(el) obs.observe(el); });
-})();
 
 
 // ═══════════════════════════════════════════
