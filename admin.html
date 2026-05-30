@@ -58,26 +58,28 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);min-
 /* ── TOPBAR ── */
 #dash{display:none}
 .top{
-  position:sticky;top:0;z-index:20;height:58px;
+  position:sticky;top:0;z-index:20;height:56px;
   background:var(--surface);border-bottom:1px solid var(--border);
-  padding:0 24px;display:flex;align-items:center;gap:10px;
+  padding:0 16px;display:flex;align-items:center;gap:8px;
   box-shadow:0 1px 8px rgba(0,0,0,.05)
 }
-.top-logo{font-family:'Lora',serif;font-size:19px;color:var(--accent);font-weight:600}
+.top-logo{font-family:'Lora',serif;font-size:18px;color:var(--accent);font-weight:600}
 .top-badge{
   font-size:10px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
-  background:var(--accent-d);color:var(--accent);border-radius:6px;padding:2px 9px
+  background:var(--accent-d);color:var(--accent);border-radius:6px;padding:2px 8px
 }
-.top-r{margin-left:auto;display:flex;align-items:center;gap:8px}
+.top-r{margin-left:auto;display:flex;align-items:center;gap:6px}
 .top-ts{font-size:11px;color:var(--text-3);white-space:nowrap}
+@media(max-width:480px){.top-ts{display:none}}
 .tbtn{
-  height:32px;padding:0 13px;border-radius:8px;border:1.5px solid var(--border);
+  height:32px;padding:0 11px;border-radius:8px;border:1.5px solid var(--border);
   background:none;color:var(--text-2);font-family:inherit;font-size:12px;font-weight:700;
-  cursor:pointer;transition:all .15s
+  cursor:pointer;transition:all .15s;white-space:nowrap
 }
 .tbtn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-d)}
 .tbtn.danger{border-color:transparent;background:var(--rose-d);color:var(--rose)}
 .tbtn.danger:hover{opacity:.8}
+@media(max-width:480px){.tbtn-label{display:none}}
 
 /* ── BODY ── */
 .body{max-width:1120px;margin:0 auto;padding:28px 20px 80px}
@@ -119,16 +121,16 @@ body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);min-
 .ch-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .ch-hd h3{font-size:13px;font-weight:700}
 .ch-leg{font-size:11px;color:var(--text-3)}
-.ch-empty{height:120px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px}
-.bars{display:flex;align-items:flex-end;gap:2px;height:120px;padding-bottom:20px}
+.ch-empty{height:180px;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:13px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:180px;padding-bottom:22px}
 .bw{flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;position:relative}
 .b{width:100%;border-radius:3px 3px 0 0;min-height:2px;position:relative;cursor:pointer;transition:opacity .15s}
 .b:hover{opacity:.85!important}
-.b:hover .btip{display:block}
+.b:hover .btip,.btip.show{display:block}
 .btip{
   display:none;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
   background:var(--text);color:var(--surface);font-size:11px;font-weight:700;
-  border-radius:6px;padding:3px 8px;white-space:nowrap;z-index:10;pointer-events:none
+  border-radius:6px;padding:4px 10px;white-space:nowrap;z-index:10;pointer-events:none
 }
 .bl{font-size:9px;color:var(--text-3);position:absolute;bottom:0;left:50%;transform:translateX(-50%);white-space:nowrap}
 
@@ -194,8 +196,8 @@ tr:hover td{background:var(--surface-2)}
     <div class="top-r">
       <span class="top-ts" id="ts"></span>
       <button class="tbtn" id="dm-btn">🌙</button>
-      <button class="tbtn" id="ref-btn">↻ 刷新</button>
-      <button class="tbtn danger" id="out-btn">退出</button>
+      <button class="tbtn" id="ref-btn">↻ <span class="tbtn-label">刷新</span></button>
+      <button class="tbtn danger" id="out-btn"><span class="tbtn-label">退出</span>✕</button>
     </div>
   </div>
 
@@ -229,7 +231,7 @@ tr:hover td{background:var(--surface-2)}
         <div class="c-icon" style="background:var(--amber-d)">🌐</div>
         <div class="c-val" id="s-total" style="color:var(--amber)">—</div>
         <div class="c-lbl">累计访问</div>
-        <div class="c-sub" id="s-fc-sub"></div>
+        <div class="c-sub" id="s-total-sub"></div>
       </div>
     </div>
 
@@ -295,9 +297,14 @@ tr:hover td{background:var(--surface-2)}
 <script>
 const SB_URL  = 'https://ueskojxtupmxwolzxdxa.supabase.co';
 const SB_KEY  = 'sb_publishable_-hbkl0aTVPGCfSL8rk6WPQ_mzGQ52O-';
-const ADMIN_PW = 'linggo2025';
+const ADMIN_HASH = '86227fb76a17d31cb8c6aa38c7590a199dda989135fdadce96b0ff31ea1d8176';
 const GATE_KEY = 'linggo_admin_ok';
 const DM_KEY   = 'linggo_dark';
+
+async function sha256(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
 
 async function callRpc(fn, params={}){
   const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`,{
@@ -313,14 +320,18 @@ async function callRpc(fn, params={}){
 function checkGate(){ return sessionStorage.getItem(GATE_KEY)==='1'; }
 document.getElementById('g-btn').onclick = doLogin;
 document.getElementById('g-pwd').onkeydown = e=>{ if(e.key==='Enter') doLogin(); };
-function doLogin(){
-  if(document.getElementById('g-pwd').value === ADMIN_PW){
+async function doLogin(){
+  const btn = document.getElementById('g-btn');
+  btn.disabled = true; btn.textContent = '验证中…';
+  const hash = await sha256(document.getElementById('g-pwd').value);
+  if(hash === ADMIN_HASH){
     sessionStorage.setItem(GATE_KEY,'1');
     showDash();
   } else {
     document.getElementById('g-err').textContent = '密码错误，请重试';
     document.getElementById('g-pwd').value = '';
     document.getElementById('g-pwd').focus();
+    btn.disabled = false; btn.textContent = '进入后台 →';
   }
 }
 function showDash(){
@@ -343,7 +354,15 @@ applyDark(localStorage.getItem(DM_KEY)==='1');
 // ── CONTROLS
 document.getElementById('out-btn').onclick = ()=>{ sessionStorage.removeItem(GATE_KEY); location.reload(); };
 document.getElementById('ref-btn').onclick = loadStats;
-setInterval(()=>{ if(checkGate()) loadStats(); }, 5*60*1000);
+setInterval(()=>{
+  if(!checkGate()) return;
+  loadStats();
+  // Brief visual pulse on the timestamp to signal auto-refresh
+  const ts = document.getElementById('ts');
+  ts.style.transition='opacity .3s';
+  ts.style.opacity='0';
+  setTimeout(()=>{ ts.style.opacity='1'; }, 350);
+}, 5*60*1000);
 
 // ── LOAD
 async function loadStats(){
@@ -375,7 +394,7 @@ async function loadStats(){
     }
 
     const fcr = d.fc_reviews??0;
-    document.getElementById('s-fc-sub').textContent = `${fcr} 次闪卡复习`;
+    document.getElementById('s-total-sub').innerHTML = '<span class="eq">自上线以来</span>';
 
     document.getElementById('m-vu').textContent  = vu;
     document.getElementById('m-fc').textContent  = fcr;
@@ -433,6 +452,13 @@ function renderBars(barsId, emptyId, legId, rows, color, unit){
     const tip=document.createElement('div'); tip.className='btip';
     tip.textContent=`${row.date}  ${row.count}${unit}`;
     b.appendChild(tip);
+    // Mobile touch: tap to show tooltip briefly
+    b.addEventListener('touchstart', e=>{
+      e.preventDefault();
+      document.querySelectorAll('.btip.show').forEach(t=>t.classList.remove('show'));
+      tip.classList.add('show');
+      setTimeout(()=>tip.classList.remove('show'), 1800);
+    }, {passive:false});
     const dl=document.createElement('div'); dl.className='bl';
     if(showLbl){ dl.textContent=isT?'今':row.date.slice(5); if(isT){dl.style.color=color;dl.style.fontWeight='800';} }
     w.appendChild(b); w.appendChild(dl); bEl.appendChild(w);
