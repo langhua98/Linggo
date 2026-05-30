@@ -178,18 +178,25 @@ body{
 #share-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-2);}
 #share-btn svg{width:18px;height:18px;flex-shrink:0;}
 .features{
-  display:grid;grid-template-columns:1fr 1fr;
-  gap:8px;margin-top:20px;
+  display:flex;flex-direction:column;gap:0;
+  margin-top:20px;
   width:min(340px,88vw);
-}
-.feat{
-  background:var(--surface);border:1px solid var(--border);
-  border-radius:12px;padding:12px 14px;
-  font-size:13px;font-weight:600;color:var(--text-2);
-  display:flex;align-items:center;gap:8px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:16px;
+  overflow:hidden;
   box-shadow:var(--shadow-sm);
 }
-.feat-icon{font-size:18px;}
+.feat{
+  display:flex;align-items:flex-start;gap:12px;
+  padding:14px 16px;
+  border-bottom:1px solid var(--border);
+}
+.feat:last-child{border-bottom:none;}
+.feat-icon{font-size:22px;flex-shrink:0;margin-top:1px;}
+.feat-body{}
+.feat-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:2px;}
+.feat-desc{font-size:12px;color:var(--text-2);line-height:1.5;}
 
 /* ── LIBRARY ── */
 #library{
