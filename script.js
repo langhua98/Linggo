@@ -843,6 +843,48 @@ document.getElementById('lib-close').addEventListener('click', () => {
 
 renderLib();
 
+// ── Level tabs: click → scroll, scroll → highlight tab
+(function(){
+  const tabs = document.querySelectorAll('.lv-tab');
+  const levels = [
+    document.getElementById('lib-level-0'),
+    document.getElementById('lib-level-1'),
+    document.getElementById('lib-level-2'),
+  ];
+  const scroll = document.getElementById('lib-scroll');
+
+  // Click → smooth scroll to level
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const lv = tab.dataset.lv;
+      if(lv === 'all'){
+        scroll.scrollTo({ top: 0, behavior: 'smooth' });
+      } else {
+        const el = document.getElementById('lib-level-' + lv);
+        if(el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      tabs.forEach(t => t.classList.remove('on'));
+      tab.classList.add('on');
+    });
+  });
+
+  // Scroll → auto-highlight tab via IntersectionObserver
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if(entry.isIntersecting){
+        const id = entry.target.id; // e.g. lib-level-0
+        const lv = id.replace('lib-level-', '');
+        tabs.forEach(t => t.classList.remove('on'));
+        const active = document.querySelector(`.lv-tab[data-lv="${lv}"]`);
+        if(active) active.classList.add('on');
+        else document.querySelector('.lv-tab[data-lv="all"]').classList.add('on');
+      }
+    });
+  }, { root: scroll, threshold: 0.35 });
+
+  levels.forEach(el => { if(el) obs.observe(el); });
+})();
+
 
 // ═══════════════════════════════════════════
 //  STATE

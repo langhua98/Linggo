@@ -268,6 +268,31 @@ body{
 }
 .lcat:hover{border-color:var(--accent);color:var(--accent);}
 .lcat.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+
+/* ── Level Tabs ── */
+.lib-level-tabs{
+  display:flex;gap:8px;
+  padding:10px 16px;
+  background:var(--bg);
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.lv-tab{
+  flex:1;
+  padding:9px 4px;
+  border:1.5px solid var(--border);border-radius:12px;
+  background:var(--surface);
+  color:var(--text-2);
+  font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+  cursor:pointer;
+  transition:all .18s;
+  white-space:nowrap;
+}
+.lv-tab.on{
+  background:var(--accent);color:#fff;border-color:var(--accent);
+  box-shadow:0 3px 10px rgba(37,99,235,0.28);
+  transform:translateY(-1px);
+}
 /* ── Gutenberg search panel ── */
 #gb-panel{
   flex-shrink:0;
