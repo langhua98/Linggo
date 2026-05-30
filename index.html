@@ -190,9 +190,33 @@
         <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
       </svg>
       <input id="lib-search" type="text" placeholder="搜索书名、作者…">
+      <button id="lib-search-clear" style="display:none">✕</button>
     </div>
-    <button id="lib-add-btn">搜索书籍</button>
+    <button id="lib-add-btn" style="display:none">搜索书籍</button>
     <button class="lib-close" id="lib-close">✕</button>
+  </div>
+  <!-- 统一搜索结果面板 -->
+  <div id="lib-search-panel" style="display:none">
+    <div id="lsp-local">
+      <div class="lsp-section-head">本地书目</div>
+      <div id="lsp-local-list"></div>
+      <button id="lsp-more" style="display:none">查看全部</button>
+    </div>
+    <div class="lsp-section-head">在线添加新书</div>
+    <div class="lsp-online-row">
+      <span class="lsp-online-name">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        Gutenberg
+      </span>
+      <button class="lsp-online-btn" id="lsp-gb-btn">搜索 →</button>
+    </div>
+    <div class="lsp-online-row">
+      <span class="lsp-online-name">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Standard Ebooks
+      </span>
+      <button class="lsp-online-btn" id="lsp-se-btn">搜索 →</button>
+    </div>
   </div>
   <!-- 分类标签栏 -->
   <div class="lib-cats-bar">

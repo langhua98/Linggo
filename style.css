@@ -246,6 +246,64 @@ body{
 #lib-add-btn:hover{opacity:.85;}
 #lib-add-btn.active{background:var(--accent-2);color:var(--accent);}
 /* ── 分类标签栏 ── */
+/* ── lib search clear btn ── */
+#lib-search-clear{
+  position:absolute;right:10px;
+  background:none;border:none;cursor:pointer;
+  color:var(--text-3);font-size:16px;padding:4px;
+  line-height:1;
+}
+#lib-search-clear:hover{color:var(--text);}
+
+/* ── unified search panel ── */
+#lib-search-panel{
+  flex-shrink:0;
+  background:var(--bg);
+  border-bottom:1px solid var(--border);
+  padding:8px 0 4px;
+}
+.lsp-section-head{
+  font-size:11px;font-weight:700;color:var(--text-3);
+  text-transform:uppercase;letter-spacing:.08em;
+  padding:8px 16px 4px;
+}
+.lsp-local-item{
+  display:flex;flex-direction:column;
+  padding:10px 16px;
+  cursor:pointer;
+  border-bottom:1px solid var(--border);
+  transition:background .12s;
+}
+.lsp-local-item:hover{background:var(--accent-2);}
+.lsp-item-title{font-size:14px;font-weight:600;color:var(--text);}
+.lsp-item-meta{font-size:12px;color:var(--text-2);margin-top:2px;}
+#lsp-more{
+  width:100%;padding:10px 16px;
+  background:none;border:none;
+  color:var(--accent);font-size:13px;font-weight:600;
+  text-align:left;cursor:pointer;
+  font-family:'Nunito',sans-serif;
+}
+.lsp-online-row{
+  display:flex;align-items:center;
+  padding:11px 16px;
+  border-bottom:1px solid var(--border);
+}
+.lsp-online-name{
+  flex:1;display:flex;align-items:center;gap:8px;
+  font-size:14px;font-weight:600;color:var(--text);
+}
+.lsp-online-name svg{width:16px;height:16px;color:var(--text-2);flex-shrink:0;}
+.lsp-online-btn{
+  flex-shrink:0;
+  padding:5px 12px;border-radius:20px;
+  background:var(--accent);color:#fff;border:none;
+  font-size:12px;font-weight:700;cursor:pointer;
+  font-family:'Nunito',sans-serif;
+  transition:opacity .15s;
+}
+.lsp-online-btn:hover{opacity:.85;}
+
 .lib-cats-bar{
   flex-shrink:0;
   display:flex;gap:8px;

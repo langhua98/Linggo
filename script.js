@@ -796,11 +796,104 @@ function renderLib(){
   document.getElementById('lib-empty').style.display = any ? 'none' : '';
 }
 
-// ── Search
+// ── Unified search
 let libSearchTimer;
-document.getElementById('lib-search').addEventListener('input', e => {
+const libSearchEl    = document.getElementById('lib-search');
+const libSearchClear = document.getElementById('lib-search-clear');
+const libSearchPanel = document.getElementById('lib-search-panel');
+const libScrollEl    = document.getElementById('lib-scroll');
+const libLevelTabsEl = document.querySelector('.lib-level-tabs');
+const libCatsBarEl   = document.querySelector('.lib-cats-bar');
+const LEVEL_NAMES    = ['入门', '中级', '进阶'];
+
+function showSearchPanel(q){
+  libSearchPanel.style.display = '';
+  libScrollEl.style.display    = 'none';
+  libLevelTabsEl.style.display = 'none';
+  libCatsBarEl.style.display   = 'none';
+  libSearchClear.style.display = '';
+
+  // local results
+  const ql = q.toLowerCase();
+  const allBooks = BOOKS.flat();
+  const matches = allBooks.filter(b =>
+    b.t.toLowerCase().includes(ql) || b.a.toLowerCase().includes(ql)
+  );
+  const list = document.getElementById('lsp-local-list');
+  list.innerHTML = '';
+  matches.slice(0,4).forEach(b => {
+    const lv = BOOKS.findIndex(arr => arr.includes(b));
+    const row = document.createElement('div');
+    row.className = 'lsp-local-item';
+    row.innerHTML = `<div class="lsp-item-title">${b.t}</div>
+      <div class="lsp-item-meta">${b.a} · ${LEVEL_NAMES[lv]??''}</div>`;
+    row.addEventListener('click', () => {
+      hideSearchPanel();
+      document.getElementById('library').classList.remove('open');
+      loadBook(b, null);
+    });
+    list.appendChild(row);
+  });
+  const moreBtn = document.getElementById('lsp-more');
+  if(matches.length > 4){
+    moreBtn.textContent = `查看全部 ${matches.length} 个结果 →`;
+    moreBtn.style.display = '';
+    moreBtn.onclick = () => { hideSearchPanel(); libQuery = q; renderLib(); };
+  } else {
+    moreBtn.style.display = 'none';
+  }
+  document.getElementById('lsp-local').style.display = matches.length ? '' : 'none';
+}
+
+function hideSearchPanel(){
+  libSearchPanel.style.display = 'none';
+  libScrollEl.style.display    = '';
+  libLevelTabsEl.style.display = '';
+  libCatsBarEl.style.display   = '';
+  libSearchClear.style.display = 'none';
+  libSearchEl.value = '';
+  libQuery = '';
+  renderLib();
+}
+
+libSearchEl.addEventListener('input', e => {
   clearTimeout(libSearchTimer);
-  libSearchTimer = setTimeout(() => { libQuery = e.target.value.trim(); renderLib(); }, 200);
+  const q = e.target.value.trim();
+  if(!q){ hideSearchPanel(); return; }
+  libSearchTimer = setTimeout(() => showSearchPanel(q), 200);
+});
+
+libSearchClear.addEventListener('click', hideSearchPanel);
+
+// Online search buttons
+document.getElementById('lsp-gb-btn').addEventListener('click', () => {
+  const q = libSearchEl.value.trim();
+  gbInput.value = q;
+  gbSrc = 'gutenberg';
+  document.querySelectorAll('.gb-tab').forEach(b =>
+    b.classList.toggle('on', b.dataset.src === 'gutenberg'));
+  libSearchPanel.style.display = 'none';
+  libScrollEl.style.display    = '';
+  libLevelTabsEl.style.display = '';
+  libCatsBarEl.style.display   = '';
+  gbPanel.style.display = '';
+  gbAddBtn.classList.add('active');
+  triggerSearch();
+});
+
+document.getElementById('lsp-se-btn').addEventListener('click', () => {
+  const q = libSearchEl.value.trim();
+  gbInput.value = q;
+  gbSrc = 'se';
+  document.querySelectorAll('.gb-tab').forEach(b =>
+    b.classList.toggle('on', b.dataset.src === 'se'));
+  libSearchPanel.style.display = 'none';
+  libScrollEl.style.display    = '';
+  libLevelTabsEl.style.display = '';
+  libCatsBarEl.style.display   = '';
+  gbPanel.style.display = '';
+  gbAddBtn.classList.add('active');
+  triggerSearch();
 });
 
 // ── Category tab bar
