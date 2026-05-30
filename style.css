@@ -257,12 +257,14 @@ body{
 /* ── 分类标签栏 ── */
 /* ── lib search clear btn ── */
 #lib-search-clear{
-  position:absolute;right:10px;
+  position:absolute;right:8px;
+  width:36px;height:36px;
   background:none;border:none;cursor:pointer;
-  color:var(--text-3);font-size:16px;padding:4px;
-  line-height:1;
+  color:var(--text-3);font-size:18px;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:50%;transition:background .12s,color .12s;
 }
-#lib-search-clear:hover{color:var(--text);}
+#lib-search-clear:hover{color:var(--text);background:var(--border);}
 
 /* ── unified search panel ── */
 #lib-search-panel{
@@ -305,11 +307,12 @@ body{
 .lsp-online-name svg{width:16px;height:16px;color:var(--text-2);flex-shrink:0;}
 .lsp-online-btn{
   flex-shrink:0;
-  padding:5px 12px;border-radius:20px;
+  padding:9px 20px;border-radius:22px;
   background:var(--accent);color:#fff;border:none;
-  font-size:12px;font-weight:700;cursor:pointer;
+  font-size:14px;font-weight:700;cursor:pointer;
   font-family:'Nunito',sans-serif;
   transition:opacity .15s;
+  min-height:40px;
 }
 .lsp-online-btn:hover{opacity:.85;}
 

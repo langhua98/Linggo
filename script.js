@@ -893,10 +893,27 @@ function showGbFromSearch(src){
   triggerSearch();
 }
 
+libSearchEl.addEventListener('focus', () => {
+  const q = libSearchEl.value.trim();
+  if(q) return; // has text — input handler covers it
+  // No query: show panel with just the online section
+  libSearchPanel.style.display = '';
+  libScrollEl.style.display    = 'none';
+  libCatsBarEl.style.display   = 'none';
+  libSearchClear.style.display = '';
+  document.getElementById('lsp-local').style.display = 'none';
+  document.getElementById('lsp-more').style.display  = 'none';
+});
+
 libSearchEl.addEventListener('input', e => {
   clearTimeout(libSearchTimer);
   const q = e.target.value.trim();
-  if(!q){ hideSearchPanel(); return; }
+  if(!q){
+    // Keep panel open with only online section when query cleared
+    document.getElementById('lsp-local').style.display = 'none';
+    document.getElementById('lsp-more').style.display  = 'none';
+    return;
+  }
   libSearchTimer = setTimeout(() => showSearchPanel(q), 200);
 });
 
