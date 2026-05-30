@@ -974,6 +974,22 @@ populateVoices();
 // ═══════════════════════════════════════════
 //  FILE LOADING (from local TXT upload)
 // ═══════════════════════════════════════════
+// ── Share app
+document.getElementById('share-btn').addEventListener('click', async () => {
+  const shareData = {
+    title: 'Linggo — 免费英文原著阅读器',
+    text: '推荐一个免费英文阅读工具 Linggo，57本经典名著免费读，点词查义+TTS跟读+闪卡背单词，完全免费无广告！',
+    url: 'https://langhua98.github.io/Linggo/'
+  };
+  if (navigator.share) {
+    try { await navigator.share(shareData); } catch(e) { /* user cancelled */ }
+  } else {
+    const text = `${shareData.text}\n${shareData.url}`;
+    await navigator.clipboard.writeText(text);
+    toast('推荐语已复制，粘贴发给朋友吧！');
+  }
+});
+
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
 dropZone.addEventListener('click', ()=>fileInput.click());
