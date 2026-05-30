@@ -560,6 +560,7 @@ async function loadSEBook(book, cardEl){
 
 // ── Card state manager
 function setCardAction(cardEl, state, pct){
+  if(!cardEl) return;
   const el = cardEl.querySelector('.bk-action');
   if(!el) return;
   if(state === 'ready'){
@@ -763,6 +764,7 @@ async function loadBook(book, cardEl){
     openBook(book, txt);
   }catch(e){
     setCardAction(cardEl, 'error', book.url);
+    if(!cardEl) toast('加载失败，请检查网络后重试');
   }
 }
 
