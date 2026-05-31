@@ -2356,83 +2356,69 @@ function renderSearchResults(results){
 // ── 每日英语（Simple English Wikipedia，无需代理）
 let voaLoaded = false;
 
+const WIKI_PALS = [
+  ['#1a1a2e','#16213e'],['#0f3460','#533483'],
+  ['#2d6a4f','#1b4332'],['#6b21a8','#3b0764'],
+  ['#991b1b','#7f1d1d'],['#1a535c','#0d3b47'],
+  ['#92400e','#78350f'],['#1e3a5f','#0c2340'],
+];
+
 async function loadVoaFeed(){
   const voaEl = document.getElementById('lib-level-voa');
   try{
     const ctrl = new AbortController();
     const tid  = setTimeout(()=>ctrl.abort(), 12000);
     const resp = await fetch(
-      'https://simple.wikipedia.org/w/api.php?action=query&list=random&rnnamespace=0&rnlimit=8&format=json&origin=*',
+      'https://simple.wikipedia.org/w/api.php?action=query&generator=random&grnnamespace=0&grnlimit=8&prop=extracts|pageimages&exintro=1&exsentences=2&explaintext=1&pithumbsize=400&format=json&origin=*',
       {signal:ctrl.signal}
     );
     clearTimeout(tid);
     if(!resp.ok) throw new Error('fetch failed');
     const data  = await resp.json();
-    const pages = data.query?.random || [];
+    const pages = Object.values(data.query?.pages || {});
     if(!pages.length) throw new Error('empty');
     const articles = pages.map(p =>({
       t:    p.title,
       url:  `https://simple.wikipedia.org/wiki/${encodeURIComponent(p.title.replace(/ /g,'_'))}`,
-      date: 'Simple English Wikipedia',
-      desc: '',
+      desc: (p.extract||'').slice(0,120).trim(),
+      img:  p.thumbnail?.source || '',
       _wiki: true,
     }));
     renderVoaArticles(articles);
     voaEl.style.display = '';
-    // 异步补充摘要
-    articles.forEach((a,i) => fetchWikiSummary(a.t, i));
   }catch(e){
     console.warn('Wiki articles fail',e);
     voaEl.style.display = 'none';
   }
 }
 
-async function fetchWikiSummary(title, idx){
-  try{
-    const ctrl = new AbortController();
-    setTimeout(()=>ctrl.abort(), 8000);
-    const resp = await fetch(
-      `https://simple.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&prop=extracts&exintro=1&exsentences=2&format=json&origin=*&explaintext=1`,
-      {signal:ctrl.signal}
-    );
-    if(!resp.ok) return;
-    const data = await resp.json();
-    const page = Object.values(data.query?.pages||{})[0];
-    const text = (page?.extract||'').slice(0,100).trim();
-    if(!text) return;
-    const items = document.querySelectorAll('.voa-item');
-    if(!items[idx]) return;
-    const info = items[idx].querySelector('.voa-item-info');
-    let descEl = items[idx].querySelector('.voa-item-desc');
-    if(!descEl && info){
-      descEl = document.createElement('div');
-      descEl.className = 'voa-item-desc';
-      info.appendChild(descEl);
-    }
-    if(descEl) descEl.textContent = text;
-  }catch(e){}
-}
-
 function renderVoaArticles(articles){
   const el = document.getElementById('voa-articles');
   el.innerHTML = '';
-  articles.forEach(article => {
+  articles.forEach((article, i) => {
     const div = document.createElement('div');
-    div.className = 'voa-item';
+    div.className = 'voa-card';
+    const [c1, c2] = WIKI_PALS[i % WIKI_PALS.length];
     div.innerHTML = `
-      <div class="voa-item-info">
-        <div class="voa-item-title">${_esc(article.t)}</div>
-        <div class="voa-item-date">${_esc(article.date)}</div>
+      <div class="voa-card-bg" style="${article.img
+        ? `background-image:url('${_esc(article.img)}')`
+        : `background:linear-gradient(135deg,${c1},${c2})`
+      }"></div>
+      <div class="voa-card-overlay"></div>
+      <div class="voa-card-body">
+        <span class="voa-card-src">Simple Wikipedia</span>
+        <div class="voa-card-title">${_esc(article.t)}</div>
+        ${article.desc ? `<div class="voa-card-desc">${_esc(article.desc)}</div>` : ''}
       </div>
-      <button class="voa-read-btn">阅读</button>`;
-    div.querySelector('.voa-read-btn').addEventListener('click', ()=> loadVoaArticle(article,div));
+      <div class="voa-card-loader" style="display:none"><span>加载中…</span></div>`;
+    div.addEventListener('click', () => loadVoaArticle(article, div));
     el.appendChild(div);
   });
 }
 
-async function loadVoaArticle(article, itemEl){
-  const btn = itemEl.querySelector('.voa-read-btn');
-  btn.textContent='加载中…'; btn.disabled=true;
+async function loadVoaArticle(article, cardEl){
+  const loader = cardEl.querySelector('.voa-card-loader');
+  if(loader) loader.style.display = '';
   try{
     const cached = await idbGet(article.url);
     if(cached){
@@ -2459,7 +2445,7 @@ async function loadVoaArticle(article, itemEl){
       return;
     }catch(e){ console.warn('wiki article fail',e); }
   }
-  btn.textContent='失败';
+  if(loader) loader.style.display = 'none';
   toast('加载失败，请检查网络连接');
 }
 
