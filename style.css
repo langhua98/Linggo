@@ -418,9 +418,18 @@ body{
 .voa-card-bg{
   position:absolute;inset:0;
   background-size:cover;background-position:center;
-  transition:transform .3s ease;
 }
-.voa-card:active .voa-card-bg{transform:scale(1.03);}
+.voa-card-bg.has-img{
+  filter:blur(14px) brightness(0.5);
+  transform:scale(1.15);
+}
+.voa-card:active .voa-card-bg.has-img{transform:scale(1.18);}
+.voa-card-img{
+  position:absolute;inset:0;
+  width:100%;height:100%;
+  object-fit:contain;object-position:center;
+  z-index:1;
+}
 .voa-card-overlay{
   position:absolute;inset:0;
   background:linear-gradient(to top,rgba(0,0,0,0.82) 0%,rgba(0,0,0,0.35) 55%,rgba(0,0,0,0.08) 100%);

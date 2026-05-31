@@ -2440,11 +2440,12 @@ function renderVoaArticles(articles){
     const div = document.createElement('div');
     div.className = 'voa-card';
     const [c1, c2] = WIKI_PALS[i % WIKI_PALS.length];
+    const bgStyle = article.img
+      ? `class="voa-card-bg has-img" style="background-image:url('${_esc(article.img)}')" `
+      : `class="voa-card-bg" style="background:linear-gradient(135deg,${c1},${c2})"`;
     div.innerHTML = `
-      <div class="voa-card-bg" style="${article.img
-        ? `background-image:url('${_esc(article.img)}')`
-        : `background:linear-gradient(135deg,${c1},${c2})`
-      }"></div>
+      <div ${bgStyle}></div>
+      ${article.img ? `<img class="voa-card-img" src="${_esc(article.img)}" alt="" loading="lazy">` : ''}
       <div class="voa-card-overlay"></div>
       <div class="voa-card-body">
         <span class="voa-card-src">Simple Wikipedia</span>
