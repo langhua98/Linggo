@@ -664,6 +664,8 @@ function openBookPreview(book, cardEl){
   document.getElementById('bprev-cats').innerHTML =
     (book.cat||[]).map(c=>`<span class="bprev-cat">${CAT_LABELS[c]||c}</span>`).join('');
   document.getElementById('bprev-desc').textContent = '加载简介中…';
+  const zhEl = document.getElementById('bprev-desc-zh');
+  if(zhEl){ zhEl.textContent = ''; zhEl.style.display = 'none'; }
 
   // Read button wires to the original card's action
   document.getElementById('bprev-read-btn').onclick = ()=>{
@@ -687,7 +689,10 @@ function closeBookPreview(){
 async function fetchBookDesc(book){
   const key = book.url || book.t;
   if(PREVIEW_CACHE.has(key)){
-    _setDesc(book, PREVIEW_CACHE.get(key)); return;
+    const text = PREVIEW_CACHE.get(key);
+    _setDesc(book, text);
+    _fetchZhDesc(book, text);
+    return;
   }
   // Try direct title, then "(novel)" variant
   for(const q of [book.t, book.t + ' (novel)']){
@@ -716,6 +721,7 @@ async function fetchBookDesc(book){
         }
         PREVIEW_CACHE.set(key, text);
         _setDesc(book, text);
+        _fetchZhDesc(book, text);
         return;
       }
     }catch(e){}
@@ -725,9 +731,44 @@ async function fetchBookDesc(book){
   _setDesc(book, fallback);
 }
 
+const ZH_CACHE = new Map();
+async function _fetchZhDesc(book, enText){
+  if(!enText || enText === '暂无简介。') return;
+  const key = book.url || book.t;
+  if(ZH_CACHE.has(key)){
+    _setZhDesc(book, ZH_CACHE.get(key)); return;
+  }
+  const toTrans = enText.length > 300
+    ? enText.slice(0, enText.lastIndexOf(' ', 300))
+    : enText;
+  try{
+    const ctrl = new AbortController();
+    const tid  = setTimeout(()=>ctrl.abort(), 10000);
+    const resp = await fetch(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(toTrans)}&langpair=en|zh-CN`,
+      {signal:ctrl.signal}
+    );
+    clearTimeout(tid);
+    if(!resp.ok) return;
+    const data = await resp.json();
+    const zh = data.responseData?.translatedText;
+    if(zh && zh.length > 10 && !/MYMEMORY WARNING/i.test(zh)){
+      ZH_CACHE.set(key, zh);
+      _setZhDesc(book, zh);
+    }
+  }catch(e){}
+}
+
 function _setDesc(book, text){
   if(_previewBook && (_previewBook.url===book.url || _previewBook.t===book.t)){
     document.getElementById('bprev-desc').textContent = text;
+  }
+}
+
+function _setZhDesc(book, text){
+  if(_previewBook && (_previewBook.url===book.url || _previewBook.t===book.t)){
+    const el = document.getElementById('bprev-desc-zh');
+    if(el){ el.textContent = text; el.style.display = ''; }
   }
 }
 
