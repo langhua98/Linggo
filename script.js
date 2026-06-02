@@ -2749,32 +2749,38 @@ if ('serviceWorker' in navigator) {
 }
 
 // ═══════════════════════════════════════════
-//  HIGH-QUALITY TTS — Microsoft Edge Neural via WebSocket
-//  Endpoint: speech.platform.bing.com (accessible in China, no API key)
-//  Same engine as Azure TTS / Edge Read Aloud (Aria, Sonia, etc.)
+//  HIGH-QUALITY TTS
+//  Primary : Microsoft Edge Neural WebSocket (speech.platform.bing.com)
+//  Fallback: Youdao dictvoice  (HTTP audio, Chinese company — works in China)
 // ═══════════════════════════════════════════
 let kokActive    = false;
 let kokSession   = 0;
-let kokWs        = null; // active synthesis WebSocket
-let kokAudio     = null; // active playback Audio element
-let kokAudioDone = null; // resolve fn — lets kokStop() abort mid-sentence
+let kokWs        = null;
+let kokAudio     = null;
+let kokAudioDone = null;
+let _edgeFailed  = false; // skip Edge WS for this session after first failure
 
 const _EDGE_WSS =
   'wss://speech.platform.bing.com/consumer/speech/synthesize/realtimeaudio/edge/v1' +
   '?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 
 function _edgeVoice(){ return S.accentUS ? 'en-US-AriaNeural' : 'en-GB-SoniaNeural'; }
-
 function _edgeRate(){
   const p = Math.round((S.speed - 1) * 100);
   return (p >= 0 ? '+' : '') + p + '%';
 }
-
 function _escXml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Synthesise text → resolves with Blob URL (caller must revoke), rejects on error
+// Youdao dictvoice — simple HTTP audio URL, accessible in China
+function _ydUrl(text){
+  const type = S.accentUS ? 1 : 2;
+  const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
+  return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(t)}&type=${type}`;
+}
+
+// Edge TTS WebSocket synthesis → Blob URL (caller must revoke)
 function _edgeSynth(text){
   return new Promise((resolve, reject) => {
     if(!text.trim()){ reject(new Error('empty')); return; }
@@ -2786,15 +2792,18 @@ function _edgeSynth(text){
       clearTimeout(timer);
       if(ok) resolve(val); else reject(new Error(val));
     };
-    const ws = new WebSocket(_EDGE_WSS);
+    // ConnectionId is required by some server versions
+    const connId = crypto.randomUUID().replace(/-/g,'');
+    const ws = new WebSocket(`${_EDGE_WSS}&ConnectionId=${connId}`);
     ws.binaryType = 'arraybuffer';
     kokWs = ws;
-    // Abort if no response within 8 s
-    const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 8000);
+    // Short timeout — firewall blocks cause TCP timeout, not fast rejection
+    const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 5000);
     ws.onopen = () => {
-      const ts = new Date().toISOString();
-      const id = crypto.randomUUID().replace(/-/g, '');
-      // 1. Send audio config
+      const ts  = new Date().toISOString();
+      const rid = crypto.randomUUID().replace(/-/g,'');
+      const lang = S.accentUS ? 'en-US' : 'en-GB';
+      // 1. Audio format config
       ws.send(
         `X-Timestamp:${ts}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
         JSON.stringify({context:{synthesis:{audio:{
@@ -2802,26 +2811,25 @@ function _edgeSynth(text){
           outputFormat:'audio-24khz-48kbitrate-mono-mp3'
         }}}})
       );
-      // 2. Send SSML synthesis request
-      const lang = S.accentUS ? 'en-US' : 'en-GB';
+      // 2. SSML request — pitch+volume required by reference implementation
       ws.send(
-        `X-RequestId:${id}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${ts}\r\nPath:ssml\r\n\r\n` +
+        `X-RequestId:${rid}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${ts}\r\nPath:ssml\r\n\r\n` +
         `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'>` +
-        `<voice name='${_edgeVoice()}'><prosody rate='${_edgeRate()}'>${_escXml(text)}</prosody></voice></speak>`
+        `<voice name='${_edgeVoice()}'>` +
+        `<prosody pitch='+0Hz' rate='${_edgeRate()}' volume='+0%'>${_escXml(text)}</prosody>` +
+        `</voice></speak>`
       );
     };
     ws.onmessage = e => {
       if(typeof e.data === 'string'){
         if(e.data.includes('Path:turn.end')){
           ws.close();
-          if(chunks.length){
-            finish(true, URL.createObjectURL(new Blob(chunks, {type:'audio/mpeg'})));
-          } else {
-            finish(false, 'no audio');
-          }
+          chunks.length
+            ? finish(true, URL.createObjectURL(new Blob(chunks, {type:'audio/mpeg'})))
+            : finish(false, 'no audio');
         }
       } else {
-        // Binary frame: [2-byte big-endian header-length][header bytes][MP3 audio bytes]
+        // Binary frame: [2-byte big-endian header-len][header bytes][MP3 data]
         const hLen = new DataView(e.data).getUint16(0);
         const audio = e.data.slice(2 + hLen);
         if(audio.byteLength > 0) chunks.push(audio);
@@ -2832,7 +2840,7 @@ function _edgeSynth(text){
   });
 }
 
-// Play a Blob URL; kokAudio / kokAudioDone track it so kokStop() can abort
+// Play any audio URL; kokAudio/kokAudioDone allow kokStop() to abort
 function _edgePlayUrl(url){
   return new Promise(resolve => {
     const a = new Audio(url);
@@ -2844,18 +2852,27 @@ function _edgePlayUrl(url){
   });
 }
 
-// Synthesise + play one sentence; returns true = success, false = error / interrupted
+// Synthesise + play one sentence; returns true = success, false = error/interrupted
 async function _edgePlayOne(text, mySession){
   let url = null;
+  let isBlobUrl = false;
   try {
-    url = await _edgeSynth(text);
-    kokWs = null; // synthesis done, clear ws reference
-    if(kokSession !== mySession) return false; // stopped while synthesising
+    if(!_edgeFailed){
+      try {
+        url = await _edgeSynth(text);
+        isBlobUrl = true;
+      } catch {
+        _edgeFailed = true; // don't retry Edge WS for this session
+      }
+    }
+    if(!url) url = _ydUrl(text); // Youdao fallback
+    kokWs = null;
+    if(kokSession !== mySession) return false;
     return await _edgePlayUrl(url);
   } catch {
     return false;
   } finally {
-    if(url) URL.revokeObjectURL(url);
+    if(isBlobUrl && url) URL.revokeObjectURL(url);
   }
 }
 
@@ -2874,13 +2891,7 @@ async function kokPlay(){
     jump(S.idx);
     const ok = await _edgePlayOne(S.sents[S.idx], mySession);
     if(kokSession !== mySession) break;
-    if(!ok){
-      toast('高音质服务异常，已切换回系统语音');
-      kokActive = false;
-      document.getElementById('kok-toggle').checked = false;
-      S.playing = false; S.paused = false; setIcon(false);
-      return;
-    }
+    if(!ok){ S.playing = false; S.paused = false; setIcon(false); return; }
     S.idx++;
   }
   if(kokSession === mySession){
@@ -2890,8 +2901,9 @@ async function kokPlay(){
 
 document.getElementById('kok-toggle').addEventListener('change', e => {
   kokActive = e.target.checked;
+  _edgeFailed = false; // retry Edge TTS on next enable
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
-  toast(kokActive ? '高音质已开启（Microsoft Aria · Neural）' : '已切换回系统语音');
+  toast(kokActive ? '高音质已开启（Microsoft Aria Neural）' : '已切换回系统语音');
 });
