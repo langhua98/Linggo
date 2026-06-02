@@ -186,33 +186,15 @@
     <!-- 高音质朗读 -->
     <div class="sb-section" id="sb-kokoro">
       <div class="sb-label">高音质朗读</div>
-      <div id="kok-state-init">
-        <p class="kok-desc">Kokoro 神经网络 TTS · 约 82 MB<br>媲美真人的英文朗读，下载后永久可用</p>
-        <button id="kok-dl-btn" class="kok-dl-btn">⬇ 下载高音质模型</button>
-      </div>
-      <div id="kok-state-loading" style="display:none">
-        <div class="kok-prog-label" id="kok-prog-label">准备中…</div>
-        <div class="kok-prog-wrap">
-          <div class="kok-prog-track"><div id="kok-prog-fill"></div></div>
+      <div class="kok-ready-row">
+        <div>
+          <div class="kok-hq-name">Amazon Polly</div>
+          <div class="kok-ready-sub">在线 Neural TTS · 需网络</div>
         </div>
-        <div class="kok-prog-info">
-          <span id="kok-prog-pct">0%</span>
-          <span id="kok-prog-mb"></span>
-        </div>
-      </div>
-      <div id="kok-state-ready" style="display:none">
-        <div class="kok-ready-row">
-          <div>
-            <div class="kok-ready-label">✓ 高音质已就绪</div>
-            <div class="kok-ready-sub">Kokoro · 神经网络 TTS</div>
-          </div>
-          <label class="kok-switch">
-            <input type="checkbox" id="kok-toggle" checked>
-            <span class="kok-slider"></span>
-          </label>
-        </div>
-      </div>
-    </div>
+        <label class="kok-switch">
+          <input type="checkbox" id="kok-toggle">
+          <span class="kok-slider"></span>
+        </label>
 
   </div>
 </div>

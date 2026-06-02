@@ -1898,27 +1898,8 @@ body{
 
 /* ── BOOK PREVIEW SHEET ── */
 /* ── Kokoro TTS ── */
-.kok-desc{font-size:12px;color:var(--text-2);line-height:1.65;margin-bottom:12px;}
-.kok-dl-btn{
-  width:100%;padding:11px;border:none;border-radius:10px;
-  background:linear-gradient(135deg,#2563EB,#3b82f6);color:#fff;
-  font-size:14px;font-weight:700;font-family:'Nunito',sans-serif;
-  cursor:pointer;transition:opacity .15s;
-}
-.kok-dl-btn:hover{opacity:.85;}
-.kok-prog-label{font-size:12px;color:var(--text-2);margin-bottom:8px;}
-.kok-prog-wrap{width:100%;margin-bottom:6px;}
-.kok-prog-track{
-  width:100%;height:8px;background:var(--border);
-  border-radius:4px;overflow:hidden;
-}
-#kok-prog-fill{
-  height:100%;width:0%;border-radius:4px;
-  background:linear-gradient(90deg,#2563EB,#60a5fa);
-  transition:width .25s;
-}
-.kok-prog-info{display:flex;justify-content:space-between;font-size:11px;color:var(--text-3);}
 .kok-ready-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.kok-hq-name{font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;}
 .kok-ready-label{font-size:13px;font-weight:700;color:var(--green);margin-bottom:2px;}
 .kok-ready-sub{font-size:11px;color:var(--text-3);}
 /* Toggle switch */

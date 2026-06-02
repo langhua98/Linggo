@@ -2749,142 +2749,60 @@ if ('serviceWorker' in navigator) {
 }
 
 // ═══════════════════════════════════════════
-//  KOKORO HIGH-QUALITY TTS ENGINE
+//  HIGH-QUALITY TTS — Amazon Polly via StreamElements
 // ═══════════════════════════════════════════
-let kok        = null;   // KokoroTTS instance
-let kokReady   = false;
-let kokLoading = false;
-let kokActive  = false;
-let kokAudioCtx    = null;
-let kokCurrentSrc  = null;
-let kokPrebuf      = null;  // { idx, promise }
-let kokSession     = 0;     // incremented on each stop to abort stale loops
+let kokActive  = false;   // user toggled on
+let kokSession = 0;       // incremented on stop to abort stale loops
+let kokCurAudio = null;   // current HTMLAudioElement
 
-function kokSetState(s){
-  document.getElementById('kok-state-init').style.display    = s==='init'    ? '' : 'none';
-  document.getElementById('kok-state-loading').style.display = s==='loading' ? '' : 'none';
-  document.getElementById('kok-state-ready').style.display   = s==='ready'   ? '' : 'none';
+// StreamElements proxy for Amazon Polly Neural TTS (free, no key needed)
+function _seUrl(text){
+  const voice = S.accentUS ? 'Joanna' : 'Brian'; // US female / UK male
+  const t = text.length > 280 ? text.slice(0, text.lastIndexOf(' ', 280)) : text;
+  return `https://api.streamelements.com/kappa/v2/speech?voice=${voice}&text=${encodeURIComponent(t)}`;
 }
 
-async function loadKokoro(){
-  if(kokLoading || kokReady) return;
-  kokLoading = true;
-  kokSetState('loading');
-  try{
-    const { KokoroTTS } = await import('https://esm.sh/kokoro-js');
-    kok = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-ONNX', {
-      dtype: 'q8',
-      progress_callback: p => {
-        const fill = document.getElementById('kok-prog-fill');
-        const pct  = document.getElementById('kok-prog-pct');
-        const mb   = document.getElementById('kok-prog-mb');
-        const lbl  = document.getElementById('kok-prog-label');
-        if(p.status === 'downloading' && p.total > 0){
-          const pc = Math.round(p.progress * 100);
-          if(fill) fill.style.width = pc + '%';
-          if(pct)  pct.textContent  = pc + '%';
-          if(mb)   mb.textContent   = (p.loaded/1048576).toFixed(0)+'/'+(p.total/1048576).toFixed(0)+' MB';
-          if(lbl)  lbl.textContent  = '下载中…';
-        } else if(p.status === 'loading'){
-          if(lbl) lbl.textContent = '初始化模型…';
-          if(fill) fill.style.width = '100%';
-        }
-      }
-    });
-    kokReady = true; kokLoading = false; kokActive = true;
-    kokSetState('ready');
-    localStorage.setItem('kokReady','1');
-    toast('高音质朗读已就绪 ✓');
-  }catch(e){
-    kokLoading = false;
-    kokSetState('init');
-    console.error('Kokoro load error:', e);
-    toast('下载失败，请检查网络连接');
-  }
-}
-
-document.getElementById('kok-dl-btn').addEventListener('click', loadKokoro);
-
-document.getElementById('kok-toggle').addEventListener('change', e => {
-  kokActive = e.target.checked;
-  if(!kokActive && (S.playing || S.paused)){
-    kokStop();
-    S.playing = false; S.paused = false; setIcon(false);
-  }
-  toast(kokActive ? '已切换到高音质朗读' : '已切换到系统语音');
-});
-
-// Auto-reload from browser cache if previously downloaded
-if(localStorage.getItem('kokReady')){
-  kokSetState('loading');
-  document.getElementById('kok-prog-label').textContent = '从缓存恢复…';
-  loadKokoro();
-}
-
-// ── Audio generation
-async function kokGen(text){
-  const voice = S.accentUS ? 'af_heart' : 'bf_emma';
-  return await kok.generate(text.trim() || '.', { voice });
-}
-
-// ── Render Float32Array to AudioContext and play
-async function kokPlayBuf({ audio, sampling_rate }){
-  if(!kokAudioCtx || kokAudioCtx.state === 'closed'){
-    kokAudioCtx = new AudioContext();
-  }
-  if(kokAudioCtx.state === 'suspended') await kokAudioCtx.resume();
-  const buf = kokAudioCtx.createBuffer(1, audio.length, sampling_rate);
-  buf.getChannelData(0).set(audio);
-  const src = kokAudioCtx.createBufferSource();
-  src.buffer = buf;
-  src.playbackRate.value = S.speed;
-  src.connect(kokAudioCtx.destination);
-  kokCurrentSrc = src;
-  return new Promise(resolve => { src.onended = resolve; src.start(); });
-}
-
-// ── Stop all Kokoro audio and invalidate running loop
 function kokStop(){
-  kokSession++;           // any running kokPlay loop will see session mismatch and exit
-  kokPrebuf = null;
-  if(kokCurrentSrc){ try{ kokCurrentSrc.stop(); }catch(e){} kokCurrentSrc = null; }
+  kokSession++;
+  if(kokCurAudio){ kokCurAudio.pause(); kokCurAudio.src=''; kokCurAudio=null; }
 }
 
-// ── Main async playback loop
+// Prebuffer next sentence silently
+function _kokPrebuf(idx){
+  if(idx >= S.sents.length) return null;
+  const a = new Audio(_seUrl(S.sents[idx]));
+  a.preload = 'auto'; a.load();
+  return a;
+}
+
 async function kokPlay(){
   const mySession = ++kokSession;
   S.playing = true; S.paused = false; setIcon(true);
 
+  let nextAudio = _kokPrebuf(S.idx + 1); // pre-warm next sentence
+
   while(S.idx < S.sents.length){
-    if(kokSession !== mySession) break;   // stop was called
+    if(kokSession !== mySession) break;
 
     jump(S.idx); updateProg();
 
-    // Get audio from prebuffer or generate fresh
-    let audioData;
+    const audio = _kokPrebuf(S.idx); // current sentence
+    audio.playbackRate = S.speed;
+    kokCurAudio = audio;
+
+    // Prebuffer the one after next
+    const afterNext = _kokPrebuf(S.idx + 2);
+
     try{
-      if(kokPrebuf && kokPrebuf.idx === S.idx){
-        audioData = await kokPrebuf.promise;
-        kokPrebuf = null;
-      } else {
-        audioData = await kokGen(S.sents[S.idx]);
-      }
-    }catch(e){
-      if(kokSession !== mySession) break;
-      S.idx++; continue;   // skip sentence on error
-    }
+      await new Promise((resolve, reject) => {
+        audio.onended = resolve;
+        audio.onerror = () => resolve(); // skip on error, don't block
+        audio.play().catch(() => resolve());
+      });
+    }catch(e){ /* skip */ }
 
+    nextAudio = afterNext;
     if(kokSession !== mySession) break;
-
-    // Pre-generate next sentence while current plays
-    const ni = S.idx + 1;
-    if(ni < S.sents.length && !(kokPrebuf?.idx === ni)){
-      kokPrebuf = { idx: ni, promise: kokGen(S.sents[ni]).catch(()=>null) };
-    }
-
-    await kokPlayBuf(audioData);
-    if(kokSession !== mySession) break;
-
     S.idx++;
   }
 
@@ -2892,3 +2810,11 @@ async function kokPlay(){
     S.playing = false; S.paused = false; setIcon(false); saveProg();
   }
 }
+
+document.getElementById('kok-toggle').addEventListener('change', e => {
+  kokActive = e.target.checked;
+  if(!kokActive && (S.playing || S.paused)){
+    kokStop(); S.playing=false; S.paused=false; setIcon(false);
+  }
+  toast(kokActive ? '高音质已开启（Amazon Polly）' : '已切换回系统语音');
+});
