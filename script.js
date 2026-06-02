@@ -2749,124 +2749,75 @@ if ('serviceWorker' in navigator) {
 }
 
 // ═══════════════════════════════════════════
-//  HIGH-QUALITY TTS
-//  Path A: Microsoft Neural/Online voices (Edge browser, works in China)
-//  Path B: StreamElements / Amazon Polly  (Chrome outside China)
+//  HIGH-QUALITY TTS — Best available browser voice via SpeechSynthesis
+//  Voice priority: Edge Neural > Siri/Premium/Enhanced > Google > MS offline
+//  Always works — no external API dependency
 // ═══════════════════════════════════════════
-let kokActive   = false;
-let kokSession  = 0;
-let kokCurAudio = null;
-let kokNextAudio = null;
+let kokActive  = false;
+let kokSession = 0;
 
-// Returns a Microsoft Neural/Online voice if available (Edge browser has them built-in)
+function _hqScore(v){
+  const n = v.name.toLowerCase();
+  if(/microsoft/.test(n) && /online|natural/.test(n)) return 100; // Edge Neural
+  if(/siri/.test(n))      return 90;
+  if(/premium/.test(n))   return 85;
+  if(/enhanced/.test(n))  return 80;
+  if(/google/.test(n))    return 60;
+  if(/natural/.test(n))   return 55;
+  if(/microsoft/.test(n)) return 40; // MS offline (Zira / David)
+  return 20;
+}
+
+// Returns the highest-quality English voice available in the current browser
 function _getHQVoice(){
   const voices = synth.getVoices();
   const pref = S.accentUS ? 'en-US' : 'en-GB';
-  const isNeural = v => /microsoft/i.test(v.name) && /online|natural/i.test(v.name);
-  return voices.find(v => v.lang === pref && isNeural(v))
-      || voices.find(v => v.lang.startsWith('en') && isNeural(v))
-      || null;
+  const en = voices.filter(v => v.lang.startsWith('en') && !BLOCK.test(v.name));
+  if(!en.length) return S.selectedVoice || null;
+  return en.sort((a, b) => {
+    const pa = a.lang === pref ? 10 : 0;
+    const pb = b.lang === pref ? 10 : 0;
+    return (_hqScore(b) + pb) - (_hqScore(a) + pa);
+  })[0];
 }
-
-// ── Path A helpers (SpeechSynthesis neural voice) ──────────────────────────
-
-function _kokPlayOneSynth(voice, text){
-  return new Promise(resolve => {
-    let settled = false;
-    const done = (ok) => { if(!settled){ settled = true; resolve(ok); } };
-    const u = new SpeechSynthesisUtterance(text);
-    u.voice = voice;
-    u.rate  = S.speed;
-    u.lang  = voice.lang;
-    u.onend   = () => done(true);
-    u.onerror = () => done(false);
-    synth.speak(u);
-  });
-}
-
-// ── Path B helpers (StreamElements / Amazon Polly) ─────────────────────────
-
-function _seUrl(text){
-  const voice = S.accentUS ? 'Joanna' : 'Brian';
-  const t = text.length > 250 ? text.slice(0, text.lastIndexOf(' ', 250) || 250) : text;
-  return `https://api.streamelements.com/kappa/v2/speech?voice=${voice}&text=${encodeURIComponent(t)}`;
-}
-
-function _seAudio(text){
-  const a = new Audio(_seUrl(text));
-  a.preload = 'auto';
-  return a;
-}
-
-function _kokPlayOneStream(audio){
-  return new Promise(resolve => {
-    let settled = false;
-    let loadTimer = null;
-    const done = (ok) => {
-      if(!settled){ settled = true; clearTimeout(loadTimer); resolve(ok); }
-    };
-    audio.onended = () => done(true);
-    audio.onerror = () => done(false);
-    loadTimer = setTimeout(() => done(false), 5000);
-    audio.addEventListener('canplay', () => clearTimeout(loadTimer), { once: true });
-    audio.play().then(() => {}).catch(() => done(false));
-  });
-}
-
-// ── Shared stop / main loop ────────────────────────────────────────────────
 
 function kokStop(){
   kokSession++;
-  synth.cancel(); stopResumeTimer();
-  if(kokNextAudio){ kokNextAudio.src = ''; kokNextAudio = null; }
-  if(kokCurAudio){ kokCurAudio.pause(); kokCurAudio.src = ''; kokCurAudio = null; }
+  synth.cancel();
+  stopResumeTimer();
 }
 
 async function kokPlay(){
   const mySession = ++kokSession;
   S.playing = true; S.paused = false; setIcon(true);
 
-  const hqVoice = _getHQVoice();
+  const voice = _getHQVoice() || S.selectedVoice;
+  const lang  = voice ? voice.lang : (S.accentUS ? 'en-US' : 'en-GB');
+  startResumeTimer();
 
-  if(hqVoice){
-    // ── Path A: Edge Neural voice (no external request) ──
-    startResumeTimer();
-    while(S.idx < S.sents.length){
-      if(kokSession !== mySession) break;
-      const text = S.sents[S.idx];
-      jump(S.idx);
-      const ok = await _kokPlayOneSynth(hqVoice, text);
-      if(kokSession !== mySession) break;
-      if(!ok) break;
-      S.idx++;
-    }
-    stopResumeTimer();
-  } else {
-    // ── Path B: StreamElements (Amazon Polly proxy) ──
-    kokNextAudio = _seAudio(S.sents[S.idx] || '');
-    while(S.idx < S.sents.length){
-      if(kokSession !== mySession) break;
-      const text = S.sents[S.idx];
-      jump(S.idx);
-      const audio = kokNextAudio || _seAudio(text);
-      kokNextAudio = null;
-      audio.playbackRate = S.speed;
-      kokCurAudio = audio;
-      const ni = S.idx + 1;
-      if(ni < S.sents.length) kokNextAudio = _seAudio(S.sents[ni]);
-      const ok = await _kokPlayOneStream(audio);
-      if(kokSession !== mySession) break;
-      if(!ok){
-        toast('高音质服务不可用。建议改用 Microsoft Edge 浏览器以获取神经网络语音');
-        kokActive = false;
-        document.getElementById('kok-toggle').checked = false;
-        S.playing = false; S.paused = false; setIcon(false);
-        return;
-      }
-      S.idx++;
-    }
+  while(S.idx < S.sents.length){
+    if(kokSession !== mySession) break;
+    const text = S.sents[S.idx];
+    jump(S.idx);
+
+    const ok = await new Promise(resolve => {
+      let settled = false;
+      const done = (r) => { if(!settled){ settled = true; resolve(r); } };
+      const u = new SpeechSynthesisUtterance(text);
+      if(voice) u.voice = voice;
+      u.rate = S.speed;
+      u.lang = lang;
+      u.onend   = () => done(true);
+      u.onerror = () => done(false);
+      synth.speak(u);
+    });
+
+    if(kokSession !== mySession) break;
+    if(!ok) break;
+    S.idx++;
   }
 
+  stopResumeTimer();
   if(kokSession === mySession){
     S.playing = false; S.paused = false; setIcon(false); saveProg();
   }
@@ -2879,12 +2830,14 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   }
   if(kokActive){
     const v = _getHQVoice();
-    if(v){
-      const label = v.name.replace(/microsoft\s*/i,'').replace(/\s*online.*$/i,'').replace(/\s*\(natural\)/i,'').trim();
-      toast(`高音质已开启：${label}（神经网络语音）`);
-    } else {
-      toast('高音质已开启（Amazon Polly）');
-    }
+    const label = v
+      ? v.name
+          .replace(/microsoft\s*/i, '')
+          .replace(/\s*(online|natural)[^-]*/i, '')
+          .replace(/\s*-\s*english.*/i, '')
+          .trim() || v.name
+      : '系统最优语音';
+    toast(`高音质已开启：${label}`);
   } else {
     toast('已切换回系统语音');
   }
