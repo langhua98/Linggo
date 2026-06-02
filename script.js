@@ -2749,75 +2749,140 @@ if ('serviceWorker' in navigator) {
 }
 
 // ═══════════════════════════════════════════
-//  HIGH-QUALITY TTS — Best available browser voice via SpeechSynthesis
-//  Voice priority: Edge Neural > Siri/Premium/Enhanced > Google > MS offline
-//  Always works — no external API dependency
+//  HIGH-QUALITY TTS — Microsoft Edge Neural via WebSocket
+//  Endpoint: speech.platform.bing.com (accessible in China, no API key)
+//  Same engine as Azure TTS / Edge Read Aloud (Aria, Sonia, etc.)
 // ═══════════════════════════════════════════
-let kokActive  = false;
-let kokSession = 0;
+let kokActive    = false;
+let kokSession   = 0;
+let kokWs        = null; // active synthesis WebSocket
+let kokAudio     = null; // active playback Audio element
+let kokAudioDone = null; // resolve fn — lets kokStop() abort mid-sentence
 
-function _hqScore(v){
-  const n = v.name.toLowerCase();
-  if(/microsoft/.test(n) && /online|natural/.test(n)) return 100; // Edge Neural
-  if(/siri/.test(n))      return 90;
-  if(/premium/.test(n))   return 85;
-  if(/enhanced/.test(n))  return 80;
-  if(/google/.test(n))    return 60;
-  if(/natural/.test(n))   return 55;
-  if(/microsoft/.test(n)) return 40; // MS offline (Zira / David)
-  return 20;
+const _EDGE_WSS =
+  'wss://speech.platform.bing.com/consumer/speech/synthesize/realtimeaudio/edge/v1' +
+  '?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+
+function _edgeVoice(){ return S.accentUS ? 'en-US-AriaNeural' : 'en-GB-SoniaNeural'; }
+
+function _edgeRate(){
+  const p = Math.round((S.speed - 1) * 100);
+  return (p >= 0 ? '+' : '') + p + '%';
 }
 
-// Returns the highest-quality English voice available in the current browser
-function _getHQVoice(){
-  const voices = synth.getVoices();
-  const pref = S.accentUS ? 'en-US' : 'en-GB';
-  const en = voices.filter(v => v.lang.startsWith('en') && !BLOCK.test(v.name));
-  if(!en.length) return S.selectedVoice || null;
-  return en.sort((a, b) => {
-    const pa = a.lang === pref ? 10 : 0;
-    const pb = b.lang === pref ? 10 : 0;
-    return (_hqScore(b) + pb) - (_hqScore(a) + pa);
-  })[0];
+function _escXml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Synthesise text → resolves with Blob URL (caller must revoke), rejects on error
+function _edgeSynth(text){
+  return new Promise((resolve, reject) => {
+    if(!text.trim()){ reject(new Error('empty')); return; }
+    let settled = false;
+    const chunks = [];
+    const finish = (ok, val) => {
+      if(settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if(ok) resolve(val); else reject(new Error(val));
+    };
+    const ws = new WebSocket(_EDGE_WSS);
+    ws.binaryType = 'arraybuffer';
+    kokWs = ws;
+    // Abort if no response within 8 s
+    const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 8000);
+    ws.onopen = () => {
+      const ts = new Date().toISOString();
+      const id = crypto.randomUUID().replace(/-/g, '');
+      // 1. Send audio config
+      ws.send(
+        `X-Timestamp:${ts}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
+        JSON.stringify({context:{synthesis:{audio:{
+          metadataoptions:{sentenceBoundaryEnabled:'false',wordBoundaryEnabled:'false'},
+          outputFormat:'audio-24khz-48kbitrate-mono-mp3'
+        }}}})
+      );
+      // 2. Send SSML synthesis request
+      const lang = S.accentUS ? 'en-US' : 'en-GB';
+      ws.send(
+        `X-RequestId:${id}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${ts}\r\nPath:ssml\r\n\r\n` +
+        `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'>` +
+        `<voice name='${_edgeVoice()}'><prosody rate='${_edgeRate()}'>${_escXml(text)}</prosody></voice></speak>`
+      );
+    };
+    ws.onmessage = e => {
+      if(typeof e.data === 'string'){
+        if(e.data.includes('Path:turn.end')){
+          ws.close();
+          if(chunks.length){
+            finish(true, URL.createObjectURL(new Blob(chunks, {type:'audio/mpeg'})));
+          } else {
+            finish(false, 'no audio');
+          }
+        }
+      } else {
+        // Binary frame: [2-byte big-endian header-length][header bytes][MP3 audio bytes]
+        const hLen = new DataView(e.data).getUint16(0);
+        const audio = e.data.slice(2 + hLen);
+        if(audio.byteLength > 0) chunks.push(audio);
+      }
+    };
+    ws.onerror = () => finish(false, 'ws error');
+    ws.onclose = () => finish(false, 'closed');
+  });
+}
+
+// Play a Blob URL; kokAudio / kokAudioDone track it so kokStop() can abort
+function _edgePlayUrl(url){
+  return new Promise(resolve => {
+    const a = new Audio(url);
+    kokAudio = a; kokAudioDone = resolve;
+    const end = (ok) => { kokAudio = null; kokAudioDone = null; resolve(ok); };
+    a.onended = () => end(true);
+    a.onerror = () => end(false);
+    a.play().catch(() => end(false));
+  });
+}
+
+// Synthesise + play one sentence; returns true = success, false = error / interrupted
+async function _edgePlayOne(text, mySession){
+  let url = null;
+  try {
+    url = await _edgeSynth(text);
+    kokWs = null; // synthesis done, clear ws reference
+    if(kokSession !== mySession) return false; // stopped while synthesising
+    return await _edgePlayUrl(url);
+  } catch {
+    return false;
+  } finally {
+    if(url) URL.revokeObjectURL(url);
+  }
 }
 
 function kokStop(){
   kokSession++;
-  synth.cancel();
-  stopResumeTimer();
+  if(kokWs){ try{ kokWs.close(); }catch{} kokWs = null; }
+  if(kokAudio){ kokAudio.pause(); kokAudio = null; }
+  if(kokAudioDone){ kokAudioDone(false); kokAudioDone = null; }
 }
 
 async function kokPlay(){
   const mySession = ++kokSession;
   S.playing = true; S.paused = false; setIcon(true);
-
-  const voice = _getHQVoice() || S.selectedVoice;
-  const lang  = voice ? voice.lang : (S.accentUS ? 'en-US' : 'en-GB');
-  startResumeTimer();
-
   while(S.idx < S.sents.length){
     if(kokSession !== mySession) break;
-    const text = S.sents[S.idx];
     jump(S.idx);
-
-    const ok = await new Promise(resolve => {
-      let settled = false;
-      const done = (r) => { if(!settled){ settled = true; resolve(r); } };
-      const u = new SpeechSynthesisUtterance(text);
-      if(voice) u.voice = voice;
-      u.rate = S.speed;
-      u.lang = lang;
-      u.onend   = () => done(true);
-      u.onerror = () => done(false);
-      synth.speak(u);
-    });
-
+    const ok = await _edgePlayOne(S.sents[S.idx], mySession);
     if(kokSession !== mySession) break;
-    if(!ok) break;
+    if(!ok){
+      toast('高音质服务异常，已切换回系统语音');
+      kokActive = false;
+      document.getElementById('kok-toggle').checked = false;
+      S.playing = false; S.paused = false; setIcon(false);
+      return;
+    }
     S.idx++;
   }
-
-  stopResumeTimer();
   if(kokSession === mySession){
     S.playing = false; S.paused = false; setIcon(false); saveProg();
   }
@@ -2828,17 +2893,5 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
-  if(kokActive){
-    const v = _getHQVoice();
-    const label = v
-      ? v.name
-          .replace(/microsoft\s*/i, '')
-          .replace(/\s*(online|natural)[^-]*/i, '')
-          .replace(/\s*-\s*english.*/i, '')
-          .trim() || v.name
-      : '系统最优语音';
-    toast(`高音质已开启：${label}`);
-  } else {
-    toast('已切换回系统语音');
-  }
+  toast(kokActive ? '高音质已开启（Microsoft Aria · Neural）' : '已切换回系统语音');
 });
