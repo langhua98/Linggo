@@ -1988,7 +1988,7 @@ function togglePlay(){
       kokStop(); S.paused=true; S.playing=false; setIcon(false);
     } else if(S.paused){
       S.paused=false; kokPlay();
-    } else {
+    } else if(S.sents.length){
       kokPlay();
     }
     return;
@@ -2770,20 +2770,25 @@ function _seAudio(text){
 
 function kokStop(){
   kokSession++;
-  kokNextAudio = null;
+  if(kokNextAudio){ kokNextAudio.src = ''; kokNextAudio = null; }
   if(kokCurAudio){ kokCurAudio.pause(); kokCurAudio.src = ''; kokCurAudio = null; }
 }
 
-// Play one Audio element; returns true on success, false on failure
+// Play one Audio element; returns true on success, false on failure/timeout
 function _kokPlayOne(audio){
   return new Promise(resolve => {
     let settled = false;
-    const done = (ok) => { if(!settled){ settled = true; resolve(ok); } };
-    audio.onended  = () => done(true);
-    audio.onerror  = () => done(false);
-    audio.play().then(() => {
-      // play() resolved = browser accepted the request; wait for onended/onerror
-    }).catch(() => done(false)); // autoplay blocked or immediate error
+    let loadTimer = null;
+    const done = (ok) => {
+      if(!settled){ settled = true; clearTimeout(loadTimer); resolve(ok); }
+    };
+    audio.onended = () => done(true);
+    audio.onerror = () => done(false);
+    // Fail if audio hasn't started loading within 5 s (firewall / unreachable host)
+    loadTimer = setTimeout(() => done(false), 5000);
+    // Once the browser has enough data to play, cancel the load timeout
+    audio.addEventListener('canplay', () => clearTimeout(loadTimer), { once: true });
+    audio.play().then(() => {}).catch(() => done(false));
   });
 }
 
@@ -2798,7 +2803,7 @@ async function kokPlay(){
     if(kokSession !== mySession) break;
 
     const text = S.sents[S.idx];
-    jump(S.idx); updateProg();
+    jump(S.idx); // jump() calls updateProg() internally
 
     // Use prebuffered audio or create fresh
     const audio = kokNextAudio || _seAudio(text);
