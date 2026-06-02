@@ -1973,7 +1973,7 @@ function makeUtterance(chunk){ return playChunk(chunk); }
 
 function playCurrent(){
   if(!S.sents.length) return;
-  if(kokActive && kokReady){ kokStop(); kokPlay(); return; }
+  if(kokActive){ kokStop(); kokPlay(); return; }
   synth.cancel(); stopResumeTimer();
   S.paused = false;
   const chunk = buildChunk(S.idx);
@@ -1983,7 +1983,7 @@ function playCurrent(){
 }
 
 function togglePlay(){
-  if(kokActive && kokReady){
+  if(kokActive){
     if(S.playing && !S.paused){
       kokStop(); S.paused=true; S.playing=false; setIcon(false);
     } else if(S.paused){
