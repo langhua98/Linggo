@@ -2751,58 +2751,78 @@ if ('serviceWorker' in navigator) {
 // ═══════════════════════════════════════════
 //  HIGH-QUALITY TTS — Amazon Polly via StreamElements
 // ═══════════════════════════════════════════
-let kokActive  = false;   // user toggled on
-let kokSession = 0;       // incremented on stop to abort stale loops
-let kokCurAudio = null;   // current HTMLAudioElement
+let kokActive   = false;
+let kokSession  = 0;
+let kokCurAudio = null;
+let kokNextAudio = null; // prebuffered next sentence
 
-// StreamElements proxy for Amazon Polly Neural TTS (free, no key needed)
 function _seUrl(text){
-  const voice = S.accentUS ? 'Joanna' : 'Brian'; // US female / UK male
-  const t = text.length > 280 ? text.slice(0, text.lastIndexOf(' ', 280)) : text;
+  const voice = S.accentUS ? 'Joanna' : 'Brian';
+  const t = text.length > 250 ? text.slice(0, text.lastIndexOf(' ', 250) || 250) : text;
   return `https://api.streamelements.com/kappa/v2/speech?voice=${voice}&text=${encodeURIComponent(t)}`;
+}
+
+function _seAudio(text){
+  const a = new Audio(_seUrl(text));
+  a.preload = 'auto';
+  return a;
 }
 
 function kokStop(){
   kokSession++;
-  if(kokCurAudio){ kokCurAudio.pause(); kokCurAudio.src=''; kokCurAudio=null; }
+  kokNextAudio = null;
+  if(kokCurAudio){ kokCurAudio.pause(); kokCurAudio.src = ''; kokCurAudio = null; }
 }
 
-// Prebuffer next sentence silently
-function _kokPrebuf(idx){
-  if(idx >= S.sents.length) return null;
-  const a = new Audio(_seUrl(S.sents[idx]));
-  a.preload = 'auto'; a.load();
-  return a;
+// Play one Audio element; returns true on success, false on failure
+function _kokPlayOne(audio){
+  return new Promise(resolve => {
+    let settled = false;
+    const done = (ok) => { if(!settled){ settled = true; resolve(ok); } };
+    audio.onended  = () => done(true);
+    audio.onerror  = () => done(false);
+    audio.play().then(() => {
+      // play() resolved = browser accepted the request; wait for onended/onerror
+    }).catch(() => done(false)); // autoplay blocked or immediate error
+  });
 }
 
 async function kokPlay(){
   const mySession = ++kokSession;
   S.playing = true; S.paused = false; setIcon(true);
 
-  let nextAudio = _kokPrebuf(S.idx + 1); // pre-warm next sentence
+  // Pre-warm first sentence
+  kokNextAudio = _seAudio(S.sents[S.idx] || '');
 
   while(S.idx < S.sents.length){
     if(kokSession !== mySession) break;
 
+    const text = S.sents[S.idx];
     jump(S.idx); updateProg();
 
-    const audio = _kokPrebuf(S.idx); // current sentence
+    // Use prebuffered audio or create fresh
+    const audio = kokNextAudio || _seAudio(text);
+    kokNextAudio = null;
     audio.playbackRate = S.speed;
     kokCurAudio = audio;
 
-    // Prebuffer the one after next
-    const afterNext = _kokPrebuf(S.idx + 2);
+    // Prebuffer next sentence while current plays
+    const ni = S.idx + 1;
+    if(ni < S.sents.length) kokNextAudio = _seAudio(S.sents[ni]);
 
-    try{
-      await new Promise((resolve, reject) => {
-        audio.onended = resolve;
-        audio.onerror = () => resolve(); // skip on error, don't block
-        audio.play().catch(() => resolve());
-      });
-    }catch(e){ /* skip */ }
+    const ok = await _kokPlayOne(audio);
 
-    nextAudio = afterNext;
     if(kokSession !== mySession) break;
+
+    if(!ok){
+      // First failure = API or autoplay issue → stop and fall back
+      toast('高音质服务不可用，已切换回系统语音');
+      kokActive = false;
+      document.getElementById('kok-toggle').checked = false;
+      S.playing = false; S.paused = false; setIcon(false);
+      return;
+    }
+
     S.idx++;
   }
 
@@ -2814,7 +2834,7 @@ async function kokPlay(){
 document.getElementById('kok-toggle').addEventListener('change', e => {
   kokActive = e.target.checked;
   if(!kokActive && (S.playing || S.paused)){
-    kokStop(); S.playing=false; S.paused=false; setIcon(false);
+    kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   toast(kokActive ? '高音质已开启（Amazon Polly）' : '已切换回系统语音');
 });
