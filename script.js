@@ -1095,8 +1095,9 @@ function qualityScore(v){
   if(n.includes('siri'))     return 10;
   if(n.includes('enhanced')) return 9;
   if(n.includes('premium'))  return 8;
-  if(n.includes('natural'))  return 5;
+  if(n.includes('natural'))  return 5;  // Edge neural voices (same as Azure Neural)
   if(n.includes('compact'))  return 0;
+  if(n.includes('google'))   return 1;  // Google TTS — blocked in China
   return 3;
 }
 function cleanVoiceName(v){
@@ -2760,9 +2761,10 @@ let kokSession      = 0;
 let kokWs           = null;
 let kokAudio        = null;
 let kokAudioDone    = null;
-let _kokSynthCancel = null;
-let _edgeFailed     = false;
-let _audioUnlocked  = false;
+let _kokSynthCancel        = null;
+let _edgeFailed            = false;
+let _audioUnlocked         = false;
+let _edgeNeuralToastShown  = false;
 
 // Unlock Chrome autoplay gate synchronously inside a user-gesture handler.
 // Playing a real 1-sample WAV marks the tab as "audio engaged" permanently.
@@ -2877,9 +2879,10 @@ function _edgePlayUrl(url){
   });
 }
 
-// SpeechSynthesis fallback — always works, uses best available system voice.
-// kokStop() can cancel it via _kokSynthCancel.
-function _synthPlay(text){
+// SpeechSynthesis playback — uses getVoice() to pick the best voice,
+// avoiding Google TTS (blocked in China) and preferring Edge Neural voices.
+// kokStop() can abort via _kokSynthCancel.
+function _synthPlay(text, forceVoice){
   return new Promise(resolve => {
     if(!('speechSynthesis' in window)){ resolve(false); return; }
     let done = false;
@@ -2896,6 +2899,8 @@ function _synthPlay(text){
     const u = new SpeechSynthesisUtterance(text);
     u.lang  = S.accentUS ? 'en-US' : 'en-GB';
     u.rate  = S.speed || 1;
+    const v = forceVoice || getVoice();
+    if(v) u.voice = v;
     u.onend   = () => end(true);
     u.onerror = () => end(false);
     window.speechSynthesis.speak(u);
@@ -2904,6 +2909,18 @@ function _synthPlay(text){
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
+  // ── Fast path: if a neural/natural voice is available via SpeechSynthesis
+  // (Microsoft Edge browser provides Azure Neural quality this way, always works)
+  const bestVoice = getVoice();
+  if(bestVoice && qualityScore(bestVoice) >= 5){
+    if(kokSession !== mySession) return false;
+    if(!_edgeNeuralToastShown){
+      _edgeNeuralToastShown = true;
+      toast(`高音质：${bestVoice.name}`);
+    }
+    return await _synthPlay(text, bestVoice);
+  }
+
   let url = null;
   let isBlobUrl = false;
   try {
@@ -2914,7 +2931,7 @@ async function _edgePlayOne(text, mySession){
         isBlobUrl = true;
       } catch {
         _edgeFailed = true;
-        toast('Edge语音不可用，已切换至有道语音');
+        toast('Edge WebSocket不可用，已切换至有道语音');
       }
     }
     kokWs = null;
@@ -2960,8 +2977,9 @@ async function kokPlay(){
 
 document.getElementById('kok-toggle').addEventListener('change', e => {
   kokActive = e.target.checked;
-  _edgeFailed = false;
-  _audioUnlocked = false;
+  _edgeFailed           = false;
+  _audioUnlocked        = false;
+  _edgeNeuralToastShown = false;
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
