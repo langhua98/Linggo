@@ -2751,25 +2751,27 @@ if ('serviceWorker' in navigator) {
 
 // ═══════════════════════════════════════════
 //  HIGH-QUALITY TTS
-//  Primary : Microsoft Edge Neural WebSocket (speech.platform.bing.com)
-//  Fallback: Youdao dictvoice  (HTTP audio, Chinese company — works in China)
+//  Primary  : Microsoft Edge Neural WebSocket (speech.platform.bing.com)
+//  Fallback1: Youdao dictvoice (accessible in China, 6 s load timeout)
+//  Fallback2: SpeechSynthesis (built-in, guaranteed to work everywhere)
 // ═══════════════════════════════════════════
-let kokActive      = false;
-let kokSession     = 0;
-let kokWs          = null;
-let kokAudio       = null;
-let kokAudioDone   = null;
-let _edgeFailed    = false;
-let _audioUnlocked = false;
+let kokActive       = false;
+let kokSession      = 0;
+let kokWs           = null;
+let kokAudio        = null;
+let kokAudioDone    = null;
+let _kokSynthCancel = null;
+let _edgeFailed     = false;
+let _audioUnlocked  = false;
 
-// Play a silent 0-sample WAV synchronously during a user gesture to unlock
-// Chrome's autoplay gate for the whole tab session. Must be called while
-// a transient activation is still live (i.e. directly inside a click handler).
+// Unlock Chrome autoplay gate synchronously inside a user-gesture handler.
+// Playing a real 1-sample WAV marks the tab as "audio engaged" permanently.
 function _unlockAudio(){
   if(_audioUnlocked) return;
   _audioUnlocked = true;
   try{
-    const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=');
+    // Minimal valid WAV: 1 channel, 44100 Hz, 16-bit, 1 silent sample
+    const a = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA');
     a.play().catch(()=>{});
   }catch(e){}
 }
@@ -2787,22 +2789,14 @@ function _escXml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Youdao dictvoice — HTTP audio, accessible in China, decent quality
+// Youdao dictvoice — HTTP audio, accessible in China
 function _ydUrl(text){
   const type = S.accentUS ? 1 : 2;
   const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
   return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(t)}&type=${type}`;
 }
 
-// Baidu fanyi TTS — accessible in China, better prosody than Youdao
-function _baiduUrl(text){
-  const t = text.length > 200 ? text.slice(0, text.lastIndexOf(' ', 200) || 200) : text;
-  const spd = S.speed >= 1.5 ? 5 : S.speed >= 1.2 ? 4 : 3;
-  const lan = S.accentUS ? 'en' : 'en';
-  return `https://fanyi.baidu.com/gettts?lan=${lan}&text=${encodeURIComponent(t)}&spd=${spd}&source=web`;
-}
-
-// Edge TTS WebSocket synthesis → Blob URL (caller must revoke)
+// Edge TTS WebSocket → Blob URL (caller must revoke)
 function _edgeSynth(text){
   return new Promise((resolve, reject) => {
     if(!text.trim()){ reject(new Error('empty')); return; }
@@ -2814,18 +2808,16 @@ function _edgeSynth(text){
       clearTimeout(timer);
       if(ok) resolve(val); else reject(new Error(val));
     };
-    // ConnectionId is required by some server versions
     const connId = crypto.randomUUID().replace(/-/g,'');
     const ws = new WebSocket(`${_EDGE_WSS}&ConnectionId=${connId}`);
     ws.binaryType = 'arraybuffer';
     kokWs = ws;
-    // 1.5 s timeout — keeps us inside Chrome's ~5 s user-gesture activation window
+    // 1.5 s: keeps us within Chrome's ~5 s transient-activation window
     const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 1500);
     ws.onopen = () => {
       const ts  = new Date().toISOString();
       const rid = crypto.randomUUID().replace(/-/g,'');
       const lang = S.accentUS ? 'en-US' : 'en-GB';
-      // 1. Audio format config
       ws.send(
         `X-Timestamp:${ts}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
         JSON.stringify({context:{synthesis:{audio:{
@@ -2833,7 +2825,6 @@ function _edgeSynth(text){
           outputFormat:'audio-24khz-48kbitrate-mono-mp3'
         }}}})
       );
-      // 2. SSML request — pitch+volume required by reference implementation
       ws.send(
         `X-RequestId:${rid}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${ts}\r\nPath:ssml\r\n\r\n` +
         `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'>` +
@@ -2851,7 +2842,6 @@ function _edgeSynth(text){
             : finish(false, 'no audio');
         }
       } else {
-        // Binary frame: [2-byte big-endian header-len][header bytes][MP3 data]
         const hLen = new DataView(e.data).getUint16(0);
         const audio = e.data.slice(2 + hLen);
         if(audio.byteLength > 0) chunks.push(audio);
@@ -2862,55 +2852,83 @@ function _edgeSynth(text){
   });
 }
 
-// Play any audio URL; kokAudio/kokAudioDone allow kokStop() to abort
+// Play an audio URL.
+// CRITICAL: includes a 6 s load-start timeout so the promise never hangs
+// if the server accepts the connection but stalls the response body.
 function _edgePlayUrl(url){
   return new Promise(resolve => {
     const a = new Audio(url);
     kokAudio = a; kokAudioDone = resolve;
-    const end = (ok) => { kokAudio = null; kokAudioDone = null; resolve(ok); };
-    a.onended = () => end(true);
-    a.onerror = () => end(false);
+    let done = false;
+    const end = (ok) => {
+      if(done) return;
+      done = true;
+      clearTimeout(loadGuard);
+      kokAudio = null; kokAudioDone = null;
+      resolve(ok);
+    };
+    // Cancel if audio hasn't started playing within 6 s (slow/blocked server)
+    const loadGuard = setTimeout(() => end(false), 6000);
+    // Once audio can play, the 6 s guard is no longer needed
+    a.oncanplay = () => clearTimeout(loadGuard);
+    a.onended   = () => end(true);
+    a.onerror   = () => end(false);
     a.play().catch(() => end(false));
   });
 }
 
-// Try playing a URL; returns true=played, false=failed
-async function _tryPlayUrl(url){
-  try{ return await _edgePlayUrl(url); }catch{ return false; }
+// SpeechSynthesis fallback — always works, uses best available system voice.
+// kokStop() can cancel it via _kokSynthCancel.
+function _synthPlay(text){
+  return new Promise(resolve => {
+    if(!('speechSynthesis' in window)){ resolve(false); return; }
+    let done = false;
+    const end = (ok) => {
+      if(done) return;
+      done = true;
+      clearTimeout(t);
+      _kokSynthCancel = null;
+      try{ window.speechSynthesis.cancel(); }catch(e){}
+      resolve(ok);
+    };
+    _kokSynthCancel = () => end(false);
+    const t = setTimeout(() => end(false), 90000);
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang  = S.accentUS ? 'en-US' : 'en-GB';
+    u.rate  = S.speed || 1;
+    u.onend   = () => end(true);
+    u.onerror = () => end(false);
+    window.speechSynthesis.speak(u);
+  });
 }
 
-// Synthesise + play one sentence; returns true = success, false = error/interrupted
+// Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
   let url = null;
   let isBlobUrl = false;
   try {
+    // ── Primary: Edge Neural WebSocket ──────────────────────────────────
     if(!_edgeFailed){
       try {
         url = await _edgeSynth(text);
         isBlobUrl = true;
       } catch {
         _edgeFailed = true;
-        toast('高音质回退至百度语音');
+        toast('Edge语音不可用，已切换至有道语音');
       }
     }
     kokWs = null;
     if(kokSession !== mySession) return false;
 
-    if(url){ // Edge TTS blob
-      const ok = await _tryPlayUrl(url);
-      if(ok) return true;
-    }
+    if(url && await _edgePlayUrl(url)) return true;
 
-    // Fallback 1: Baidu fanyi TTS
+    // ── Fallback 1: Youdao dictvoice ─────────────────────────────────────
     if(kokSession !== mySession) return false;
-    const bdOk = await _tryPlayUrl(_baiduUrl(text));
-    if(bdOk) return true;
+    if(await _edgePlayUrl(_ydUrl(text))) return true;
 
-    // Fallback 2: Youdao dictvoice
+    // ── Fallback 2: SpeechSynthesis (guaranteed) ─────────────────────────
     if(kokSession !== mySession) return false;
-    return await _tryPlayUrl(_ydUrl(text));
-  } catch {
-    return false;
+    return await _synthPlay(text);
   } finally {
     if(isBlobUrl && url) URL.revokeObjectURL(url);
   }
@@ -2921,6 +2939,7 @@ function kokStop(){
   if(kokWs){ try{ kokWs.close(); }catch{} kokWs = null; }
   if(kokAudio){ kokAudio.pause(); kokAudio = null; }
   if(kokAudioDone){ kokAudioDone(false); kokAudioDone = null; }
+  if(_kokSynthCancel){ _kokSynthCancel(); _kokSynthCancel = null; }
 }
 
 async function kokPlay(){
@@ -2941,7 +2960,8 @@ async function kokPlay(){
 
 document.getElementById('kok-toggle').addEventListener('change', e => {
   kokActive = e.target.checked;
-  _edgeFailed = false; // retry Edge TTS on next enable
+  _edgeFailed = false;
+  _audioUnlocked = false;
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
