@@ -1973,7 +1973,7 @@ function makeUtterance(chunk){ return playChunk(chunk); }
 
 function playCurrent(){
   if(!S.sents.length) return;
-  if(kokActive){ kokStop(); kokPlay(); return; }
+  if(kokActive){ _unlockAudio(); kokStop(); kokPlay(); return; }
   synth.cancel(); stopResumeTimer();
   S.paused = false;
   const chunk = buildChunk(S.idx);
@@ -1984,6 +1984,7 @@ function playCurrent(){
 
 function togglePlay(){
   if(kokActive){
+    _unlockAudio(); // must be synchronous while user gesture is still active
     if(S.playing && !S.paused){
       kokStop(); S.paused=true; S.playing=false; setIcon(false);
     } else if(S.paused){
@@ -2753,12 +2754,25 @@ if ('serviceWorker' in navigator) {
 //  Primary : Microsoft Edge Neural WebSocket (speech.platform.bing.com)
 //  Fallback: Youdao dictvoice  (HTTP audio, Chinese company — works in China)
 // ═══════════════════════════════════════════
-let kokActive    = false;
-let kokSession   = 0;
-let kokWs        = null;
-let kokAudio     = null;
-let kokAudioDone = null;
-let _edgeFailed  = false; // skip Edge WS for this session after first failure
+let kokActive      = false;
+let kokSession     = 0;
+let kokWs          = null;
+let kokAudio       = null;
+let kokAudioDone   = null;
+let _edgeFailed    = false;
+let _audioUnlocked = false;
+
+// Play a silent 0-sample WAV synchronously during a user gesture to unlock
+// Chrome's autoplay gate for the whole tab session. Must be called while
+// a transient activation is still live (i.e. directly inside a click handler).
+function _unlockAudio(){
+  if(_audioUnlocked) return;
+  _audioUnlocked = true;
+  try{
+    const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=');
+    a.play().catch(()=>{});
+  }catch(e){}
+}
 
 const _EDGE_WSS =
   'wss://speech.platform.bing.com/consumer/speech/synthesize/realtimeaudio/edge/v1' +
@@ -2773,11 +2787,19 @@ function _escXml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Youdao dictvoice — simple HTTP audio URL, accessible in China
+// Youdao dictvoice — HTTP audio, accessible in China, decent quality
 function _ydUrl(text){
   const type = S.accentUS ? 1 : 2;
   const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
   return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(t)}&type=${type}`;
+}
+
+// Baidu fanyi TTS — accessible in China, better prosody than Youdao
+function _baiduUrl(text){
+  const t = text.length > 200 ? text.slice(0, text.lastIndexOf(' ', 200) || 200) : text;
+  const spd = S.speed >= 1.5 ? 5 : S.speed >= 1.2 ? 4 : 3;
+  const lan = S.accentUS ? 'en' : 'en';
+  return `https://fanyi.baidu.com/gettts?lan=${lan}&text=${encodeURIComponent(t)}&spd=${spd}&source=web`;
 }
 
 // Edge TTS WebSocket synthesis → Blob URL (caller must revoke)
@@ -2797,8 +2819,8 @@ function _edgeSynth(text){
     const ws = new WebSocket(`${_EDGE_WSS}&ConnectionId=${connId}`);
     ws.binaryType = 'arraybuffer';
     kokWs = ws;
-    // Short timeout — firewall blocks cause TCP timeout, not fast rejection
-    const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 5000);
+    // 1.5 s timeout — keeps us inside Chrome's ~5 s user-gesture activation window
+    const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 1500);
     ws.onopen = () => {
       const ts  = new Date().toISOString();
       const rid = crypto.randomUUID().replace(/-/g,'');
@@ -2852,6 +2874,11 @@ function _edgePlayUrl(url){
   });
 }
 
+// Try playing a URL; returns true=played, false=failed
+async function _tryPlayUrl(url){
+  try{ return await _edgePlayUrl(url); }catch{ return false; }
+}
+
 // Synthesise + play one sentence; returns true = success, false = error/interrupted
 async function _edgePlayOne(text, mySession){
   let url = null;
@@ -2862,13 +2889,26 @@ async function _edgePlayOne(text, mySession){
         url = await _edgeSynth(text);
         isBlobUrl = true;
       } catch {
-        _edgeFailed = true; // don't retry Edge WS for this session
+        _edgeFailed = true;
+        toast('高音质回退至百度语音');
       }
     }
-    if(!url) url = _ydUrl(text); // Youdao fallback
     kokWs = null;
     if(kokSession !== mySession) return false;
-    return await _edgePlayUrl(url);
+
+    if(url){ // Edge TTS blob
+      const ok = await _tryPlayUrl(url);
+      if(ok) return true;
+    }
+
+    // Fallback 1: Baidu fanyi TTS
+    if(kokSession !== mySession) return false;
+    const bdOk = await _tryPlayUrl(_baiduUrl(text));
+    if(bdOk) return true;
+
+    // Fallback 2: Youdao dictvoice
+    if(kokSession !== mySession) return false;
+    return await _tryPlayUrl(_ydUrl(text));
   } catch {
     return false;
   } finally {
