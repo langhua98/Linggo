@@ -1091,13 +1091,15 @@ function restoreProg(){
 // ═══════════════════════════════════════════
 let allVoices = [];
 function qualityScore(v){
-  const n = v.name.toLowerCase();
+  // iOS hides quality tier in voiceURI (com.apple.voice.enhanced.en-US.Samantha)
+  // while name stays plain "Samantha" — score on both.
+  const n = (v.name + ' ' + (v.voiceURI || '')).toLowerCase();
   if(n.includes('siri'))     return 10;
-  if(n.includes('enhanced')) return 9;
-  if(n.includes('premium'))  return 8;
-  if(n.includes('natural'))  return 5;  // Edge neural voices (same as Azure Neural)
+  if(n.includes('premium'))  return 9;   // Apple premium neural (Ava, Zoe…)
+  if(n.includes('enhanced')) return 8;   // Apple enhanced
+  if(n.includes('natural'))  return 5;   // Edge neural voices (same as Azure Neural)
   if(n.includes('compact'))  return 0;
-  if(n.includes('google'))   return 1;  // Google TTS — blocked in China
+  if(n.includes('google'))   return 1;   // Google TTS — blocked in China
   return 3;
 }
 function cleanVoiceName(v){
@@ -2950,12 +2952,25 @@ function _escXml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Youdao dictvoice — HTTP audio, accessible in China
+// Youdao dictvoice — HTTP audio, fast in China, slow/unreliable elsewhere
 function _ydUrl(text){
   const type = S.accentUS ? 1 : 2;
   const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
   return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(t)}&type=${type}`;
 }
+
+// Google Translate TTS — no key needed, good quality, works outside China
+function _gtUrl(text){
+  const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
+  const tl = S.accentUS ? 'en' : 'en-GB';
+  return `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(t)}`;
+}
+
+// Per-engine failure counters: an engine that failed twice in a row is
+// skipped for the rest of the session (no more multi-second stalls per
+// sentence). Reset when HQ is toggled.
+let _gtFails = 0;
+let _ydFails = 0;
 
 // Edge TTS WebSocket → Blob URL (caller must revoke)
 async function _edgeSynth(text){
@@ -3148,12 +3163,25 @@ async function _edgePlayOne(text, mySession){
       if(kokSession !== mySession) return false;
     }
 
-    // ── Fallback 2: Youdao dictvoice ─────────────────────────────────────
-    if(kokSession !== mySession) return false;
-    _kokAnnounce('有道在线语音');
-    if(await _edgePlayUrl(_ydUrl(text))) return true;
+    // ── Fallback 2: Google Translate TTS (works in US, no key needed) ───────
+    if(_gtFails < 2){
+      if(kokSession !== mySession) return false;
+      _kokAnnounce('Google 在线语音');
+      const gtOk = await _edgePlayUrl(_gtUrl(text));
+      if(gtOk){ _gtFails = 0; return true; }
+      _gtFails++;
+    }
 
-    // ── Fallback 3: any SpeechSynthesis voice (guaranteed) ───────────────
+    // ── Fallback 3: Youdao dictvoice (works well in China) ───────────────
+    if(_ydFails < 2){
+      if(kokSession !== mySession) return false;
+      _kokAnnounce('有道在线语音');
+      const ydOk = await _edgePlayUrl(_ydUrl(text));
+      if(ydOk){ _ydFails = 0; return true; }
+      _ydFails++;
+    }
+
+    // ── Fallback 4: any SpeechSynthesis voice (guaranteed) ───────────────
     if(kokSession !== mySession) return false;
     _kokAnnounce('系统语音');
     return await _synthPlay(text);
@@ -3192,6 +3220,8 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   _audioUnlocked      = false;
   _kokSynthToastShown = false;
   _kokSrcShown        = '';
+  _gtFails            = 0;
+  _ydFails            = 0;
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
