@@ -2752,9 +2752,10 @@ if ('serviceWorker' in navigator) {
 
 // ═══════════════════════════════════════════
 //  HIGH-QUALITY TTS
-//  Primary  : Microsoft Edge Neural WebSocket (speech.platform.bing.com)
-//  Fallback1: Youdao dictvoice (accessible in China, 6 s load timeout)
-//  Fallback2: SpeechSynthesis (built-in, guaranteed to work everywhere)
+//  Primary  : Kokoro-82M local neural model (in-repo, runs in browser, unblockable)
+//  Fallback1: Microsoft Edge Neural WebSocket (speech.platform.bing.com)
+//  Fallback2: Youdao dictvoice (accessible in China, 6 s load timeout)
+//  Fallback3: SpeechSynthesis (built-in, guaranteed to work everywhere)
 // ═══════════════════════════════════════════
 let kokActive       = false;
 let kokSession      = 0;
@@ -2776,6 +2777,61 @@ function _unlockAudio(){
     const a = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA');
     a.play().catch(()=>{});
   }catch(e){}
+}
+
+// ── Kokoro-82M local neural TTS ──────────────────────────────────────────
+// Model + runtime are committed in /Linggo/kokoro/ and served by GitHub
+// Pages — same origin as the app, so wherever the site loads, the model
+// loads. Runs fully in-browser via WebAssembly after a one-time ~115 MB
+// download (cached by the browser; no network needed afterwards).
+let kokTTS        = null;   // ready KokoroTTS instance
+let kokTTSLoading = null;   // in-flight load promise
+const KOK_CACHE   = new Map(); // synth key → Promise<blob URL>
+
+function _kokLoad(){
+  if(kokTTS) return Promise.resolve(kokTTS);
+  if(kokTTSLoading) return kokTTSLoading;
+  kokTTSLoading = (async () => {
+    const mod = await import('/Linggo/kokoro/kokoro.web.js');
+    mod.env.wasmPaths = '/Linggo/kokoro/ort/';
+    let lastPct = -10;
+    const tts = await mod.KokoroTTS.from_pretrained('kokoro', {
+      dtype: 'q8',
+      device: 'wasm',
+      progress_callback: p => {
+        if(p.status === 'progress' && p.file && p.file.endsWith('.onnx')){
+          const pct = Math.floor(p.progress || 0);
+          if(pct >= lastPct + 10){ lastPct = pct; toast(`正在下载本地语音模型 ${pct}%`); }
+        }
+      }
+    });
+    kokTTS = tts;
+    toast('本地神经语音已就绪 ✓');
+    return tts;
+  })();
+  kokTTSLoading.catch(() => { kokTTSLoading = null; }); // allow retry on failure
+  return kokTTSLoading;
+}
+
+function _kokVoice(){ return S.accentUS ? 'af_heart' : 'bf_emma'; }
+
+// Synthesise one sentence → Promise<blob URL>. Cached so the play loop and
+// the next-sentence prefetch share one generate() call (wasm is single-job).
+function _kokSynthBlob(text){
+  const key = `${_kokVoice()}|${S.speed || 1}|${text}`;
+  if(KOK_CACHE.has(key)) return KOK_CACHE.get(key);
+  const p = (async () => {
+    const audio = await kokTTS.generate(text, { voice: _kokVoice(), speed: S.speed || 1 });
+    return URL.createObjectURL(audio.toBlob());
+  })();
+  KOK_CACHE.set(key, p);
+  p.catch(() => KOK_CACHE.delete(key));
+  if(KOK_CACHE.size > 40){
+    const oldKey = KOK_CACHE.keys().next().value;
+    Promise.resolve(KOK_CACHE.get(oldKey)).then(u => URL.revokeObjectURL(u)).catch(()=>{});
+    KOK_CACHE.delete(oldKey);
+  }
+  return p;
 }
 
 const _EDGE_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
@@ -2936,6 +2992,18 @@ function _synthPlay(text, forceVoice){
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
+  // ── Priority 0: Kokoro local neural model (once downloaded & ready) ──
+  if(kokTTS){
+    try {
+      const url = await _kokSynthBlob(text);
+      if(kokSession !== mySession) return false;
+      const next = S.sents[S.idx + 1];           // prefetch next sentence
+      if(next) _kokSynthBlob(next).catch(()=>{}); // while this one plays
+      if(await _edgePlayUrl(url)) return true;
+      if(kokSession !== mySession) return false;
+    } catch(e) { /* fall through to network engines */ }
+  }
+
   // ── Fast path: if a neural/natural voice is available via SpeechSynthesis
   // (Microsoft Edge browser provides Azure Neural quality this way, always works)
   const bestVoice = getVoice();
@@ -3010,5 +3078,11 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
-  toast(kokActive ? '高音质已开启（Microsoft Aria Neural）' : '已切换回系统语音');
+  if(kokActive){
+    toast(kokTTS ? '高音质已开启（Kokoro 本地神经语音）'
+                 : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
+    _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
+  } else {
+    toast('已切换回系统语音');
+  }
 });

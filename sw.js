@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v58';
+const CACHE = 'linggo-v59';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -40,6 +40,11 @@ self.addEventListener('fetch', e => {
 
   // Let external requests (APIs, CDN, fonts) go straight to network
   if (url.origin !== location.origin) return;
+
+  // Kokoro model assets (~115 MB): handled by transformers.js's own
+  // persistent Cache API bucket — keep them out of the versioned app cache
+  // so SW version bumps never force a re-download
+  if (url.pathname.startsWith('/Linggo/kokoro/')) return;
 
   e.respondWith(
     caches.match(e.request).then(cached => {
