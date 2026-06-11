@@ -2803,6 +2803,7 @@ let kokTTSLoading = null;   // in-flight load promise
 let _kokMsgId     = 0;
 const _kokPending = new Map(); // msg id → { resolve, reject }
 const KOK_CACHE   = new Map(); // synth key → Promise<blob URL>
+const KOK_DONE    = new Map(); // synth key → blob URL (resolved & ready to play)
 
 function _kokLoad(){
   if(kokTTSReady) return Promise.resolve(true);
@@ -2857,15 +2858,21 @@ function _wav16(f32, rate){
   return new Blob([buf], { type: 'audio/wav' });
 }
 
+function _kokKey(text){ return `${_kokVoice()}|${S.speed || 1}|${text}`; }
+
 // Synthesise one sentence → Promise<blob URL>. Cached so the play loop and
-// the next-sentence prefetch share one generate() call (wasm is single-job).
+// the background prefetch pipeline share one generate() call per sentence.
 function _kokSynthBlob(text){
-  const key = `${_kokVoice()}|${S.speed || 1}|${text}`;
+  const key = _kokKey(text);
   if(KOK_CACHE.has(key)) return KOK_CACHE.get(key);
   const p = new Promise((resolve, reject) => {
     const id = ++_kokMsgId;
     _kokPending.set(id, {
-      resolve: m => resolve(URL.createObjectURL(_wav16(m.samples, m.rate))),
+      resolve: m => {
+        const u = URL.createObjectURL(_wav16(m.samples, m.rate));
+        KOK_DONE.set(key, u);
+        resolve(u);
+      },
       reject
     });
     kokWorker.postMessage({ type: 'synth', id, text, voice: _kokVoice(), speed: S.speed || 1 });
@@ -2876,8 +2883,19 @@ function _kokSynthBlob(text){
     const oldKey = KOK_CACHE.keys().next().value;
     Promise.resolve(KOK_CACHE.get(oldKey)).then(u => URL.revokeObjectURL(u)).catch(()=>{});
     KOK_CACHE.delete(oldKey);
+    KOK_DONE.delete(oldKey);
   }
   return p;
+}
+
+// Keep the synth pipeline running ahead of the reading position.
+// Called on every sentence — queues whatever isn't cached yet.
+function _kokPrefetch(n = 8){
+  if(!kokTTSReady) return;
+  const end = Math.min(S.idx + n, S.sents.length);
+  for(let i = S.idx; i < end; i++){
+    _kokSynthBlob(S.sents[i]).catch(()=>{});
+  }
 }
 
 const _EDGE_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
@@ -3046,23 +3064,30 @@ function _synthPlay(text, forceVoice){
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
-  // ── Priority 0: Kokoro local neural model (once downloaded & ready) ──
+  // ── Priority 0: Kokoro local neural model — NEVER blocks reading ──────
+  // The pipeline pre-synthesizes ahead in the background. We wait at most
+  // 2.5 s for the current sentence; if synthesis can't keep up (slow
+  // devices), the online/system voices below carry this sentence and the
+  // neural voice takes over as soon as its audio is ready.
   if(kokTTSReady){
     try {
-      if(!_kokSynthToastShown){
-        _kokSynthToastShown = true;
-        toast('神经语音合成中…（手机端首句需几秒）');
+      _kokPrefetch();
+      let url = KOK_DONE.get(_kokKey(text));
+      if(!url){
+        url = await Promise.race([
+          _kokSynthBlob(text),
+          new Promise(r => setTimeout(() => r(null), 2500))
+        ]);
       }
-      const url = await _kokSynthBlob(text);
       if(kokSession !== mySession) return false;
-      const next = S.sents[S.idx + 1];           // prefetch next sentence
-      if(next) _kokSynthBlob(next).catch(()=>{}); // while this one plays
-      if(await _edgePlayUrl(url)) return true;
-      if(kokSession !== mySession) return false;
-      toast('本地语音播放失败，切换在线语音');
-    } catch(e) {
-      toast('本地合成失败，切换在线语音');
-    }
+      if(url){
+        if(await _edgePlayUrl(url)) return true;
+        if(kokSession !== mySession) return false;
+      } else if(!_kokSynthToastShown){
+        _kokSynthToastShown = true;
+        toast('神经语音后台合成中，暂以在线语音播放');
+      }
+    } catch(e) { /* fall through to online engines */ }
   }
 
   // ── Fast path: if a neural/natural voice is available via SpeechSynthesis

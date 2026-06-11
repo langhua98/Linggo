@@ -6,9 +6,9 @@ import { KokoroTTS, env } from '/Linggo/kokoro/kokoro.web.js';
 env.wasmPaths = '/Linggo/kokoro/ort/';
 
 let tts = null;
+let queue = Promise.resolve(); // serialize: concurrent session.run is unsafe
 
-self.onmessage = async (e) => {
-  const msg = e.data;
+async function handle(msg) {
   try {
     if (msg.type === 'load') {
       tts = await KokoroTTS.from_pretrained('kokoro', {
@@ -31,4 +31,6 @@ self.onmessage = async (e) => {
   } catch (err) {
     self.postMessage({ type: 'error', id: msg.id, message: String(err && err.message || err) });
   }
-};
+}
+
+self.onmessage = (e) => { queue = queue.then(() => handle(e.data)); };
