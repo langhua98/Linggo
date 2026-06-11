@@ -2765,8 +2765,20 @@ let kokAudioDone    = null;
 let _kokSynthCancel        = null;
 let _edgeFailed            = false;
 let _audioUnlocked         = false;
-let _edgeNeuralToastShown  = false;
 let _kokSynthToastShown    = false;
+let _kokSrcShown           = '';
+
+// All iOS browsers (incl. Chrome) are WebKit. Running an 88 MB model there
+// risks tab memory kills and WASM is slow — use online neural + Siri instead.
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// Tell the user which engine is actually speaking (once per engine switch)
+function _kokAnnounce(src){
+  if(_kokSrcShown === src) return;
+  _kokSrcShown = src;
+  toast('语音源：' + src);
+}
 
 // Persistent gesture-blessed audio element.
 // iOS WebKit requires EVERY Audio element to be activated by a user gesture
@@ -2787,6 +2799,13 @@ function _unlockAudio(){
     // Minimal valid WAV: 1 channel, 44100 Hz, 16-bit, 1 silent sample
     _kokAudioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA';
     _kokAudioEl.play().catch(()=>{});
+    // iOS also gates speechSynthesis: the first speak() must happen inside
+    // a user gesture or all later speak() calls are silently ignored.
+    if('speechSynthesis' in window){
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0;
+      window.speechSynthesis.speak(u);
+    }
   }catch(e){}
 }
 
@@ -3044,18 +3063,23 @@ function _synthPlay(text, forceVoice){
     const end = (ok) => {
       if(done) return;
       done = true;
-      clearTimeout(t);
+      clearTimeout(t); clearTimeout(startGuard);
       _kokSynthCancel = null;
       try{ window.speechSynthesis.cancel(); }catch(e){}
       resolve(ok);
     };
     _kokSynthCancel = () => end(false);
     const t = setTimeout(() => end(false), 90000);
+    // If speech hasn't actually STARTED in 4 s the engine is blocked
+    // (e.g. gesture-gated on iOS) — fail fast so the next engine can try,
+    // instead of hanging for 90 s looking like "nothing happens".
+    const startGuard = setTimeout(() => end(false), 4000);
     const u = new SpeechSynthesisUtterance(text);
     u.lang  = S.accentUS ? 'en-US' : 'en-GB';
     u.rate  = S.speed || 1;
     const v = forceVoice || getVoice();
     if(v) u.voice = v;
+    u.onstart = () => clearTimeout(startGuard);
     u.onend   = () => end(true);
     u.onerror = () => end(false);
     window.speechSynthesis.speak(u);
@@ -3081,6 +3105,7 @@ async function _edgePlayOne(text, mySession){
       }
       if(kokSession !== mySession) return false;
       if(url){
+        _kokAnnounce('Kokoro 本地神经语音');
         if(await _edgePlayUrl(url)) return true;
         if(kokSession !== mySession) return false;
       } else if(!_kokSynthToastShown){
@@ -3090,42 +3115,47 @@ async function _edgePlayOne(text, mySession){
     } catch(e) { /* fall through to online engines */ }
   }
 
-  // ── Fast path: if a neural/natural voice is available via SpeechSynthesis
-  // (Microsoft Edge browser provides Azure Neural quality this way, always works)
-  const bestVoice = getVoice();
-  if(bestVoice && qualityScore(bestVoice) >= 5){
-    if(kokSession !== mySession) return false;
-    if(!_edgeNeuralToastShown){
-      _edgeNeuralToastShown = true;
-      toast(`高音质：${bestVoice.name}`);
-    }
-    return await _synthPlay(text, bestVoice);
-  }
-
   let url = null;
   let isBlobUrl = false;
   try {
-    // ── Primary: Edge Neural WebSocket ──────────────────────────────────
+    // ── Primary: Edge Neural WebSocket (Aria / Sonia) ────────────────────
     if(!_edgeFailed){
       try {
         url = await _edgeSynth(text);
         isBlobUrl = true;
-      } catch {
+      } catch(e) {
         _edgeFailed = true;
-        toast('Edge WebSocket不可用，已切换至有道语音');
+        toast(`Edge神经语音不可用（${e && e.message || '未知'}），切换备用源`);
       }
     }
     kokWs = null;
     if(kokSession !== mySession) return false;
 
-    if(url && await _edgePlayUrl(url)) return true;
+    if(url){
+      _kokAnnounce('Microsoft 神经语音（在线）');
+      if(await _edgePlayUrl(url)) return true;
+      if(kokSession !== mySession) return false;
+    }
 
-    // ── Fallback 1: Youdao dictvoice ─────────────────────────────────────
+    // ── Fallback 1: best local SpeechSynthesis voice ─────────────────────
+    // (On iPhone these are Apple's own neural Siri voices; on Edge browser
+    //  these are Azure Neural voices — high quality and zero latency.)
+    const bestVoice = getVoice();
+    if(bestVoice && qualityScore(bestVoice) >= 5){
+      if(kokSession !== mySession) return false;
+      _kokAnnounce(`系统神经语音（${bestVoice.name}）`);
+      if(await _synthPlay(text, bestVoice)) return true;
+      if(kokSession !== mySession) return false;
+    }
+
+    // ── Fallback 2: Youdao dictvoice ─────────────────────────────────────
     if(kokSession !== mySession) return false;
+    _kokAnnounce('有道在线语音');
     if(await _edgePlayUrl(_ydUrl(text))) return true;
 
-    // ── Fallback 2: SpeechSynthesis (guaranteed) ─────────────────────────
+    // ── Fallback 3: any SpeechSynthesis voice (guaranteed) ───────────────
     if(kokSession !== mySession) return false;
+    _kokAnnounce('系统语音');
     return await _synthPlay(text);
   } finally {
     if(isBlobUrl && url) URL.revokeObjectURL(url);
@@ -3158,17 +3188,23 @@ async function kokPlay(){
 
 document.getElementById('kok-toggle').addEventListener('change', e => {
   kokActive = e.target.checked;
-  _edgeFailed           = false;
-  _audioUnlocked        = false;
-  _edgeNeuralToastShown = false;
-  _kokSynthToastShown   = false;
+  _edgeFailed         = false;
+  _audioUnlocked      = false;
+  _kokSynthToastShown = false;
+  _kokSrcShown        = '';
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
-    toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
-                      : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
-    _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
+    if(IS_IOS){
+      // iOS: skip the 115 MB local model (WebKit memory limits, slow WASM)
+      // — Microsoft online neural + Apple Siri voices serve instead.
+      toast('高音质已开启（在线神经语音）');
+    } else {
+      toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
+                        : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
+      _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
+    }
   } else {
     toast('已切换回系统语音');
   }
