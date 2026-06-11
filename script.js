@@ -2766,16 +2766,27 @@ let _kokSynthCancel        = null;
 let _edgeFailed            = false;
 let _audioUnlocked         = false;
 let _edgeNeuralToastShown  = false;
+let _kokSynthToastShown    = false;
 
-// Unlock Chrome autoplay gate synchronously inside a user-gesture handler.
-// Playing a real 1-sample WAV marks the tab as "audio engaged" permanently.
+// Persistent gesture-blessed audio element.
+// iOS WebKit requires EVERY Audio element to be activated by a user gesture
+// — unlike Chrome, playing a silent clip on one element does NOT unlock
+// others. So we create ONE element inside the click handler, play a silent
+// WAV on it to bless it, then reuse it (swap .src) for every sentence.
+let _kokAudioEl = null;
+
 function _unlockAudio(){
-  if(_audioUnlocked) return;
-  _audioUnlocked = true;
   try{
+    if(!_kokAudioEl){
+      _kokAudioEl = new Audio();
+      _kokAudioEl.setAttribute('playsinline','');
+      _kokAudioEl.preload = 'auto';
+    }
+    if(_audioUnlocked) return;
+    _audioUnlocked = true;
     // Minimal valid WAV: 1 channel, 44100 Hz, 16-bit, 1 silent sample
-    const a = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA');
-    a.play().catch(()=>{});
+    _kokAudioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA';
+    _kokAudioEl.play().catch(()=>{});
   }catch(e){}
 }
 
@@ -2815,6 +2826,24 @@ function _kokLoad(){
 
 function _kokVoice(){ return S.accentUS ? 'af_heart' : 'bf_emma'; }
 
+// Encode Float32 samples as 16-bit PCM WAV — universally supported,
+// unlike the 32-bit float WAV that RawAudio.toBlob() produces (iOS-safe).
+function _wav16(f32, rate){
+  const n = f32.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const wstr = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  wstr(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); wstr(8, 'WAVE');
+  wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  wstr(36, 'data'); v.setUint32(40, n * 2, true);
+  for(let i = 0; i < n; i++){
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
 // Synthesise one sentence → Promise<blob URL>. Cached so the play loop and
 // the next-sentence prefetch share one generate() call (wasm is single-job).
 function _kokSynthBlob(text){
@@ -2822,7 +2851,7 @@ function _kokSynthBlob(text){
   if(KOK_CACHE.has(key)) return KOK_CACHE.get(key);
   const p = (async () => {
     const audio = await kokTTS.generate(text, { voice: _kokVoice(), speed: S.speed || 1 });
-    return URL.createObjectURL(audio.toBlob());
+    return URL.createObjectURL(_wav16(audio.audio, audio.sampling_rate));
   })();
   KOK_CACHE.set(key, p);
   p.catch(() => KOK_CACHE.delete(key));
@@ -2942,22 +2971,30 @@ async function _edgeSynth(text){
 // if the server accepts the connection but stalls the response body.
 function _edgePlayUrl(url){
   return new Promise(resolve => {
-    const a = new Audio(url);
-    kokAudio = a; kokAudioDone = resolve;
+    // Reuse the gesture-blessed element — REQUIRED on iOS: a freshly created
+    // Audio element outside a user gesture is silently refused by WebKit.
+    if(!_kokAudioEl){
+      _kokAudioEl = new Audio();
+      _kokAudioEl.setAttribute('playsinline','');
+    }
+    const a = _kokAudioEl;
     let done = false;
     const end = (ok) => {
       if(done) return;
       done = true;
       clearTimeout(loadGuard);
+      a.onended = a.onerror = a.oncanplay = null;
       kokAudio = null; kokAudioDone = null;
       resolve(ok);
     };
+    kokAudio = a; kokAudioDone = end;
     // Cancel if audio hasn't started playing within 6 s (slow/blocked server)
     const loadGuard = setTimeout(() => end(false), 6000);
     // Once audio can play, the 6 s guard is no longer needed
     a.oncanplay = () => clearTimeout(loadGuard);
     a.onended   = () => end(true);
     a.onerror   = () => end(false);
+    a.src = url;
     a.play().catch(() => end(false));
   });
 }
@@ -2995,13 +3032,20 @@ async function _edgePlayOne(text, mySession){
   // ── Priority 0: Kokoro local neural model (once downloaded & ready) ──
   if(kokTTS){
     try {
+      if(!_kokSynthToastShown){
+        _kokSynthToastShown = true;
+        toast('神经语音合成中…（手机端首句需几秒）');
+      }
       const url = await _kokSynthBlob(text);
       if(kokSession !== mySession) return false;
       const next = S.sents[S.idx + 1];           // prefetch next sentence
       if(next) _kokSynthBlob(next).catch(()=>{}); // while this one plays
       if(await _edgePlayUrl(url)) return true;
       if(kokSession !== mySession) return false;
-    } catch(e) { /* fall through to network engines */ }
+      toast('本地语音播放失败，切换在线语音');
+    } catch(e) {
+      toast('本地合成失败，切换在线语音');
+    }
   }
 
   // ── Fast path: if a neural/natural voice is available via SpeechSynthesis
@@ -3075,6 +3119,7 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   _edgeFailed           = false;
   _audioUnlocked        = false;
   _edgeNeuralToastShown = false;
+  _kokSynthToastShown   = false;
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
