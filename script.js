@@ -2778,9 +2778,29 @@ function _unlockAudio(){
   }catch(e){}
 }
 
+const _EDGE_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+// Correct endpoint is "readaloud" (per rany2/edge-tts) — NOT "realtimeaudio"
 const _EDGE_WSS =
-  'wss://speech.platform.bing.com/consumer/speech/synthesize/realtimeaudio/edge/v1' +
-  '?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+  'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1' +
+  '?TrustedClientToken=' + _EDGE_TOKEN;
+
+// Sec-MS-GEC DRM query param (required since 2024, else server returns 403):
+// SHA-256( windows-file-time-in-100ns rounded down to 5 min + trusted token ),
+// uppercase hex. It's a URL param, so browser JS CAN compute and send it.
+let _gecCache = { exp: 0, val: '' };
+async function _secMsGec(){
+  const now = Math.floor(Date.now() / 1000);
+  if(now < _gecCache.exp) return _gecCache.val;
+  let sec = now + 11644473600;        // Unix epoch → Windows epoch (1601-01-01)
+  sec -= sec % 300;                   // round down to 5-minute boundary
+  const ticks = BigInt(sec) * 10000000n;  // seconds → 100-ns intervals (needs BigInt)
+  const data  = new TextEncoder().encode(ticks.toString() + _EDGE_TOKEN);
+  const hash  = await crypto.subtle.digest('SHA-256', data);
+  const hex   = [...new Uint8Array(hash)]
+    .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  _gecCache = { exp: now + 60, val: hex };
+  return hex;
+}
 
 function _edgeVoice(){ return S.accentUS ? 'en-US-AriaNeural' : 'en-GB-SoniaNeural'; }
 function _edgeRate(){
@@ -2799,9 +2819,10 @@ function _ydUrl(text){
 }
 
 // Edge TTS WebSocket → Blob URL (caller must revoke)
-function _edgeSynth(text){
+async function _edgeSynth(text){
+  if(!text.trim()) throw new Error('empty');
+  const gec = await _secMsGec();
   return new Promise((resolve, reject) => {
-    if(!text.trim()){ reject(new Error('empty')); return; }
     let settled = false;
     const chunks = [];
     const finish = (ok, val) => {
@@ -2811,12 +2832,18 @@ function _edgeSynth(text){
       if(ok) resolve(val); else reject(new Error(val));
     };
     const connId = crypto.randomUUID().replace(/-/g,'');
-    const ws = new WebSocket(`${_EDGE_WSS}&ConnectionId=${connId}`);
+    const ws = new WebSocket(
+      `${_EDGE_WSS}&Sec-MS-GEC=${gec}&Sec-MS-GEC-Version=1-130.0.2849.68&ConnectionId=${connId}`
+    );
     ws.binaryType = 'arraybuffer';
     kokWs = ws;
-    // 1.5 s: keeps us within Chrome's ~5 s transient-activation window
-    const timer = setTimeout(() => { ws.close(); finish(false, 'timeout'); }, 1500);
+    // Two-stage timeout: 4 s to connect, then 15 s for full synthesis.
+    // Audio autoplay is already unlocked via _unlockAudio, so we are no
+    // longer constrained by Chrome's 5 s gesture window.
+    let timer = setTimeout(() => { ws.close(); finish(false, 'connect timeout'); }, 4000);
     ws.onopen = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { ws.close(); finish(false, 'synth timeout'); }, 15000);
       const ts  = new Date().toISOString();
       const rid = crypto.randomUUID().replace(/-/g,'');
       const lang = S.accentUS ? 'en-US' : 'en-GB';
