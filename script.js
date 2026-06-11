@@ -2795,32 +2795,45 @@ function _unlockAudio(){
 // Pages — same origin as the app, so wherever the site loads, the model
 // loads. Runs fully in-browser via WebAssembly after a one-time ~115 MB
 // download (cached by the browser; no network needed afterwards).
-let kokTTS        = null;   // ready KokoroTTS instance
+// Inference runs in a Web Worker: WASM compute on the main thread would
+// freeze the page for seconds per sentence, especially on phones.
+let kokWorker     = null;
+let kokTTSReady   = false;
 let kokTTSLoading = null;   // in-flight load promise
+let _kokMsgId     = 0;
+const _kokPending = new Map(); // msg id → { resolve, reject }
 const KOK_CACHE   = new Map(); // synth key → Promise<blob URL>
 
 function _kokLoad(){
-  if(kokTTS) return Promise.resolve(kokTTS);
+  if(kokTTSReady) return Promise.resolve(true);
   if(kokTTSLoading) return kokTTSLoading;
-  kokTTSLoading = (async () => {
-    const mod = await import('/Linggo/kokoro/kokoro.web.js');
-    mod.env.wasmPaths = '/Linggo/kokoro/ort/';
+  kokTTSLoading = new Promise((resolve, reject) => {
+    const fail = (err) => { kokTTSLoading = null; reject(err); };
     let lastPct = -10;
-    const tts = await mod.KokoroTTS.from_pretrained('kokoro', {
-      dtype: 'q8',
-      device: 'wasm',
-      progress_callback: p => {
-        if(p.status === 'progress' && p.file && p.file.endsWith('.onnx')){
-          const pct = Math.floor(p.progress || 0);
-          if(pct >= lastPct + 10){ lastPct = pct; toast(`正在下载本地语音模型 ${pct}%`); }
-        }
+    try {
+      kokWorker = new Worker('/Linggo/kokoro/kokoro-worker.js', { type: 'module' });
+    } catch(e){ fail(e); return; }
+    kokWorker.onerror = () => { if(!kokTTSReady) fail(new Error('worker failed')); };
+    kokWorker.onmessage = (e) => {
+      const m = e.data;
+      if(m.type === 'progress'){
+        const pct = Math.floor(m.progress);
+        if(pct >= lastPct + 10){ lastPct = pct; toast(`正在下载本地语音模型 ${pct}%`); }
+      } else if(m.type === 'ready'){
+        kokTTSReady = true;
+        toast('本地神经语音已就绪 ✓');
+        resolve(true);
+      } else if(m.type === 'audio'){
+        const p = _kokPending.get(m.id);
+        if(p){ _kokPending.delete(m.id); p.resolve(m); }
+      } else if(m.type === 'error'){
+        if(m.id == null){ if(!kokTTSReady) fail(new Error(m.message)); return; }
+        const p = _kokPending.get(m.id);
+        if(p){ _kokPending.delete(m.id); p.reject(new Error(m.message)); }
       }
-    });
-    kokTTS = tts;
-    toast('本地神经语音已就绪 ✓');
-    return tts;
-  })();
-  kokTTSLoading.catch(() => { kokTTSLoading = null; }); // allow retry on failure
+    };
+    kokWorker.postMessage({ type: 'load' });
+  });
   return kokTTSLoading;
 }
 
@@ -2849,10 +2862,14 @@ function _wav16(f32, rate){
 function _kokSynthBlob(text){
   const key = `${_kokVoice()}|${S.speed || 1}|${text}`;
   if(KOK_CACHE.has(key)) return KOK_CACHE.get(key);
-  const p = (async () => {
-    const audio = await kokTTS.generate(text, { voice: _kokVoice(), speed: S.speed || 1 });
-    return URL.createObjectURL(_wav16(audio.audio, audio.sampling_rate));
-  })();
+  const p = new Promise((resolve, reject) => {
+    const id = ++_kokMsgId;
+    _kokPending.set(id, {
+      resolve: m => resolve(URL.createObjectURL(_wav16(m.samples, m.rate))),
+      reject
+    });
+    kokWorker.postMessage({ type: 'synth', id, text, voice: _kokVoice(), speed: S.speed || 1 });
+  });
   KOK_CACHE.set(key, p);
   p.catch(() => KOK_CACHE.delete(key));
   if(KOK_CACHE.size > 40){
@@ -3030,7 +3047,7 @@ function _synthPlay(text, forceVoice){
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
   // ── Priority 0: Kokoro local neural model (once downloaded & ready) ──
-  if(kokTTS){
+  if(kokTTSReady){
     try {
       if(!_kokSynthToastShown){
         _kokSynthToastShown = true;
@@ -3124,8 +3141,8 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
-    toast(kokTTS ? '高音质已开启（Kokoro 本地神经语音）'
-                 : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
+    toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
+                      : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
     _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
   } else {
     toast('已切换回系统语音');
