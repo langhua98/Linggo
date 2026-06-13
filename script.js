@@ -2753,11 +2753,13 @@ if ('serviceWorker' in navigator) {
 }
 
 // ═══════════════════════════════════════════
-//  HIGH-QUALITY TTS
-//  Primary  : Kokoro-82M local neural model (in-repo, runs in browser, unblockable)
-//  Fallback1: Microsoft Edge Neural WebSocket (speech.platform.bing.com)
-//  Fallback2: Youdao dictvoice (accessible in China, 6 s load timeout)
-//  Fallback3: SpeechSynthesis (built-in, guaranteed to work everywhere)
+//  HIGH-QUALITY TTS — engine priority (each skipped after 2 straight failures):
+//  0: Kokoro-82M local neural model (in-repo, non-iOS, never blocks reading)
+//  1: Microsoft Edge Neural WebSocket (speech.platform.bing.com)
+//  2: Best local SpeechSynthesis neural voice (Siri / enhanced, score >= 5)
+//  3: Google Translate TTS (works outside China, no key)
+//  4: Youdao dictvoice (works in China)
+//  5: Any SpeechSynthesis voice (guaranteed fallback)
 // ═══════════════════════════════════════════
 let kokActive       = false;
 let kokSession      = 0;
@@ -2765,7 +2767,6 @@ let kokWs           = null;
 let kokAudio        = null;
 let kokAudioDone    = null;
 let _kokSynthCancel        = null;
-let _edgeFailed            = false;
 let _audioUnlocked         = false;
 let _kokSynthToastShown    = false;
 let _kokSrcShown           = '';
@@ -2955,22 +2956,29 @@ function _escXml(s){
 // Youdao dictvoice — HTTP audio, fast in China, slow/unreliable elsewhere
 function _ydUrl(text){
   const type = S.accentUS ? 1 : 2;
-  const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
-  return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(t)}&type=${type}`;
+  return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(_clip180(text))}&type=${type}`;
 }
 
 // Google Translate TTS — no key needed, good quality, works outside China
 function _gtUrl(text){
-  const t = text.length > 180 ? text.slice(0, text.lastIndexOf(' ', 180) || 180) : text;
   const tl = S.accentUS ? 'en' : 'en-GB';
-  return `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(t)}`;
+  return `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(_clip180(text))}`;
 }
 
 // Per-engine failure counters: an engine that failed twice in a row is
 // skipped for the rest of the session (no more multi-second stalls per
 // sentence). Reset when HQ is toggled.
-let _gtFails = 0;
-let _ydFails = 0;
+let _edgeFails = 0;
+let _gtFails   = 0;
+let _ydFails   = 0;
+
+// Clip text for URL-based TTS engines (~200 char server limits).
+// NB: lastIndexOf returns -1 when no space exists — must not feed that to slice.
+function _clip180(text){
+  if(text.length <= 180) return text;
+  const cut = text.lastIndexOf(' ', 180);
+  return text.slice(0, cut > 0 ? cut : 180);
+}
 
 // Edge TTS WebSocket → Blob URL (caller must revoke)
 async function _edgeSynth(text){
@@ -3051,16 +3059,17 @@ function _edgePlayUrl(url){
     const end = (ok) => {
       if(done) return;
       done = true;
-      clearTimeout(loadGuard);
+      clearTimeout(guard);
       a.onended = a.onerror = a.oncanplay = null;
       kokAudio = null; kokAudioDone = null;
       resolve(ok);
     };
     kokAudio = a; kokAudioDone = end;
-    // Cancel if audio hasn't started playing within 6 s (slow/blocked server)
-    const loadGuard = setTimeout(() => end(false), 6000);
-    // Once audio can play, the 6 s guard is no longer needed
-    a.oncanplay = () => clearTimeout(loadGuard);
+    // Cancel if audio hasn't started playing within 6 s (slow/blocked server).
+    // After canplay, keep a 90 s hard cap so a mid-stream stall (server
+    // accepted then froze) can never hang the reading loop forever.
+    let guard = setTimeout(() => end(false), 6000);
+    a.oncanplay = () => { clearTimeout(guard); guard = setTimeout(() => end(false), 90000); };
     a.onended   = () => end(true);
     a.onerror   = () => end(false);
     a.src = url;
@@ -3134,13 +3143,19 @@ async function _edgePlayOne(text, mySession){
   let isBlobUrl = false;
   try {
     // ── Primary: Edge Neural WebSocket (Aria / Sonia) ────────────────────
-    if(!_edgeFailed){
+    if(_edgeFails < 2){
       try {
         url = await _edgeSynth(text);
         isBlobUrl = true;
       } catch(e) {
-        _edgeFailed = true;
-        toast(`Edge神经语音不可用（${e && e.message || '未知'}），切换备用源`);
+        kokWs = null;
+        // kokStop() closes the socket mid-synthesis (pause / next / prev) —
+        // that rejection is user-initiated, NOT an engine failure.
+        if(kokSession !== mySession) return false;
+        _edgeFails++;
+        if(_edgeFails >= 2){
+          toast(`Edge神经语音不可用（${e && e.message || '未知'}），切换备用源`);
+        }
       }
     }
     kokWs = null;
@@ -3148,7 +3163,8 @@ async function _edgePlayOne(text, mySession){
 
     if(url){
       _kokAnnounce('Microsoft 神经语音（在线）');
-      if(await _edgePlayUrl(url)) return true;
+      const edgeOk = await _edgePlayUrl(url);
+      if(edgeOk){ _edgeFails = 0; return true; }
       if(kokSession !== mySession) return false;
     }
 
@@ -3206,7 +3222,11 @@ async function kokPlay(){
     jump(S.idx);
     const ok = await _edgePlayOne(S.sents[S.idx], mySession);
     if(kokSession !== mySession) break;
-    if(!ok){ S.playing = false; S.paused = false; setIcon(false); return; }
+    if(!ok){
+      S.playing = false; S.paused = false; setIcon(false);
+      toast('朗读已停止：所有语音引擎暂不可用，请稍后重试');
+      return;
+    }
     S.idx++;
   }
   if(kokSession === mySession){
@@ -3216,10 +3236,10 @@ async function kokPlay(){
 
 document.getElementById('kok-toggle').addEventListener('change', e => {
   kokActive = e.target.checked;
-  _edgeFailed         = false;
   _audioUnlocked      = false;
   _kokSynthToastShown = false;
   _kokSrcShown        = '';
+  _edgeFails          = 0;
   _gtFails            = 0;
   _ydFails            = 0;
   if(!kokActive && (S.playing || S.paused)){
