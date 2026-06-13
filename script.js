@@ -2753,13 +2753,13 @@ if ('serviceWorker' in navigator) {
 }
 
 // ═══════════════════════════════════════════
-//  HIGH-QUALITY TTS — engine priority (each skipped after 2 straight failures):
+//  HIGH-QUALITY TTS — engine priority:
 //  0: Kokoro-82M local neural model (in-repo, non-iOS, never blocks reading)
-//  1: Microsoft Edge Neural WebSocket (speech.platform.bing.com)
-//  2: Best local SpeechSynthesis neural voice (Siri / enhanced, score >= 5)
-//  3: Google Translate TTS (works outside China, no key)
-//  4: Youdao dictvoice (works in China)
-//  5: Any SpeechSynthesis voice (guaranteed fallback)
+//  1: Microsoft Edge Neural WebSocket — non-iOS, skip after 2 failures
+//  2: Best local SpeechSynthesis neural voice (Siri score=10, Enhanced=8, score≥5)
+//  3: Google Translate TTS — non-iOS, skip after 2 failures
+//  4: Any SpeechSynthesis voice (guaranteed fallback)
+//  iOS always lands on P2 (Siri) with no network latency — ideal.
 // ═══════════════════════════════════════════
 let kokActive       = false;
 let kokSession      = 0;
@@ -2953,31 +2953,22 @@ function _escXml(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Youdao dictvoice — HTTP audio, fast in China, slow/unreliable elsewhere
-function _ydUrl(text){
-  const type = S.accentUS ? 1 : 2;
-  return `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(_clip180(text))}&type=${type}`;
-}
-
-// Google Translate TTS — no key needed, good quality, works outside China
-function _gtUrl(text){
-  const tl = S.accentUS ? 'en' : 'en-GB';
-  return `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(_clip180(text))}`;
-}
-
-// Per-engine failure counters: an engine that failed twice in a row is
-// skipped for the rest of the session (no more multi-second stalls per
-// sentence). Reset when HQ is toggled.
+// Per-engine failure counters: skip after 2 straight failures; reset on toggle.
 let _edgeFails = 0;
 let _gtFails   = 0;
-let _ydFails   = 0;
 
-// Clip text for URL-based TTS engines (~200 char server limits).
-// NB: lastIndexOf returns -1 when no space exists — must not feed that to slice.
+// Clip text for URL-based TTS engines (~180 char server limits).
+// lastIndexOf returns -1 when no space exists — handle explicitly.
 function _clip180(text){
   if(text.length <= 180) return text;
   const cut = text.lastIndexOf(' ', 180);
   return text.slice(0, cut > 0 ? cut : 180);
+}
+
+// Google Translate TTS — no API key, works outside China. Non-iOS only.
+function _gtUrl(text){
+  const tl = S.accentUS ? 'en' : 'en-GB';
+  return `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${tl}&q=${encodeURIComponent(_clip180(text))}`;
 }
 
 // Edge TTS WebSocket → Blob URL (caller must revoke)
@@ -3078,32 +3069,44 @@ function _edgePlayUrl(url){
 }
 
 // SpeechSynthesis playback — uses getVoice() to pick the best voice,
-// avoiding Google TTS (blocked in China) and preferring Edge Neural voices.
+// avoiding Google TTS (blocked in China) and preferring Siri / Edge Neural.
 // kokStop() can abort via _kokSynthCancel.
 function _synthPlay(text, forceVoice){
   return new Promise(resolve => {
     if(!('speechSynthesis' in window)){ resolve(false); return; }
     let done = false;
+    let startGuard = null;
+    let speakCheck = null;
     const end = (ok) => {
       if(done) return;
       done = true;
-      clearTimeout(t); clearTimeout(startGuard);
+      clearTimeout(t);
+      clearTimeout(startGuard);
+      clearTimeout(speakCheck);
       _kokSynthCancel = null;
       try{ window.speechSynthesis.cancel(); }catch(e){}
       resolve(ok);
     };
     _kokSynthCancel = () => end(false);
     const t = setTimeout(() => end(false), 90000);
-    // If speech hasn't actually STARTED in 4 s the engine is blocked
-    // (e.g. gesture-gated on iOS) — fail fast so the next engine can try,
-    // instead of hanging for 90 s looking like "nothing happens".
-    const startGuard = setTimeout(() => end(false), 4000);
+
+    // iOS WebKit: onstart is unreliable (often never fires) — don't use it as
+    // the sole gate. Instead poll speechSynthesis.speaking 2 s after speak().
+    // Non-iOS / pre-unlock: onstart guard still catches gesture-gated speech.
+    if(_audioUnlocked && IS_IOS){
+      speakCheck = setTimeout(() => {
+        if(!window.speechSynthesis.speaking) end(false);
+      }, 2000);
+    } else {
+      startGuard = setTimeout(() => end(false), 4000);
+    }
+
     const u = new SpeechSynthesisUtterance(text);
     u.lang  = S.accentUS ? 'en-US' : 'en-GB';
     u.rate  = S.speed || 1;
     const v = forceVoice || getVoice();
     if(v) u.voice = v;
-    u.onstart = () => clearTimeout(startGuard);
+    u.onstart = () => { clearTimeout(startGuard); clearTimeout(speakCheck); };
     u.onend   = () => end(true);
     u.onerror = () => end(false);
     window.speechSynthesis.speak(u);
@@ -3142,15 +3145,17 @@ async function _edgePlayOne(text, mySession){
   let url = null;
   let isBlobUrl = false;
   try {
-    // ── Primary: Edge Neural WebSocket (Aria / Sonia) ────────────────────
-    if(_edgeFails < 2){
+    // ── P1: Edge Neural WebSocket (Aria/Sonia) — non-iOS only ────────────
+    // On iOS every browser is WebKit; Apple's own neural Siri voices via
+    // speechSynthesis are higher quality than Edge and need zero network.
+    if(!IS_IOS && _edgeFails < 2){
       try {
         url = await _edgeSynth(text);
         isBlobUrl = true;
       } catch(e) {
         kokWs = null;
-        // kokStop() closes the socket mid-synthesis (pause / next / prev) —
-        // that rejection is user-initiated, NOT an engine failure.
+        // kokStop() closes the socket mid-synthesis (user pressed pause/next)
+        // — that is a user-initiated cancel, not an engine failure.
         if(kokSession !== mySession) return false;
         _edgeFails++;
         if(_edgeFails >= 2){
@@ -3168,9 +3173,9 @@ async function _edgePlayOne(text, mySession){
       if(kokSession !== mySession) return false;
     }
 
-    // ── Fallback 1: best local SpeechSynthesis voice ─────────────────────
-    // (On iPhone these are Apple's own neural Siri voices; on Edge browser
-    //  these are Azure Neural voices — high quality and zero latency.)
+    // ── P2: Best local SpeechSynthesis neural voice ───────────────────────
+    // iPhone: Siri (score 10) or Apple Enhanced (score 8) — instant, offline.
+    // Edge browser (desktop): Azure Neural voices (score 5+).
     const bestVoice = getVoice();
     if(bestVoice && qualityScore(bestVoice) >= 5){
       if(kokSession !== mySession) return false;
@@ -3179,8 +3184,8 @@ async function _edgePlayOne(text, mySession){
       if(kokSession !== mySession) return false;
     }
 
-    // ── Fallback 2: Google Translate TTS (works in US, no key needed) ───────
-    if(_gtFails < 2){
+    // ── P3: Google Translate TTS — non-iOS, <2 failures ──────────────────
+    if(!IS_IOS && _gtFails < 2){
       if(kokSession !== mySession) return false;
       _kokAnnounce('Google 在线语音');
       const gtOk = await _edgePlayUrl(_gtUrl(text));
@@ -3188,16 +3193,7 @@ async function _edgePlayOne(text, mySession){
       _gtFails++;
     }
 
-    // ── Fallback 3: Youdao dictvoice (works well in China) ───────────────
-    if(_ydFails < 2){
-      if(kokSession !== mySession) return false;
-      _kokAnnounce('有道在线语音');
-      const ydOk = await _edgePlayUrl(_ydUrl(text));
-      if(ydOk){ _ydFails = 0; return true; }
-      _ydFails++;
-    }
-
-    // ── Fallback 4: any SpeechSynthesis voice (guaranteed) ───────────────
+    // ── P4: Any SpeechSynthesis voice (guaranteed fallback) ──────────────
     if(kokSession !== mySession) return false;
     _kokAnnounce('系统语音');
     return await _synthPlay(text);
@@ -3241,15 +3237,15 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   _kokSrcShown        = '';
   _edgeFails          = 0;
   _gtFails            = 0;
-  _ydFails            = 0;
   if(!kokActive && (S.playing || S.paused)){
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
     if(IS_IOS){
-      // iOS: skip the 115 MB local model (WebKit memory limits, slow WASM)
-      // — Microsoft online neural + Apple Siri voices serve instead.
-      toast('高音质已开启（在线神经语音）');
+      // iOS: skip local WASM model (memory/speed limits) and online engines
+      // (unnecessary latency) — Apple Siri / Enhanced voices via speechSynthesis
+      // are already neural quality and work instantly offline.
+      toast('高音质已开启（Apple 神经语音）');
     } else {
       toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
                         : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
