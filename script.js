@@ -470,38 +470,67 @@ function coverUrl(isbn){ return `https://covers.openlibrary.org/b/isbn/${isbn}-M
 function gbCoverUrl(id){ return `https://www.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`; }
 
 // ── CORS proxies with real progress tracking
-const CORS_PROXIES = [
-  u => u,  // 直连（Gutenberg 支持 CORS，国外网络优先）
+// P1 pair raced simultaneously; P2 tried serially if both P1 fail
+const _P1 = [
+  u => u,
   u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+];
+const _P2 = [
   u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u => `https://thingproxy.freeboard.io/fetch/${encodeURIComponent(u)}`,
 ];
 
+async function _tryFetch(mk, url, ms){
+  const ctrl = new AbortController();
+  const tid  = setTimeout(() => ctrl.abort(), ms);
+  try{
+    const r = await fetch(mk(url), {signal: ctrl.signal});
+    clearTimeout(tid);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r;
+  }catch(e){ clearTimeout(tid); throw e; }
+}
+
 async function fetchWithProgress(rawUrl, onProgress){
-  for(const mk of CORS_PROXIES){
-    try{
-      const ctrl = new AbortController();
-      const tid  = setTimeout(()=>ctrl.abort(), 20000);
-      const resp = await fetch(mk(rawUrl), {signal:ctrl.signal});
-      clearTimeout(tid);
-      if(!resp.ok) continue;
-      const total  = parseInt(resp.headers.get('content-length')||'0');
-      const reader = resp.body.getReader();
-      const chunks = []; let got = 0;
-      while(true){
-        const {done,value} = await reader.read();
-        if(done) break;
-        chunks.push(value); got += value.length;
-        const pct = total > 0 ? Math.round(got/total*100) : Math.min(90, Math.round(got/5000));
-        onProgress(pct);
-      }
-      onProgress(100);
-      const buf = new Uint8Array(got); let pos=0;
-      for(const c of chunks){ buf.set(c,pos); pos+=c.length; }
-      return new TextDecoder('utf-8').decode(buf);
-    }catch(e){ console.warn('proxy fail',e); }
+  let resp = null;
+
+  // Race direct + corsproxy.io — whichever responds first wins
+  const ctrls = [new AbortController(), new AbortController()];
+  const racers = _P1.map((mk, i) => {
+    const ctrl = ctrls[i];
+    const tid  = setTimeout(() => ctrl.abort(), 9000);
+    return fetch(mk(rawUrl), {signal: ctrl.signal})
+      .then(r => { clearTimeout(tid); if(!r.ok) throw new Error(r.status); return {r, i}; })
+      .catch(e => { clearTimeout(tid); throw e; });
+  });
+  try{
+    const winner = await Promise.any(racers);
+    ctrls.forEach((c, i) => { if(i !== winner.i) c.abort(); });
+    resp = winner.r;
+  }catch(e){
+    // Both P1 failed — try P2 serially
+    for(const mk of _P2){
+      try{ resp = await _tryFetch(mk, rawUrl, 15000); break; }
+      catch(e2){ console.warn('proxy fail', e2); }
+    }
   }
-  throw new Error('all proxies failed');
+
+  if(!resp) throw new Error('all proxies failed');
+
+  const total  = parseInt(resp.headers.get('content-length') || '0');
+  const reader = resp.body.getReader();
+  const chunks = []; let got = 0;
+  while(true){
+    const {done, value} = await reader.read();
+    if(done) break;
+    chunks.push(value); got += value.length;
+    const pct = total > 0 ? Math.round(got/total*100) : Math.min(90, Math.round(got/5000));
+    onProgress(pct);
+  }
+  onProgress(100);
+  const buf = new Uint8Array(got); let pos = 0;
+  for(const c of chunks){ buf.set(c, pos); pos += c.length; }
+  return new TextDecoder('utf-8').decode(buf);
 }
 
 // ── Standard Ebooks: strip HTML to plain text
@@ -515,13 +544,10 @@ function seHtmlToText(html){
 // ── Fetch SE single-page book through CORS proxy
 async function fetchSEText(slug){
   const url = `https://standardebooks.org/ebooks/${slug}/text/single-page`;
-  for(const mk of CORS_PROXIES){
+  const all = [..._P1, ..._P2];
+  for(const mk of all){
     try{
-      const ctrl = new AbortController();
-      const tid  = setTimeout(()=>ctrl.abort(), 60000);
-      const resp = await fetch(mk(url),{signal:ctrl.signal});
-      clearTimeout(tid);
-      if(!resp.ok) continue;
+      const resp = await _tryFetch(mk, url, 30000);
       return seHtmlToText(await resp.text());
     }catch(e){ console.warn('SE proxy fail',e); }
   }
