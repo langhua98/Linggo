@@ -808,8 +808,8 @@ body{
   border-left:2px solid var(--border);
   padding:3px 0 3px 12px;
   margin:3px 0 1.4em;
-  font-size:14px;
-  line-height:1.6;
+  font-size:calc(var(--font-read) * 0.82);
+  line-height:1.65;
   color:var(--text-3);
   transition:background .15s, border-color .15s, color .15s;
 }
