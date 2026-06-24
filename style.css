@@ -804,24 +804,25 @@ body{
 #content.bilin .tl-line{
   display:block;
   background:none;
-  border-radius:0;
-  border-left:2px solid var(--border);
-  padding:3px 0 3px 12px;
+  border:2px solid transparent;     /* 预留边框，避免高亮时布局跳动 */
+  border-left-color:var(--border);
+  border-radius:8px;
+  padding:5px 11px;
   margin:3px 0 1.4em;
   font-size:calc(var(--font-read) * 0.82);
   line-height:1.65;
   color:var(--text-3);
   transition:background .15s, border-color .15s, color .15s;
 }
-/* 中文翻译随英文同步高亮——读到哪一句，对应中文也点亮 */
+/* 中文翻译随英文同步高亮——读到哪一句，对应中文用蓝色框框出来 */
 #content.bilin .sent.playing + .tl-line{
-  background:rgba(245,200,50,0.30);
-  border-left-color:var(--accent);
-  border-radius:0 6px 6px 0;
+  background:rgba(245,200,50,0.18);
+  border-color:var(--accent);       /* 四周蓝色边框 */
   color:var(--text);
 }
 .night #content.bilin .sent.playing + .tl-line{
-  background:rgba(245,180,30,0.20);
+  background:rgba(245,180,30,0.14);
+  border-color:var(--accent);
   color:var(--text);
 }
 .w-blur{filter:blur(5px);cursor:pointer;transition:filter .2s;}
