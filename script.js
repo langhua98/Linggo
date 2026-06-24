@@ -1061,7 +1061,7 @@ const S = {
   lineHeight:2.05, textAlign:'left',
   vocab:[], fileName:'',
   srchHits:[], srchIdx:0, srchOpen:false,
-  night:false, bilin:false, trans:{}, align:{},
+  night:false, bilin:false, trans:{}, align:{}, nalign:{},
   curWordEl:null, curWordData:null,
   selectedVoice:null, savedWords:new Set(),
   chapters:[],  // { title, sentIdx, el }
@@ -1490,7 +1490,7 @@ area.addEventListener('selectstart',  e=> e.preventDefault());
 
 function buildReader(raw){
   const paras = raw.split(/\n\s*\n/).map(p => p.replace(/\s+/g,' ').trim()).filter(p => p.length > 10);
-  S.sents = []; S.trans = {}; S.align = {}; S.chapters = [];
+  S.sents = []; S.trans = {}; S.align = {}; S.nalign = {}; S.chapters = [];
   S.savedWords = new Set(S.vocab.map(v => v.word));
   area.innerHTML = '';
 
@@ -1704,13 +1704,81 @@ function applyBilin(){
     content.classList.remove('bilin');
     _cnClearHl();
   }
+  if(typeof _syncNalignRow === 'function') _syncNalignRow();
 }
 
 // ═══════════════════════════════════════════
-//  WORD ALIGNMENT  词对齐
-//  本地词典（CET4 + CET6 + Ogden850 ≈ 2300 词）把英文词映射到中文义项，
+//  NEURAL ALIGNMENT  神经词对齐（可选 · 高精度）
+//  开启后懒加载一个 ~112 MB 多语言 MiniLM 模型（WASM，浏览器内推理），
+//  用上下文向量相似度做英中词对齐，准确度远高于词典查表。
+//  未开启 / 加载中 / 失败时自动回退到本地词典对齐。模型在独立 Worker 中运行。
+// ═══════════════════════════════════════════
+const NALIGN = (() => {
+  let worker = null, ready = false, loading = null, msgId = 0;
+  const pend = new Map();          // msgId → 句子下标
+  const inflight = new Set();      // 正在对齐的句子下标
+  let enabled = localStorage.getItem('nalign') === '1';
+
+  function _spawn(){
+    if(ready) return Promise.resolve(true);
+    if(loading) return loading;
+    loading = new Promise((resolve, reject) => {
+      let lastPct = -20;
+      try { worker = new Worker('/Linggo/align-worker.js', { type: 'module' }); }
+      catch(e){ loading = null; reject(e); return; }
+      worker.onerror = () => { if(!ready){ loading = null; reject(new Error('align worker failed')); } };
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if(m.type === 'progress'){
+          const pct = Math.floor(m.progress);
+          if(pct >= lastPct + 20){ lastPct = pct; toast(`正在下载词对齐模型 ${pct}%`); }
+        } else if(m.type === 'ready'){
+          ready = true; toast('神经词对齐已就绪 ✓'); resolve(true);
+        } else if(m.type === 'result'){
+          const i = pend.get(m.id); pend.delete(m.id); inflight.delete(i);
+          S.nalign[i] = m.align;
+          // 若结果属当前正在朗读的句子，立即用新对齐重绘高亮
+          if(i === _curHlIdx && _curHlCs >= 0) _cnAlignHighlight(i, _curHlCs);
+        } else if(m.type === 'error'){
+          const i = pend.get(m.id); pend.delete(m.id); if(i != null) inflight.delete(i);
+          if(m.id == null && !ready){ loading = null; reject(new Error(m.message)); }
+        }
+      };
+      worker.postMessage({ type: 'load' });
+    });
+    return loading;
+  }
+
+  function request(i){
+    if(!enabled || i < 0) return;
+    if(S.nalign[i] || inflight.has(i)) return;     // 已对齐 / 排队中
+    const en = S.sents[i], zh = S.trans[i];
+    if(!en || zh == null) return;                  // 译文未就绪
+    inflight.add(i);
+    _spawn().then(() => {
+      const id = ++msgId; pend.set(id, i);
+      worker.postMessage({ type: 'align', id, i, en, zh });
+    }).catch(() => { inflight.delete(i); });
+  }
+
+  function setEnabled(v){
+    enabled = !!v;
+    localStorage.setItem('nalign', enabled ? '1' : '0');
+    if(enabled){
+      S.nalign = {};                               // 清掉旧词典结果，改用神经对齐
+      _spawn().catch(() => toast('词对齐模型加载失败，已回退词典'));
+      if(_curHlIdx >= 0) request(_curHlIdx);
+    }
+  }
+
+  return { request, setEnabled, isEnabled: () => enabled };
+})();
+
+// ═══════════════════════════════════════════
+//  WORD ALIGNMENT  词对齐（词典法 · 默认 / 离线兜底）
+//  本地词典（CET4 + CET6 + Ogden850 + ECDICT 12k）把英文词映射到中文义项，
 //  在整句译文里定位该义项的字符位置 → 朗读到哪个英文词，对应中文同步高亮。
-//  纯前端、无后端、无神经模型；功能词/未收录词不高亮（保持整句底色即可）。
+//  纯前端、无后端、零延迟；开启"神经词对齐"后 _buildAlign 改用 NALIGN 结果。
 // ═══════════════════════════════════════════
 // 高频基础实词补充表——CET/Ogden 多未收录，但阅读文本里最常见
 const _LEX_BASE = {
@@ -1813,6 +1881,7 @@ function _enWords(sent){
 
 // 整句预对齐：英文词 → 中文译文字符区间，带"已占用"约束，避免抢词
 function _buildAlign(i){
+  if(S.nalign[i]) return S.nalign[i];          // 神经对齐结果优先（更准）
   if(S.align[i] !== undefined) return S.align[i];
   const T = S.trans[i];
   if(T == null) return undefined;            // 译文未就绪，先不缓存
@@ -1852,19 +1921,29 @@ function _cnClearHl(){
   _cnHlEl = null; _cnHlIdx = -1;
 }
 
+let _curHlIdx = -1, _curHlCs = -1;     // 当前正在朗读的句/词，供异步对齐就绪后重绘
 // 朗读到英文词（句内字符起点 enCs，属第 globalIdx 句）时，高亮对应中文字
 function _cnAlignHighlight(globalIdx, enCs){
+  _curHlIdx = globalIdx; _curHlCs = enCs;
+  NALIGN.request(globalIdx);            // 高精度模式下按需触发神经对齐
+  NALIGN.request(globalIdx + 1);        // 预取下一句，朗读到时已就绪
   const T = S.trans[globalIdx];
   const tl = document.querySelector(`.sent[data-i="${globalIdx}"] + .tl-line`);
   if(T == null || !tl){ _cnClearHl(); return; }
   const align = _buildAlign(globalIdx);
   _cnClearHl();
   if(!align || !align.length) return;
-  const hit = align.find(a => a.en === enCs);
-  if(!hit) return;
-  tl.innerHTML = _esc(T.slice(0, hit.cs)) +
-    '<span class="cn-tts">' + _esc(T.slice(hit.cs, hit.ce)) + '</span>' +
-    _esc(T.slice(hit.ce));
+  const hits = align.filter(a => a.en === enCs);   // 一词可对多个非连续中文区间
+  if(!hits.length) return;
+  hits.sort((a, b) => a.cs - b.cs);
+  let html = '', p = 0;
+  for(const h of hits){
+    if(h.cs < p) continue;                          // 跳过重叠区间
+    html += _esc(T.slice(p, h.cs)) + '<span class="cn-tts">' + _esc(T.slice(h.cs, h.ce)) + '</span>';
+    p = h.ce;
+  }
+  html += _esc(T.slice(p));
+  tl.innerHTML = html;
   _cnHlEl = tl; _cnHlIdx = globalIdx;
 }
 
@@ -2413,12 +2492,26 @@ document.querySelectorAll('.sb-mode-btn').forEach(btn => {
     S.mode = btn.dataset.mode; applyMode(); updMbtns(); saveProg();
   });
 });
+function _syncNalignRow(){
+  const row = document.getElementById('nalign-row');
+  if(row) row.style.display = S.bilin ? 'flex' : 'none';
+  const btn = document.getElementById('nalign-toggle');
+  if(btn) btn.classList.toggle('on', NALIGN.isEnabled());
+}
 document.getElementById('bilin-toggle').addEventListener('click', () => {
   S.bilin = !S.bilin;
   applyBilin();
+  _syncNalignRow();
   saveProg();
   if(S.bilin) toast('中英对照已开启');
 });
+document.getElementById('nalign-toggle').addEventListener('click', () => {
+  const on = !NALIGN.isEnabled();
+  NALIGN.setEnabled(on);
+  document.getElementById('nalign-toggle').classList.toggle('on', on);
+  toast(on ? '神经词对齐已开启，正在准备模型…' : '已切回词典对齐');
+});
+_syncNalignRow();
 
 function applyMode(){
   document.querySelectorAll('.word').forEach(w => w.classList.remove('w-blur'));
