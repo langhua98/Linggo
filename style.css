@@ -798,8 +798,20 @@ body{
 #content.bilin .sent{
   display:block;
   line-height:1.85;
-  margin:0 -6px;
-  padding:2px 6px;
+  margin:0 -9px;
+  padding:4px 9px;
+  border:2px solid transparent;     /* 预留边框，避免高亮时布局跳动 */
+  border-radius:8px;
+}
+/* 正在读的英文：蓝框 + 淡黄底，与下方中文翻译成对的一致样式 */
+#content.bilin .sent.playing{
+  background:rgba(245,200,50,0.18);
+  border-color:var(--accent);
+  border-radius:8px;
+}
+.night #content.bilin .sent.playing{
+  background:rgba(245,180,30,0.14);
+  border-color:var(--accent);
 }
 #content.bilin .tl-line{
   display:block;
