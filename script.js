@@ -1035,7 +1035,7 @@ const S = {
   lineHeight:2.05, textAlign:'left',
   vocab:[], fileName:'',
   srchHits:[], srchIdx:0, srchOpen:false,
-  night:false, trans:{},
+  night:false, bilin:false, trans:{},
   curWordEl:null, curWordData:null,
   selectedVoice:null, savedWords:new Set(),
   chapters:[],  // { title, sentIdx, el }
@@ -1058,7 +1058,7 @@ function saveProg(){
   if(!S.fileName) return;
   localStorage.setItem('rdr_'+S.fileName, JSON.stringify({
     idx:S.idx, speed:S.speed,
-    fontSize:S.fontSize, night:S.night,
+    fontSize:S.fontSize, night:S.night, bilin:S.bilin,
     accentUS:S.accentUS, mode:S.mode,
     lineHeight:S.lineHeight, textAlign:S.textAlign,
   }));
@@ -1072,6 +1072,7 @@ function loadProg(){
     S.speed      = d.speed      || 1.0;
     S.fontSize   = d.fontSize   || 18;
     S.night      = !!d.night;
+    S.bilin      = !!d.bilin;
     S.accentUS   = d.accentUS !== undefined ? d.accentUS : true;
     S.mode       = d.mode       || 'normal';
     S.lineHeight = d.lineHeight || 2.05;
@@ -1498,6 +1499,7 @@ function buildReader(raw){
       renderChapters();
       const chapBtn = document.getElementById('chap-tbtn');
       chapBtn.style.display = S.chapters.length ? '' : 'none';
+      applyBilin(); // set up observer if bilin mode was on before book loaded
     }
   }
 
@@ -1562,6 +1564,7 @@ document.getElementById('chap-close').addEventListener('click', closeChapPanel);
 
 async function onSentTranslate(i, sp){
   if (S.mode === 'immersive') return;
+  if (S.bilin) return; // bilin mode already shows all translations
   injectWords(sp);
   const nx = sp.nextElementSibling;
   if (nx && nx.classList.contains('tl-line')){ nx.remove(); return; }
@@ -1623,12 +1626,57 @@ async function translate(txt) {
 
   // Source 3: Lingva (open-source Google Translate frontend)
   try {
-    const r = await fetchTimed(`https://lingva.ml/api/v1/en/zh/${encodeURIComponent(txt.slice(0, 300))}`);
+    const r = await fetchTimed(`https://lingva.lunar.icu/api/v1/en/zh/${encodeURIComponent(txt.slice(0, 300))}`);
     const d = await r.json();
     if (d.translation) { TRANS_CACHE.set(cacheKey, d.translation); return d.translation; }
   } catch(e) {}
 
   return '[翻译失败，请检查网络]';
+}
+
+// ═══════════════════════════════════════════
+//  BILINGUAL MODE
+//  IntersectionObserver lazily translates each sentence as it scrolls
+//  into view — never pre-fetches the whole book.
+// ═══════════════════════════════════════════
+let _bilinObs = null;
+
+function _bilinTranslateSent(sp){
+  if(sp.style.display === 'none') return; // hidden heading spans
+  const nx = sp.nextElementSibling;
+  if(nx && nx.classList.contains('tl-line')) return; // already translated
+  const i = +sp.dataset.i;
+  const tl = document.createElement('span');
+  tl.className = 'tl-line';
+  tl.textContent = '…';
+  sp.after(tl);
+  if(S.trans[i]){
+    tl.textContent = S.trans[i];
+  } else {
+    translate(S.sents[i]).then(res => {
+      S.trans[i] = res;
+      tl.textContent = res;
+    }).catch(() => { tl.remove(); });
+  }
+}
+
+function applyBilin(){
+  const content = document.getElementById('content');
+  // Always disconnect first to avoid observing stale/removed elements
+  if(_bilinObs){ _bilinObs.disconnect(); _bilinObs = null; }
+  const btn = document.getElementById('bilin-toggle');
+  if(btn) btn.classList.toggle('on', S.bilin);
+  if(S.bilin){
+    content.classList.add('bilin');
+    _bilinObs = new IntersectionObserver(entries => {
+      for(const e of entries){
+        if(e.isIntersecting) _bilinTranslateSent(e.target);
+      }
+    }, { rootMargin: '0px 0px 300px 0px' }); // 300px pre-load ahead
+    content.querySelectorAll('.sent').forEach(sp => _bilinObs.observe(sp));
+  } else {
+    content.classList.remove('bilin');
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -2173,6 +2221,13 @@ document.querySelectorAll('.sb-mode-btn').forEach(btn => {
     S.mode = btn.dataset.mode; applyMode(); updMbtns(); saveProg();
   });
 });
+document.getElementById('bilin-toggle').addEventListener('click', () => {
+  S.bilin = !S.bilin;
+  applyBilin();
+  saveProg();
+  if(S.bilin) toast('中英对照已开启');
+});
+
 function applyMode(){
   document.querySelectorAll('.word').forEach(w => w.classList.remove('w-blur'));
   document.querySelectorAll('.tl-line').forEach(el => { el.style.display = S.mode==='immersive' ? 'none' : ''; });
