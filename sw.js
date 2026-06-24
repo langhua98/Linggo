@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v70';
+const CACHE = 'linggo-v71';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -34,7 +34,11 @@ self.addEventListener('activate', e => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for app shell, network-only for external APIs
+// Core code files: always fetch fresh so deploys take effect immediately,
+// fall back to cache only when offline
+const CODE = /\/(index\.html|script\.js|style\.css|sb\.js|srs\.js|cet4\.js|cet6\.js|ogden850\.js)$|\/Linggo\/$/;
+
+// Fetch: network-first for code, cache-first for static assets
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
@@ -46,6 +50,21 @@ self.addEventListener('fetch', e => {
   // so SW version bumps never force a re-download
   if (url.pathname.startsWith('/Linggo/kokoro/')) return;
 
+  // Network-first for HTML/JS/CSS — users always get the latest code online
+  if (CODE.test(url.pathname) || e.request.mode === 'navigate') {
+    e.respondWith(
+      fetch(e.request).then(res => {
+        if (res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+        }
+        return res;
+      }).catch(() => caches.match(e.request).then(c => c || caches.match('/Linggo/index.html')))
+    );
+    return;
+  }
+
+  // Cache-first + background update for static assets (icons, manifest)
   e.respondWith(
     caches.match(e.request).then(cached => {
       const fromNetwork = fetch(e.request).then(res => {
@@ -55,7 +74,6 @@ self.addEventListener('fetch', e => {
         }
         return res;
       }).catch(() => cached);
-      // Return cache immediately if available, update in background
       return cached || fromNetwork;
     })
   );
