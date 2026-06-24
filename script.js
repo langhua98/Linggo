@@ -1751,6 +1751,7 @@ function _buildLex(){
   if(typeof CET4     !== 'undefined') add(CET4);
   if(typeof CET6     !== 'undefined') add(CET6);
   if(typeof OGDEN850 !== 'undefined') add(OGDEN850);
+  if(typeof ECDICT   !== 'undefined') add(ECDICT);
   for(const w in _LEX_BASE){ if(!_LEX.has(w)) _LEX.set(w, _LEX_BASE[w]); }
   return _LEX;
 }

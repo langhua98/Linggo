@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v76';
+const CACHE = 'linggo-v77';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -9,6 +9,7 @@ const SHELL = [
   '/Linggo/cet4.js',
   '/Linggo/cet6.js',
   '/Linggo/ogden850.js',
+  '/Linggo/ecdict.js',
   '/Linggo/icon.png',
   '/Linggo/icon-192.png',
   '/Linggo/icon-512.png',
@@ -36,7 +37,7 @@ self.addEventListener('activate', e => {
 
 // Core code files: always fetch fresh so deploys take effect immediately,
 // fall back to cache only when offline
-const CODE = /\/(index\.html|script\.js|style\.css|sb\.js|srs\.js|cet4\.js|cet6\.js|ogden850\.js)$|\/Linggo\/$/;
+const CODE = /\/(index\.html|script\.js|style\.css|sb\.js|srs\.js|cet4\.js|cet6\.js|ogden850\.js|ecdict\.js)$|\/Linggo\/$/;
 
 // Fetch: network-first for code, cache-first for static assets
 self.addEventListener('fetch', e => {
