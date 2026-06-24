@@ -1202,8 +1202,14 @@ if(_sv) try{ S.vocab=JSON.parse(_sv); }catch(e){}
 //  BUILD READER  —  chunked render + delegation
 // ═══════════════════════════════════════════
 function splitSents(txt){
+  // Protect abbreviation periods so they don't trigger sentence splits.
+  // Covers titles, ranks, degrees, months, days, and Latin abbreviations
+  // common in classic English literature (Project Gutenberg).
+  const ABBR = /\b(Mr|Mrs|Ms|Miss|Dr|Prof|Rev|Sr|Jr|Gen|Sgt|Col|Capt|Lt|Maj|Adm|Gov|Sen|Rep|Messrs|Esq|St|Co|Corp|Inc|Dept|Univ|Ave|Blvd|Fig|Figs|Vol|Vols|Ch|Sec|No|Nos|pp|vs|Vs|etc|ie|eg|viz|cf|ca|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Sun|Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat)\.(?=\s)/g;
+  const safe = txt.replace(ABBR, m => m.slice(0, -1) + '\x01');
+
   // Step 1: split on sentence-ending punctuation (.!?) and semicolons
-  const raw = txt.match(/[^.!?;]+[.!?;]+['""\u201d]?\s*|[^.!?;]+$/g) || [txt];
+  const raw = safe.match(/[^.!?;]+[.!?;]+['""\u201d]?\s*|[^.!?;]+$/g) || [safe];
 
   // Step 2: further split any chunk longer than 160 chars at a comma
   const MAX = 160;
@@ -1228,7 +1234,8 @@ function splitSents(txt){
       result.push(s);
     }
   }
-  return result.filter(s => s.length > 2);
+  // Restore abbreviation periods before returning
+  return result.map(s => s.replace(/\x01/g, '.')).filter(s => s.length > 2);
 }
 
 // Detect chapter heading — checks ANY sentence, not just standalone paragraphs
