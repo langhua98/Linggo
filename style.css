@@ -795,14 +795,34 @@ body{
   border-radius:0 8px 8px 0;
 }
 /* ── BILINGUAL MODE ── */
-#content.bilin .sent{display:block;margin-bottom:3px;}
+#content.bilin .sent{
+  display:block;
+  line-height:1.85;
+  margin:0 -6px;
+  padding:2px 6px;
+}
 #content.bilin .tl-line{
+  display:block;
   background:none;
   border-radius:0;
-  border-left:2px solid var(--accent);
-  padding:2px 10px;
-  margin:0 0 1.3em;
-  font-size:13px;
+  border-left:2px solid var(--border);
+  padding:3px 0 3px 12px;
+  margin:3px 0 1.4em;
+  font-size:14px;
+  line-height:1.6;
+  color:var(--text-3);
+  transition:background .15s, border-color .15s, color .15s;
+}
+/* 中文翻译随英文同步高亮——读到哪一句，对应中文也点亮 */
+#content.bilin .sent.playing + .tl-line{
+  background:rgba(245,200,50,0.30);
+  border-left-color:var(--accent);
+  border-radius:0 6px 6px 0;
+  color:var(--text);
+}
+.night #content.bilin .sent.playing + .tl-line{
+  background:rgba(245,180,30,0.20);
+  color:var(--text);
 }
 .w-blur{filter:blur(5px);cursor:pointer;transition:filter .2s;}
 .w-blur:hover{filter:none;}
