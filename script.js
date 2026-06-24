@@ -1061,7 +1061,7 @@ const S = {
   lineHeight:2.05, textAlign:'left',
   vocab:[], fileName:'',
   srchHits:[], srchIdx:0, srchOpen:false,
-  night:false, bilin:false, trans:{},
+  night:false, bilin:false, trans:{}, align:{},
   curWordEl:null, curWordData:null,
   selectedVoice:null, savedWords:new Set(),
   chapters:[],  // { title, sentIdx, el }
@@ -1490,7 +1490,7 @@ area.addEventListener('selectstart',  e=> e.preventDefault());
 
 function buildReader(raw){
   const paras = raw.split(/\n\s*\n/).map(p => p.replace(/\s+/g,' ').trim()).filter(p => p.length > 10);
-  S.sents = []; S.trans = {}; S.chapters = [];
+  S.sents = []; S.trans = {}; S.align = {}; S.chapters = [];
   S.savedWords = new Set(S.vocab.map(v => v.word));
   area.innerHTML = '';
 
@@ -1702,7 +1702,169 @@ function applyBilin(){
     content.querySelectorAll('.sent').forEach(sp => _bilinObs.observe(sp));
   } else {
     content.classList.remove('bilin');
+    _cnClearHl();
   }
+}
+
+// ═══════════════════════════════════════════
+//  WORD ALIGNMENT  词对齐
+//  本地词典（CET4 + CET6 + Ogden850 ≈ 2300 词）把英文词映射到中文义项，
+//  在整句译文里定位该义项的字符位置 → 朗读到哪个英文词，对应中文同步高亮。
+//  纯前端、无后端、无神经模型；功能词/未收录词不高亮（保持整句底色即可）。
+// ═══════════════════════════════════════════
+// 高频基础实词补充表——CET/Ogden 多未收录，但阅读文本里最常见
+const _LEX_BASE = {
+  live:'住；生活；活着', life:'生活；生命', home:'家；家庭', house:'房子；屋',
+  course:'课程；过程', know:'知道；认识', begin:'开始', beginning:'开始；开端',
+  end:'结束；末端', start:'开始', come:'来', go:'去；走', see:'看；看见',
+  look:'看；瞧', watch:'看；观察', think:'想；认为', say:'说',
+  tell:'告诉；讲', talk:'说话；谈', speak:'说；讲', ask:'问；要求', answer:'回答',
+  find:'找到；发现', give:'给', take:'拿；取', get:'得到', make:'做；制造',
+  want:'想要', need:'需要', feel:'感觉；觉得', become:'变成；成为', leave:'离开',
+  grow:'生长；成长', keep:'保持；保留', let:'让；允许', turn:'转；变', call:'叫；打电话',
+  work:'工作', play:'玩；演奏', run:'跑；运行', walk:'走；步行', move:'移动',
+  hear:'听见', read:'读', write:'写', open:'打开', close:'关闭', stand:'站；立',
+  sit:'坐', lie:'躺；说谎', sleep:'睡', eat:'吃', drink:'喝', love:'爱', like:'喜欢',
+  hate:'恨；讨厌', hope:'希望', wish:'希望；愿', remember:'记得', forget:'忘记',
+  day:'天；白天', night:'夜晚', morning:'早晨', time:'时间', year:'年', hour:'小时',
+  man:'男人；人', woman:'女人', child:'孩子', boy:'男孩', girl:'女孩', friend:'朋友',
+  mother:'母亲；妈妈', father:'父亲；爸爸', hand:'手', eye:'眼睛', face:'脸；面孔',
+  head:'头', heart:'心', way:'路；方法', thing:'事物；东西', world:'世界',
+  room:'房间', door:'门', window:'窗', water:'水', fire:'火', light:'光；灯',
+  word:'词；话', name:'名字', story:'故事', book:'书', voice:'声音', sound:'声音',
+  lovely:'可爱的；美好的', sweet:'甜的；可爱的', good:'好的', great:'伟大的；很好的',
+  little:'小的；一点', old:'老的；旧的', young:'年轻的', long:'长的', short:'短的',
+  high:'高的', low:'低的', small:'小的', large:'大的', big:'大的', happy:'快乐的',
+  sad:'悲伤的', kind:'善良的；种类', dark:'黑暗的', bright:'明亮的', quiet:'安静的',
+  beautiful:'美丽的', pretty:'漂亮的', strange:'奇怪的', true:'真的', real:'真实的',
+  chief:'主要的；首领', whole:'整个的', full:'满的', mind:'头脑；介意', romantic:'浪漫的',
+};
+
+let _LEX = null;
+function _buildLex(){
+  if(_LEX) return _LEX;
+  _LEX = new Map();
+  const add = arr => {
+    if(!Array.isArray(arr)) return;
+    for(const e of arr){ if(e && e.w && !_LEX.has(e.w)) _LEX.set(e.w, e.cn); }
+  };
+  if(typeof CET4     !== 'undefined') add(CET4);
+  if(typeof CET6     !== 'undefined') add(CET6);
+  if(typeof OGDEN850 !== 'undefined') add(OGDEN850);
+  for(const w in _LEX_BASE){ if(!_LEX.has(w)) _LEX.set(w, _LEX_BASE[w]); }
+  return _LEX;
+}
+
+// 英文词 → 中文义项原文（含简单词形还原）
+function _lexGet(w){
+  const L = _buildLex();
+  if(L.has(w)) return L.get(w);
+  const cands = [];
+  if(/ies$/.test(w)) cands.push(w.replace(/ies$/, 'y'));
+  if(/es$/.test(w))  cands.push(w.replace(/es$/, ''));
+  if(/s$/.test(w))   cands.push(w.replace(/s$/, ''));
+  if(/ed$/.test(w))  { cands.push(w.replace(/ed$/, '')); cands.push(w.replace(/ed$/, 'e')); }
+  if(/ing$/.test(w)) { cands.push(w.replace(/ing$/, '')); cands.push(w.replace(/ing$/, 'e')); }
+  if(/d$/.test(w))   cands.push(w.replace(/d$/, ''));
+  if(/er$/.test(w))  cands.push(w.replace(/er$/, ''));
+  if(/ly$/.test(w))  cands.push(w.replace(/ly$/, ''));
+  for(const c of cands){ if(L.has(c)) return L.get(c); }
+  return null;
+}
+
+// 把义项串拆成"按词义先后排序"的候选中文片段（主词义优先，非按长度）
+// "甜的；可爱的" → ["甜的","甜","可爱的","可爱"]，确保主词义先匹配
+function _glossSenses(cn){
+  const out = [];
+  for(const sense of cn.split(/[；;]/).map(s => s.trim()).filter(Boolean)){
+    for(let q of sense.split(/[，,、/]/).map(s => s.trim()).filter(Boolean)){
+      q = q.replace(/[（(][^)）]*[)）]/g, '').trim(); // 去括号注释
+      if(!q) continue;
+      out.push(q);
+      const s = q.replace(/[的地得了着]$/, ''); // 去虚词尾，提升匹配率
+      if(s && s !== q) out.push(s);
+    }
+  }
+  return [...new Set(out)];
+}
+
+// 功能词/代词不参与对齐——高亮它们只会添乱
+const _STOP = new Set(('a an the of to and or but nor in on at with for as by from into onto ' +
+  'is am are was were be been being do does did have has had will would shall should can could ' +
+  'may might must that this these those it its he she they we you i me him her them us his their ' +
+  'my your our not no so if then than too very there here what which who whom whose when where ' +
+  'why how all any some each every out up down over under off again about above below').split(' '));
+
+// 提取英文词及其在句中的字符起点（与 injectWords 一致）
+function _enWords(sent){
+  const out = []; let pos = 0;
+  for(const part of sent.split(/(\s+)/)){
+    if(/^\s+$/.test(part)){ pos += part.length; continue; }
+    const m = part.match(/[a-zA-Z']+/);
+    if(m){
+      const w = m[0].toLowerCase().replace(/^'+|'+$/g, '');
+      out.push({ w, cs: pos + part.indexOf(m[0]) });
+    }
+    pos += part.length;
+  }
+  return out;
+}
+
+// 整句预对齐：英文词 → 中文译文字符区间，带"已占用"约束，避免抢词
+function _buildAlign(i){
+  if(S.align[i] !== undefined) return S.align[i];
+  const T = S.trans[i];
+  if(T == null) return undefined;            // 译文未就绪，先不缓存
+  const res = [];
+  const claimed = [];                         // 已占用的中文区间 [start,end)
+  const overlaps = (a, b) => claimed.some(r => a < r[1] && b > r[0]);
+  let lastEnd = 0;
+  for(const { w, cs } of _enWords(S.sents[i])){
+    if(_STOP.has(w)) continue;
+    const gl = _lexGet(w); if(!gl) continue;
+    let chosen = null;
+    for(const g of _glossSenses(gl)){
+      if(!g) continue;
+      // 优先取 lastEnd 之后的未占用位置（单调，读起来从左到右）
+      let idx = T.indexOf(g, lastEnd);
+      while(idx >= 0 && overlaps(idx, idx + g.length)) idx = T.indexOf(g, idx + 1);
+      if(idx < 0){                            // 退而求其次：全句找未占用位置
+        idx = T.indexOf(g);
+        while(idx >= 0 && overlaps(idx, idx + g.length)) idx = T.indexOf(g, idx + 1);
+      }
+      if(idx >= 0){ chosen = [idx, idx + g.length]; break; }
+    }
+    if(chosen){ claimed.push(chosen); lastEnd = chosen[1]; res.push({ en: cs, cs: chosen[0], ce: chosen[1] }); }
+  }
+  res.sort((a, b) => a.en - b.en);
+  S.align[i] = res;
+  return res;
+}
+
+function _esc(s){
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+let _cnHlEl = null, _cnHlIdx = -1;
+function _cnClearHl(){
+  if(_cnHlEl && S.trans[_cnHlIdx] != null) _cnHlEl.textContent = S.trans[_cnHlIdx];
+  _cnHlEl = null; _cnHlIdx = -1;
+}
+
+// 朗读到英文词（句内字符起点 enCs，属第 globalIdx 句）时，高亮对应中文字
+function _cnAlignHighlight(globalIdx, enCs){
+  const T = S.trans[globalIdx];
+  const tl = document.querySelector(`.sent[data-i="${globalIdx}"] + .tl-line`);
+  if(T == null || !tl){ _cnClearHl(); return; }
+  const align = _buildAlign(globalIdx);
+  _cnClearHl();
+  if(!align || !align.length) return;
+  const hit = align.find(a => a.en === enCs);
+  if(!hit) return;
+  tl.innerHTML = _esc(T.slice(0, hit.cs)) +
+    '<span class="cn-tts">' + _esc(T.slice(hit.cs, hit.ce)) + '</span>' +
+    _esc(T.slice(hit.ce));
+  _cnHlEl = tl; _cnHlIdx = globalIdx;
 }
 
 // ═══════════════════════════════════════════
@@ -2031,6 +2193,7 @@ function playChunk(chunk){
 // ── TTS word highlight helpers
 function clearTtsWord(){
   document.querySelectorAll('.word.tts-word').forEach(w => w.classList.remove('tts-word'));
+  _cnClearHl();
 }
 
 function highlightWordAt(sentEl, charIdx){
@@ -2045,6 +2208,8 @@ function highlightWordAt(sentEl, charIdx){
   }
   if(best){
     best.classList.add('tts-word');
+    // 词对齐：朗读到的英文词 → 中文译文里对应字同步高亮
+    if(S.bilin) _cnAlignHighlight(+sentEl.dataset.i, +best.dataset.charStart);
     // Subtle scroll — only if word is outside viewport
     const rect = best.getBoundingClientRect();
     if(rect.bottom > window.innerHeight - 180 || rect.top < 60){

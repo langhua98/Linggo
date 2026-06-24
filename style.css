@@ -798,44 +798,41 @@ body{
 #content.bilin .sent{
   display:block;
   line-height:1.85;
-  margin:0 -9px;
-  padding:4px 9px;
-  border:2px solid transparent;     /* 预留边框，避免高亮时布局跳动 */
-  border-radius:8px;
-}
-/* 正在读的英文：蓝框 + 淡黄底，与下方中文翻译成对的一致样式 */
-#content.bilin .sent.playing{
-  background:rgba(245,200,50,0.18);
-  border-color:var(--accent);
-  border-radius:8px;
-}
-.night #content.bilin .sent.playing{
-  background:rgba(245,180,30,0.14);
-  border-color:var(--accent);
+  margin:0 -5px;
+  padding:2px 5px;
 }
 #content.bilin .tl-line{
   display:block;
   background:none;
-  border:2px solid transparent;     /* 预留边框，避免高亮时布局跳动 */
-  border-left-color:var(--border);
-  border-radius:8px;
-  padding:5px 11px;
+  border-left:2px solid var(--border);
+  border-radius:0;
+  padding:3px 0 3px 12px;
   margin:3px 0 1.4em;
   font-size:calc(var(--font-read) * 0.82);
   line-height:1.65;
   color:var(--text-3);
   transition:background .15s, border-color .15s, color .15s;
 }
-/* 中文翻译随英文同步高亮——读到哪一句，对应中文用蓝色框框出来 */
+/* 当前朗读句的中文：淡黄底（与英文句一致），词级高亮叠加其上 */
 #content.bilin .sent.playing + .tl-line{
-  background:rgba(245,200,50,0.18);
-  border-color:var(--accent);       /* 四周蓝色边框 */
-  color:var(--text);
+  background:rgba(245,200,50,0.16);
+  border-left-color:var(--accent);
+  color:var(--text-2);
 }
 .night #content.bilin .sent.playing + .tl-line{
-  background:rgba(245,180,30,0.14);
-  border-color:var(--accent);
+  background:rgba(245,180,30,0.12);
+}
+/* 词对齐：朗读到的英文词对应的中文字 */
+.cn-tts{
+  background:rgba(37,99,235,0.20);
+  border-radius:3px;
+  padding:0 1px;
+  box-shadow:0 0 0 1.5px rgba(37,99,235,0.45);
   color:var(--text);
+}
+.night .cn-tts{
+  background:rgba(96,165,250,0.26);
+  box-shadow:0 0 0 1.5px rgba(96,165,250,0.5);
 }
 .w-blur{filter:blur(5px);cursor:pointer;transition:filter .2s;}
 .w-blur:hover{filter:none;}
