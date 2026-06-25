@@ -3218,7 +3218,7 @@ function _unlockAudio(){
 // SpeechSynthesis; the background fetch populates KOK_DONE for the next sentence.
 //
 // Deploy: create a HF Space (sdk:docker) and replace KOK_SERVER_URL below.
-const KOK_SERVER_URL = 'https://langhua98-kokoro.hf.space';
+const KOK_SERVER_URL = 'https://langhua1998-kokoro.hf.space';
 
 let kokTTSReady = true;   // server always "ready"; cold-start handled by race timeout
 const KOK_CACHE = new Map(); // synth key → Promise<blob URL>
@@ -3236,7 +3236,7 @@ function _kokServerSynth(text){
       voice: _kokVoice(),
       speed: String(S.speed || 1)
     });
-    const resp = await fetch(`${KOK_SERVER_URL}/?${params}`);
+    const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`);
     if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
     const blob = await resp.blob();
     const url  = URL.createObjectURL(blob);
