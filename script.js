@@ -1063,7 +1063,7 @@ const S = {
   srchHits:[], srchIdx:0, srchOpen:false,
   night:false, bilin:false, trans:{}, align:{}, nalign:{},
   curWordEl:null, curWordData:null, wordCs:0,
-  selectedVoice:null, savedWords:new Set(),
+  savedWords:new Set(),
   kokVoice:'af_heart',  // selected Kokoro neural voice
   chapters:[],  // { title, sentIdx, el }
 };
@@ -1138,49 +1138,8 @@ function cleanVoiceName(v){
     .replace(/^en[-_][A-Z]{2}[-_]/,'')
     .replace(/ \(.*?\)/,'').trim();
 }
-const BLOCK = /albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|fred|good news|hysterical|jester|junior|organ|pipe organ|princess|ralph|superstar|trinoids|whisper|wobble|zarvox/i;
-
-function populateVoices(){
-  allVoices = synth.getVoices();
-  const enVoices = allVoices
-    .filter(v => v.lang.startsWith('en') && !BLOCK.test(v.name))
-    .sort((a,b)=>{
-      const au = a.lang==='en-US'?1:0, bu = b.lang==='en-US'?1:0;
-      if(au!==bu) return bu-au;
-      return qualityScore(b)-qualityScore(a);
-    });
-  if(!enVoices.length) return;
-  const sel = document.getElementById('sb-voice-select');
-  if(!sel) return;
-  sel.innerHTML = '';
-  enVoices.forEach(v=>{
-    const o = document.createElement('option');
-    o.value = v.name;
-    const flag = v.lang==='en-US'?'🇺🇸':v.lang==='en-GB'?'🇬🇧':'🌐';
-    o.textContent = flag+' '+cleanVoiceName(v);
-    sel.appendChild(o);
-  });
-  const saved = localStorage.getItem('selectedVoice');
-  const savedVoice = saved && enVoices.find(v=>v.name===saved);
-  if(savedVoice){ sel.value=savedVoice.name; S.selectedVoice=savedVoice; }
-  else{
-    S.selectedVoice = enVoices[0];
-    sel.value = enVoices[0].name;
-    localStorage.setItem('selectedVoice', enVoices[0].name);
-  }
-}
-document.getElementById('sb-voice-select').addEventListener('change', function(){
-  S.selectedVoice = allVoices.find(v=>v.name===this.value)||null;
-  localStorage.setItem('selectedVoice', this.value);
-});
-document.getElementById('sb-voice-preview').addEventListener('click', ()=>{
-  const u = new SpeechSynthesisUtterance('Hello! This is a voice preview.');
-  u.rate = S.speed;
-  if(S.selectedVoice) u.voice = S.selectedVoice;
-  synth.cancel(); synth.speak(u);
-});
-synth.onvoiceschanged = ()=>{ populateVoices(); };
-populateVoices();
+synth.onvoiceschanged = ()=>{ allVoices = synth.getVoices(); };
+allVoices = synth.getVoices();
 
 // ═══════════════════════════════════════════
 //  FILE LOADING (from local TXT upload)
@@ -2214,11 +2173,10 @@ function buildChunk(startIdx, startChar = 0){
 }
 
 function getVoice(){
-  if(S.selectedVoice) return S.selectedVoice;
-  const lang = S.accentUS ? 'en-US' : 'en-GB';
-  return synth.getVoices()
-    .filter(v => v.lang === lang || v.lang.startsWith('en'))
-    .sort((a,b) => qualityScore(b) - qualityScore(a))[0] || null;
+  const voices = synth.getVoices();
+  return voices.find(v => v.name === 'Samantha') ||
+         voices.filter(v => v.lang.startsWith('en'))
+               .sort((a,b) => qualityScore(b) - qualityScore(a))[0] || null;
 }
 
 function playChunk(chunk){
