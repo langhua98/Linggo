@@ -3250,11 +3250,11 @@ async function _kokStreamPlay(text, mySession, sentEl){
   const reader = resp.body.getReader();
   let acc = new Uint8Array(0);
   let schedAt = ctx.currentTime + 0.05;
-  let lastSrc = null;
+  const allSrcs = [];          // track every node so cancel can stop all of them
   let finished = false;
   let hlAnimId = null;
   let streamStartTime = -1;
-  const charsPerSec = 13 * (S.speed || 1);  // ~150 wpm × 5 chars estimate
+  const charsPerSec = 13 * (S.speed || 1);
 
   return new Promise(resolve => {
     const finish = ok => {
@@ -3266,7 +3266,7 @@ async function _kokStreamPlay(text, mySession, sentEl){
     };
     _kokSynthCancel = () => {
       reader.cancel();
-      if(lastSrc) try{ lastSrc.stop(0); }catch(e){}
+      allSrcs.forEach(s => { try{ s.stop(0); }catch(e){} });  // stop ALL scheduled nodes
       finish(false);
     };
 
@@ -3280,7 +3280,7 @@ async function _kokStreamPlay(text, mySession, sentEl){
           m.set(acc); m.set(value, acc.length); acc = m;
           while(acc.length >= 4){
             const len = (acc[0]<<24)|(acc[1]<<16)|(acc[2]<<8)|acc[3];
-            if(acc.length < 4 + len) break;
+            if(len === 0 || acc.length < 4 + len) break;   // guard against zero-len / partial
             const wav = acc.slice(4, 4 + len); acc = acc.slice(4 + len);
             let decoded;
             try{ decoded = await ctx.decodeAudioData(
@@ -3290,7 +3290,8 @@ async function _kokStreamPlay(text, mySession, sentEl){
             const src = ctx.createBufferSource();
             src.buffer = decoded; src.connect(ctx.destination);
             const at = Math.max(schedAt, ctx.currentTime + 0.01);
-            src.start(at); schedAt = at + decoded.duration; lastSrc = src;
+            src.start(at); schedAt = at + decoded.duration;
+            allSrcs.push(src);
             if(streamStartTime < 0){
               streamStartTime = at;
               if(sentEl){
@@ -3306,8 +3307,11 @@ async function _kokStreamPlay(text, mySession, sentEl){
             }
           }
         }
-        if(lastSrc){
-          const wait = Math.max(0, (schedAt - ctx.currentTime) * 1000 + 150);
+        if(allSrcs.length > 0){
+          const last = allSrcs[allSrcs.length - 1];
+          // onended fires when last chunk finishes; setTimeout is a safety fallback
+          last.onended = () => finish(kokSession === mySession);
+          const wait = Math.max(0, (schedAt - ctx.currentTime) * 1000 + 300);
           setTimeout(() => finish(kokSession === mySession), wait);
         } else { finish(false); }
       }catch(e){ finish(false); }
