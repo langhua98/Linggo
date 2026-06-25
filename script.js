@@ -1527,6 +1527,7 @@ function buildReader(raw){
       const chapBtn = document.getElementById('chap-tbtn');
       chapBtn.style.display = S.chapters.length ? '' : 'none';
       applyBilin(); // set up observer if bilin mode was on before book loaded
+      _kokWarm();   // pre-synthesize the starting sentence so play is instant
     }
   }
 
@@ -2192,6 +2193,10 @@ function jump(i){
   }
   document.getElementById('sent-preview-text').textContent = S.sents[i] || '';
   updateProg(); saveProg();
+  // While idle, warm the sentence the user just navigated to so pressing play
+  // there is instant. Debounced so scrubbing only synthesizes the settled spot.
+  // During playback _kokPrefetch already warms ahead.
+  if(!S.playing) _kokWarmSoon(i);
 }
 
 // Build a chunk: join sentences into one utterance, track char offsets per sentence.
@@ -3301,6 +3306,28 @@ async function _kokPrefetch(n = 4){
   }
 }
 
+// Eagerly pre-synthesize the sentence the user is most likely to play next
+// (current + 1 ahead) BEFORE they press play, so the click hits the KOK_DONE
+// cache and audio starts almost instantly. This is the main lever for low
+// click-to-sound latency: synthesizing happens during the idle gap between
+// opening a book / enabling Kokoro and pressing play. Pure network fetch — needs
+// no user gesture (the gesture is only required to *play*). Also warms the HF
+// Space pipeline so the very first real synthesis is just inference.
+function _kokWarm(idx = S.idx){
+  if(!kokActive) return;
+  if(KOK_SERVER_URL === 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space') return;
+  for(let i = idx; i < Math.min(idx + 2, S.sents.length); i++){
+    if(S.sents[i]) _kokServerSynth(S.sents[i]).catch(()=>{});
+  }
+}
+// Debounced variant for rapid idle navigation (scrubbing) — only the settled
+// position gets synthesized, so we never backlog the 2-vCPU server.
+let _kokWarmTimer = null;
+function _kokWarmSoon(idx = S.idx){
+  clearTimeout(_kokWarmTimer);
+  _kokWarmTimer = setTimeout(() => _kokWarm(idx), 350);
+}
+
 const _EDGE_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 // Correct endpoint is "readaloud" (per rany2/edge-tts) — NOT "realtimeaudio"
 const _EDGE_WSS =
@@ -3671,6 +3698,8 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
       synth.cancel(); stopResumeTimer();
       S.paused = false; S.playing = false;
       kokPlay();
+    } else {
+      _kokWarm();   // warm current sentence now so the next play click is instant
     }
   } else {
     toast('已切换回系统语音');
