@@ -3236,7 +3236,7 @@ function _kokServerSynth(text){
       voice: _kokVoice(),
       speed: String(S.speed || 1)
     });
-    const resp = await fetch(`${KOK_SERVER_URL}/?${params}`);
+    const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`);
     if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
     const blob = await resp.blob();
     const url  = URL.createObjectURL(blob);
