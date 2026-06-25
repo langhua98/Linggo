@@ -3267,9 +3267,11 @@ async function _kokStreamPlay(text, mySession, sentEl){
   const charsPerSec = 13 * (S.speed || 1);
 
   return new Promise(resolve => {
+    let coldTimer = null;
     const finish = ok => {
       if(finished) return;
       finished = true;
+      if(coldTimer){ clearTimeout(coldTimer); coldTimer = null; }
       _kokSynthCancel = null;
       if(hlAnimId){ cancelAnimationFrame(hlAnimId); hlAnimId = null; }
       resolve(ok);
@@ -3280,6 +3282,10 @@ async function _kokStreamPlay(text, mySession, sentEl){
       allSrcs.forEach(s => { try{ s.stop(0); }catch(e){} });
       finish(false);
     };
+    // Cold-start guard: if no audio has started within 8 s, HF Space is still waking up.
+    // Cancel and fall through to online voice. Once first audio plays, timer is cleared
+    // so playback duration (e.g. 15 s at 0.5×) is never cut short.
+    coldTimer = setTimeout(() => { if(streamStartTime < 0){ abort.abort(); finish(false); } }, 8000);
 
     (async () => {
       try{
@@ -3310,6 +3316,7 @@ async function _kokStreamPlay(text, mySession, sentEl){
             allSrcs.push(src);
             if(streamStartTime < 0){
               streamStartTime = at;
+              if(coldTimer){ clearTimeout(coldTimer); coldTimer = null; }
               if(sentEl){
                 const tl = text.length;
                 const tick = () => {
@@ -3362,8 +3369,8 @@ function _kokServerSynth(text){
 }
 
 function _kokPrefetch(n = 8){
-  const end = Math.min(S.idx + n, S.sents.length);
-  for(let i = S.idx; i < end; i++){
+  const end = Math.min(S.idx + 1 + n, S.sents.length);
+  for(let i = S.idx + 1; i < end; i++){
     _kokServerSynth(S.sents[i]).catch(()=>{});
   }
 }
@@ -3584,15 +3591,10 @@ async function _edgePlayOne(text, mySession){
         // Race with 8 s cold-start timeout — if HF Space is waking up (30-60 s),
         // fall through to Edge TTS immediately; stream is aborted cleanly.
         _kokAnnounce('Kokoro 神经语音（服务器）');
-        const streamResult = await Promise.race([
-          _kokStreamPlay(text, mySession, _hlEl),
-          new Promise(r => setTimeout(() => r('cold'), 8000))
-        ]);
-        if(streamResult === true) return true;
-        if(streamResult === 'cold'){
-          if(_kokSynthCancel){ _kokSynthCancel(); }
-          if(!_kokSynthToastShown){ _kokSynthToastShown = true; toast('神经语音服务启动中，暂以在线语音播放'); }
-        }
+        const ok = await _kokStreamPlay(text, mySession, _hlEl);
+        if(ok) return true;
+        if(kokSession !== mySession) return false;
+        if(!_kokSynthToastShown){ _kokSynthToastShown = true; toast('神经语音服务启动中，暂以在线语音播放'); }
       }
       if(kokSession !== mySession) return false;
     } catch(e) { /* fall through to online engines */ }
