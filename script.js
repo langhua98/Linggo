@@ -3655,16 +3655,9 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
-    if(IS_IOS){
-      // iOS: skip local WASM model (memory/speed limits) and online engines
-      // (unnecessary latency) — Apple Siri / Enhanced voices via speechSynthesis
-      // are already neural quality and work instantly offline.
-      toast('高音质已开启（Apple 神经语音）');
-    } else {
-      toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
-                        : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
-      _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
-    }
+    toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
+                      : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
+    _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
   } else {
     toast('已切换回系统语音');
   }
@@ -3676,7 +3669,7 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
 function _syncKokVoiceRow(){
   const row = document.getElementById('kok-voice-row');
   if(!row) return;
-  row.style.display = (kokActive && !IS_IOS) ? '' : 'none';
+  row.style.display = kokActive ? '' : 'none';
 }
 
 (function _initKokVoice(){
@@ -3695,7 +3688,7 @@ function _syncKokVoiceRow(){
     toast('音色已切换：' + this.options[this.selectedIndex].text.replace(/[（(].*$/, '').trim());
     // If currently reading with Kokoro, restart the sentence so the new
     // voice takes over immediately instead of after the cached audio ends.
-    if(kokActive && !IS_IOS && (S.playing || S.paused)){
+    if(kokActive && (S.playing || S.paused)){
       kokStop(); kokPlay();
     }
   });
