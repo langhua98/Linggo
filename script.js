@@ -3238,6 +3238,8 @@ function _kokServerSynth(text){
     });
     const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`);
     if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
+    const ct = resp.headers.get('content-type') || '';
+    if(!ct.startsWith('audio/')) { console.warn('[Kokoro] bad content-type:', ct); throw new Error('not audio'); }
     const blob = await resp.blob();
     const url  = URL.createObjectURL(blob);
     KOK_DONE.set(key, url);
