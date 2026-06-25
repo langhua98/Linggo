@@ -3170,6 +3170,20 @@ let _kokStartChar          = 0;   // 逐词跳转：首句从该字符起朗读�
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
+// Update the sidebar label to reflect what this device will actually use
+(function _initKokLabel(){
+  const name = document.getElementById('kok-hq-name');
+  const sub  = document.getElementById('kok-ready-sub');
+  if(!name || !sub) return;
+  if(IS_IOS){
+    name.textContent = 'Microsoft / Apple 神经语音';
+    sub.textContent  = '在线高音质 · 无需下载';
+  } else {
+    name.textContent = 'Kokoro 神经语音';
+    sub.textContent  = '本地 WASM 离线推理 · 首次下载约 115MB';
+  }
+})();
+
 // Tell the user which engine is actually speaking (once per engine switch)
 function _kokAnnounce(src){
   if(_kokSrcShown === src) return;
@@ -3657,21 +3671,27 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
-    toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
-                      : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
-    _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
+    if(IS_IOS){
+      // iOS Safari kills tabs when WASM inference exceeds ~1 GB memory.
+      // Use Microsoft Edge Neural TTS (online) or Apple neural voices instead —
+      // both are high quality and don't require a 115 MB local model.
+      toast('高音质已开启（Microsoft / Apple 神经语音）');
+    } else {
+      toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
+                        : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
+      _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
+    }
   } else {
     toast('已切换回系统语音');
   }
   _syncKokVoiceRow();
 });
 
-// Show the Kokoro voice picker only when high-quality reading is on and the
-// device actually uses Kokoro (iOS uses Apple's voices, so these don't apply).
+// Voice picker only applies on non-iOS (iOS doesn't run Kokoro WASM).
 function _syncKokVoiceRow(){
   const row = document.getElementById('kok-voice-row');
   if(!row) return;
-  row.style.display = kokActive ? '' : 'none';
+  row.style.display = (kokActive && !IS_IOS) ? '' : 'none';
 }
 
 (function _initKokVoice(){
@@ -3690,7 +3710,7 @@ function _syncKokVoiceRow(){
     toast('音色已切换：' + this.options[this.selectedIndex].text.replace(/[（(].*$/, '').trim());
     // If currently reading with Kokoro, restart the sentence so the new
     // voice takes over immediately instead of after the cached audio ends.
-    if(kokActive && (S.playing || S.paused)){
+    if(kokActive && !IS_IOS && (S.playing || S.paused)){
       kokStop(); kokPlay();
     }
   });
