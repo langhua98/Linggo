@@ -2359,12 +2359,21 @@ function togglePlay(){
   if(kokActive){
     _unlockAudio(); // must be synchronous while user gesture is still active
     if(S.playing && !S.paused){
-      kokStop(); S.paused=true; S.playing=false; setIcon(false);
+      // Soft pause: suspend AudioContext so audio node timeline is frozen in place
+      S.paused = true; S.playing = false; setIcon(false);
+      _kokSoftPaused = true;
+      if(_kokAudioCtx && _kokAudioCtx.state === 'running')
+        _kokAudioCtx.suspend().catch(()=>{});
     } else if(S.paused){
-      S.paused=false; kokPlay();
-    } else if(S.sents.length){
+      S.paused = false;
+      if(_kokSoftPaused && _kokAudioCtx && _kokAudioCtx.state === 'suspended'){
+        _kokSoftPaused = false;
+        _kokAudioCtx.resume().then(()=>{ setIcon(true); S.playing = true; }).catch(()=>{});
+        return;
+      }
+      _kokSoftPaused = false;
       kokPlay();
-    }
+    } else if(S.sents.length){ kokPlay(); }
     return;
   }
   if(S.playing && !S.paused){
@@ -3159,6 +3168,7 @@ let kokWs           = null;
 let kokAudio        = null;
 let kokAudioDone    = null;
 let _kokSynthCancel        = null;
+let _kokSoftPaused         = false;
 let _audioUnlocked         = false;
 let _kokSynthToastShown    = false;
 let _kokSrcShown           = '';
@@ -3226,6 +3236,93 @@ const KOK_DONE  = new Map(); // synth key → blob URL (resolved & ready to play
 
 function _kokVoice(){ return S.kokVoice || (S.accentUS ? 'af_heart' : 'bf_emma'); }
 function _kokKey(text){ return `${_kokVoice()}|${S.speed || 1}|${text}`; }
+
+// Stream /tts-stream chunks via Web Audio API for low first-word latency.
+// Each chunk is a 4-byte-length-prefixed WAV; we decode+schedule them as they arrive.
+async function _kokStreamPlay(text, mySession, sentEl){
+  // AbortController created BEFORE fetch so kokStop() can abort mid-request
+  const abort = new AbortController();
+
+  if(!_kokAudioCtx || _kokAudioCtx.state==='closed')
+    _kokAudioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  if(_kokAudioCtx.state==='suspended') await _kokAudioCtx.resume().catch(()=>{});
+  const ctx = _kokAudioCtx;
+
+  let acc = new Uint8Array(0);
+  let schedAt = ctx.currentTime + 0.05;
+  const allSrcs = [];
+  let finished = false;
+  let hlAnimId = null;
+  let streamStartTime = -1;
+  const charsPerSec = 13 * (S.speed || 1);
+
+  return new Promise(resolve => {
+    const finish = ok => {
+      if(finished) return;
+      finished = true;
+      _kokSynthCancel = null;
+      if(hlAnimId){ cancelAnimationFrame(hlAnimId); hlAnimId = null; }
+      resolve(ok);
+    };
+    // Set cancel BEFORE fetch starts — kokStop() may fire while fetch is in-flight
+    _kokSynthCancel = () => {
+      abort.abort();
+      allSrcs.forEach(s => { try{ s.stop(0); }catch(e){} });
+      finish(false);
+    };
+
+    (async () => {
+      try{
+        const params = new URLSearchParams({text, voice:_kokVoice(), speed:String(S.speed||1)});
+        const resp = await fetch(`${KOK_SERVER_URL}/tts-stream?${params}`, {signal: abort.signal});
+        if(!resp.ok) throw new Error(`stream ${resp.status}`);
+        if(!resp.body) throw new Error('no stream body');
+        const reader = resp.body.getReader();
+        while(true){
+          const {done, value} = await reader.read();
+          if(done) break;
+          if(kokSession !== mySession){ reader.cancel(); finish(false); return; }
+          const m = new Uint8Array(acc.length + value.length);
+          m.set(acc); m.set(value, acc.length); acc = m;
+          while(acc.length >= 4){
+            const len = (acc[0]<<24)|(acc[1]<<16)|(acc[2]<<8)|acc[3];
+            if(len === 0 || acc.length < 4 + len) break;
+            const wav = acc.slice(4, 4 + len); acc = acc.slice(4 + len);
+            let decoded;
+            try{ decoded = await ctx.decodeAudioData(
+              wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength)); }
+            catch(e){ continue; }
+            if(finished) return;
+            const src = ctx.createBufferSource();
+            src.buffer = decoded; src.connect(ctx.destination);
+            const at = Math.max(schedAt, ctx.currentTime + 0.01);
+            src.start(at); schedAt = at + decoded.duration;
+            allSrcs.push(src);
+            if(streamStartTime < 0){
+              streamStartTime = at;
+              if(sentEl){
+                const tl = text.length;
+                const tick = () => {
+                  if(finished) return;
+                  const frac = Math.min((ctx.currentTime - streamStartTime) / (tl / charsPerSec), 1);
+                  highlightWordAt(sentEl, Math.floor(frac * tl));
+                  hlAnimId = requestAnimationFrame(tick);
+                };
+                hlAnimId = requestAnimationFrame(tick);
+              }
+            }
+          }
+        }
+        if(allSrcs.length > 0){
+          const last = allSrcs[allSrcs.length - 1];
+          last.onended = () => finish(kokSession === mySession);
+          const wait = Math.max(0, (schedAt - ctx.currentTime) * 1000 + 300);
+          setTimeout(() => finish(kokSession === mySession), wait);
+        } else { finish(false); }
+      }catch(e){ finish(false); }
+    })();
+  });
+}
 
 function _kokServerSynth(text){
   const key = _kokKey(text);
@@ -3463,26 +3560,21 @@ async function _edgePlayOne(text, mySession){
   // the background fetch continues and populates KOK_DONE for the next sentence.
   if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     try {
-      const key = _kokKey(text);
-      const alreadySynthesizing = KOK_CACHE.has(key);
-      _kokPrefetch();
-      let url = KOK_DONE.get(key);
-      if(!url){
-        const timeoutMs = alreadySynthesizing ? 30000 : 5000;
-        url = await Promise.race([
-          _kokServerSynth(text),
-          new Promise(r => setTimeout(() => r(null), timeoutMs))
-        ]);
+      _kokPrefetch();  // background-synthesize upcoming sentences into KOK_DONE
+      const _hlEl = document.querySelector(`.sent[data-i="${S.idx}"]`);
+      // Fast path: already prefetched → play blob directly (no wait)
+      const cachedUrl = KOK_DONE.get(_kokKey(text));
+      if(cachedUrl){
+        _kokAnnounce('Kokoro 神经语音（服务器）');
+        const _hlLen = text.length;
+        const _onP = _hlEl ? frac => highlightWordAt(_hlEl, Math.min(Math.floor(frac * _hlLen), _hlLen - 1)) : null;
+        if(await _edgePlayUrl(cachedUrl, _onP)) return true;
+      } else {
+        // Streaming path: first sound in ~300 ms, chunks arrive as server yields
+        _kokAnnounce('Kokoro 神经语音（服务器）');
+        if(await _kokStreamPlay(text, mySession, _hlEl)) return true;
       }
       if(kokSession !== mySession) return false;
-      if(url){
-        _kokAnnounce('Kokoro 神经语音（服务器）');
-        if(await _edgePlayUrl(url)) return true;
-        if(kokSession !== mySession) return false;
-      } else if(!_kokSynthToastShown){
-        _kokSynthToastShown = true;
-        toast('神经语音服务启动中，暂以在线语音播放');
-      }
     } catch(e) { /* fall through to online engines */ }
   }
 
@@ -3547,6 +3639,7 @@ async function _edgePlayOne(text, mySession){
 }
 
 function kokStop(){
+  _kokSoftPaused = false;
   kokSession++;
   if(kokWs){ try{ kokWs.close(); }catch{} kokWs = null; }
   if(kokAudio){ kokAudio.pause(); kokAudio = null; }
@@ -3627,3 +3720,10 @@ function _syncKokVoiceRow(){
     }
   });
 })();
+
+// Ping HF Space every 4 min while page is visible to prevent cold-start sleep
+setInterval(() => {
+  if(document.visibilityState === 'visible' &&
+     KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space')
+    fetch(`${KOK_SERVER_URL}/health`, {mode:'no-cors'}).catch(()=>{});
+}, 4 * 60 * 1000);
