@@ -1763,6 +1763,14 @@ body{
 .cbtn:hover{ background:var(--accent-2);color:var(--accent); }
 .cbtn:active{ transform:scale(.88); }
 .cbtn svg{ width:24px;height:24px; }
+/* word-step buttons (one word forward/back) — smaller than sentence skip */
+.wstep{
+  width:44px;height:44px;
+  font-size:15px;font-weight:700;line-height:1;
+  gap:1px;letter-spacing:-.5px;
+}
+.wstep span{ font-size:18px;font-weight:600;color:var(--text-3); }
+.wstep:hover span{ color:var(--accent); }
 #play-btn{
   width:52px;height:52px;margin:0;
   background:linear-gradient(145deg,var(--accent) 0%,#3b82f6 100%);color:#fff;
@@ -1815,6 +1823,7 @@ body{
   .book-grid{grid-template-columns:repeat(2,1fr);}
   #content{padding-left:16px;padding-right:16px;}
   .cbtn{width:46px;height:46px;}
+  .wstep{width:40px;height:40px;font-size:14px;}
   #play-btn{width:46px;height:46px;}
   #speed-btn{width:46px;height:46px;font-size:11px;}
   .spill{font-size:11px;}

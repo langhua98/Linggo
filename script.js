@@ -1062,7 +1062,7 @@ const S = {
   vocab:[], fileName:'',
   srchHits:[], srchIdx:0, srchOpen:false,
   night:false, bilin:false, trans:{}, align:{}, nalign:{},
-  curWordEl:null, curWordData:null,
+  curWordEl:null, curWordData:null, wordCs:0,
   selectedVoice:null, savedWords:new Set(),
   chapters:[],  // { title, sentIdx, el }
 };
@@ -2180,6 +2180,7 @@ function dl(name,content,type){
 function jump(i){
   document.querySelectorAll('.sent.playing').forEach(el=>el.classList.remove('playing'));
   clearTtsWord();
+  if(i !== S.idx) S.wordCs = 0;   // 换句时重置逐词位置
   S.idx = i;
   const el = document.querySelector(`.sent[data-i="${i}"]`);
   if(el){
@@ -2192,21 +2193,23 @@ function jump(i){
   updateProg(); saveProg();
 }
 
-// Build a chunk: join sentences into one utterance, track char offsets per sentence
-function buildChunk(startIdx){
+// Build a chunk: join sentences into one utterance, track char offsets per sentence.
+// startChar > 0 begins the FIRST sentence mid-way (word-level seek); later
+// sentences are always whole.
+function buildChunk(startIdx, startChar = 0){
   const MAX_CHARS = 300; // keep chunks short for responsiveness
   const offsets = []; // char position where each sentence starts
   const parts = [];
   let pos = 0, i = startIdx;
   while(i < S.sents.length){
-    const s = S.sents[i];
+    const s = i === startIdx ? S.sents[i].slice(startChar) : S.sents[i];
     if(parts.length > 0 && pos + s.length > MAX_CHARS) break;
     offsets.push(pos);
     parts.push(s);
     pos += s.length + 1;
     i++;
   }
-  return { text: parts.join(' '), offsets, endIdx: i, startIdx };
+  return { text: parts.join(' '), offsets, endIdx: i, startIdx, firstChar: startChar };
 }
 
 function getVoice(){
@@ -2238,8 +2241,8 @@ function playChunk(chunk){
     const globalIdx = chunk.startIdx + si;
     if(globalIdx !== S.idx) jump(globalIdx);
 
-    // 2. Char position within this sentence
-    const sentCharIdx = e.charIndex - chunk.offsets[si];
+    // 2. Char position within this sentence (first sentence may be sliced)
+    const sentCharIdx = e.charIndex - chunk.offsets[si] + (si === 0 ? chunk.firstChar : 0);
 
     // 3. Highlight that word in DOM
     const sentEl = document.querySelector(`.sent[data-i="${globalIdx}"]`);
@@ -2288,6 +2291,7 @@ function highlightWordAt(sentEl, charIdx){
   }
   if(best){
     best.classList.add('tts-word');
+    S.wordCs = +best.dataset.charStart;   // 记录当前词位置，供逐词前进/后退
     // 词对齐：朗读到的英文词 → 中文译文里对应字同步高亮
     if(S.bilin) _cnAlignHighlight(+sentEl.dataset.i, +best.dataset.charStart);
     // Subtle scroll — only if word is outside viewport
@@ -2309,6 +2313,45 @@ function playCurrent(){
   jump(S.idx);
   S.playing = true; setIcon(true); startResumeTimer();
   synth.speak(playChunk(chunk));
+}
+
+// 从当前句的某个字符位置开始朗读（逐词前进/后退用）。startChar 落在某个词的起点。
+function playFrom(startChar){
+  if(!S.sents.length) return;
+  if(kokActive){
+    _unlockAudio(); kokStop();
+    _kokStartChar = startChar;     // kokPlay 负责 jump + 高亮起始词
+    kokPlay();
+    return;
+  }
+  synth.cancel(); stopResumeTimer();
+  S.paused = false;
+  const chunk = buildChunk(S.idx, startChar);
+  jump(S.idx);
+  const el = document.querySelector(`.sent[data-i="${S.idx}"]`);  // 立即高亮起始词
+  if(el){ injectWords(el); highlightWordAt(el, startChar); }
+  S.playing = true; setIcon(true); startResumeTimer();
+  synth.speak(playChunk(chunk));
+}
+
+// 逐词前进（dir>0）/ 后退（dir<0）：跳到相邻词并从那里接着播放，跨句自动衔接。
+function stepWord(dir){
+  if(!S.sents.length) return;
+  const cs = S.wordCs || 0;
+  const words = _enWords(S.sents[S.idx]);
+  const target = dir > 0 ? words.find(w => w.cs > cs)
+                         : [...words].reverse().find(w => w.cs < cs);
+  if(target){ playFrom(target.cs); return; }
+  // 已到本句首/尾 → 跨到相邻句
+  if(dir > 0 && S.idx < S.sents.length - 1){
+    S.idx++;
+    const w = _enWords(S.sents[S.idx]);
+    playFrom(w.length ? w[0].cs : 0);
+  } else if(dir < 0 && S.idx > 0){
+    S.idx--;
+    const w = _enWords(S.sents[S.idx]);
+    playFrom(w.length ? w[w.length - 1].cs : 0);
+  }
 }
 
 function togglePlay(){
@@ -2348,6 +2391,8 @@ document.getElementById('prev-btn').addEventListener('click',()=>{
 document.getElementById('next-btn').addEventListener('click',()=>{
   if(S.idx<S.sents.length-1){ S.idx++; jump(S.idx); if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); } }
 });
+document.getElementById('prevword-btn').addEventListener('click',()=>{ _unlockAudio(); stepWord(-1); });
+document.getElementById('nextword-btn').addEventListener('click',()=>{ _unlockAudio(); stepWord(1); });
 
 // ── SPEED: single button + popup
 const speedWrap = document.getElementById('speed-wrap');
@@ -2540,8 +2585,8 @@ document.addEventListener('keydown', e=>{
   // 闪卡打开时，所有按键交由闪卡自己的 keydown 处理
   if(document.getElementById('flashcard').classList.contains('open')) return;
   if(e.code==='Space'){ e.preventDefault(); togglePlay(); }
-  if(e.code==='ArrowRight') document.getElementById('next-btn').click();
-  if(e.code==='ArrowLeft') document.getElementById('prev-btn').click();
+  if(e.code==='ArrowRight') document.getElementById(e.shiftKey?'nextword-btn':'next-btn').click();
+  if(e.code==='ArrowLeft')  document.getElementById(e.shiftKey?'prevword-btn':'prev-btn').click();
   if(e.key==='Escape'){
     wpop.classList.remove('vis');
     document.getElementById('library').classList.remove('open');
@@ -3117,6 +3162,7 @@ let _kokSynthCancel        = null;
 let _audioUnlocked         = false;
 let _kokSynthToastShown    = false;
 let _kokSrcShown           = '';
+let _kokStartChar          = 0;   // 逐词跳转：首句从该字符起朗读，用后即清
 
 // All iOS browsers (incl. Chrome) are WebKit. Running an 88 MB model there
 // risks tab memory kills and WASM is slow — use online neural + Siri instead.
@@ -3559,11 +3605,18 @@ function kokStop(){
 
 async function kokPlay(){
   const mySession = ++kokSession;
+  let startChar = _kokStartChar; _kokStartChar = 0;   // 仅首句生效
   S.playing = true; S.paused = false; setIcon(true);
   while(S.idx < S.sents.length){
     if(kokSession !== mySession) break;
     jump(S.idx);
-    const ok = await _edgePlayOne(S.sents[S.idx], mySession);
+    if(startChar > 0){                          // 逐词跳转的起始词：立即高亮（无逐词事件）
+      const el = document.querySelector(`.sent[data-i="${S.idx}"]`);
+      if(el){ injectWords(el); highlightWordAt(el, startChar); }
+    }
+    const text = startChar > 0 ? S.sents[S.idx].slice(startChar) : S.sents[S.idx];
+    startChar = 0;
+    const ok = await _edgePlayOne(text, mySession);
     if(kokSession !== mySession) break;
     if(!ok){
       S.playing = false; S.paused = false; setIcon(false);
