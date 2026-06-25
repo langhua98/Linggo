@@ -3248,107 +3248,13 @@ const KOK_ABORT = new Map(); // synth key → AbortController (in-flight /tts re
 function _kokVoice(){ return S.kokVoice || (S.accentUS ? 'af_heart' : 'bf_emma'); }
 function _kokKey(text){ return `${_kokVoice()}|${text}`; }
 
-// Stream /tts-stream chunks via Web Audio API for low first-word latency.
-// The server yields each phoneme chunk as a 4-byte-length-prefixed WAV the
-// moment it's synthesized, so first audio arrives in ~200-500 ms. We decode +
-// schedule each chunk as it lands and apply S.speed via playbackRate.
-// (Caching is left to _kokPrefetch /tts, which produces a single valid WAV;
-//  concatenating these per-chunk WAVs would yield an invalid multi-header file.)
-async function _kokStreamPlay(text, mySession, sentEl){
-  // AbortController created BEFORE fetch so kokStop() can abort mid-request
-  const abort = new AbortController();
-
-  // _kokAudioCtx was created & resumed in _unlockAudio() during the user gesture.
-  if(!_kokAudioCtx || _kokAudioCtx.state === 'closed')
-    _kokAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if(_kokAudioCtx.state === 'suspended')
-    await _kokAudioCtx.resume().catch(()=>{});
-  const ctx = _kokAudioCtx;
-
-  let acc = new Uint8Array(0);
-  let schedAt = ctx.currentTime + 0.05;
-  const allSrcs = [];
-  let finished = false;
-  let hlAnimId = null;
-  let streamStartTime = -1;
-  const rate = S.speed || 1;
-  const charsPerSec = 13 * rate;
-
-  return new Promise(resolve => {
-    let coldTimer = null;
-    const finish = ok => {
-      if(finished) return;
-      finished = true;
-      if(coldTimer){ clearTimeout(coldTimer); coldTimer = null; }
-      _kokSynthCancel = null;
-      if(hlAnimId){ cancelAnimationFrame(hlAnimId); hlAnimId = null; }
-      resolve(ok);
-    };
-    // Set cancel BEFORE fetch starts — kokStop() may fire while fetch is in-flight
-    _kokSynthCancel = () => {
-      abort.abort();
-      allSrcs.forEach(s => { try{ s.stop(0); }catch(e){} });
-      finish(false);
-    };
-    // Cold-start guard: with TRUE streaming the first chunk arrives in ~200-500 ms,
-    // so 8 s with no audio means HF Space is still waking up → fall through.
-    coldTimer = setTimeout(() => { if(streamStartTime < 0){ abort.abort(); finish(false); } }, 8000);
-
-    (async () => {
-      try{
-        const params = new URLSearchParams({text, voice:_kokVoice(), speed:'1'});
-        const resp = await fetch(`${KOK_SERVER_URL}/tts-stream?${params}`, {signal: abort.signal});
-        if(!resp.ok) throw new Error(`stream ${resp.status}`);
-        if(!resp.body) throw new Error('no stream body');
-        const reader = resp.body.getReader();
-        while(true){
-          const {done, value} = await reader.read();
-          if(done) break;
-          if(kokSession !== mySession){ reader.cancel(); finish(false); return; }
-          const m = new Uint8Array(acc.length + value.length);
-          m.set(acc); m.set(value, acc.length); acc = m;
-          while(acc.length >= 4){
-            const len = (acc[0]<<24)|(acc[1]<<16)|(acc[2]<<8)|acc[3];
-            if(len === 0 || acc.length < 4 + len) break;
-            const wav = acc.slice(4, 4 + len); acc = acc.slice(4 + len);
-            let decoded;
-            try{ decoded = await ctx.decodeAudioData(
-              wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength)); }
-            catch(e){ continue; }
-            if(finished) return;
-            const src = ctx.createBufferSource();
-            src.buffer = decoded;
-            src.playbackRate.value = rate;   // Web Audio speed (pitch shifts; cached replay is pitch-correct)
-            src.connect(ctx.destination);
-            const at = Math.max(schedAt, ctx.currentTime + 0.01);
-            src.start(at); schedAt = at + decoded.duration / rate;
-            allSrcs.push(src);
-            if(streamStartTime < 0){
-              streamStartTime = at;
-              if(coldTimer){ clearTimeout(coldTimer); coldTimer = null; }
-              if(sentEl){
-                const tl = text.length;
-                const tick = () => {
-                  if(finished) return;
-                  const frac = Math.min((ctx.currentTime - streamStartTime) / (tl / charsPerSec), 1);
-                  highlightWordAt(sentEl, Math.floor(frac * tl));
-                  hlAnimId = requestAnimationFrame(tick);
-                };
-                hlAnimId = requestAnimationFrame(tick);
-              }
-            }
-          }
-        }
-        if(allSrcs.length > 0){
-          const last = allSrcs[allSrcs.length - 1];
-          last.onended = () => finish(kokSession === mySession);
-          const wait = Math.max(0, (schedAt - ctx.currentTime) * 1000 + 300);
-          setTimeout(() => finish(kokSession === mySession), wait);
-        } else { finish(false); }
-      }catch(e){ finish(false); }
-    })();
-  });
-}
+// NOTE: the previous Web-Audio /tts-stream player (_kokStreamPlay) was removed.
+// It played through ctx.destination — a separate output from the gesture-blessed
+// _kokAudioEl <audio> element — so togglePlay's pause() could not stop a scheduled
+// source (it kept reading uncontrollably) and on iOS the Web-Audio output was often
+// silent. Every Kokoro sentence now plays through _edgePlayUrl (<audio>) for uniform,
+// controllable pause/resume/speed/highlight. First-sentence latency is covered by
+// _kokServerSynth (/tts) + the 4-min /health keep-warm ping.
 
 function _kokServerSynth(text){
   const key = _kokKey(text);
@@ -3614,23 +3520,31 @@ async function _edgePlayOne(text, mySession){
   if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     try {
       const _hlEl = document.querySelector(`.sent[data-i="${S.idx}"]`);
-      const cachedUrl = KOK_DONE.get(_kokKey(text));
-      if(cachedUrl){
-        // Fast path: already synthesized → HTML <audio> with pitch-preserved speed.
+      // SINGLE playback path: always the gesture-blessed <audio> element via
+      // _edgePlayUrl. This keeps pause/resume, speed (preservesPitch) and word
+      // highlight uniform and fully controllable. The old Web-Audio streaming
+      // path played outside _kokAudioEl, so togglePlay's pause() couldn't stop a
+      // scheduled source (it kept reading on its own) and on iOS it was often
+      // silent — both fixed by routing every sentence through _edgePlayUrl.
+      let url = KOK_DONE.get(_kokKey(text));
+      if(!url){
+        // Not prefetched yet — synthesize now via /tts, racing an 8 s cold-start
+        // timeout so a sleeping HF Space falls through to the online engines
+        // instead of hanging the reader.
+        url = await Promise.race([
+          _kokServerSynth(text).catch(() => null),
+          new Promise(r => setTimeout(() => r(null), 8000))
+        ]);
+        if(kokSession !== mySession) return false;
+      }
+      if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
         _kokPrefetch();  // warm upcoming sentences while this one plays
-        if(await _edgePlayUrl(cachedUrl, _hlEl)) return true;
+        if(await _edgePlayUrl(url, _hlEl)) return true;
         if(kokSession !== mySession) return false;
-      } else {
-        // Streaming path: first audio in ~200-500 ms; 8 s cold-start guard inside.
-        // Prefetch upcoming sentences via /tts (proper single-WAV) so they take the
-        // pitch-preserved <audio> fast path next.
-        _kokAnnounce('Kokoro 神经语音（服务器）');
-        _kokPrefetch();
-        const ok = await _kokStreamPlay(text, mySession, _hlEl);
-        if(ok) return true;
-        if(kokSession !== mySession) return false;
-        if(!_kokSynthToastShown){ _kokSynthToastShown = true; toast('神经语音服务启动中，暂以在线语音播放'); }
+      } else if(!_kokSynthToastShown){
+        _kokSynthToastShown = true;
+        toast('神经语音服务启动中，暂以在线语音播放');
       }
     } catch(e) { /* fall through to online engines */ }
   }
