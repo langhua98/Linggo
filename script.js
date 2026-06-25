@@ -3380,7 +3380,7 @@ async function _edgeSynth(text){
 // Play an audio URL.
 // CRITICAL: includes a 6 s load-start timeout so the promise never hangs
 // if the server accepts the connection but stalls the response body.
-function _edgePlayUrl(url){
+function _edgePlayUrl(url, onProgress){
   return new Promise(resolve => {
     // Reuse the gesture-blessed element — REQUIRED on iOS: a freshly created
     // Audio element outside a user gesture is silently refused by WebKit.
@@ -3390,10 +3390,12 @@ function _edgePlayUrl(url){
     }
     const a = _kokAudioEl;
     let done = false;
+    let animId = null;
     const end = (ok) => {
       if(done) return;
       done = true;
       clearTimeout(guard);
+      if(animId){ cancelAnimationFrame(animId); animId = null; }
       a.onended = a.onerror = a.oncanplay = null;
       kokAudio = null; kokAudioDone = null;
       resolve(ok);
@@ -3403,7 +3405,18 @@ function _edgePlayUrl(url){
     // After canplay, keep a 90 s hard cap so a mid-stream stall (server
     // accepted then froze) can never hang the reading loop forever.
     let guard = setTimeout(() => end(false), 6000);
-    a.oncanplay = () => { clearTimeout(guard); guard = setTimeout(() => end(false), 90000); };
+    a.oncanplay = () => {
+      clearTimeout(guard);
+      guard = setTimeout(() => end(false), 90000);
+      if(onProgress){
+        const tick = () => {
+          if(done) return;
+          if(a.duration > 0) onProgress(a.currentTime / a.duration);
+          animId = requestAnimationFrame(tick);
+        };
+        animId = requestAnimationFrame(tick);
+      }
+    };
     a.onended   = () => end(true);
     a.onerror   = () => end(false);
     a.src = url;
@@ -3479,7 +3492,10 @@ async function _edgePlayOne(text, mySession){
       if(kokSession !== mySession) return false;
       if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
-        if(await _edgePlayUrl(url)) return true;
+        const _hlEl = document.querySelector(`.sent[data-i="${S.idx}"]`);
+        const _hlLen = text.length;
+        const _onProg = _hlEl ? frac => highlightWordAt(_hlEl, Math.min(Math.floor(frac * _hlLen), _hlLen - 1)) : null;
+        if(await _edgePlayUrl(url, _onProg)) return true;
         if(kokSession !== mySession) return false;
       } else if(!_kokSynthToastShown){
         _kokSynthToastShown = true;
@@ -3563,7 +3579,7 @@ async function kokPlay(){
   while(S.idx < S.sents.length){
     if(kokSession !== mySession) break;
     jump(S.idx);
-    if(startChar > 0){                          // 逐词跳转的起始词：立即高亮（无逐词事件）
+    {
       const el = document.querySelector(`.sent[data-i="${S.idx}"]`);
       if(el){ injectWords(el); highlightWordAt(el, startChar); }
     }
