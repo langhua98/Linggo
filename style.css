@@ -84,9 +84,10 @@ body{
   width:46px;height:46px;border:none;background:none;cursor:pointer;
   color:var(--text-2);border-radius:var(--r-sm);
   display:flex;align-items:center;justify-content:center;
-  transition:background .15s,color .15s;flex-shrink:0;
+  transition:background .15s,color .15s,transform .15s;flex-shrink:0;
 }
-.tbtn:hover{background:var(--accent-2);color:var(--accent);}
+.tbtn:hover{background:var(--accent-2);color:var(--accent);transform:scale(1.08);}
+.tbtn:active{transform:scale(.92);}
 .tbtn svg{width:26px;height:26px;}
 
 /* ── LANDING ── */
@@ -246,7 +247,8 @@ body{
   font-family:'Nunito',sans-serif;font-size:15px;
   outline:none;transition:border-color .15s;
 }
-#lib-search:focus{border-color:var(--accent);}
+#lib-search:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-2);}
+.night #lib-search:focus{box-shadow:0 0 0 3px rgba(96,165,250,0.2);}
 #lib-search::placeholder{color:var(--text-3);}
 #lib-add-btn{
   flex-shrink:0;
@@ -339,9 +341,10 @@ body{
   background:var(--surface);
   font-size:13px;font-weight:700;cursor:pointer;
   color:var(--text-2);font-family:'Nunito',sans-serif;
-  transition:all .15s;white-space:nowrap;
+  transition:all .15s,transform .1s;white-space:nowrap;
 }
 .lcat:hover{border-color:var(--accent);color:var(--accent);}
+.lcat:active{transform:scale(.93);}
 .lcat.on{background:var(--accent);color:#fff;border-color:var(--accent);}
 .lcat-lv.on{background:var(--green);border-color:var(--green);}
 .lcat-sep{
@@ -577,11 +580,18 @@ body{
 .bk{
   flex-shrink:0;width:140px;
   cursor:pointer;
-  transition:transform .18s;
+  transition:transform .2s cubic-bezier(.34,1.56,.64,1),box-shadow .2s;
   display:flex;flex-direction:column;
+  animation:cardIn .32s cubic-bezier(.34,1.15,.64,1) both;
 }
-.bk:hover{transform:translateY(-3px);}
+.bk:nth-child(1){animation-delay:.04s;}
+.bk:nth-child(2){animation-delay:.08s;}
+.bk:nth-child(3){animation-delay:.12s;}
+.bk:nth-child(4){animation-delay:.16s;}
+.bk:nth-child(5){animation-delay:.20s;}
+.bk:hover{transform:translateY(-4px);box-shadow:6px 12px 32px rgba(0,0,0,0.28),-2px 0 0 rgba(0,0,0,0.12),inset 2px 0 0 rgba(255,255,255,0.08);}
 .bk:active{transform:scale(.96);}
+@keyframes cardIn{from{opacity:0;transform:translateY(12px) scale(.97);}to{opacity:1;transform:translateY(0) scale(1);}}
 /* cover */
 .bk-cover{
   width:140px;height:200px;
@@ -765,7 +775,7 @@ body{
 .word{
   display:inline; cursor:pointer;
   border-radius:4px;
-  transition:background .1s;
+  transition:background .1s,box-shadow .1s;
   padding:1px 1px;
 }
 .word:hover{ background:rgba(37,99,235,0.11); }
@@ -774,7 +784,7 @@ body{
 .word.active{
   background:rgba(37,99,235,0.16);
   outline:2px solid rgba(37,99,235,0.5);
-  outline-offset:0px;
+  outline-offset:2px;
   border-radius:4px;
 }
 /* TTS currently reading word: darker solid box */
@@ -1460,9 +1470,10 @@ body{
 .vi{
   background:var(--bg);border:1px solid var(--border);
   border-radius:var(--r-md);padding:12px 14px;margin-bottom:8px;
-  transition:border-color .15s;
+  transition:border-color .15s,box-shadow .15s,transform .15s;
 }
-.vi:hover{border-color:var(--accent);}
+.vi:hover{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-2);transform:translateX(3px);}
+.night .vi:hover{box-shadow:0 0 0 3px rgba(96,165,250,0.18);}
 .vi-w{font-family:'Lora',serif;font-size:15px;font-weight:600;margin-bottom:2px;}
 .vi-m{font-size:12px;color:var(--text-2);margin-bottom:6px;}
 .vi-s{
@@ -1746,7 +1757,9 @@ body{
   height:100%;
   background:linear-gradient(90deg,var(--accent),#3b82f6);
   border-radius:4px;transition:width .25s;pointer-events:none;
+  box-shadow:0 0 8px rgba(37,99,235,0.4);
 }
+.night #prog-fill{box-shadow:0 0 8px rgba(96,165,250,0.5);}
 #prog-pct{ font-size:11px;font-weight:700;color:var(--text-3);width:28px;text-align:right; }
 /* ── controls — prev/play/next + speed all on one row ── */
 .ctrl-row{
@@ -1818,6 +1831,11 @@ body{
 
 ::-webkit-scrollbar{width:3px;}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+::-webkit-scrollbar-track{background:transparent;}
+.night ::-webkit-scrollbar{width:4px;}
+.night ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.15);}
+.night ::-webkit-scrollbar-track{background:rgba(255,255,255,0.04);}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
 
 @media(max-width:600px){
   .book-grid{grid-template-columns:repeat(2,1fr);}
