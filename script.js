@@ -3523,14 +3523,16 @@ async function _edgePlayOne(text, mySession){
   // so the user hears audio without a long silence.
   if(kokTTSReady){
     try {
+      const key = _kokKey(text);
+      // Check BEFORE prefetch: sentences already in KOK_CACHE were started
+      // by a previous sentence's prefetch call and have been synthesizing
+      // for several seconds — give them a generous wait (30 s).
+      // Sentences not yet in KOK_CACHE are starting fresh — fall back quickly
+      // (3 s) so the user hears audio without a long silence.
+      const alreadySynthesizing = KOK_CACHE.has(key);
       _kokPrefetch();
-      let url = KOK_DONE.get(_kokKey(text));
+      let url = KOK_DONE.get(key);
       if(!url){
-        const key = _kokKey(text);
-        const alreadySynthesizing = KOK_CACHE.has(key);
-        // Sentences already in KOK_CACHE have been synthesizing since the
-        // previous prefetch call — wait up to 30 s for them to finish.
-        // Fresh sentences (no prefetch head-start) get a 3 s quick-fall-back.
         const timeoutMs = alreadySynthesizing ? 30000 : 3000;
         url = await Promise.race([
           _kokSynthBlob(text),
