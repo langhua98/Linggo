@@ -3197,7 +3197,8 @@ function _kokAnnounce(src){
 // — unlike Chrome, playing a silent clip on one element does NOT unlock
 // others. So we create ONE element inside the click handler, play a silent
 // WAV on it to bless it, then reuse it (swap .src) for every sentence.
-let _kokAudioEl = null;
+let _kokAudioEl  = null;
+let _kokAudioCtx = null;   // Web Audio context — created inside user gesture so iOS allows it
 
 function _unlockAudio(){
   try{
@@ -3206,6 +3207,12 @@ function _unlockAudio(){
       _kokAudioEl.setAttribute('playsinline','');
       _kokAudioEl.preload = 'auto';
     }
+    // Create & resume AudioContext while the user gesture is still active.
+    // iOS Safari locks AudioContext to 'suspended' when created outside a gesture.
+    if(!_kokAudioCtx || _kokAudioCtx.state === 'closed')
+      _kokAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(_kokAudioCtx.state === 'suspended')
+      _kokAudioCtx.resume().catch(()=>{});
     if(_audioUnlocked) return;
     _audioUnlocked = true;
     // Minimal valid WAV: 1 channel, 44100 Hz, 16-bit, 1 silent sample
@@ -3243,9 +3250,12 @@ async function _kokStreamPlay(text, mySession, sentEl){
   // AbortController created BEFORE fetch so kokStop() can abort mid-request
   const abort = new AbortController();
 
-  if(!_kokAudioCtx || _kokAudioCtx.state==='closed')
-    _kokAudioCtx = new (window.AudioContext||window.webkitAudioContext)();
-  if(_kokAudioCtx.state==='suspended') await _kokAudioCtx.resume().catch(()=>{});
+  // _kokAudioCtx was created & resumed in _unlockAudio() during the user gesture.
+  // Recreate only if it was closed (e.g. page was backgrounded).
+  if(!_kokAudioCtx || _kokAudioCtx.state === 'closed')
+    _kokAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if(_kokAudioCtx.state === 'suspended')
+    await _kokAudioCtx.resume().catch(()=>{});
   const ctx = _kokAudioCtx;
 
   let acc = new Uint8Array(0);
@@ -3570,9 +3580,19 @@ async function _edgePlayOne(text, mySession){
         const _onP = _hlEl ? frac => highlightWordAt(_hlEl, Math.min(Math.floor(frac * _hlLen), _hlLen - 1)) : null;
         if(await _edgePlayUrl(cachedUrl, _onP)) return true;
       } else {
-        // Streaming path: first sound in ~300 ms, chunks arrive as server yields
+        // Streaming path: first sound in ~300 ms when server is warm.
+        // Race with 8 s cold-start timeout — if HF Space is waking up (30-60 s),
+        // fall through to Edge TTS immediately; stream is aborted cleanly.
         _kokAnnounce('Kokoro 神经语音（服务器）');
-        if(await _kokStreamPlay(text, mySession, _hlEl)) return true;
+        const streamResult = await Promise.race([
+          _kokStreamPlay(text, mySession, _hlEl),
+          new Promise(r => setTimeout(() => r('cold'), 8000))
+        ]);
+        if(streamResult === true) return true;
+        if(streamResult === 'cold'){
+          if(_kokSynthCancel){ _kokSynthCancel(); }
+          if(!_kokSynthToastShown){ _kokSynthToastShown = true; toast('神经语音服务启动中，暂以在线语音播放'); }
+        }
       }
       if(kokSession !== mySession) return false;
     } catch(e) { /* fall through to online engines */ }
@@ -3682,11 +3702,19 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   _edgeFails          = 0;
   _gtFails            = 0;
   if(!kokActive && (S.playing || S.paused)){
+    synth.cancel(); stopResumeTimer();
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
     const deployed = KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space';
     toast(deployed ? '高音质已开启（Kokoro 神经语音服务器）' : '高音质已开启（Microsoft / Apple 神经语音）');
+    _unlockAudio();
+    // If system voice was playing, hand off to Kokoro immediately
+    if(S.playing || S.paused){
+      synth.cancel(); stopResumeTimer();
+      S.paused = false; S.playing = false;
+      kokPlay();
+    }
   } else {
     toast('已切换回系统语音');
   }
