@@ -3238,6 +3238,12 @@ function _kokLoad(){
       } else if(m.type === 'ready'){
         kokTTSReady = true;
         toast('本地神经语音已就绪 ✓');
+        // Aggressively pre-synthesize upcoming sentences while Edge TTS plays
+        const warmStart = S.idx;
+        const warmEnd = Math.min(warmStart + 20, S.sents.length);
+        for(let i = warmStart; i < warmEnd; i++){
+          _kokSynthBlob(S.sents[i]).catch(()=>{});
+        }
         resolve(true);
       } else if(m.type === 'audio'){
         const p = _kokPending.get(m.id);
@@ -3508,19 +3514,26 @@ function _synthPlay(text, forceVoice){
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
-  // ── Priority 0: Kokoro local neural model — NEVER blocks reading ──────
-  // The pipeline pre-synthesizes ahead in the background. We wait at most
-  // 2.5 s for the current sentence; if synthesis can't keep up (slow
-  // devices), the online/system voices below carry this sentence and the
-  // neural voice takes over as soon as its audio is ready.
+  // ── Priority 0: Kokoro local neural model ────────────────────────────
+  // WASM inference is slow (3–10 s/sentence depending on device).
+  // Strategy: if synthesis is already running for this sentence (started by
+  // an earlier prefetch call), wait generously — it will finish "soon".
+  // If starting cold (first sentence after model loads), fall back quickly
+  // so the user hears audio without a long silence.
   if(kokTTSReady){
     try {
       _kokPrefetch();
       let url = KOK_DONE.get(_kokKey(text));
       if(!url){
+        const key = _kokKey(text);
+        const alreadySynthesizing = KOK_CACHE.has(key);
+        // Sentences already in KOK_CACHE have been synthesizing since the
+        // previous prefetch call — wait up to 30 s for them to finish.
+        // Fresh sentences (no prefetch head-start) get a 3 s quick-fall-back.
+        const timeoutMs = alreadySynthesizing ? 30000 : 3000;
         url = await Promise.race([
           _kokSynthBlob(text),
-          new Promise(r => setTimeout(() => r(null), 2500))
+          new Promise(r => setTimeout(() => r(null), timeoutMs))
         ]);
       }
       if(kokSession !== mySession) return false;
