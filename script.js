@@ -1064,6 +1064,7 @@ const S = {
   night:false, bilin:false, trans:{}, align:{}, nalign:{},
   curWordEl:null, curWordData:null, wordCs:0,
   selectedVoice:null, savedWords:new Set(),
+  kokVoice:'af_heart',  // selected Kokoro neural voice
   chapters:[],  // { title, sentIdx, el }
 };
 const synth = window.speechSynthesis;
@@ -3259,7 +3260,7 @@ function _kokLoad(){
   return kokTTSLoading;
 }
 
-function _kokVoice(){ return S.accentUS ? 'af_heart' : 'bf_emma'; }
+function _kokVoice(){ return S.kokVoice || (S.accentUS ? 'af_heart' : 'bf_emma'); }
 
 // Encode Float32 samples as 16-bit PCM WAV — universally supported,
 // unlike the 32-bit float WAV that RawAudio.toBlob() produces (iOS-safe).
@@ -3667,4 +3668,35 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
   } else {
     toast('已切换回系统语音');
   }
+  _syncKokVoiceRow();
 });
+
+// Show the Kokoro voice picker only when high-quality reading is on and the
+// device actually uses Kokoro (iOS uses Apple's voices, so these don't apply).
+function _syncKokVoiceRow(){
+  const row = document.getElementById('kok-voice-row');
+  if(!row) return;
+  row.style.display = (kokActive && !IS_IOS) ? '' : 'none';
+}
+
+(function _initKokVoice(){
+  const sel = document.getElementById('kok-voice-select');
+  if(!sel) return;
+  const saved = localStorage.getItem('kokVoice');
+  if(saved && sel.querySelector(`option[value="${saved}"]`)){
+    S.kokVoice = saved;
+  }
+  sel.value = S.kokVoice;
+  S.accentUS = S.kokVoice[0] === 'a';   // a*=美式, b*=英式 — keep fallbacks aligned
+  sel.addEventListener('change', function(){
+    S.kokVoice = this.value;
+    S.accentUS = this.value[0] === 'a';
+    localStorage.setItem('kokVoice', this.value);
+    toast('音色已切换：' + this.options[this.selectedIndex].text.replace(/[（(].*$/, '').trim());
+    // If currently reading with Kokoro, restart the sentence so the new
+    // voice takes over immediately instead of after the cached audio ends.
+    if(kokActive && !IS_IOS && (S.playing || S.paused)){
+      kokStop(); kokPlay();
+    }
+  });
+})();

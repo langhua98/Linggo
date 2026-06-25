@@ -1987,6 +1987,9 @@ body{
 }
 .kok-switch input:checked + .kok-slider{background:var(--accent);}
 .kok-switch input:checked + .kok-slider:before{transform:translateX(20px);}
+.kok-voice-row{margin-top:10px;}
+.kok-voice-row .sb-label{font-size:11px;color:var(--text-3);margin-bottom:4px;}
+.kok-voice-row select{width:100%;padding:6px 8px;border-radius:var(--r-sm);border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;cursor:pointer;}
 
 #book-prev-overlay{
   position:fixed;inset:0;z-index:500;
