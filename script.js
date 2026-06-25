@@ -3147,12 +3147,11 @@ if ('serviceWorker' in navigator) {
 
 // ═══════════════════════════════════════════
 //  HIGH-QUALITY TTS — engine priority:
-//  0: Kokoro-82M local neural model (in-repo, non-iOS, never blocks reading)
+//  0: Kokoro-82M server-side neural TTS (Hugging Face Spaces API, all platforms)
 //  1: Microsoft Edge Neural WebSocket — non-iOS, skip after 2 failures
 //  2: Best local SpeechSynthesis neural voice (Siri score=10, Enhanced=8, score≥5)
 //  3: Google Translate TTS — non-iOS, skip after 2 failures
 //  4: Any SpeechSynthesis voice (guaranteed fallback)
-//  iOS always lands on P2 (Siri) with no network latency — ideal.
 // ═══════════════════════════════════════════
 let kokActive       = false;
 let kokSession      = 0;
@@ -3165,23 +3164,15 @@ let _kokSynthToastShown    = false;
 let _kokSrcShown           = '';
 let _kokStartChar          = 0;   // 逐词跳转：首句从该字符起朗读，用后即清
 
-// All iOS browsers (incl. Chrome) are WebKit. Running an 88 MB model there
-// risks tab memory kills and WASM is slow — use online neural + Siri instead.
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-// Update the sidebar label to reflect what this device will actually use
 (function _initKokLabel(){
   const name = document.getElementById('kok-hq-name');
   const sub  = document.getElementById('kok-ready-sub');
   if(!name || !sub) return;
-  if(IS_IOS){
-    name.textContent = 'Microsoft / Apple 神经语音';
-    sub.textContent  = '在线高音质 · 无需下载';
-  } else {
-    name.textContent = 'Kokoro 神经语音';
-    sub.textContent  = '本地 WASM 离线推理 · 首次下载约 115MB';
-  }
+  name.textContent = 'Kokoro 神经语音';
+  sub.textContent  = '服务器神经语音 · 全平台可用';
 })();
 
 // Tell the user which engine is actually speaking (once per engine switch)
@@ -3220,99 +3211,38 @@ function _unlockAudio(){
   }catch(e){}
 }
 
-// ── Kokoro-82M local neural TTS ──────────────────────────────────────────
-// Model + runtime are committed in /Linggo/kokoro/ and served by GitHub
-// Pages — same origin as the app, so wherever the site loads, the model
-// loads. Runs fully in-browser via WebAssembly after a one-time ~115 MB
-// download (cached by the browser; no network needed afterwards).
-// Inference runs in a Web Worker: WASM compute on the main thread would
-// freeze the page for seconds per sentence, especially on phones.
-let kokWorker     = null;
-let kokTTSReady   = false;
-let kokTTSLoading = null;   // in-flight load promise
-let _kokMsgId     = 0;
-const _kokPending = new Map(); // msg id → { resolve, reject }
-const KOK_CACHE   = new Map(); // synth key → Promise<blob URL>
-const KOK_DONE    = new Map(); // synth key → blob URL (resolved & ready to play)
+// ── Kokoro-82M server-side neural TTS ─────────────────────────────────────
+// Runs on a Hugging Face Spaces FastAPI server (free, all platforms including iOS).
+// HF Spaces free tier sleeps after 5 min of inactivity; cold start ~30-60 s.
+// During warmup, P0 times out quickly (5 s) and falls through to Edge TTS /
+// SpeechSynthesis; the background fetch populates KOK_DONE for the next sentence.
+//
+// Deploy: create a HF Space (sdk:docker) and replace KOK_SERVER_URL below.
+const KOK_SERVER_URL = 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space';
 
-function _kokLoad(){
-  if(kokTTSReady) return Promise.resolve(true);
-  if(kokTTSLoading) return kokTTSLoading;
-  kokTTSLoading = new Promise((resolve, reject) => {
-    const fail = (err) => { kokTTSLoading = null; reject(err); };
-    let lastPct = -10;
-    try {
-      kokWorker = new Worker('/Linggo/kokoro/kokoro-worker.js', { type: 'module' });
-    } catch(e){ fail(e); return; }
-    kokWorker.onerror = () => { if(!kokTTSReady) fail(new Error('worker failed')); };
-    kokWorker.onmessage = (e) => {
-      const m = e.data;
-      if(m.type === 'progress'){
-        const pct = Math.floor(m.progress);
-        if(pct >= lastPct + 10){ lastPct = pct; toast(`正在下载本地语音模型 ${pct}%`); }
-      } else if(m.type === 'ready'){
-        kokTTSReady = true;
-        toast('本地神经语音已就绪 ✓');
-        // Aggressively pre-synthesize upcoming sentences while Edge TTS plays
-        const warmStart = S.idx;
-        const warmEnd = Math.min(warmStart + 20, S.sents.length);
-        for(let i = warmStart; i < warmEnd; i++){
-          _kokSynthBlob(S.sents[i]).catch(()=>{});
-        }
-        resolve(true);
-      } else if(m.type === 'audio'){
-        const p = _kokPending.get(m.id);
-        if(p){ _kokPending.delete(m.id); p.resolve(m); }
-      } else if(m.type === 'error'){
-        if(m.id == null){ if(!kokTTSReady) fail(new Error(m.message)); return; }
-        const p = _kokPending.get(m.id);
-        if(p){ _kokPending.delete(m.id); p.reject(new Error(m.message)); }
-      }
-    };
-    kokWorker.postMessage({ type: 'load' });
-  });
-  return kokTTSLoading;
-}
+let kokTTSReady = true;   // server always "ready"; cold-start handled by race timeout
+const KOK_CACHE = new Map(); // synth key → Promise<blob URL>
+const KOK_DONE  = new Map(); // synth key → blob URL (resolved & ready to play)
 
 function _kokVoice(){ return S.kokVoice || (S.accentUS ? 'af_heart' : 'bf_emma'); }
-
-// Encode Float32 samples as 16-bit PCM WAV — universally supported,
-// unlike the 32-bit float WAV that RawAudio.toBlob() produces (iOS-safe).
-function _wav16(f32, rate){
-  const n = f32.length;
-  const buf = new ArrayBuffer(44 + n * 2);
-  const v = new DataView(buf);
-  const wstr = (o, s) => { for(let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  wstr(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); wstr(8, 'WAVE');
-  wstr(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  wstr(36, 'data'); v.setUint32(40, n * 2, true);
-  for(let i = 0; i < n; i++){
-    const s = Math.max(-1, Math.min(1, f32[i]));
-    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-  }
-  return new Blob([buf], { type: 'audio/wav' });
-}
-
 function _kokKey(text){ return `${_kokVoice()}|${S.speed || 1}|${text}`; }
 
-// Synthesise one sentence → Promise<blob URL>. Cached so the play loop and
-// the background prefetch pipeline share one generate() call per sentence.
-function _kokSynthBlob(text){
+function _kokServerSynth(text){
   const key = _kokKey(text);
   if(KOK_CACHE.has(key)) return KOK_CACHE.get(key);
-  const p = new Promise((resolve, reject) => {
-    const id = ++_kokMsgId;
-    _kokPending.set(id, {
-      resolve: m => {
-        const u = URL.createObjectURL(_wav16(m.samples, m.rate));
-        KOK_DONE.set(key, u);
-        resolve(u);
-      },
-      reject
+  const p = (async () => {
+    const params = new URLSearchParams({
+      text,
+      voice: _kokVoice(),
+      speed: String(S.speed || 1)
     });
-    kokWorker.postMessage({ type: 'synth', id, text, voice: _kokVoice(), speed: S.speed || 1 });
-  });
+    const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`);
+    if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
+    const blob = await resp.blob();
+    const url  = URL.createObjectURL(blob);
+    KOK_DONE.set(key, url);
+    return url;
+  })();
   KOK_CACHE.set(key, p);
   p.catch(() => KOK_CACHE.delete(key));
   if(KOK_CACHE.size > 40){
@@ -3324,13 +3254,10 @@ function _kokSynthBlob(text){
   return p;
 }
 
-// Keep the synth pipeline running ahead of the reading position.
-// Called on every sentence — queues whatever isn't cached yet.
 function _kokPrefetch(n = 8){
-  if(!kokTTSReady) return;
   const end = Math.min(S.idx + n, S.sents.length);
   for(let i = S.idx; i < end; i++){
-    _kokSynthBlob(S.sents[i]).catch(()=>{});
+    _kokServerSynth(S.sents[i]).catch(()=>{});
   }
 }
 
@@ -3529,38 +3456,32 @@ function _synthPlay(text, forceVoice){
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession){
-  // ── Priority 0: Kokoro local neural model ────────────────────────────
-  // WASM inference is slow (3–10 s/sentence depending on device).
-  // Strategy: if synthesis is already running for this sentence (started by
-  // an earlier prefetch call), wait generously — it will finish "soon".
-  // If starting cold (first sentence after model loads), fall back quickly
-  // so the user hears audio without a long silence.
-  if(kokTTSReady){
+  // ── Priority 0: Kokoro server neural TTS ─────────────────────────────────
+  // HF Spaces may be cold-starting (~30-60 s). If this sentence is already
+  // in KOK_CACHE (prefetched), wait 30 s — server will finish soon.
+  // If starting fresh, race with 5 s timeout so the user hears audio quickly;
+  // the background fetch continues and populates KOK_DONE for the next sentence.
+  if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     try {
       const key = _kokKey(text);
-      // Check BEFORE prefetch: sentences already in KOK_CACHE were started
-      // by a previous sentence's prefetch call and have been synthesizing
-      // for several seconds — give them a generous wait (30 s).
-      // Sentences not yet in KOK_CACHE are starting fresh — fall back quickly
-      // (3 s) so the user hears audio without a long silence.
       const alreadySynthesizing = KOK_CACHE.has(key);
       _kokPrefetch();
       let url = KOK_DONE.get(key);
       if(!url){
-        const timeoutMs = alreadySynthesizing ? 30000 : 3000;
+        const timeoutMs = alreadySynthesizing ? 30000 : 5000;
         url = await Promise.race([
-          _kokSynthBlob(text),
+          _kokServerSynth(text),
           new Promise(r => setTimeout(() => r(null), timeoutMs))
         ]);
       }
       if(kokSession !== mySession) return false;
       if(url){
-        _kokAnnounce('Kokoro 本地神经语音');
+        _kokAnnounce('Kokoro 神经语音（服务器）');
         if(await _edgePlayUrl(url)) return true;
         if(kokSession !== mySession) return false;
       } else if(!_kokSynthToastShown){
         _kokSynthToastShown = true;
-        toast('神经语音后台合成中，暂以在线语音播放');
+        toast('神经语音服务启动中，暂以在线语音播放');
       }
     } catch(e) { /* fall through to online engines */ }
   }
@@ -3671,27 +3592,18 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
     kokStop(); S.playing = false; S.paused = false; setIcon(false);
   }
   if(kokActive){
-    if(IS_IOS){
-      // iOS Safari kills tabs when WASM inference exceeds ~1 GB memory.
-      // Use Microsoft Edge Neural TTS (online) or Apple neural voices instead —
-      // both are high quality and don't require a 115 MB local model.
-      toast('高音质已开启（Microsoft / Apple 神经语音）');
-    } else {
-      toast(kokTTSReady ? '高音质已开启（Kokoro 本地神经语音）'
-                        : '高音质已开启，正在加载本地语音模型（首次约 115MB）');
-      _kokLoad().catch(() => toast('本地模型加载失败，将使用在线语音'));
-    }
+    const deployed = KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space';
+    toast(deployed ? '高音质已开启（Kokoro 神经语音服务器）' : '高音质已开启（Microsoft / Apple 神经语音）');
   } else {
     toast('已切换回系统语音');
   }
   _syncKokVoiceRow();
 });
 
-// Voice picker only applies on non-iOS (iOS doesn't run Kokoro WASM).
 function _syncKokVoiceRow(){
   const row = document.getElementById('kok-voice-row');
   if(!row) return;
-  row.style.display = (kokActive && !IS_IOS) ? '' : 'none';
+  row.style.display = kokActive ? '' : 'none';
 }
 
 (function _initKokVoice(){
@@ -3710,7 +3622,7 @@ function _syncKokVoiceRow(){
     toast('音色已切换：' + this.options[this.selectedIndex].text.replace(/[（(].*$/, '').trim());
     // If currently reading with Kokoro, restart the sentence so the new
     // voice takes over immediately instead of after the cached audio ends.
-    if(kokActive && !IS_IOS && (S.playing || S.paused)){
+    if(kokActive && (S.playing || S.paused)){
       kokStop(); kokPlay();
     }
   });
