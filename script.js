@@ -3243,31 +3243,145 @@ const KOK_SERVER_URL = 'https://langhua1998-kokoro.hf.space';
 let kokTTSReady = true;   // server always "ready"; cold-start handled by race timeout
 const KOK_CACHE = new Map(); // synth key → Promise<blob URL>
 const KOK_DONE  = new Map(); // synth key → blob URL (resolved & ready to play)
+const KOK_ABORT = new Map(); // synth key → AbortController (in-flight /tts requests only)
 
 function _kokVoice(){ return S.kokVoice || (S.accentUS ? 'af_heart' : 'bf_emma'); }
 function _kokKey(text){ return `${_kokVoice()}|${text}`; }
 
+// Stream /tts-stream chunks via Web Audio API for low first-word latency.
+// The server yields each phoneme chunk as a 4-byte-length-prefixed WAV the
+// moment it's synthesized, so first audio arrives in ~200-500 ms. We decode +
+// schedule each chunk as it lands and apply S.speed via playbackRate.
+// (Caching is left to _kokPrefetch /tts, which produces a single valid WAV;
+//  concatenating these per-chunk WAVs would yield an invalid multi-header file.)
+async function _kokStreamPlay(text, mySession, sentEl){
+  // AbortController created BEFORE fetch so kokStop() can abort mid-request
+  const abort = new AbortController();
+
+  // _kokAudioCtx was created & resumed in _unlockAudio() during the user gesture.
+  if(!_kokAudioCtx || _kokAudioCtx.state === 'closed')
+    _kokAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if(_kokAudioCtx.state === 'suspended')
+    await _kokAudioCtx.resume().catch(()=>{});
+  const ctx = _kokAudioCtx;
+
+  let acc = new Uint8Array(0);
+  let schedAt = ctx.currentTime + 0.05;
+  const allSrcs = [];
+  let finished = false;
+  let hlAnimId = null;
+  let streamStartTime = -1;
+  const rate = S.speed || 1;
+  const charsPerSec = 13 * rate;
+
+  return new Promise(resolve => {
+    let coldTimer = null;
+    const finish = ok => {
+      if(finished) return;
+      finished = true;
+      if(coldTimer){ clearTimeout(coldTimer); coldTimer = null; }
+      _kokSynthCancel = null;
+      if(hlAnimId){ cancelAnimationFrame(hlAnimId); hlAnimId = null; }
+      resolve(ok);
+    };
+    // Set cancel BEFORE fetch starts — kokStop() may fire while fetch is in-flight
+    _kokSynthCancel = () => {
+      abort.abort();
+      allSrcs.forEach(s => { try{ s.stop(0); }catch(e){} });
+      finish(false);
+    };
+    // Cold-start guard: with TRUE streaming the first chunk arrives in ~200-500 ms,
+    // so 8 s with no audio means HF Space is still waking up → fall through.
+    coldTimer = setTimeout(() => { if(streamStartTime < 0){ abort.abort(); finish(false); } }, 8000);
+
+    (async () => {
+      try{
+        const params = new URLSearchParams({text, voice:_kokVoice(), speed:'1'});
+        const resp = await fetch(`${KOK_SERVER_URL}/tts-stream?${params}`, {signal: abort.signal});
+        if(!resp.ok) throw new Error(`stream ${resp.status}`);
+        if(!resp.body) throw new Error('no stream body');
+        const reader = resp.body.getReader();
+        while(true){
+          const {done, value} = await reader.read();
+          if(done) break;
+          if(kokSession !== mySession){ reader.cancel(); finish(false); return; }
+          const m = new Uint8Array(acc.length + value.length);
+          m.set(acc); m.set(value, acc.length); acc = m;
+          while(acc.length >= 4){
+            const len = (acc[0]<<24)|(acc[1]<<16)|(acc[2]<<8)|acc[3];
+            if(len === 0 || acc.length < 4 + len) break;
+            const wav = acc.slice(4, 4 + len); acc = acc.slice(4 + len);
+            let decoded;
+            try{ decoded = await ctx.decodeAudioData(
+              wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength)); }
+            catch(e){ continue; }
+            if(finished) return;
+            const src = ctx.createBufferSource();
+            src.buffer = decoded;
+            src.playbackRate.value = rate;   // Web Audio speed (pitch shifts; cached replay is pitch-correct)
+            src.connect(ctx.destination);
+            const at = Math.max(schedAt, ctx.currentTime + 0.01);
+            src.start(at); schedAt = at + decoded.duration / rate;
+            allSrcs.push(src);
+            if(streamStartTime < 0){
+              streamStartTime = at;
+              if(coldTimer){ clearTimeout(coldTimer); coldTimer = null; }
+              if(sentEl){
+                const tl = text.length;
+                const tick = () => {
+                  if(finished) return;
+                  const frac = Math.min((ctx.currentTime - streamStartTime) / (tl / charsPerSec), 1);
+                  highlightWordAt(sentEl, Math.floor(frac * tl));
+                  hlAnimId = requestAnimationFrame(tick);
+                };
+                hlAnimId = requestAnimationFrame(tick);
+              }
+            }
+          }
+        }
+        if(allSrcs.length > 0){
+          const last = allSrcs[allSrcs.length - 1];
+          last.onended = () => finish(kokSession === mySession);
+          const wait = Math.max(0, (schedAt - ctx.currentTime) * 1000 + 300);
+          setTimeout(() => finish(kokSession === mySession), wait);
+        } else { finish(false); }
+      }catch(e){ finish(false); }
+    })();
+  });
+}
+
 function _kokServerSynth(text){
   const key = _kokKey(text);
+  if(KOK_DONE.has(key)) return Promise.resolve(KOK_DONE.get(key));
   if(KOK_CACHE.has(key)) return KOK_CACHE.get(key);
+  const ac = new AbortController();
+  KOK_ABORT.set(key, ac);
   const p = (async () => {
-    const params = new URLSearchParams({
-      text,
-      voice: _kokVoice(),
-      speed: '1'
-    });
-    const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`);
-    if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
-    const blob = await resp.blob();
-    const url  = URL.createObjectURL(blob);
-    KOK_DONE.set(key, url);
-    return url;
+    try {
+      const params = new URLSearchParams({
+        text,
+        voice: _kokVoice(),
+        speed: '1'
+      });
+      const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`, { signal: ac.signal });
+      if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
+      const blob = await resp.blob();
+      const url  = URL.createObjectURL(blob);
+      KOK_DONE.set(key, url);
+      KOK_ABORT.delete(key);
+      return url;
+    } catch(e) {
+      KOK_ABORT.delete(key);
+      throw e;
+    }
   })();
   KOK_CACHE.set(key, p);
   p.catch(() => KOK_CACHE.delete(key));
   if(KOK_CACHE.size > 40){
     const oldKey = KOK_CACHE.keys().next().value;
     Promise.resolve(KOK_CACHE.get(oldKey)).then(u => URL.revokeObjectURL(u)).catch(()=>{});
+    const oldAc = KOK_ABORT.get(oldKey);
+    if(oldAc){ try{ oldAc.abort(); }catch(e){} KOK_ABORT.delete(oldKey); }
     KOK_CACHE.delete(oldKey);
     KOK_DONE.delete(oldKey);
   }
@@ -3500,26 +3614,23 @@ async function _edgePlayOne(text, mySession){
   if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     try {
       const _hlEl = document.querySelector(`.sent[data-i="${S.idx}"]`);
-      let kokUrl = KOK_DONE.get(_kokKey(text));
-      if(!kokUrl){
+      const cachedUrl = KOK_DONE.get(_kokKey(text));
+      if(cachedUrl){
+        // Fast path: already synthesized → HTML <audio> with pitch-preserved speed.
         _kokAnnounce('Kokoro 神经语音（服务器）');
-        // 15 s cold-start guard. We do NOT abort the synthesising request itself —
-        // it keeps running in the background and writes KOK_DONE when done, so the
-        // next sentence hits the cache immediately after the server wakes up.
-        kokUrl = await Promise.race([
-          _kokServerSynth(text).catch(() => null),
-          new Promise(r => setTimeout(() => r('__cold__'), 15000))
-        ]);
+        _kokPrefetch();  // warm upcoming sentences while this one plays
+        if(await _edgePlayUrl(cachedUrl, _hlEl)) return true;
         if(kokSession !== mySession) return false;
-        if(kokUrl === '__cold__'){
-          if(!_kokSynthToastShown){ _kokSynthToastShown = true; toast('神经语音服务启动中，暂以在线语音播放'); }
-          kokUrl = null;
-        }
-      } else { _kokAnnounce('Kokoro 神经语音（服务器）'); }
-      if(kokUrl){
-        _kokPrefetch();  // prefetch AFTER current sentence is ready, not before
-        if(await _edgePlayUrl(kokUrl, _hlEl)) return true;
+      } else {
+        // Streaming path: first audio in ~200-500 ms; 8 s cold-start guard inside.
+        // Prefetch upcoming sentences via /tts (proper single-WAV) so they take the
+        // pitch-preserved <audio> fast path next.
+        _kokAnnounce('Kokoro 神经语音（服务器）');
+        _kokPrefetch();
+        const ok = await _kokStreamPlay(text, mySession, _hlEl);
+        if(ok) return true;
         if(kokSession !== mySession) return false;
+        if(!_kokSynthToastShown){ _kokSynthToastShown = true; toast('神经语音服务启动中，暂以在线语音播放'); }
       }
     } catch(e) { /* fall through to online engines */ }
   }
@@ -3587,6 +3698,12 @@ async function _edgePlayOne(text, mySession){
 function kokStop(){
   _kokSoftPaused = false;
   kokSession++;
+  // Abort all in-flight /tts prefetch requests so the HF Space (2 vCPU) is freed
+  // immediately — otherwise a voice/speed switch queues behind ~4 stale requests
+  // (~20 s) and looks like a cold start.
+  KOK_ABORT.forEach(ac => { try{ ac.abort(); }catch(e){} });
+  KOK_ABORT.clear();
+  KOK_CACHE.clear();  // drop stale in-flight promises; KOK_DONE keeps completed URLs
   if(kokWs){ try{ kokWs.close(); }catch{} kokWs = null; }
   if(kokAudio){ kokAudio.pause(); kokAudio = null; }
   if(kokAudioDone){ kokAudioDone(false); kokAudioDone = null; }

@@ -1,10 +1,12 @@
 import io
+import struct
 import hashlib
 import threading
 import numpy as np
 import soundfile as sf
 from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="Kokoro TTS")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"], allow_headers=["*"])
@@ -77,3 +79,29 @@ def tts(
     _cache_put(ck, wav)
     return Response(content=wav, media_type="audio/wav",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+@app.get("/tts-stream")
+def tts_stream(
+    text:  str   = Query(..., max_length=500),
+    voice: str   = Query("af_heart"),
+    speed: float = Query(1.0, ge=0.5, le=2.0),
+):
+    if voice not in VALID_VOICES:
+        voice = "af_heart"
+
+    lang_code = voice[0]  # 'a' = American, 'b' = British
+    pipeline = _get_pipeline(lang_code)
+
+    # Yield each phoneme chunk as soon as the generator produces it, so the
+    # client hears the first audio in ~200-500 ms instead of waiting for the
+    # whole sentence to synthesize. Each chunk = 4-byte big-endian length + WAV.
+    def generate():
+        for _, _, audio in pipeline(text, voice=voice, speed=speed):
+            if audio is None or len(audio) == 0:
+                continue
+            buf = io.BytesIO()
+            sf.write(buf, audio, 24000, format="WAV", subtype="PCM_16")
+            wav = buf.getvalue()
+            yield struct.pack(">I", len(wav)) + wav
+
+    return StreamingResponse(generate(), media_type="application/octet-stream")
