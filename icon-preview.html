@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Linggo · 图标动画预览</title>
+<style>
+  :root{
+    --bg:#f7f6f3; --surface:#fff; --border:#e7e4de;
+    --text:#2b2925; --text-2:#78716c; --text-3:#a8a29e;
+    --accent:#2563eb; --accent-2:#eaf2ff;
+  }
+  .night{
+    --bg:#1a1916; --surface:#262320; --border:#3a3530;
+    --text:#ece8e1; --text-2:#b8b0a4; --text-3:#7c756b;
+    --accent:#5b8cff; --accent-2:#23304a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,'Nunito','Helvetica Neue',sans-serif;
+    transition:background .25s,color .25s;padding:0 0 60px;
+  }
+  header{
+    position:sticky;top:0;z-index:10;
+    background:var(--surface);border-bottom:1px solid var(--border);
+    padding:14px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    box-shadow:0 1px 8px rgba(0,0,0,.04);
+  }
+  h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.3px;}
+  .sub{font-size:12px;color:var(--text-3);}
+  .spacer{flex:1;}
+  .ctrl{
+    display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;
+    border:1.5px solid var(--border);background:var(--bg);color:var(--text-2);
+    border-radius:20px;padding:7px 14px;cursor:pointer;transition:.15s;user-select:none;
+  }
+  .ctrl:hover{border-color:var(--accent);color:var(--accent);}
+  .ctrl.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .wrap{max-width:1100px;margin:0 auto;padding:18px;}
+  .cat{margin:26px 0 10px;font-size:14px;font-weight:800;color:var(--accent);
+       display:flex;align-items:center;gap:8px;}
+  .cat .line{flex:1;height:1px;background:var(--border);}
+  .grid{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));
+    gap:12px;
+  }
+  .cell{
+    background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    padding:12px 6px 9px;display:flex;flex-direction:column;align-items:center;gap:6px;
+    cursor:pointer;transition:transform .12s,border-color .15s,box-shadow .15s;position:relative;
+  }
+  .cell:hover{transform:translateY(-2px);border-color:var(--accent);
+              box-shadow:0 6px 18px rgba(0,0,0,.08);}
+  .cell:active{transform:scale(.96);}
+  .ico{width:40px;height:40px;color:var(--text);display:flex;align-items:center;justify-content:center;}
+  .ico svg{width:100%;height:100%;display:block;}
+  /* theme color over Lottie's baked stroke/fill */
+  .ico svg path,.ico svg ellipse,.ico svg rect,.ico svg line,.ico svg polygon{stroke:currentColor !important;}
+  .ico svg path[fill]:not([fill="none"]),.ico svg ellipse[fill]:not([fill="none"]),.ico svg rect[fill]:not([fill="none"]){fill:currentColor !important;}
+  .name{font-size:11px;color:var(--text-2);font-weight:700;text-align:center;
+        word-break:break-word;line-height:1.25;}
+  .used{position:absolute;top:6px;right:6px;font-size:9px;font-weight:800;
+        background:var(--accent);color:#fff;border-radius:8px;padding:2px 5px;letter-spacing:.3px;}
+  .star{position:absolute;top:6px;left:6px;font-size:11px;}
+  .hint{font-size:12px;color:var(--text-3);margin:4px 0 0;}
+  .tip{background:var(--accent-2);color:var(--accent);border-radius:12px;
+       padding:10px 14px;font-size:13px;font-weight:600;margin-bottom:6px;}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Linggo · 图标动画预览</h1>
+    <div class="sub">useAnimations · MIT · 共 <span id="count">0</span> 个 · 点任意图标重播</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="ctrl on" id="hover-toggle">悬停自动播放：开</div>
+  <div class="ctrl" id="theme-toggle">🌙 夜间</div>
+</header>
+
+<div class="wrap">
+  <div class="tip">🏷️ <b>已用</b> = 现在 App 里已经接入的 · ⭐ = 推荐给 Linggo 加的 · 颜色已套用主题（切夜间看效果）</div>
+  <div id="cats"></div>
+  <p class="hint">提示：图标描边色 = 主题文字色，所以夜间模式 / 强调色会自动适配，无需逐个改色。</p>
+</div>
+
+<script src="vendor/lottie.min.js"></script>
+<script>
+const USED = ['playPause','skipBack','skipForward','searchToX','settings2','menu','bookmark','heart'];
+const STAR = ['volume','star','thumbUp','plusToX','checkmark','toggle','trash','copy','download',
+              'home','explore','arrowLeftCircle','arrowRightCircle','loading','userPlus','maximizeMinimize'];
+
+const CATEGORIES = [
+  ['🎵 播放 / 媒体控制', ['playPause','playPauseCircle','skipBack','skipForward','volume','microphone','microphone2','video','video2','airplay']],
+  ['❤️ 收藏 / 标记 / 评分', ['heart','bookmark','star','thumbUp','archive','pocket']],
+  ['✏️ 操作 / 增删改', ['plusToX','checkmark','checkBox','radioButton','toggle','edit','copy','trash','trash2','download','share','folder','calendar','lock','visibility','visibility2']],
+  ['🧭 导航 / 菜单 / 箭头', ['searchToX','menu','menu2','menu3','menu4','home','explore','arrowLeftCircle','arrowRightCircle','arrowUpCircle','arrowDownCircle','arrowUp','arrowDown','scrollDown','maximizeMinimize','maximizeMinimize2','zoomIn','zoomOut','settings','settings2']],
+  ['⏳ 加载 / 状态 / 提示', ['loading','loading2','loading3','notification','notification2','activity','infinity','alertCircle','alertTriangle','alertOctagon','error','info','help']],
+  ['👤 用户 / 账号', ['userPlus','userMinus','userX','mail']],
+  ['🔗 社交品牌', ['github','twitter','facebook','instagram','linkedin','behance','dribbble','codepen','youtube','youtube2']],
+];
+
+const animCache = new Map();   // name -> json
+const anims = new Map();       // name -> lottie instance
+let hoverPlay = true;
+
+async function loadJson(name){
+  if(!animCache.has(name)){
+    const r = await fetch(`lottie/${name}.json`);
+    animCache.set(name, r.ok ? await r.json() : null);
+  }
+  return animCache.get(name);
+}
+
+async function mountCell(name){
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  const ico = document.createElement('div'); ico.className = 'ico';
+  const label = document.createElement('div'); label.className = 'name'; label.textContent = name;
+  cell.appendChild(ico); cell.appendChild(label);
+  if(USED.includes(name)){ const b=document.createElement('span'); b.className='used'; b.textContent='已用'; cell.appendChild(b); }
+  else if(STAR.includes(name)){ const s=document.createElement('span'); s.className='star'; s.textContent='⭐'; cell.appendChild(s); }
+
+  const data = await loadJson(name);
+  if(!data){ ico.textContent = '—'; return cell; }
+  const anim = lottie.loadAnimation({
+    container: ico, renderer:'svg', loop:false, autoplay:false,
+    animationData: JSON.parse(JSON.stringify(data)),
+  });
+  anims.set(name, anim);
+  const play = () => { anim.setDirection(1); anim.goToAndPlay(0, true); };
+  cell.addEventListener('mouseenter', () => { if(hoverPlay) play(); });
+  cell.addEventListener('click', play);
+  return cell;
+}
+
+async function build(){
+  const root = document.getElementById('cats');
+  let total = 0;
+  for(const [title, names] of CATEGORIES){
+    const h = document.createElement('div'); h.className = 'cat';
+    h.innerHTML = `<span>${title}</span><span class="line"></span><span class="sub" style="font-size:11px;color:var(--text-3)">${names.length}</span>`;
+    root.appendChild(h);
+    const grid = document.createElement('div'); grid.className = 'grid';
+    root.appendChild(grid);
+    for(const name of names){ grid.appendChild(await mountCell(name)); total++; }
+  }
+  document.getElementById('count').textContent = total;
+}
+build();
+
+document.getElementById('theme-toggle').addEventListener('click', e => {
+  const night = document.body.classList.toggle('night');
+  e.target.textContent = night ? '☀️ 日间' : '🌙 夜间';
+});
+document.getElementById('hover-toggle').addEventListener('click', e => {
+  hoverPlay = !hoverPlay;
+  e.target.classList.toggle('on', hoverPlay);
+  e.target.textContent = '悬停自动播放：' + (hoverPlay ? '开' : '关');
+});
+</script>
+</body>
+</html>
