@@ -1168,42 +1168,23 @@ const BLOCK = /albert|bad news|bahh|bells|boing|bubbles|cellos|deranged|fred|goo
 function populateVoices(){
   allVoices = synth.getVoices();
   const enVoices = allVoices
-    .filter(v => v.lang.startsWith('en') && !BLOCK.test(v.name))
-    .sort((a,b)=>{
-      const au = a.lang==='en-US'?1:0, bu = b.lang==='en-US'?1:0;
-      if(au!==bu) return bu-au;
-      return qualityScore(b)-qualityScore(a);
-    });
+    .filter(v => v.lang.startsWith('en') && !BLOCK.test(v.name));
   if(!enVoices.length) return;
+  // 系统音源只保留 Samantha 作为默认兜底；找不到则取最佳英文音兜底
+  const only = enVoices.find(v => /samantha/i.test(v.name))
+            || enVoices.slice().sort((a,b)=>qualityScore(b)-qualityScore(a))[0];
   const sel = document.getElementById('sb-voice-select');
   if(!sel) return;
   sel.innerHTML = '';
-  enVoices.forEach(v=>{
-    const o = document.createElement('option');
-    o.value = v.name;
-    const flag = v.lang==='en-US'?'🇺🇸':v.lang==='en-GB'?'🇬🇧':'🌐';
-    o.textContent = flag+' '+cleanVoiceName(v);
-    sel.appendChild(o);
-  });
-  const saved = localStorage.getItem('selectedVoice');
-  const savedVoice = saved && enVoices.find(v=>v.name===saved);
-  if(savedVoice){ sel.value=savedVoice.name; S.selectedVoice=savedVoice; }
-  else{
-    S.selectedVoice = enVoices[0];
-    sel.value = enVoices[0].name;
-    localStorage.setItem('selectedVoice', enVoices[0].name);
-  }
+  const o = document.createElement('option');
+  o.value = only.name;
+  const flag = only.lang==='en-US'?'🇺🇸':only.lang==='en-GB'?'🇬🇧':'🌐';
+  o.textContent = flag+' '+cleanVoiceName(only);
+  sel.appendChild(o);
+  sel.value = only.name;
+  S.selectedVoice = only;
+  localStorage.setItem('selectedVoice', only.name);
 }
-document.getElementById('sb-voice-select').addEventListener('change', function(){
-  S.selectedVoice = allVoices.find(v=>v.name===this.value)||null;
-  localStorage.setItem('selectedVoice', this.value);
-});
-document.getElementById('sb-voice-preview').addEventListener('click', ()=>{
-  const u = new SpeechSynthesisUtterance('Hello! This is a voice preview.');
-  u.rate = S.speed;
-  if(S.selectedVoice) u.voice = S.selectedVoice;
-  synth.cancel(); synth.speak(u);
-});
 synth.onvoiceschanged = ()=>{ populateVoices(); };
 populateVoices();
 
