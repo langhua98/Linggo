@@ -665,7 +665,8 @@ function buildCard(book){
 const PREVIEW_CACHE = new Map();
 let _previewBook = null;
 
-function openBookPreview(book, cardEl){
+function openBookPreview(book, cardEl, opts){
+  opts = opts || {};
   _previewBook = book;
   const overlay = document.getElementById('book-prev-overlay');
   const sheet   = document.getElementById('book-prev');
@@ -696,11 +697,32 @@ function openBookPreview(book, cardEl){
   const zhEl = document.getElementById('bprev-desc-zh');
   if(zhEl){ zhEl.textContent = ''; zhEl.style.display = 'none'; }
 
-  // Read button wires to the original card's action
+  // Read button: download + open the book directly (works for any book).
   document.getElementById('bprev-read-btn').onclick = ()=>{
     closeBookPreview();
     loadBook(book, cardEl);
   };
+
+  // Add button: only for search results that aren't built-in / already added.
+  const addBtn = document.getElementById('bprev-add-btn');
+  if(addBtn){
+    const owned = !!book._builtin || userBooks.some(b => b.url === book.url);
+    if(opts.search && !owned){
+      addBtn.style.display = '';
+      addBtn.disabled = false;
+      addBtn.textContent = '+ 添加到书架';
+      addBtn.onclick = async ()=>{
+        addBtn.disabled = true; addBtn.textContent = '添加中…';
+        const ok = await addUserBook(book);
+        addBtn.textContent = ok ? '已添加 ✓' : '添加失败';
+        // keep the underlying search card's button in sync
+        const cb = cardEl && cardEl.querySelector('.gb-add-btn');
+        if(cb && ok){ cb.disabled = true; cb.textContent = '已添加'; }
+      };
+    } else {
+      addBtn.style.display = 'none';
+    }
+  }
 
   // Animate in
   overlay.classList.add('vis');
@@ -2795,31 +2817,52 @@ function renderSearchResults(results){
     return;
   }
   res.innerHTML = `<div class="gb-count">找到 ${results.length} 本</div>`;
-  results.forEach(book => {
-    const isBuiltin = !!book._builtin;
-    const isAdded   = userBooks.some(b => b.url === book.url);
-    const disabled  = isBuiltin || isAdded;
-    const btnText   = isBuiltin ? '已内置' : isAdded ? '已添加' : '+ 添加';
-    const catTags   = (book.cat||[]).map(c =>
-      `<span class="gb-cat">${CAT_LABELS[c]||c}</span>`).join('');
-    const el = document.createElement('div');
-    el.className = 'gb-item';
-    el.innerHTML = `
-      <div class="gb-item-info">
-        <div class="gb-item-title">${book.t}</div>
-        <div class="gb-item-meta">${book.a}${book.y ? ' · ' + book.y : ''}</div>
-        <div class="gb-cats">${catTags}</div>
+  results.forEach(book => res.appendChild(buildSearchCard(book)));
+}
+
+// Search-result card: cover grid (readest-style). Tapping cover/title opens the
+// book detail sheet (openBookPreview); the button adds the book to the shelf.
+function buildSearchCard(book){
+  const div = document.createElement('div');
+  div.className = 'gb-card';
+  div._book = book;
+  const [c1,c2]   = book.pal || ['#667eea','#764ba2'];
+  const hasIsbn   = book.isbn && book.isbn !== 'null' && book.isbn !== '';
+  const imgSrc    = hasIsbn ? coverUrl(book.isbn)
+                  : book._gbId ? gbCoverUrl(book._gbId) : null;
+  const isBuiltin = !!book._builtin;
+  const isAdded   = userBooks.some(b => b.url === book.url);
+  const disabled  = isBuiltin || isAdded;
+  const btnText   = isBuiltin ? '已内置' : isAdded ? '已添加' : '+ 添加';
+  div.innerHTML = `
+    <div class="gb-cover">
+      ${imgSrc ? `<img src="${imgSrc}" alt="${book.t}" loading="lazy">` : ''}
+      <div class="bk-cover-fallback" style="${imgSrc?'display:none;':'display:flex;'}background:linear-gradient(145deg,${c1},${c2})">
+        <div class="bk-fb-title">${book.t}</div>
+        <div class="bk-fb-author">${book.a.split(' ').pop()}</div>
+        <div class="bk-fb-deco"></div>
       </div>
-      <button class="gb-add-btn"${disabled?' disabled':''}>${btnText}</button>`;
-    if(!disabled){
-      el.querySelector('.gb-add-btn').addEventListener('click', async function(){
-        this.disabled = true; this.textContent = '添加中…';
-        const ok = await addUserBook(book);
-        this.textContent = ok ? '已添加' : '失败';
-      });
-    }
-    res.appendChild(el);
-  });
+    </div>
+    <div class="gb-ttl">${book.t}</div>
+    <div class="gb-au">${book.a}${book.y ? ' · ' + book.y : ''}</div>
+    <button class="gb-add-btn"${disabled?' disabled':''}>${btnText}</button>`;
+  if(imgSrc){
+    const img = div.querySelector('img');
+    const fb  = div.querySelector('.bk-cover-fallback');
+    img.onerror = () => { img.style.display='none'; fb.style.display='flex'; };
+  }
+  const openDetail = e => { e.stopPropagation(); openBookPreview(book, div, {search:true}); };
+  div.querySelector('.gb-cover').addEventListener('click', openDetail);
+  div.querySelector('.gb-ttl').addEventListener('click', openDetail);
+  if(!disabled){
+    div.querySelector('.gb-add-btn').addEventListener('click', async function(e){
+      e.stopPropagation();
+      this.disabled = true; this.textContent = '添加中…';
+      const ok = await addUserBook(book);
+      this.textContent = ok ? '已添加' : '失败';
+    });
+  }
+  return div;
 }
 
 // ── 每日英语（Simple English Wikipedia，无需代理）
