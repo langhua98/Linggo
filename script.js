@@ -3078,8 +3078,23 @@ function _gutendexToBook(gb){
   return { t, a, y, cat, mark: '', url: txtUrl, isbn: null, _gbId: id, pal };
 }
 
-async function _gutendexSearch(q){
-  const params = new URLSearchParams({ languages: 'en', search: q });
+// Map our UI categories → Gutendex `topic` (matches subjects + bookshelves).
+// 'classic' has no single subject, so use 'fiction' — Gutendex sorts by
+// download count, so the top results are exactly the canonical classics.
+const GDX_TOPICS = {
+  mystery:   'detective',
+  adventure: 'adventure',
+  scifi:     'science fiction',
+  horror:    'horror',
+  short:     'short stories',
+  classic:   'fiction',
+};
+
+// Fetch from Gutendex with optional free-text search and/or topic filter.
+async function _gutendexFetch({ search, topic }){
+  const params = new URLSearchParams({ languages: 'en' });
+  if(search) params.set('search', search);
+  if(topic)  params.set('topic', topic);
   const ctrl = new AbortController();
   const tid = setTimeout(() => ctrl.abort(), 10000);
   try{
@@ -3123,31 +3138,30 @@ async function browseCatalog(filter){
     b.t.toLowerCase().includes(ql) || b.a.toLowerCase().includes(ql));
   renderSearchResults(local);
 
-  if(!q) return;
+  // Phase 2: hit Gutendex whenever there's a query OR a category selected,
+  // so categories browse the full online catalog by topic — not just locals.
+  const topic = filter !== 'all' ? GDX_TOPICS[filter] : '';
+  if(!q && !topic) return;  // 全部 + 无关键词 = 纯本地浏览
 
-  // Phase 2: hit Gutendex for full 70k Gutenberg catalog
   const res = document.getElementById('gb-results');
   if(res){
     const note = document.createElement('div');
     note.className = 'gb-api-status';
-    note.textContent = '正在搜索 Gutenberg 7 万本全库…';
+    note.textContent = q
+      ? '正在搜索 Gutenberg 7 万本全库…'
+      : `正在加载「${CAT_LABELS[filter] || filter}」分类的在线书目…`;
     res.appendChild(note);
   }
 
-  const apiBooks = await _gutendexSearch(q);
-  if(_gbSearchSeq !== mySeq) return;  // another search started, discard
+  const apiBooks = await _gutendexFetch({ search: q, topic });
+  if(_gbSearchSeq !== mySeq) return;  // another search/filter started, discard
 
-  // Filter API results by category if needed, then deduplicate against local
-  let fresh = apiBooks;
-  if(filter !== 'all') fresh = fresh.filter(b => b.cat && b.cat.includes(filter));
+  // Deduplicate against local results
   const localGbIds = new Set(local.filter(b => b._gbId).map(b => b._gbId));
-  fresh = fresh.filter(b => !localGbIds.has(b._gbId));
+  const fresh = apiBooks.filter(b => !localGbIds.has(b._gbId));
 
-  if(!fresh.length){
-    // Remove the loading note
-    document.querySelector('.gb-api-status')?.remove();
-    return;
-  }
+  document.querySelector('.gb-api-status')?.remove();
+  if(!fresh.length) return;
 
   renderSearchResults([...local, ...fresh]);
   const countEl = document.querySelector('#gb-results .gb-count');
