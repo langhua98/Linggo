@@ -3492,6 +3492,9 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
       done = true;
       clearTimeout(guard);
       a.onended = a.onerror = a.oncanplay = a.ontimeupdate = null;
+      // Stop any pending audio so it doesn't start after we've moved on to a
+      // fallback engine — that would cause Kokoro + system-voice to overlap.
+      if(!ok){ try{ a.pause(); }catch(e){} }
       kokAudio = null; kokAudioDone = null;
       resolve(ok);
     };
@@ -3499,20 +3502,17 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
     // Pitch-preserved speed control (playbackRate=2 plays twice as fast, no chipmunk effect)
     a.preservesPitch = a.mozPreservesPitch = a.webkitPreservesPitch = true;
     a.playbackRate = S.speed || 1;
-    // Cancel if audio hasn't started playing within 6 s (slow/blocked server).
-    // After canplay, keep a 90 s hard cap so a mid-stream stall (server
-    // accepted then froze) can never hang the reading loop forever.
-    let guard = setTimeout(() => end(false), 6000);
+    // Stall guard: shared between the pre-canplay (6 s) and post-canplay (90 s)
+    // timeouts. Re-arms instead of firing while audio is user-paused, so a
+    // soft-pause is never mistaken for a server stall that triggers a fallback.
+    const stall = () => {
+      if(a.paused && !a.ended){ guard = setTimeout(stall, 10000); return; }
+      end(false);
+    };
+    let guard = setTimeout(stall, 6000);
     let seekDone = false;
     a.oncanplay = () => {
       clearTimeout(guard);
-      // Hard cap to kill a frozen server. But a user soft-pause also halts
-      // playback — don't mistake that for a stall, or we'd resolve false and
-      // fall through to a fallback engine that auto-plays while paused.
-      const stall = () => {
-        if(a.paused && !a.ended){ guard = setTimeout(stall, 10000); return; }
-        end(false);
-      };
       guard = setTimeout(stall, 90000);
       // Some browsers reset playbackRate on src change; re-apply on canplay
       a.playbackRate = S.speed || 1;
@@ -3534,7 +3534,15 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
       };
     }
     a.src = url;
-    a.play().catch(() => end(false));
+    a.play().catch(err => {
+      // AbortError caused by the user calling .pause() is a soft-pause, not a
+      // failure. The audio will resume when the user presses play again; the
+      // stall guard and onended will settle the promise then. Treating it as a
+      // failure would resolve end(false) and fall through to a system-voice
+      // fallback that plays simultaneously with the Kokoro audio on resume.
+      if(err && err.name === 'AbortError' && a.paused) return;
+      end(false);
+    });
   });
 }
 
