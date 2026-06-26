@@ -386,6 +386,18 @@ GitHub Actions 自动将 `main` 分支部署到 GitHub Pages。
 - `main`：生产分支，推送即触发 Pages 部署
 - `claude/*`：AI 辅助开发分支（如 `claude/claude-md-docs-Cdrse`）
 
+### 每次工作完成的固定流程（务必遵守）
+
+每完成一项工作就**立即合并推送上线，不把改动留在工作目录**：
+
+1. 在功能分支 `claude/*` 上 `commit`（改了 JS/CSS 记得先递增 `sw.js` 的 `CACHE` 版本号）
+2. `git push -u origin <功能分支>`
+3. 快进合并到 `main` 并推送上线：`git push origin <commit>:main`
+   （`main` 与功能分支保持一致；推 `main` 即触发线上部署）
+4. 确认 `git status` 工作区干净，无遗留未提交改动
+
+> 推 `main` 是不可逆的对外部署。除非用户当次明确表示「先别上线」，否则默认按上述流程一路推到 `main`。
+
 ---
 
 ## 常见陷阱
