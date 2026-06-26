@@ -2122,6 +2122,7 @@ async function onWordClick(el){
   // position then show
   positionPopup(el);
   wpop.classList.add('vis');
+  if(_licons && _licons.learn) _licons.learn.goToAndStop(0, true);   // reset heart to empty
 
   // async: dictionary → POS + meaning in Chinese
   try{
@@ -2488,10 +2489,48 @@ function togglePlay(){
 }
 
 function setIcon(playing){
-  document.getElementById('play-ico').outerHTML = playing
+  // Lottie play↔pause morph when mounted; SVG swap as offline fallback.
+  if(_licons.play){ Licon.setState(_licons.play, playing); return; }
+  const ico = document.getElementById('play-ico');
+  if(ico) ico.outerHTML = playing
     ? `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><rect x="5" y="3" width="5" height="18" rx="1"/><rect x="14" y="3" width="5" height="18" rx="1"/></svg>`
     : `<svg id="play-ico" viewBox="0 0 24 24" fill="currentColor" width="24" height="24"><polygon points="6 3 20 12 6 21"/></svg>`;
 }
+
+// ── Lottie micro-interaction icons (see licon.js) ──────────────
+const _licons = {};
+async function _initLicons(){
+  if(typeof Licon === 'undefined') return;
+  const $ = id => document.getElementById(id);
+
+  // Player: play/pause morph + prev/next nudge
+  _licons.play = await Licon.mount($('play-btn'), 'playPause');
+  if(_licons.play) setIcon(S.playing);   // sync to current state
+  _licons.prev = await Licon.mount($('prev-btn'), 'skipBack');
+  _licons.next = await Licon.mount($('next-btn'), 'skipForward');
+  $('prev-btn').addEventListener('click', () => Licon.nudge(_licons.prev));
+  $('next-btn').addEventListener('click', () => Licon.nudge(_licons.next));
+
+  // Top bar: search↔X, settings gear, chapter menu, vocab bookmark
+  _licons.search = await Licon.mount($('srch-tbtn'), 'searchToX');
+  $('srch-tbtn').addEventListener('click', () => Licon.setState(_licons.search, S.srchOpen));
+  $('s-close').addEventListener('click', () => Licon.setState(_licons.search, false));
+
+  _licons.settings = await Licon.mount($('set-tbtn'), 'settings2');
+  $('set-tbtn').addEventListener('mouseenter', () => Licon.nudge(_licons.settings));
+  $('set-tbtn').addEventListener('click', () => Licon.nudge(_licons.settings));
+
+  _licons.chap = await Licon.mount($('chap-tbtn'), 'menu');
+  $('chap-tbtn').addEventListener('click', () => Licon.nudge(_licons.chap));
+
+  _licons.voc = await Licon.mount($('voc-tbtn'), 'bookmark');
+  $('voc-tbtn').addEventListener('click', () => Licon.nudge(_licons.voc));
+
+  // Word popup: heart pop when adding to vocabulary
+  _licons.learn = await Licon.mount($('wp-learn-ico'), 'heart');
+  $('wp-learn').addEventListener('click', () => Licon.nudge(_licons.learn));
+}
+_initLicons();
 
 document.getElementById('play-btn').addEventListener('click', togglePlay);
 

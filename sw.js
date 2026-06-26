@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v109';
+const CACHE = 'linggo-v110';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -10,6 +10,17 @@ const SHELL = [
   '/Linggo/cet6.js',
   '/Linggo/ogden850.js',
   '/Linggo/ecdict.js',
+  '/Linggo/licon.js',
+  '/Linggo/vendor/lottie.min.js',
+  '/Linggo/lottie/playPause.json',
+  '/Linggo/lottie/skipBack.json',
+  '/Linggo/lottie/skipForward.json',
+  '/Linggo/lottie/heart.json',
+  '/Linggo/lottie/bookmark.json',
+  '/Linggo/lottie/searchToX.json',
+  '/Linggo/lottie/settings2.json',
+  '/Linggo/lottie/menu.json',
+  '/Linggo/lottie/loading.json',
   '/Linggo/icon.png',
   '/Linggo/icon-192.png',
   '/Linggo/icon-512.png',
@@ -37,7 +48,7 @@ self.addEventListener('activate', e => {
 
 // Core code files: always fetch fresh so deploys take effect immediately,
 // fall back to cache only when offline
-const CODE = /\/(index\.html|script\.js|style\.css|sb\.js|srs\.js|cet4\.js|cet6\.js|ogden850\.js|ecdict\.js|align-worker\.js)$|\/Linggo\/$/;
+const CODE = /\/(index\.html|script\.js|style\.css|sb\.js|srs\.js|cet4\.js|cet6\.js|ogden850\.js|ecdict\.js|licon\.js|align-worker\.js)$|\/Linggo\/$/;
 
 // Fetch: network-first for code, cache-first for static assets
 self.addEventListener('fetch', e => {
