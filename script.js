@@ -3506,7 +3506,14 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
     let seekDone = false;
     a.oncanplay = () => {
       clearTimeout(guard);
-      guard = setTimeout(() => end(false), 90000);
+      // Hard cap to kill a frozen server. But a user soft-pause also halts
+      // playback — don't mistake that for a stall, or we'd resolve false and
+      // fall through to a fallback engine that auto-plays while paused.
+      const stall = () => {
+        if(a.paused && !a.ended){ guard = setTimeout(stall, 10000); return; }
+        end(false);
+      };
+      guard = setTimeout(stall, 90000);
       // Some browsers reset playbackRate on src change; re-apply on canplay
       a.playbackRate = S.speed || 1;
       // Mid-sentence word-jump: seek to the proportional time offset so audio
@@ -3578,6 +3585,10 @@ function _synthPlay(text, forceVoice){
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
 async function _edgePlayOne(text, mySession, startChar = 0){
+  // Soft-paused during the synth gap between sentences: stop cleanly instead of
+  // starting a new playback (which would auto-play a fallback engine while the
+  // user has it paused). kokPlay keeps S.idx so resume replays this sentence.
+  if(S.paused) return 'paused';
   // ── Priority 0: Kokoro server neural TTS ─────────────────────────────────
   // HF Spaces may be cold-starting (~30-60 s). If this sentence is already
   // in KOK_CACHE (prefetched), wait 30 s — server will finish soon.
@@ -3602,6 +3613,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
           new Promise(r => setTimeout(() => r(null), 8000))
         ]);
         if(kokSession !== mySession) return false;
+        if(S.paused) return 'paused';   // user paused while we were synthesizing
       }
       if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
@@ -3705,6 +3717,7 @@ async function kokPlay(){
     const sc = startChar; startChar = 0;
     const ok = await _edgePlayOne(text, mySession, sc);
     if(kokSession !== mySession) break;
+    if(ok === 'paused') return;   // 软暂停发生在合成间隙：干净停在当前句，恢复时重播
     if(!ok){
       S.playing = false; S.paused = false; setIcon(false);
       toast('朗读已停止：所有语音引擎暂不可用，请稍后重试');
