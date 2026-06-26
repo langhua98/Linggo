@@ -302,6 +302,20 @@ body{
   text-align:left;cursor:pointer;
   font-family:'Nunito',sans-serif;
 }
+/* Browse button replaces old Gutenberg/SE row buttons */
+.lsp-browse-btn{
+  display:flex;align-items:center;gap:10px;
+  width:calc(100% - 32px);margin:8px 16px 12px;
+  padding:13px 18px;border-radius:14px;
+  background:var(--accent);color:#fff;border:none;
+  font-size:15px;font-weight:700;cursor:pointer;
+  font-family:'Nunito',sans-serif;
+  transition:opacity .15s;text-align:left;
+}
+.lsp-browse-btn svg{width:18px;height:18px;flex-shrink:0;opacity:.9;}
+.lsp-browse-btn:hover{opacity:.88;}
+
+/* Legacy rows kept for safety but hidden in new UI */
 .lsp-online-row{
   display:flex;align-items:center;
   padding:11px 16px;
@@ -361,15 +375,22 @@ body{
   padding:10px 16px 12px;
   animation:fadeIn .15s ease;
 }
-/* ── gb source tabs */
-.gb-tabs{display:flex;gap:6px;margin-bottom:10px;}
-.gb-tab{
-  padding:4px 14px;border-radius:12px;
-  border:1.5px solid var(--border);background:var(--bg);
-  color:var(--text-2);font-size:12px;font-weight:700;
-  font-family:'Nunito',sans-serif;cursor:pointer;transition:background .15s,color .15s,border-color .15s;
+/* ── Browse category chips */
+.gb-browse-cats{
+  display:flex;gap:7px;
+  overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;
+  padding:2px 0 10px;margin-bottom:2px;
 }
-.gb-tab.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+.gb-browse-cats::-webkit-scrollbar{display:none;}
+.gbcat{
+  flex-shrink:0;
+  padding:6px 16px;border-radius:20px;
+  border:1.5px solid var(--border);background:var(--bg);
+  color:var(--text-2);font-size:13px;font-weight:700;
+  font-family:'Nunito',sans-serif;cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;
+}
+.gbcat.on{background:var(--accent);color:#fff;border-color:var(--accent);}
 .gb-input-row{display:flex;gap:8px;}
 #gb-input{
   flex:1;padding:10px 14px;

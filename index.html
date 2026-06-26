@@ -257,21 +257,11 @@
       <div id="lsp-local-list"></div>
       <button id="lsp-more" style="display:none">查看全部</button>
     </div>
-    <div class="lsp-section-head">在线添加新书</div>
-    <div class="lsp-online-row">
-      <span class="lsp-online-name">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        Gutenberg
-      </span>
-      <button class="lsp-online-btn" id="lsp-gb-btn">搜索</button>
-    </div>
-    <div class="lsp-online-row">
-      <span class="lsp-online-name">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        Standard Ebooks
-      </span>
-      <button class="lsp-online-btn" id="lsp-se-btn">搜索</button>
-    </div>
+    <div class="lsp-section-head">在线书库</div>
+    <button class="lsp-browse-btn" id="lsp-browse-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+      浏览 130+ 本经典书目
+    </button>
   </div>
   <!-- 统一筛选栏 -->
   <div class="lib-cats-bar">
@@ -288,14 +278,19 @@
     <button class="lcat" data-filter="horror">恐怖</button>
     <button class="lcat" data-filter="short">短篇</button>
   </div>
-  <!-- Book search panel (Gutenberg + Standard Ebooks) -->
+  <!-- Browse panel: category chips + cover grid -->
   <div id="gb-panel" style="display:none">
-    <div class="gb-tabs">
-      <button class="gb-tab on" data-src="gutenberg">Gutenberg</button>
-      <button class="gb-tab" data-src="se">Standard Ebooks</button>
+    <div id="gb-browse-cats" class="gb-browse-cats">
+      <button class="gbcat on" data-gc="all">全部</button>
+      <button class="gbcat" data-gc="classic">经典</button>
+      <button class="gbcat" data-gc="mystery">推理</button>
+      <button class="gbcat" data-gc="adventure">冒险</button>
+      <button class="gbcat" data-gc="scifi">科幻</button>
+      <button class="gbcat" data-gc="horror">恐怖</button>
+      <button class="gbcat" data-gc="short">短篇</button>
     </div>
     <div class="gb-input-row">
-      <input id="gb-input" type="text" placeholder="输入英文书名或作者…">
+      <input id="gb-input" type="text" placeholder="搜索书名、作者…">
       <button id="gb-search-btn">搜索</button>
     </div>
     <div id="gb-results"></div>

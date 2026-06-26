@@ -964,25 +964,15 @@ function hideSearchPanel(){
 
 function closeGbPanel(){
   gbPanel.style.display = 'none';
-  document.querySelector('.gb-input-row').style.display = '';
-  document.querySelector('.gb-tabs').style.display = '';
 }
 
-function showGbFromSearch(src){
-  const q = libSearchEl.value.trim();
-  gbInput.value = q;
-  gbSrc = src;
-  document.querySelectorAll('.gb-tab').forEach(b =>
-    b.classList.toggle('on', b.dataset.src === src));
+function openBrowsePanel(){
   libSearchPanel.style.display = 'none';
   libScrollEl.style.display    = 'none';
-  
   libCatsBarEl.style.display   = 'none';
-  document.querySelector('.gb-input-row').style.display = 'none';
-  document.querySelector('.gb-tabs').style.display      = 'none';
   gbPanel.style.display = '';
   libSearchClear.style.display = '';
-  triggerSearch();
+  browseCatalog(gbBrowseFilter);
 }
 
 libSearchEl.addEventListener('focus', () => {
@@ -1018,9 +1008,8 @@ libSearchClear.addEventListener('click', () => {
   hideSearchPanel();
 });
 
-// Online search buttons
-document.getElementById('lsp-gb-btn').addEventListener('click', () => showGbFromSearch('gutenberg'));
-document.getElementById('lsp-se-btn').addEventListener('click', () => showGbFromSearch('se'));
+// Browse button
+document.getElementById('lsp-browse-btn').addEventListener('click', openBrowsePanel);
 
 // ── Unified filter bar (level + category)
 document.querySelectorAll('.lcat').forEach(btn => {
@@ -2960,43 +2949,53 @@ function localSearchSE(q){
   );
 }
 
-// ── 搜索面板事件
+// ── 浏览面板事件
 const gbPanel  = document.getElementById('gb-panel');
 const gbAddBtn = document.getElementById('lib-add-btn');
 const gbInput  = document.getElementById('gb-input');
 const gbSearch = document.getElementById('gb-search-btn');
 
-let gbSrc = 'gutenberg'; // 'gutenberg' | 'se'
+let gbBrowseFilter = 'all';  // current category filter in browse panel
 let gbTimer;
-function triggerSearch(){
-  clearTimeout(gbTimer);
-  const q = gbInput.value.trim();
-  if(gbSrc === 'se'){
-    gbTimer = setTimeout(()=> renderSearchResults(localSearchSE(q)), 120);
-    return;
-  }
-  if(!q){ document.getElementById('gb-results').innerHTML = ''; return; }
-  gbTimer = setTimeout(()=> renderSearchResults(localSearch(q)), 120);
+
+// Build the CATALOG pool with all browseable fields
+function _catalogPool(){
+  return CATALOG.map(([id,t,a,y,cat,mark]) => ({
+    t, a, y, cat, mark: mark || 'Chapter',
+    url: `https://www.gutenberg.org/files/${id}/${id}-0.txt`,
+    isbn: null, _gbId: id,
+  }));
 }
 
-gbAddBtn.addEventListener('click', () => {
-  const open = gbPanel.style.display === 'none';
-  gbPanel.style.display = open ? '' : 'none';
-  gbAddBtn.classList.toggle('active', open);
-  if(open){ gbInput.focus(); triggerSearch(); }
-});
-gbInput.addEventListener('input', triggerSearch);
-gbSearch.addEventListener('click', triggerSearch);
-gbInput.addEventListener('keydown', e => { if(e.key==='Enter') triggerSearch(); });
+function browseCatalog(filter){
+  gbBrowseFilter = filter;
+  const q = (gbInput.value || '').trim().toLowerCase();
+  let results = _catalogPool();
+  if(filter !== 'all') results = results.filter(b => b.cat && b.cat.includes(filter));
+  if(q) results = results.filter(b =>
+    b.t.toLowerCase().includes(q) || b.a.toLowerCase().includes(q));
+  renderSearchResults(results);
+}
 
-document.querySelectorAll('.gb-tab').forEach(btn => {
+// Category chip clicks inside browse panel
+document.querySelectorAll('.gbcat').forEach(btn => {
   btn.addEventListener('click', ()=>{
-    gbSrc = btn.dataset.src;
-    document.querySelectorAll('.gb-tab').forEach(b => b.classList.toggle('on', b===btn));
-    gbInput.placeholder = gbSrc==='se' ? '搜索 Standard Ebooks 书目…' : '输入英文书名或作者…';
-    triggerSearch();
+    document.querySelectorAll('.gbcat').forEach(b => b.classList.toggle('on', b===btn));
+    browseCatalog(btn.dataset.gc);
   });
 });
+
+gbInput.addEventListener('input', () => {
+  clearTimeout(gbTimer);
+  gbTimer = setTimeout(() => browseCatalog(gbBrowseFilter), 150);
+});
+gbSearch.addEventListener('click', () => browseCatalog(gbBrowseFilter));
+gbInput.addEventListener('keydown', e => { if(e.key==='Enter') browseCatalog(gbBrowseFilter); });
+
+// Legacy lib-add-btn (kept for compatibility, redirects to browse)
+if(gbAddBtn){
+  gbAddBtn.addEventListener('click', openBrowsePanel);
+}
 
 // ── UI helpers
 function setAuthUI(user){
