@@ -469,15 +469,16 @@ let libFilter = 'all', libQuery = '';
 function coverUrl(isbn){ return `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`; }
 function gbCoverUrl(id){ return `https://www.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`; }
 
-// ── CORS proxies with real progress tracking
-// P1 pair raced simultaneously; P2 tried serially if both P1 fail
-const _P1 = [
-  u => u,
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-];
-const _P2 = [
+// ── CORS proxies, tried serially (most reliable first).
+// As of 2025: corsproxy.io now 403s anonymous traffic and thingproxy is dead —
+// both removed. cors.eu.org is fast and handles full-size books (~700 KB);
+// allorigins works but times out on large files; codetabs/corsproxy are
+// last-resort fallbacks. Whichever returns first valid bytes wins.
+const PROXIES = [
+  u => `https://cors.eu.org/${u}`,
   u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  u => `https://thingproxy.freeboard.io/fetch/${encodeURIComponent(u)}`,
+  u => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
 ];
 
 async function _tryFetch(mk, url, ms){
@@ -491,46 +492,44 @@ async function _tryFetch(mk, url, ms){
   }catch(e){ clearTimeout(tid); throw e; }
 }
 
-async function fetchWithProgress(rawUrl, onProgress){
-  let resp = null;
-
-  // Race direct + corsproxy.io — whichever responds first wins
-  const ctrls = [new AbortController(), new AbortController()];
-  const racers = _P1.map((mk, i) => {
-    const ctrl = ctrls[i];
-    const tid  = setTimeout(() => ctrl.abort(), 9000);
-    return fetch(mk(rawUrl), {signal: ctrl.signal})
-      .then(r => { clearTimeout(tid); if(!r.ok) throw new Error(r.status); return {r, i}; })
-      .catch(e => { clearTimeout(tid); throw e; });
-  });
+// Stream one proxy with progress + a STALL watchdog: abort only after `stallMs`
+// of zero new bytes, so slow-but-progressing large-book downloads aren't killed
+// by a fixed deadline (the old 9 s hard cap was the main cause of timeouts).
+async function _streamProxy(mk, rawUrl, onProgress, stallMs){
+  const ctrl = new AbortController();
+  let tid = setTimeout(() => ctrl.abort(), stallMs);
+  const kick = () => { clearTimeout(tid); tid = setTimeout(() => ctrl.abort(), stallMs); };
   try{
-    const winner = await Promise.any(racers);
-    ctrls.forEach((c, i) => { if(i !== winner.i) c.abort(); });
-    resp = winner.r;
-  }catch(e){
-    // Both P1 failed — try P2 serially
-    for(const mk of _P2){
-      try{ resp = await _tryFetch(mk, rawUrl, 15000); break; }
-      catch(e2){ console.warn('proxy fail', e2); }
+    const resp = await fetch(mk(rawUrl), {signal: ctrl.signal});
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    kick();
+    const total  = parseInt(resp.headers.get('content-length') || '0');
+    const reader = resp.body.getReader();
+    const chunks = []; let got = 0;
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      kick();
+      chunks.push(value); got += value.length;
+      const pct = total > 0 ? Math.round(got/total*100) : Math.min(90, Math.round(got/5000));
+      onProgress(pct);
     }
-  }
+    clearTimeout(tid);
+    if(got === 0) throw new Error('empty body');
+    onProgress(100);
+    const buf = new Uint8Array(got); let pos = 0;
+    for(const c of chunks){ buf.set(c, pos); pos += c.length; }
+    return new TextDecoder('utf-8').decode(buf);
+  }catch(e){ clearTimeout(tid); throw e; }
+}
 
-  if(!resp) throw new Error('all proxies failed');
-
-  const total  = parseInt(resp.headers.get('content-length') || '0');
-  const reader = resp.body.getReader();
-  const chunks = []; let got = 0;
-  while(true){
-    const {done, value} = await reader.read();
-    if(done) break;
-    chunks.push(value); got += value.length;
-    const pct = total > 0 ? Math.round(got/total*100) : Math.min(90, Math.round(got/5000));
-    onProgress(pct);
+async function fetchWithProgress(rawUrl, onProgress){
+  let lastErr;
+  for(const mk of PROXIES){
+    try{ return await _streamProxy(mk, rawUrl, onProgress, 15000); }
+    catch(e){ lastErr = e; console.warn('proxy fail', mk(rawUrl).split('/')[2], e.message); onProgress(0); }
   }
-  onProgress(100);
-  const buf = new Uint8Array(got); let pos = 0;
-  for(const c of chunks){ buf.set(c, pos); pos += c.length; }
-  return new TextDecoder('utf-8').decode(buf);
+  throw new Error('all proxies failed: ' + (lastErr?.message || ''));
 }
 
 // ── Standard Ebooks: strip HTML to plain text
@@ -544,8 +543,7 @@ function seHtmlToText(html){
 // ── Fetch SE single-page book through CORS proxy
 async function fetchSEText(slug){
   const url = `https://standardebooks.org/ebooks/${slug}/text/single-page`;
-  const all = [..._P1, ..._P2];
-  for(const mk of all){
+  for(const mk of PROXIES){
     try{
       const resp = await _tryFetch(mk, url, 30000);
       return seHtmlToText(await resp.text());
