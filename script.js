@@ -469,15 +469,20 @@ let libFilter = 'all', libQuery = '';
 function coverUrl(isbn){ return `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg`; }
 function gbCoverUrl(id){ return `https://www.gutenberg.org/cache/epub/${id}/pg${id}.cover.medium.jpg`; }
 
-// ── CORS proxies, tried serially (most reliable first).
-// As of 2025: corsproxy.io now 403s anonymous traffic and thingproxy is dead —
-// both removed. cors.eu.org is fast and handles full-size books (~700 KB);
-// allorigins works but times out on large files; codetabs/corsproxy are
-// last-resort fallbacks. Whichever returns first valid bytes wins.
+// ── CORS proxies, tried serially (fastest/most reliable first).
+// Self-hosted Cloudflare Worker (edge-cached, fastest) — set BOOK_PROXY after
+// deploying cloudflare-proxy/ (see its README). When set it becomes the primary
+// proxy and the public ones below are just fallbacks. Empty = use public only.
+const BOOK_PROXY = '';   // e.g. 'https://linggo-proxy.xxxx.workers.dev'
+//
+// Public fallbacks (2025): corsproxy.io now 403s anonymous traffic and thingproxy
+// is dead. cors.eu.org is the fastest public option and handles full-size books
+// (~700 KB in ~8 s); proxy.cors.sh / allorigins are slower backups.
 const PROXIES = [
+  ...(BOOK_PROXY ? [u => `${BOOK_PROXY}/?url=${encodeURIComponent(u)}`] : []),
   u => `https://cors.eu.org/${u}`,
+  u => `https://proxy.cors.sh/${u}`,
   u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  u => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(u)}`,
   u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
 ];
 

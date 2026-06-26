@@ -1,0 +1,6 @@
+name = "linggo-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# 部署后默认域名为 https://linggo-proxy.<你的子域>.workers.dev
+# 把它填到 script.js 顶部的 BOOK_PROXY 常量即可启用为主代理。
