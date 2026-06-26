@@ -2056,18 +2056,23 @@ async function onWordClick(el){
     const zhPos  = POS_ZH[rawPos] || rawPos;
     if(zhPos){ posEl.textContent = zhPos; posEl.style.display = ''; }
 
-    const enDef = entry.meanings?.[0]?.definitions?.[0]?.definition || '';
-    wpop._meaning = enDef;
-    const src = enDef || word;
-    const zh  = await translate(src);
+    // 直接翻译单词本身（与整句翻译同源 = Google 翻译），简洁不啰嗦
+    const zh = await translate(word);
     if(document.getElementById('wp-word').textContent === word){
       meaningEl.textContent = zh;
       meaningEl.className   = 'wp-meaning';
       wpop._meaning = zh;
     }
   }catch{
-    meaningEl.textContent = '—';
-    meaningEl.className   = 'wp-meaning';
+    // 词典 API 挂掉也照样给翻译，保证有中文释义
+    try{
+      const zh = await translate(word);
+      if(document.getElementById('wp-word').textContent === word){
+        meaningEl.textContent = zh;
+        wpop._meaning = zh;
+      }
+    }catch{ meaningEl.textContent = '—'; }
+    meaningEl.className = 'wp-meaning';
   }
 }
 
