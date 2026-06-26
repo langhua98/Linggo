@@ -414,21 +414,28 @@ GitHub Actions 自动将 `main` 分支部署到 GitHub Pages。
 | 调用格式 | `…/?url=<URL编码后的书籍地址>` |
 | Cloudflare 账号 ID | `aca35ff5f62ae4208757219dbc3b489b` |
 | workers.dev 子域 | `langhua98.workers.dev` |
+| KV 命名空间 | `linggo-books` id=`9d85306e3292443dad716d055bb32ae6`，绑定名 `BOOKS` |
 | 源码 | `cloudflare-proxy/worker.js`（只代理 Gutenberg / Standard Ebooks，非开放代理）|
 | 公共备用 | `cors.eu.org` → `proxy.cors.sh` → `allorigins` → `corsproxy`（均在 `PROXIES`）|
+
+**为什么用 KV**：Cloudflare Cache API 是**分机房**的（我测热了，别的地区用户首次仍冷）；
+KV 全球复制，命中后任何地区都秒读。Worker 先查 KV，未命中才抓 Gutenberg（伪装 Chrome
+UA 防限流）并写回 KV。57 本内置书已预灌进 KV。**Gutenberg 冷抓很慢（8–31s），所以新书
+源务必预灌**：依次用 `…/?url=<book>` 命中一次即写入 KV。
 
 **API token**：存于环境密钥 `CLOUDFLARE_API_TOKEN`（**绝不写进仓库**，公开库会泄露）。
 建 token 用 Cloudflare「Edit Cloudflare Workers」模板。
 
-**改完 worker.js 后重新部署**（token 从环境变量读，勿明文）：
+**改完 worker.js 后重新部署**（必须带 KV 绑定，否则全球缓存失效；token 从环境变量读）：
 ```bash
 ACC=aca35ff5f62ae4208757219dbc3b489b
+KV=9d85306e3292443dad716d055bb32ae6
 curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/linggo-proxy" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  -F 'metadata={"main_module":"worker.js"};type=application/json' \
+  -F "metadata={\"main_module\":\"worker.js\",\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"BOOKS\",\"namespace_id\":\"$KV\"}]};type=application/json" \
   -F 'worker.js=@cloudflare-proxy/worker.js;type=application/javascript+module'
 ```
-免费额度 10 万次/天；改换书源主机改 `worker.js` 的 `ALLOW_HOSTS`。
+免费额度：Worker 10 万次/天，KV 读 10 万/天、写 1000/天、存储 1GB；改书源主机改 `ALLOW_HOSTS`。
 
 ---
 
