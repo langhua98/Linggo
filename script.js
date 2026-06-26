@@ -3477,7 +3477,7 @@ async function _edgeSynth(text){
 // Play an audio URL. Applies client-side speed via playbackRate + preservesPitch
 // (pitch-preserved time-stretch — works on all modern browsers including iOS Safari).
 // Optional sentEl: drives word-highlight via ontimeupdate as audio plays.
-function _edgePlayUrl(url, sentEl){
+function _edgePlayUrl(url, sentEl, startChar = 0){
   return new Promise(resolve => {
     // Reuse the gesture-blessed element — REQUIRED on iOS: a freshly created
     // Audio element outside a user gesture is silently refused by WebKit.
@@ -3503,11 +3503,18 @@ function _edgePlayUrl(url, sentEl){
     // After canplay, keep a 90 s hard cap so a mid-stream stall (server
     // accepted then froze) can never hang the reading loop forever.
     let guard = setTimeout(() => end(false), 6000);
+    let seekDone = false;
     a.oncanplay = () => {
       clearTimeout(guard);
       guard = setTimeout(() => end(false), 90000);
       // Some browsers reset playbackRate on src change; re-apply on canplay
       a.playbackRate = S.speed || 1;
+      // Mid-sentence word-jump: seek to the proportional time offset so audio
+      // starts at the right word and the highlight formula stays correct.
+      if(startChar > 0 && !seekDone && isFinite(a.duration) && a.duration > 0){
+        const tl = (a._sentText || '').length || (sentEl ? sentEl.textContent.length : 0);
+        if(tl > 0){ seekDone = true; a.currentTime = (startChar / tl) * a.duration; }
+      }
     };
     a.onended = () => end(true);
     a.onerror = () => end(false);
@@ -3570,7 +3577,7 @@ function _synthPlay(text, forceVoice){
 }
 
 // Synthesise + play one sentence; true = done, false = stop-was-called
-async function _edgePlayOne(text, mySession){
+async function _edgePlayOne(text, mySession, startChar = 0){
   // ── Priority 0: Kokoro server neural TTS ─────────────────────────────────
   // HF Spaces may be cold-starting (~30-60 s). If this sentence is already
   // in KOK_CACHE (prefetched), wait 30 s — server will finish soon.
@@ -3599,7 +3606,7 @@ async function _edgePlayOne(text, mySession){
       if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
         _kokPrefetch();  // warm upcoming sentences while this one plays
-        if(await _edgePlayUrl(url, _hlEl)) return true;
+        if(await _edgePlayUrl(url, _hlEl, startChar)) return true;
         if(kokSession !== mySession) return false;
       } else if(!_kokSynthToastShown){
         _kokSynthToastShown = true;
@@ -3694,9 +3701,9 @@ async function kokPlay(){
       const el = document.querySelector(`.sent[data-i="${S.idx}"]`);
       if(el){ injectWords(el); highlightWordAt(el, startChar); }
     }
-    const text = startChar > 0 ? S.sents[S.idx].slice(startChar) : S.sents[S.idx];
-    startChar = 0;
-    const ok = await _edgePlayOne(text, mySession);
+    const text = S.sents[S.idx];          // always full sentence — seek handles start offset
+    const sc = startChar; startChar = 0;
+    const ok = await _edgePlayOne(text, mySession, sc);
     if(kokSession !== mySession) break;
     if(!ok){
       S.playing = false; S.paused = false; setIcon(false);
