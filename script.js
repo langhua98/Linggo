@@ -473,7 +473,7 @@ function gbCoverUrl(id){ return `https://www.gutenberg.org/cache/epub/${id}/pg${
 // Self-hosted Cloudflare Worker (edge-cached, fastest) — set BOOK_PROXY after
 // deploying cloudflare-proxy/ (see its README). When set it becomes the primary
 // proxy and the public ones below are just fallbacks. Empty = use public only.
-const BOOK_PROXY = '';   // e.g. 'https://linggo-proxy.xxxx.workers.dev'
+const BOOK_PROXY = 'https://linggo-proxy.langhua98.workers.dev';
 //
 // Public fallbacks (2025): corsproxy.io now 403s anonymous traffic and thingproxy
 // is dead. cors.eu.org is the fastest public option and handles full-size books
