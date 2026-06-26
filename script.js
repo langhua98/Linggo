@@ -3037,6 +3037,56 @@ function localSearchSE(q){
   );
 }
 
+// ── Gutendex (Gutenberg JSON API) — 70,000+ books, CORS-enabled
+const _GDX_PALS = [
+  ['#fdf2e9','#d35400'],['#e8f8f5','#1a6b4a'],['#eaf2ff','#1a5276'],
+  ['#fef9e7','#b7950b'],['#fdedec','#7b241c'],['#f4ecf7','#6c3483'],
+  ['#1c2833','#d4ac0d'],['#d5f5e3','#1e8449'],['#d7dbdd','#2c3e50'],
+  ['#1a2a3a','#5dade2'],['#1c1c1c','#f1c40f'],['#2c3e50','#85929e'],
+];
+
+function _gutendexToBook(gb){
+  const id = gb.id;
+  const authorRaw = (gb.authors[0] || {}).name || '';
+  const a = authorRaw.includes(',')
+    ? authorRaw.split(', ').reverse().join(' ')
+    : (authorRaw || 'Unknown');
+  const t = gb.title || 'Unknown';
+  const y = (gb.authors[0] || {}).birth_year || null;
+  const fmts = gb.formats || {};
+  // prefer UTF-8 text, fall back to plain text or the standard pattern
+  const txtUrl = fmts['text/plain; charset=utf-8']
+    || fmts['text/plain; charset=us-ascii']
+    || fmts['text/plain']
+    || `https://www.gutenberg.org/files/${id}/${id}-0.txt`;
+  const subj = [...(gb.subjects||[]), ...(gb.bookshelves||[])].join(' ').toLowerCase();
+  const cat = [];
+  if(/detective|mystery|crime|thriller/.test(subj)) cat.push('mystery');
+  if(/adventure|sea voyage|island|pirate/.test(subj)) cat.push('adventure');
+  if(/science fiction|sci-fi|utopia/.test(subj)) cat.push('scifi');
+  if(/horror|ghost|supernatural|gothic/.test(subj)) cat.push('horror');
+  if(/short stor|tales|fable|sketch/.test(subj)) cat.push('short');
+  if(!cat.length) cat.push('classic');
+  const pal = _GDX_PALS[id % _GDX_PALS.length];
+  return { t, a, y, cat, mark: '', url: txtUrl, isbn: null, _gbId: id, pal };
+}
+
+async function _gutendexSearch(q){
+  const params = new URLSearchParams({ languages: 'en', search: q });
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 10000);
+  try{
+    const resp = await fetch(`https://gutendex.com/books/?${params}`, {signal: ctrl.signal});
+    clearTimeout(tid);
+    if(!resp.ok) return [];
+    const data = await resp.json();
+    return (data.results || []).map(_gutendexToBook);
+  }catch(e){
+    clearTimeout(tid);
+    return [];
+  }
+}
+
 // ── 浏览面板事件
 const gbPanel  = document.getElementById('gb-panel');
 const gbAddBtn = document.getElementById('lib-add-btn');
@@ -3045,6 +3095,7 @@ const gbSearch = document.getElementById('gb-search-btn');
 
 let gbBrowseFilter = 'all';  // current category filter in browse panel
 let gbTimer;
+let _gbSearchSeq = 0;  // stale-result guard for async Gutendex calls
 
 // Build the CATALOG pool with all browseable fields
 function _catalogPool(){
@@ -3055,14 +3106,49 @@ function _catalogPool(){
   }));
 }
 
-function browseCatalog(filter){
+async function browseCatalog(filter){
+  const mySeq = ++_gbSearchSeq;
   gbBrowseFilter = filter;
-  const q = (gbInput.value || '').trim().toLowerCase();
-  let results = [..._catalogPool(), ...SE_BOOKS];
-  if(filter !== 'all') results = results.filter(b => b.cat && b.cat.includes(filter));
-  if(q) results = results.filter(b =>
-    b.t.toLowerCase().includes(q) || b.a.toLowerCase().includes(q));
-  renderSearchResults(results);
+  const q = (gbInput.value || '').trim();
+  const ql = q.toLowerCase();
+
+  // Phase 1: local results shown immediately (offline-capable)
+  let local = [..._catalogPool(), ...SE_BOOKS];
+  if(filter !== 'all') local = local.filter(b => b.cat && b.cat.includes(filter));
+  if(ql) local = local.filter(b =>
+    b.t.toLowerCase().includes(ql) || b.a.toLowerCase().includes(ql));
+  renderSearchResults(local);
+
+  if(!q) return;
+
+  // Phase 2: hit Gutendex for full 70k Gutenberg catalog
+  const res = document.getElementById('gb-results');
+  if(res){
+    const note = document.createElement('div');
+    note.className = 'gb-api-status';
+    note.textContent = '正在搜索 Gutenberg 7 万本全库…';
+    res.appendChild(note);
+  }
+
+  const apiBooks = await _gutendexSearch(q);
+  if(_gbSearchSeq !== mySeq) return;  // another search started, discard
+
+  // Filter API results by category if needed, then deduplicate against local
+  let fresh = apiBooks;
+  if(filter !== 'all') fresh = fresh.filter(b => b.cat && b.cat.includes(filter));
+  const localGbIds = new Set(local.filter(b => b._gbId).map(b => b._gbId));
+  fresh = fresh.filter(b => !localGbIds.has(b._gbId));
+
+  if(!fresh.length){
+    // Remove the loading note
+    document.querySelector('.gb-api-status')?.remove();
+    return;
+  }
+
+  renderSearchResults([...local, ...fresh]);
+  const countEl = document.querySelector('#gb-results .gb-count');
+  if(countEl) countEl.textContent =
+    `找到 ${local.length + fresh.length} 本（含 Gutenberg 在线结果）`;
 }
 
 // Category chip clicks inside browse panel
@@ -3075,7 +3161,7 @@ document.querySelectorAll('.gbcat').forEach(btn => {
 
 gbInput.addEventListener('input', () => {
   clearTimeout(gbTimer);
-  gbTimer = setTimeout(() => browseCatalog(gbBrowseFilter), 150);
+  gbTimer = setTimeout(() => browseCatalog(gbBrowseFilter), 300);
 });
 gbSearch.addEventListener('click', () => browseCatalog(gbBrowseFilter));
 gbInput.addEventListener('keydown', e => { if(e.key==='Enter') browseCatalog(gbBrowseFilter); });

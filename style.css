@@ -441,6 +441,8 @@ body{
 .gb-add-btn:disabled{background:var(--border);color:var(--text-3);cursor:default;}
 .gb-empty{grid-column:1/-1;padding:30px 4px;font-size:13px;color:var(--text-3);text-align:center;}
 .gb-count{grid-column:1/-1;font-size:12px;color:var(--text-3);padding:2px 4px 0;}
+.gb-api-status{grid-column:1/-1;padding:10px 4px;font-size:12px;color:var(--text-3);text-align:center;animation:gbpulse 1.2s ease-in-out infinite alternate;}
+@keyframes gbpulse{from{opacity:.4}to{opacity:.9}}
 .gb-cats{display:flex;gap:4px;margin-top:4px;flex-wrap:wrap;}
 .gb-cat{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--accent-2);color:var(--accent);font-weight:700;}
 /* ── VOA 每日英语 ── */
