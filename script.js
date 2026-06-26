@@ -1038,6 +1038,7 @@ document.getElementById('logo-btn').addEventListener('click', () => {
   // Only act when reader is visible (user is reading)
   if(reader.style.display === 'none' || !reader.style.display) return;
   synth.cancel(); stopResumeTimer();
+  if(kokActive) kokStop();
   S.playing = false; S.paused = false; setIcon(false);
   reader.style.display = 'none';
   player.style.display = 'none';
@@ -3331,10 +3332,10 @@ function _kokServerSynth(text){
   return p;
 }
 
-async function _kokPrefetch(n = 4){
-  const end = Math.min(S.idx + 1 + n, S.sents.length);
-  for(let i = S.idx + 1; i < end; i++){
-    try { await _kokServerSynth(S.sents[i]); } catch(e){}
+function _kokPrefetch(n = 4){
+  const stop = Math.min(S.idx + 1 + n, S.sents.length);
+  for(let i = S.idx + 1; i < stop; i++){
+    if(S.sents[i]) _kokServerSynth(S.sents[i]).catch(()=>{});
   }
 }
 
@@ -3492,9 +3493,10 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
       done = true;
       clearTimeout(guard);
       a.onended = a.onerror = a.oncanplay = a.ontimeupdate = null;
-      // Stop any pending audio so it doesn't start after we've moved on to a
-      // fallback engine — that would cause Kokoro + system-voice to overlap.
-      if(!ok){ try{ a.pause(); }catch(e){} }
+      // Only pause the element if this call still owns it. A stale end(false)
+      // from a previous sentence's guard/error must not pause a new sentence's
+      // audio that has already set a.src to a different URL.
+      if(!ok && a.src === url){ try{ a.pause(); }catch(e){} }
       kokAudio = null; kokAudioDone = null;
       resolve(ok);
     };
@@ -3502,18 +3504,24 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
     // Pitch-preserved speed control (playbackRate=2 plays twice as fast, no chipmunk effect)
     a.preservesPitch = a.mozPreservesPitch = a.webkitPreservesPitch = true;
     a.playbackRate = S.speed || 1;
-    // Stall guard: shared between the pre-canplay (6 s) and post-canplay (90 s)
-    // timeouts. Re-arms instead of firing while audio is user-paused, so a
-    // soft-pause is never mistaken for a server stall that triggers a fallback.
+    // Stall guard: detects a truly frozen server (currentTime stops advancing)
+    // without misfiring on a user soft-pause or a brief network hiccup.
+    // • Paused: re-arm for 60 s so the guard can't fire immediately after resume.
+    // • Playing and making progress: re-arm for 30 s.
+    // • Playing but currentTime stuck: real stall → end(false).
+    let lastStallTime = -1;
     const stall = () => {
-      if(a.paused && !a.ended){ guard = setTimeout(stall, 10000); return; }
+      if(a.paused && !a.ended){ guard = setTimeout(stall, 60000); return; }
+      const ct = a.currentTime;
+      if(ct > lastStallTime){ lastStallTime = ct; guard = setTimeout(stall, 30000); return; }
       end(false);
     };
     let guard = setTimeout(stall, 6000);
     let seekDone = false;
     a.oncanplay = () => {
       clearTimeout(guard);
-      guard = setTimeout(stall, 90000);
+      lastStallTime = -1;   // reset progress baseline after load
+      guard = setTimeout(stall, 30000);
       // Some browsers reset playbackRate on src change; re-apply on canplay
       a.playbackRate = S.speed || 1;
       // Mid-sentence word-jump: seek to the proportional time offset so audio
@@ -3597,25 +3605,18 @@ async function _edgePlayOne(text, mySession, startChar = 0){
   // starting a new playback (which would auto-play a fallback engine while the
   // user has it paused). kokPlay keeps S.idx so resume replays this sentence.
   if(S.paused) return 'paused';
+  // Sentence element for word-highlight — resolved once, shared by all engines.
+  const _hlEl = document.querySelector(`.sent[data-i="${S.idx}"]`);
   // ── Priority 0: Kokoro server neural TTS ─────────────────────────────────
   // HF Spaces may be cold-starting (~30-60 s). If this sentence is already
   // in KOK_CACHE (prefetched), wait 30 s — server will finish soon.
-  // If starting fresh, race with 5 s timeout so the user hears audio quickly;
-  // the background fetch continues and populates KOK_DONE for the next sentence.
+  // If starting fresh, race with 8 s timeout so a sleeping HF Space falls
+  // through to the online engines instead of hanging the reader.
   if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     try {
-      const _hlEl = document.querySelector(`.sent[data-i="${S.idx}"]`);
-      // SINGLE playback path: always the gesture-blessed <audio> element via
-      // _edgePlayUrl. This keeps pause/resume, speed (preservesPitch) and word
-      // highlight uniform and fully controllable. The old Web-Audio streaming
-      // path played outside _kokAudioEl, so togglePlay's pause() couldn't stop a
-      // scheduled source (it kept reading on its own) and on iOS it was often
-      // silent — both fixed by routing every sentence through _edgePlayUrl.
       let url = KOK_DONE.get(_kokKey(text));
+      if(S.paused) return 'paused';   // paused between function entry and cache check
       if(!url){
-        // Not prefetched yet — synthesize now via /tts, racing an 8 s cold-start
-        // timeout so a sleeping HF Space falls through to the online engines
-        // instead of hanging the reader.
         url = await Promise.race([
           _kokServerSynth(text).catch(() => null),
           new Promise(r => setTimeout(() => r(null), 8000))
@@ -3641,6 +3642,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
     // ── P1: Edge Neural WebSocket (Aria/Sonia) — non-iOS only ────────────
     // On iOS every browser is WebKit; Apple's own neural Siri voices via
     // speechSynthesis are higher quality than Edge and need zero network.
+    if(S.paused) return 'paused';
     if(!IS_IOS && _edgeFails < 2){
       try {
         url = await _edgeSynth(text);
@@ -3658,10 +3660,11 @@ async function _edgePlayOne(text, mySession, startChar = 0){
     }
     kokWs = null;
     if(kokSession !== mySession) return false;
+    if(S.paused) return 'paused';
 
     if(url){
       _kokAnnounce('Microsoft 神经语音（在线）');
-      const edgeOk = await _edgePlayUrl(url);
+      const edgeOk = await _edgePlayUrl(url, _hlEl);
       if(edgeOk){ _edgeFails = 0; return true; }
       if(kokSession !== mySession) return false;
     }
@@ -3669,6 +3672,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
     // ── P2: Best local SpeechSynthesis neural voice ───────────────────────
     // iPhone: Siri (score 10) or Apple Enhanced (score 8) — instant, offline.
     // Edge browser (desktop): Azure Neural voices (score 5+).
+    if(S.paused) return 'paused';
     const bestVoice = getVoice();
     if(bestVoice && qualityScore(bestVoice) >= 5){
       if(kokSession !== mySession) return false;
@@ -3678,6 +3682,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
     }
 
     // ── P3: Google Translate TTS — non-iOS, <2 failures ──────────────────
+    if(S.paused) return 'paused';
     if(!IS_IOS && _gtFails < 2){
       if(kokSession !== mySession) return false;
       _kokAnnounce('Google 在线语音');
@@ -3687,6 +3692,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
     }
 
     // ── P4: Any SpeechSynthesis voice (guaranteed fallback) ──────────────
+    if(S.paused) return 'paused';
     if(kokSession !== mySession) return false;
     _kokAnnounce('系统语音');
     return await _synthPlay(text);
@@ -3787,6 +3793,11 @@ function _syncKokVoiceRow(){
     S.accentUS = this.value[0] === 'a';
     localStorage.setItem('kokVoice', this.value);
     toast('音色已切换：' + this.options[this.selectedIndex].text.replace(/[（(].*$/, '').trim());
+    // Revoke all cached audio for the old voice (keys include the voice name).
+    // KOK_DONE holds completed blob URLs that kokStop() deliberately keeps, but
+    // they become unreachable under a new voice prefix — revoke now to avoid leak.
+    KOK_DONE.forEach(u => { try{ URL.revokeObjectURL(u); }catch(e){} });
+    KOK_DONE.clear();
     // If currently reading with Kokoro, restart the sentence so the new
     // voice takes over immediately instead of after the cached audio ends.
     if(kokActive && (S.playing || S.paused)){
