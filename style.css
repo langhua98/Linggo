@@ -391,23 +391,6 @@ body{
   transition:background .15s,color .15s,border-color .15s;
 }
 .gbcat.on{background:var(--accent);color:#fff;border-color:var(--accent);}
-.gb-input-row{display:flex;gap:8px;}
-#gb-input{
-  flex:1;padding:10px 14px;
-  border:1.5px solid var(--border);border-radius:12px;
-  background:var(--bg);color:var(--text);
-  font-family:'Nunito',sans-serif;font-size:14px;
-  outline:none;transition:border-color .15s;
-}
-#gb-input:focus{border-color:var(--accent);}
-#gb-search-btn{
-  padding:0 18px;height:42px;
-  background:var(--accent);color:#fff;border:none;
-  border-radius:12px;font-size:14px;font-weight:700;
-  font-family:'Nunito',sans-serif;cursor:pointer;
-  white-space:nowrap;transition:opacity .15s;
-}
-#gb-search-btn:hover{opacity:.85;}
 /* search results: cover grid (readest-style) */
 #gb-results{
   margin-top:10px;max-height:58vh;overflow-y:auto;

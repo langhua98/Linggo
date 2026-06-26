@@ -1064,6 +1064,7 @@ function openBrowsePanel(){
 }
 
 libSearchEl.addEventListener('focus', () => {
+  if(gbPanel && gbPanel.style.display !== 'none') return; // in browse mode, top bar is already active
   const q = libSearchEl.value.trim();
   if(q) return; // has text — input handler covers it
   // No query: show panel with just the online section
@@ -1078,6 +1079,11 @@ libSearchEl.addEventListener('focus', () => {
 libSearchEl.addEventListener('input', e => {
   clearTimeout(libSearchTimer);
   const q = e.target.value.trim();
+  // Browse panel is open: top search bar drives it
+  if(gbPanel && gbPanel.style.display !== 'none'){
+    libSearchTimer = setTimeout(() => browseCatalog(gbBrowseFilter), 300);
+    return;
+  }
   if(!q){
     // Keep panel open with only online section when query cleared
     document.getElementById('lsp-local').style.display = 'none';
@@ -1088,10 +1094,11 @@ libSearchEl.addEventListener('input', e => {
 });
 
 libSearchClear.addEventListener('click', () => {
-  if(gbPanel.style.display !== 'none'){
-    closeGbPanel();
-    const q = libSearchEl.value.trim();
-    if(q){ showSearchPanel(q); return; }
+  if(gbPanel && gbPanel.style.display !== 'none'){
+    // In browse mode: clear query and re-browse all books
+    libSearchEl.value = '';
+    browseCatalog(gbBrowseFilter);
+    return;
   }
   hideSearchPanel();
 });
@@ -3090,11 +3097,8 @@ async function _gutendexSearch(q){
 // ── 浏览面板事件
 const gbPanel  = document.getElementById('gb-panel');
 const gbAddBtn = document.getElementById('lib-add-btn');
-const gbInput  = document.getElementById('gb-input');
-const gbSearch = document.getElementById('gb-search-btn');
 
 let gbBrowseFilter = 'all';  // current category filter in browse panel
-let gbTimer;
 let _gbSearchSeq = 0;  // stale-result guard for async Gutendex calls
 
 // Build the CATALOG pool with all browseable fields
@@ -3109,7 +3113,7 @@ function _catalogPool(){
 async function browseCatalog(filter){
   const mySeq = ++_gbSearchSeq;
   gbBrowseFilter = filter;
-  const q = (gbInput.value || '').trim();
+  const q = (libSearchEl.value || '').trim();
   const ql = q.toLowerCase();
 
   // Phase 1: local results shown immediately (offline-capable)
@@ -3158,13 +3162,6 @@ document.querySelectorAll('.gbcat').forEach(btn => {
     browseCatalog(btn.dataset.gc);
   });
 });
-
-gbInput.addEventListener('input', () => {
-  clearTimeout(gbTimer);
-  gbTimer = setTimeout(() => browseCatalog(gbBrowseFilter), 300);
-});
-gbSearch.addEventListener('click', () => browseCatalog(gbBrowseFilter));
-gbInput.addEventListener('keydown', e => { if(e.key==='Enter') browseCatalog(gbBrowseFilter); });
 
 // Legacy lib-add-btn (kept for compatibility, redirects to browse)
 if(gbAddBtn){
