@@ -400,6 +400,38 @@ GitHub Actions 自动将 `main` 分支部署到 GitHub Pages。
 
 ---
 
+## 图书下载代理（Cloudflare Worker）
+
+书籍下载走 CORS 代理链（`script.js` 顶部的 `BOOK_PROXY` + `PROXIES`），按序尝试、
+首个成功者胜出、`_streamProxy` 用「15s 无新数据才放弃」的停滞看门狗。
+
+**主代理 = 自建 Cloudflare Worker**（边缘缓存，热门书二次下载近乎秒开）：
+
+| 项 | 值 |
+|----|----|
+| Worker 名 | `linggo-proxy` |
+| 线上域名 | `https://linggo-proxy.langhua98.workers.dev` |
+| 调用格式 | `…/?url=<URL编码后的书籍地址>` |
+| Cloudflare 账号 ID | `aca35ff5f62ae4208757219dbc3b489b` |
+| workers.dev 子域 | `langhua98.workers.dev` |
+| 源码 | `cloudflare-proxy/worker.js`（只代理 Gutenberg / Standard Ebooks，非开放代理）|
+| 公共备用 | `cors.eu.org` → `proxy.cors.sh` → `allorigins` → `corsproxy`（均在 `PROXIES`）|
+
+**API token**：存于环境密钥 `CLOUDFLARE_API_TOKEN`（**绝不写进仓库**，公开库会泄露）。
+建 token 用 Cloudflare「Edit Cloudflare Workers」模板。
+
+**改完 worker.js 后重新部署**（token 从环境变量读，勿明文）：
+```bash
+ACC=aca35ff5f62ae4208757219dbc3b489b
+curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/linggo-proxy" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  -F 'metadata={"main_module":"worker.js"};type=application/json' \
+  -F 'worker.js=@cloudflare-proxy/worker.js;type=application/javascript+module'
+```
+免费额度 10 万次/天；改换书源主机改 `worker.js` 的 `ALLOW_HOSTS`。
+
+---
+
 ## 常见陷阱
 
 1. **Service Worker 缓存旧版本**：修改 JS/CSS 后必须更新 `sw.js` 中的 `CACHE` 常量
@@ -407,4 +439,4 @@ GitHub Actions 自动将 `main` 分支部署到 GitHub Pages。
 3. **CATALOG 格式**：6 元素数组 `[id, title, author, year, [cats], markText]`，id 是 Gutenberg 数字 ID
 4. **Gutenberg ID 提取**：从 URL `files/(\d+)/` 正则提取，存入 `_gbId` 字段
 5. **iOS TTS 暂停问题**：使用 `resumeTimer` 每秒调用 `synth.resume()` 防止系统暂停
-6. **CORS 代理**：书籍下载走代理列表（`CORS_PROXIES`），按序尝试，失败自动切换
+6. **CORS 代理**：书籍下载走 `BOOK_PROXY`（自建 Worker）+ `PROXIES` 备用链，按序尝试、失败自动切换（详见「图书下载代理」节）。免费公共代理会失效（corsproxy.io 已 403、thingproxy 已死），换代理时务必实测连通性
