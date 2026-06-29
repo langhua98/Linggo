@@ -3517,6 +3517,33 @@ function _kokKey(text){ return `${_kokVoice()}|${text}`; }
 // controllable pause/resume/speed/highlight. First-sentence latency is covered by
 // _kokServerSynth (/tts) + the 4-min /health keep-warm ping.
 
+// ── Cold-start countdown UI ─────────────────────────────────────────────
+// HF Space sleeps after 5 min; first synth then takes ~30-60 s. Instead of
+// falling back to a lesser voice, we show a countdown beside the play button
+// and keep awaiting the same in-flight request — playback starts the instant
+// the audio returns.
+const _KOK_COLD_EST = 60;          // estimated cold-start seconds (countdown from)
+let _kokColdTimer = null;
+function _kokColdShow(){
+  const el = document.getElementById('kok-coldwait');
+  if(!el) return;
+  const numEl = el.querySelector('.kcw-num');
+  const t0 = Date.now();
+  const tick = () => {
+    const left = _KOK_COLD_EST - Math.floor((Date.now() - t0) / 1000);
+    if(numEl) numEl.textContent = left > 0 ? left + 's' : '即将就绪';
+  };
+  tick();
+  if(_kokColdTimer) clearInterval(_kokColdTimer);
+  _kokColdTimer = setInterval(tick, 1000);
+  el.style.display = '';
+}
+function _kokColdHide(){
+  if(_kokColdTimer){ clearInterval(_kokColdTimer); _kokColdTimer = null; }
+  const el = document.getElementById('kok-coldwait');
+  if(el) el.style.display = 'none';
+}
+
 function _kokServerSynth(text){
   const key = _kokKey(text);
   if(KOK_DONE.has(key)) return Promise.resolve(KOK_DONE.get(key));
@@ -3840,12 +3867,27 @@ async function _edgePlayOne(text, mySession, startChar = 0){
       let url = KOK_DONE.get(_kokKey(text));
       if(S.paused) return 'paused';   // paused between function entry and cache check
       if(!url){
+        // Give the (maybe warm) server a short window first.
         url = await Promise.race([
           _kokServerSynth(text).catch(() => null),
-          new Promise(r => setTimeout(() => r(null), 8000))
+          new Promise(r => setTimeout(() => r('__cold__'), 5000))
         ]);
-        if(kokSession !== mySession) return false;
-        if(S.paused) return 'paused';   // user paused while we were synthesizing
+        if(url === '__cold__'){
+          // No response in 5 s → server is cold-starting. Show the countdown
+          // and keep awaiting the SAME in-flight request (memoized by key) so
+          // we play the instant it returns, rather than dropping to a lesser voice.
+          url = null;
+          _kokColdShow();
+          try {
+            url = await Promise.race([
+              _kokServerSynth(text),
+              new Promise((_, rej) => setTimeout(() => rej(0), 90000))
+            ]);
+          } catch(e) { url = null; }
+          _kokColdHide();
+        }
+        if(kokSession !== mySession){ _kokColdHide(); return false; }
+        if(S.paused){ _kokColdHide(); return 'paused'; }   // user paused while synthesizing
       }
       if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
@@ -3856,7 +3898,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
         _kokSynthToastShown = true;
         toast('神经语音服务启动中，暂以在线语音播放');
       }
-    } catch(e) { /* fall through to online engines */ }
+    } catch(e) { _kokColdHide(); /* fall through to online engines */ }
   }
 
   let url = null;
@@ -3927,6 +3969,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
 function kokStop(){
   _kokSoftPaused = false;
   kokSession++;
+  _kokColdHide();   // drop any cold-start countdown — request is being aborted
   // Abort all in-flight /tts prefetch requests so the HF Space (2 vCPU) is freed
   // immediately — otherwise a voice/speed switch queues behind ~4 stale requests
   // (~20 s) and looks like a cold start.
