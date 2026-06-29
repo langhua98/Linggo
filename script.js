@@ -3517,28 +3517,44 @@ function _kokKey(text){ return `${_kokVoice()}|${text}`; }
 // controllable pause/resume/speed/highlight. First-sentence latency is covered by
 // _kokServerSynth (/tts) + the 4-min /health keep-warm ping.
 
-// ── Cold-start countdown UI ─────────────────────────────────────────────
-// HF Space sleeps after 5 min; first synth then takes ~30-60 s. Instead of
-// falling back to a lesser voice, we show a countdown beside the play button
-// and keep awaiting the same in-flight request — playback starts the instant
-// the audio returns.
+// ── Synth wait indicator (cold-start vs. generating) ─────────────────────
+// HF Space sleeps after 5 min; the first synth then takes ~30-60 s. We must
+// distinguish two slow cases so the label is honest:
+//   • cold  — server is waking up (never synthesized this session, or idle
+//             long enough to have slept) → "神经语音启动中" + countdown.
+//   • gen   — server is warm but this sentence is still being generated
+//             → "正在生成语音…" (spinner only, no countdown).
+// Both keep awaiting the same in-flight request and play the instant it returns.
 const _KOK_COLD_EST = 60;          // estimated cold-start seconds (countdown from)
 let _kokColdTimer = null;
-function _kokColdShow(){
+let _kokLastOkAt  = 0;             // ts of last successful synth (0 = never this session)
+function _kokMaybeCold(){
+  // Warm only if we've synthesized recently; HF sleeps after ~5 min idle.
+  return _kokLastOkAt === 0 || (Date.now() - _kokLastOkAt) > 4 * 60 * 1000;
+}
+function _kokWaitShow(mode){       // mode: 'cold' | 'gen'
   const el = document.getElementById('kok-coldwait');
   if(!el) return;
+  const txtEl = el.querySelector('.kcw-txt');
   const numEl = el.querySelector('.kcw-num');
-  const t0 = Date.now();
-  const tick = () => {
-    const left = _KOK_COLD_EST - Math.floor((Date.now() - t0) / 1000);
-    if(numEl) numEl.textContent = left > 0 ? left + 's' : '即将就绪';
-  };
-  tick();
-  if(_kokColdTimer) clearInterval(_kokColdTimer);
-  _kokColdTimer = setInterval(tick, 1000);
+  if(_kokColdTimer){ clearInterval(_kokColdTimer); _kokColdTimer = null; }
+  if(mode === 'cold'){
+    if(txtEl) txtEl.textContent = '神经语音启动中';
+    if(numEl){ numEl.style.display = ''; }
+    const t0 = Date.now();
+    const tick = () => {
+      const left = _KOK_COLD_EST - Math.floor((Date.now() - t0) / 1000);
+      if(numEl) numEl.textContent = left > 0 ? left + 's' : '即将就绪';
+    };
+    tick();
+    _kokColdTimer = setInterval(tick, 1000);
+  } else {
+    if(txtEl) txtEl.textContent = '正在生成语音…';
+    if(numEl) numEl.style.display = 'none';
+  }
   el.style.display = '';
 }
-function _kokColdHide(){
+function _kokWaitHide(){
   if(_kokColdTimer){ clearInterval(_kokColdTimer); _kokColdTimer = null; }
   const el = document.getElementById('kok-coldwait');
   if(el) el.style.display = 'none';
@@ -3563,6 +3579,7 @@ function _kokServerSynth(text){
       const url  = URL.createObjectURL(blob);
       KOK_DONE.set(key, url);
       KOK_ABORT.delete(key);
+      _kokLastOkAt = Date.now();   // server proven warm — informs cold vs. gen label
       return url;
     } catch(e) {
       KOK_ABORT.delete(key);
@@ -3873,21 +3890,22 @@ async function _edgePlayOne(text, mySession, startChar = 0){
           new Promise(r => setTimeout(() => r('__cold__'), 5000))
         ]);
         if(url === '__cold__'){
-          // No response in 5 s → server is cold-starting. Show the countdown
-          // and keep awaiting the SAME in-flight request (memoized by key) so
-          // we play the instant it returns, rather than dropping to a lesser voice.
+          // No response in 5 s. Keep awaiting the SAME in-flight request
+          // (memoized by key) so we play the instant it returns. Label it
+          // honestly: cold-start countdown only if the server is actually
+          // waking up; otherwise it's just normal generation latency.
           url = null;
-          _kokColdShow();
+          _kokWaitShow(_kokMaybeCold() ? 'cold' : 'gen');
           try {
             url = await Promise.race([
               _kokServerSynth(text),
               new Promise((_, rej) => setTimeout(() => rej(0), 90000))
             ]);
           } catch(e) { url = null; }
-          _kokColdHide();
+          _kokWaitHide();
         }
-        if(kokSession !== mySession){ _kokColdHide(); return false; }
-        if(S.paused){ _kokColdHide(); return 'paused'; }   // user paused while synthesizing
+        if(kokSession !== mySession){ _kokWaitHide(); return false; }
+        if(S.paused){ _kokWaitHide(); return 'paused'; }   // user paused while synthesizing
       }
       if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
@@ -3898,7 +3916,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
         _kokSynthToastShown = true;
         toast('神经语音服务启动中，暂以在线语音播放');
       }
-    } catch(e) { _kokColdHide(); /* fall through to online engines */ }
+    } catch(e) { _kokWaitHide(); /* fall through to online engines */ }
   }
 
   let url = null;
@@ -3969,7 +3987,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
 function kokStop(){
   _kokSoftPaused = false;
   kokSession++;
-  _kokColdHide();   // drop any cold-start countdown — request is being aborted
+  _kokWaitHide();   // drop any wait indicator — request is being aborted
   // Abort all in-flight /tts prefetch requests so the HF Space (2 vCPU) is freed
   // immediately — otherwise a voice/speed switch queues behind ~4 stale requests
   // (~20 s) and looks like a cold start.
