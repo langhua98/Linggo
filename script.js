@@ -719,15 +719,15 @@ function buildCard(book){
                 : null;
   div.innerHTML = `
     <div class="bk-cover">
-      ${imgSrc ? `<img src="${imgSrc}" alt="${book.t}" loading="lazy">` : ''}
+      ${imgSrc ? `<img src="${_esc(imgSrc)}" alt="${_esc(book.t)}" loading="lazy">` : ''}
       <div class="bk-cover-fallback" style="${imgSrc?'display:none;':'display:flex;'}background:linear-gradient(145deg,${c1},${c2})">
-        <div class="bk-fb-title">${book.t}</div>
-        <div class="bk-fb-author">${book.a.split(' ').pop()}</div>
+        <div class="bk-fb-title">${_esc(book.t)}</div>
+        <div class="bk-fb-author">${_esc(book.a.split(' ').pop())}</div>
         <div class="bk-fb-deco"></div>
       </div>
     </div>
-    <div class="bk-title">${book.t}</div>
-    <div class="bk-author">${book.a}</div>
+    <div class="bk-title">${_esc(book.t)}</div>
+    <div class="bk-author">${_esc(book.a)}</div>
     <div class="bk-action"></div>`;
 
   if(imgSrc){
@@ -2946,16 +2946,16 @@ function buildSearchCard(book){
   const btnText   = isBuiltin ? '已内置' : isAdded ? '已添加' : '+ 添加';
   div.innerHTML = `
     <div class="gb-cover">
-      ${imgSrc ? `<img src="${imgSrc}" alt="${book.t}" loading="lazy">` : ''}
+      ${imgSrc ? `<img src="${_esc(imgSrc)}" alt="${_esc(book.t)}" loading="lazy">` : ''}
       <div class="bk-cover-fallback" style="${imgSrc?'display:none;':'display:flex;'}background:linear-gradient(145deg,${c1},${c2})">
-        <div class="bk-fb-title">${book.t}</div>
-        <div class="bk-fb-author">${book.a.split(' ').pop()}</div>
+        <div class="bk-fb-title">${_esc(book.t)}</div>
+        <div class="bk-fb-author">${_esc(book.a.split(' ').pop())}</div>
         <div class="bk-fb-deco"></div>
       </div>
     </div>
-    <div class="gb-ttl">${book.t}</div>
-    <div class="gb-au">${book.a}${book.y ? ' · ' + book.y : ''}</div>
-    <button class="gb-add-btn"${disabled?' disabled':''}>${btnText}</button>`;
+    <div class="gb-ttl">${_esc(book.t)}</div>
+    <div class="gb-au">${_esc(book.a)}${book.y ? ' · ' + _esc(String(book.y)) : ''}</div>
+    <button class="gb-add-btn"${disabled?' disabled':''}>${_esc(btnText)}</button>`;
   if(imgSrc){
     const img = div.querySelector('img');
     const fb  = div.querySelector('.bk-cover-fallback');
