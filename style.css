@@ -2191,8 +2191,20 @@ body{
 .bprev-cover-wrap{
   width:100px;height:140px;border-radius:10px;overflow:hidden;
   flex-shrink:0;box-shadow:var(--shadow-md);background:var(--bg);
+  position:relative;
 }
 .bprev-cover-wrap img{width:100%;height:100%;object-fit:cover;object-position:center;}
+/* Light-sweep that glides across the detail cover once when the sheet opens
+   (after the cover fly-in settles). Clipped by overflow:hidden. */
+.bprev-cover-wrap::after{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:2;
+  background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.45) 50%,transparent 70%);
+  transform:translateX(-140%);
+}
+@media (prefers-reduced-motion: no-preference){
+  #book-prev.open .bprev-cover-wrap::after{ animation:coverShine .85s cubic-bezier(.4,0,.2,1) .45s 1; }
+}
+@keyframes coverShine{ from{transform:translateX(-140%);} to{transform:translateX(140%);} }
 .bprev-fb{
   width:100%;height:100%;
   display:flex;align-items:center;justify-content:center;
