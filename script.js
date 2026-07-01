@@ -3662,6 +3662,7 @@ let kokTTSReady = true;   // server always "ready"; cold-start handled by race t
 const KOK_CACHE = new Map(); // synth key → Promise<blob URL>
 const KOK_DONE  = new Map(); // synth key → blob URL (resolved & ready to play)
 const KOK_ABORT = new Map(); // synth key → AbortController (in-flight /tts requests only)
+const KOK_WORDS = new Map(); // synth key → [[word, startSec, endSec], …] for exact highlight
 
 function _kokVoice(){ return S.kokVoice || (S.accentUS ? 'af_heart' : 'bf_emma'); }
 function _kokKey(text){ return `${_kokVoice()}|${text}`; }
@@ -3730,11 +3731,25 @@ function _kokServerSynth(text){
         voice: _kokVoice(),
         speed: '1'
       });
-      const resp = await fetch(`${KOK_SERVER_URL}/tts?${params}`, { signal: ac.signal });
-      if(!resp.ok || resp.status === 204) throw new Error(`server ${resp.status}`);
-      const blob = await resp.blob();
-      const url  = URL.createObjectURL(blob);
+      // /tts-timed returns JSON { audio: base64 WAV, words: [[w,start,end],…] }
+      // so we get exact per-word timing for the highlight. Falls back to /tts
+      // (plain WAV) if the timed endpoint is unavailable.
+      let url, words = null;
+      const resp = await fetch(`${KOK_SERVER_URL}/tts-timed?${params}`, { signal: ac.signal });
+      if(resp.ok && resp.status !== 204){
+        const data = await resp.json();
+        const bin  = atob(data.audio || '');
+        const bytes = new Uint8Array(bin.length);
+        for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+        words = Array.isArray(data.words) && data.words.length ? data.words : null;
+      } else {
+        const r2 = await fetch(`${KOK_SERVER_URL}/tts?${params}`, { signal: ac.signal });
+        if(!r2.ok || r2.status === 204) throw new Error(`server ${r2.status}`);
+        url = URL.createObjectURL(await r2.blob());
+      }
       KOK_DONE.set(key, url);
+      if(words) KOK_WORDS.set(key, words);
       KOK_ABORT.delete(key);
       _kokLastOkAt = Date.now();   // server proven warm — informs cold vs. gen label
       return url;
@@ -3752,6 +3767,7 @@ function _kokServerSynth(text){
     if(oldAc){ try{ oldAc.abort(); }catch(e){} KOK_ABORT.delete(oldKey); }
     KOK_CACHE.delete(oldKey);
     KOK_DONE.delete(oldKey);
+    KOK_WORDS.delete(oldKey);
   }
   return p;
 }
@@ -3902,7 +3918,7 @@ async function _edgeSynth(text){
 // Play an audio URL. Applies client-side speed via playbackRate + preservesPitch
 // (pitch-preserved time-stretch — works on all modern browsers including iOS Safari).
 // Optional sentEl: drives word-highlight via ontimeupdate as audio plays.
-function _edgePlayUrl(url, sentEl, startChar = 0){
+function _edgePlayUrl(url, sentEl, startChar = 0, words = null){
   return new Promise(resolve => {
     // Reuse the gesture-blessed element — REQUIRED on iOS: a freshly created
     // Audio element outside a user gesture is silently refused by WebKit.
@@ -3965,25 +3981,38 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
       // highlight advance in visible ~250 ms steps and feel laggy. A small lead
       // offset keeps the highlight sitting on / just ahead of the audio rather
       // than trailing it. Only re-runs highlightWordAt when the word changes.
-      const tl = (a._sentText || '').length || sentEl.textContent.length;
+      const sentText = sentEl.textContent;
+      const tl = sentText.length;
       const wordEls = [...sentEl.querySelectorAll('.word[data-char-start]')];
       const LEAD = 0.05;   // seconds — perceptual sync compensation
-      let lastWord = null;
+      // Exact path: map each Kokoro token to a char offset in the sentence
+      // (located in order) so we can drive the existing char→word highlight
+      // by real timestamps. Null when the server returned no word timings.
+      let timed = null;
+      if(words && words.length){
+        timed = []; let cursor = 0;
+        for(const wd of words){
+          const idx = sentText.indexOf(wd[0], cursor);
+          if(idx >= 0){ timed.push([idx, wd[1]]); cursor = idx + wd[0].length; }
+        }
+        if(!timed.length) timed = null;
+      }
+      let lastCs = -1;
       const track = () => {
         if(done) return;
         const dur = a.duration;
         if(dur && !a.paused){
-          const t = Math.min(a.currentTime + LEAD, dur);
-          const charIdx = Math.min(Math.floor((t / dur) * tl), tl - 1);
-          let w = null;
-          for(const el of wordEls){
-            if(+el.dataset.charStart > charIdx) break;
-            w = el;
+          const t = a.currentTime + LEAD;
+          let cs = -1;
+          if(timed){
+            // exact: last token whose start time has passed
+            for(const [charStart, ws] of timed){ if(ws > t) break; cs = charStart; }
+          } else {
+            // fallback: linear char position proportional to elapsed time
+            const charIdx = Math.min(Math.floor((Math.min(t, dur) / dur) * tl), tl - 1);
+            for(const el of wordEls){ if(+el.dataset.charStart > charIdx) break; cs = +el.dataset.charStart; }
           }
-          if(w && w !== lastWord){
-            lastWord = w;
-            highlightWordAt(sentEl, +w.dataset.charStart);
-          }
+          if(cs >= 0 && cs !== lastCs){ lastCs = cs; highlightWordAt(sentEl, cs); }
         }
         hlRaf = requestAnimationFrame(track);
       };
@@ -4091,7 +4120,7 @@ async function _edgePlayOne(text, mySession, startChar = 0){
       if(url){
         _kokAnnounce('Kokoro 神经语音（服务器）');
         _kokPrefetch();  // warm upcoming sentences while this one plays
-        if(await _edgePlayUrl(url, _hlEl, startChar)) return true;
+        if(await _edgePlayUrl(url, _hlEl, startChar, KOK_WORDS.get(_kokKey(text)))) return true;
         if(kokSession !== mySession) return false;
       } else if(!_kokSynthToastShown){
         _kokSynthToastShown = true;
@@ -4266,6 +4295,7 @@ function _syncKokVoiceRow(){
     // they become unreachable under a new voice prefix — revoke now to avoid leak.
     KOK_DONE.forEach(u => { try{ URL.revokeObjectURL(u); }catch(e){} });
     KOK_DONE.clear();
+    KOK_WORDS.clear();
     // If currently reading with Kokoro, restart the sentence so the new
     // voice takes over immediately instead of after the cached audio ends.
     if(kokActive && (S.playing || S.paused)){
