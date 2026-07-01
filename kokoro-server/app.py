@@ -14,7 +14,8 @@ VALID_VOICES = {
     'bm_fable','bm_george',
 }
 _pipelines, _lock = {}, threading.Lock()
-_cache, _order = {}, []
+_cache, _order = {}, []               # ck -> WAV bytes (for /tts, /tts-stream)
+_timed_cache, _timed_order = {}, []   # ck -> JSON payload bytes (for /tts-timed)
 
 def _get_pipeline(lang_code):
     if lang_code in _pipelines: return _pipelines[lang_code]
@@ -28,6 +29,11 @@ def _cache_put(ck, wav):
     if ck not in _cache: _order.append(ck)
     _cache[ck] = wav
     while len(_order) > 256: _cache.pop(_order.pop(0), None)
+
+def _timed_put(ck, payload):
+    if ck not in _timed_cache: _timed_order.append(ck)
+    _timed_cache[ck] = payload
+    while len(_timed_order) > 256: _timed_cache.pop(_timed_order.pop(0), None)
 
 @app.get("/health")
 def health():
@@ -69,6 +75,9 @@ def tts_timed(
     if voice not in VALID_VOICES:
         voice = "af_heart"
     ck = hashlib.md5(f"{voice}|{speed:.2f}|{text}".encode()).hexdigest()
+    _hdrs = {"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"}
+    if ck in _timed_cache:   # repeat request → serve instantly, no re-synthesis
+        return Response(content=_timed_cache[ck], media_type="application/json", headers=_hdrs)
     pipeline = _get_pipeline(voice[0])
     raw_chunks, words, offset = [], [], 0.0
     for result in pipeline(text, voice=voice, speed=speed):
@@ -87,12 +96,10 @@ def tts_timed(
     buf = io.BytesIO()
     sf.write(buf, combined, 24000, format="WAV", subtype="PCM_16")
     wav = buf.getvalue()
-    _cache_put(ck, wav)   # shares cache with /tts (same key)
-    return Response(
-        content=json.dumps({"audio": base64.b64encode(wav).decode("ascii"), "words": words}),
-        media_type="application/json",
-        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
-    )
+    _cache_put(ck, wav)   # keep /tts cache warm too (same key)
+    payload = json.dumps({"audio": base64.b64encode(wav).decode("ascii"), "words": words})
+    _timed_put(ck, payload)
+    return Response(content=payload, media_type="application/json", headers=_hdrs)
 
 @app.get("/tts-stream")
 def tts_stream(
