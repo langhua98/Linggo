@@ -2461,10 +2461,23 @@ function togglePlay(){
   if(kokActive){
     _unlockAudio(); // must be synchronous while user gesture is still active
     if(S.playing && !S.paused){
-      // Soft pause: pause the HTML <audio> element in-place
-      S.paused = true; S.playing = false; setIcon(false);
-      _kokSoftPaused = true;
-      if(_kokAudioEl) _kokAudioEl.pause();
+      // Two engines can be live: the gesture-blessed <audio> element (Kokoro /
+      // Edge / Google) or the speechSynthesis fallback (common on iOS while
+      // Kokoro is cold). Only the <audio> path can pause/resume mid-sentence;
+      // pausing it is a clean soft-pause. speechSynthesis can't reliably
+      // pause/resume mid-utterance, and calling _kokAudioEl.pause() would leave
+      // the system voice talking (uncontrollable) and overlap on resume — so
+      // hard-stop it and mark paused, which replays the current sentence.
+      const audioLive = _kokAudioEl && !_kokAudioEl.paused &&
+                        _kokAudioEl.src && !_kokAudioEl.ended;
+      if(audioLive){
+        S.paused = true; S.playing = false; setIcon(false);
+        _kokSoftPaused = true;
+        _kokAudioEl.pause();
+      } else {
+        kokStop();   // cancels the in-flight synth utterance / fetch
+        S.paused = true; S.playing = false; setIcon(false);
+      }
     } else if(S.paused){
       S.paused = false;
       if(_kokSoftPaused && _kokAudioEl && _kokAudioEl.src && !_kokAudioEl.ended){
