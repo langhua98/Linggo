@@ -949,13 +949,28 @@ async function loadBook(book, cardEl){
 }
 
 // ── Open book in reader
+// ── Smooth native view transitions (View Transitions API).
+// No-op fallback on unsupported browsers or when the user prefers reduced motion.
+function withVT(mutate){
+  if(!document.startViewTransition ||
+     matchMedia('(prefers-reduced-motion: reduce)').matches){
+    mutate(); return;
+  }
+  try { document.startViewTransition(mutate); }
+  catch(e){ mutate(); }
+}
+
 function openBook(book, text){
   S.fileName = book.t;
   document.getElementById('filename').textContent = book.t;
   loadProg();
-  document.getElementById('library').classList.remove('open');
-  document.getElementById('overlay').classList.remove('vis');
-  buildReader(text);
+  // Crossfade the library → reader swap (content is built inside the transition
+  // so the incoming snapshot already shows the rendered page).
+  withVT(() => {
+    document.getElementById('library').classList.remove('open');
+    document.getElementById('overlay').classList.remove('vis');
+    buildReader(text);
+  });
   toast('《' + book.t + '》');
 }
 
@@ -1124,12 +1139,14 @@ document.getElementById('logo-btn').addEventListener('click', () => {
   synth.cancel(); stopResumeTimer();
   if(kokActive) kokStop();
   S.playing = false; S.paused = false; setIcon(false);
-  reader.style.display = 'none';
-  player.style.display = 'none';
-  document.getElementById('pct-badge').style.display = 'none';
-  document.getElementById('chap-tbtn').style.display = 'none';
-  document.getElementById('filename').textContent = '未加载';
-  document.getElementById('landing').style.display = '';
+  withVT(() => {
+    reader.style.display = 'none';
+    player.style.display = 'none';
+    document.getElementById('pct-badge').style.display = 'none';
+    document.getElementById('chap-tbtn').style.display = 'none';
+    document.getElementById('filename').textContent = '未加载';
+    document.getElementById('landing').style.display = '';
+  });
 });
 
 // ── Library open/close
