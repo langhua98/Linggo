@@ -63,7 +63,7 @@ body{
    the user prefers reduced motion. ── */
 @media (prefers-reduced-motion: no-preference){
   /* Landing: staggered entrance rise (plays once on load / on return home) */
-  #landing > *{ animation: landingRise .6s cubic-bezier(.22,1,.36,1) both; }
+  #landing > *:not(#landing-particles){ animation: landingRise .6s cubic-bezier(.22,1,.36,1) both; }
   #landing > *:nth-child(1){ animation-delay:.03s; }
   #landing > *:nth-child(2){ animation-delay:.09s; }
   #landing > *:nth-child(3){ animation-delay:.15s; }
@@ -89,6 +89,47 @@ body{
 }
 @keyframes landingRise{ from{opacity:0;transform:translateY(18px);} to{opacity:1;transform:none;} }
 @keyframes previewFade{ from{opacity:.3;} to{opacity:1;} }
+
+/* ── UI polish batch 3 (effects) ── */
+/* Karaoke sliding underline that glides under the current TTS word */
+#kw-underline{
+  position:fixed; left:0; top:0; width:0; height:3px;
+  background:linear-gradient(90deg,var(--accent),#60a5fa);
+  border-radius:2px; box-shadow:0 0 8px rgba(37,99,235,.5);
+  opacity:0; pointer-events:none; z-index:90;
+  transition:left .16s cubic-bezier(.4,0,.2,1), top .16s cubic-bezier(.4,0,.2,1),
+             width .16s cubic-bezier(.4,0,.2,1), opacity .2s ease;
+}
+@media (prefers-reduced-motion: reduce){ #kw-underline{ display:none !important; } }
+
+/* Player progress: flowing "liquid" sheen while playing */
+@media (prefers-reduced-motion: no-preference){
+  #player.playing #prog-fill{
+    background:linear-gradient(100deg,var(--accent) 0%,#60a5fa 42%,#93c5fd 50%,#60a5fa 58%,var(--accent) 100%);
+    background-size:220% 100%;
+    animation:progFlow 1.8s linear infinite;
+  }
+}
+@keyframes progFlow{ from{background-position:110% 0;} to{background-position:-110% 0;} }
+
+/* Chapter jump: subtle page-turn flip on the reader content */
+#content.flip{ transform-origin:left center; }
+@media (prefers-reduced-motion: no-preference){
+  #content.flip{ animation:pageFlip .45s cubic-bezier(.22,1,.36,1); }
+}
+@keyframes pageFlip{ from{opacity:.4;transform:perspective(1400px) rotateY(-5deg) translateX(14px);} to{opacity:1;transform:none;} }
+
+/* Shared-element cover morph: card cover flies into the preview sheet */
+@media (prefers-reduced-motion: no-preference){
+  ::view-transition-group(book-cover){
+    animation-duration:.42s; animation-timing-function:cubic-bezier(.22,1,.36,1);
+  }
+}
+
+/* Landing: particle canvas sits behind the hero content */
+#landing{ position:relative; }
+#landing-particles{ position:absolute; inset:0; z-index:0; pointer-events:none; }
+#landing > *:not(#landing-particles){ position:relative; z-index:1; }
 
 /* ── TOP BAR ── */
 #topbar{
@@ -1101,14 +1142,22 @@ body{
 }
 #wpop.vis{
   display:flex;
-  animation:popUp .2s cubic-bezier(.34,1.15,.64,1);
 }
 /* animate from below or above based on class */
 #wpop.from-below{transform-origin:top center;}
 #wpop.from-above{transform-origin:bottom center;}
-@keyframes popUp{
-  from{opacity:0;transform:translateX(-50%) scale(.95)}
-  to  {opacity:1;transform:translateX(-50%) scale(1)}
+/* "Magical" pop-in: scale up with an overshoot + a brief accent glow that
+   settles into the normal shadow. Skipped for reduced-motion users. */
+@media (prefers-reduced-motion: no-preference){
+  #wpop.vis{ animation:popUpMagic .34s cubic-bezier(.34,1.3,.64,1); }
+}
+@keyframes popUpMagic{
+  0%{opacity:0;transform:translateX(-50%) scale(.9) translateY(8px);
+     box-shadow:0 0 0 rgba(37,99,235,0);}
+  55%{opacity:1;
+      box-shadow:0 10px 44px rgba(37,99,235,0.34),0 0 30px rgba(37,99,235,0.22);}
+  100%{opacity:1;transform:translateX(-50%) scale(1) translateY(0);
+       box-shadow:0 8px 40px rgba(0,0,0,0.22),0 2px 8px rgba(0,0,0,0.08);}
 }
 /* header: word + 🔊 + ✕ */
 .wp-header{

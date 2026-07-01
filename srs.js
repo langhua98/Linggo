@@ -378,6 +378,10 @@ function showFcResult(){
   const emoji = pct>=80?'🎉':pct>=50?'💪':'📚';
   document.getElementById('fc-res-emoji').textContent = emoji;
   document.getElementById('fc-res-sub').textContent   = `掌握率 ${pct}%`;
+  // Celebrate a strong session (≥80% mastery)
+  if(pct >= 80 && total > 0 && typeof confettiBurst === 'function'){
+    setTimeout(() => confettiBurst({ y: window.innerHeight * 0.30 }), 220);
+  }
   document.getElementById('fc-res-stats').innerHTML = `
     <div class="fc-stat" style="background:#FEE2E2">
       <div class="fc-stat-n" style="color:#DC2626">${fcCounts.again}</div>

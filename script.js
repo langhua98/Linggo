@@ -813,8 +813,27 @@ function openBookPreview(book, cardEl, opts){
   }
 
   // Animate in
-  overlay.classList.add('vis');
-  sheet.classList.add('open');
+  // Shared-element transition: the tapped card cover morphs into the sheet
+  // cover. The source loses its name inside the mutation so only ONE element
+  // carries `book-cover` in each snapshot (a dup would abort the transition).
+  const _cardCover  = cardEl && cardEl.querySelector('.bk-cover, .gb-cover');
+  const _sheetCover = sheet.querySelector('.bprev-cover-wrap');
+  const _doOpen = () => { overlay.classList.add('vis'); sheet.classList.add('open'); };
+  if(document.startViewTransition && _cardCover && _sheetCover &&
+     !matchMedia('(prefers-reduced-motion: reduce)').matches){
+    _cardCover.style.viewTransitionName = 'book-cover';
+    const vt = document.startViewTransition(() => {
+      _cardCover.style.viewTransitionName = '';
+      _sheetCover.style.viewTransitionName = 'book-cover';
+      _doOpen();
+    });
+    vt.finished.finally(() => {
+      _cardCover.style.viewTransitionName = '';
+      _sheetCover.style.viewTransitionName = '';
+    });
+  } else {
+    _doOpen();
+  }
 
   fetchBookDesc(book);
 }
@@ -1669,6 +1688,9 @@ function renderChapters(){
       if(!c) return;
       // Jump to sentence and scroll heading into view
       jump(c.sentIdx);
+      // Subtle page-turn flip on the reader content
+      const _ct = document.getElementById('content');
+      if(_ct){ _ct.classList.remove('flip'); void _ct.offsetWidth; _ct.classList.add('flip'); }
       setTimeout(()=> c.el.scrollIntoView({behavior:'smooth', block:'start'}), 80);
       closeChapPanel();
     });
@@ -2401,6 +2423,105 @@ function clearTtsWord(){
   _cnClearHl();
 }
 
+// ── Karaoke sliding underline: a single bar that glides under the current word
+let _kwBarEl = null;
+function _moveKwUnderline(wordEl){
+  if(!_kwBarEl){
+    _kwBarEl = document.createElement('div');
+    _kwBarEl.id = 'kw-underline';
+    document.body.appendChild(_kwBarEl);
+  }
+  const r = wordEl.getBoundingClientRect();
+  _kwBarEl.style.left  = r.left + 'px';
+  _kwBarEl.style.top   = (r.bottom - 1) + 'px';
+  _kwBarEl.style.width = r.width + 'px';
+  _kwBarEl.style.opacity = '1';
+}
+function _hideKwUnderline(){ if(_kwBarEl) _kwBarEl.style.opacity = '0'; }
+
+// ── Confetti burst (hand-rolled canvas, zero dependency) ────────────
+function confettiBurst(opts){
+  opts = opts || {};
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const c = document.createElement('canvas');
+  c.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:9999';
+  document.body.appendChild(c);
+  const ctx = c.getContext('2d');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = window.innerWidth, H = window.innerHeight;
+  c.width = W * dpr; c.height = H * dpr; ctx.scale(dpr, dpr);
+  const colors = ['#2563EB','#7C3AED','#16A34A','#F59E0B','#EF4444','#60A5FA'];
+  const N  = opts.count || 130;
+  const cx = opts.x != null ? opts.x : W / 2;
+  const cy = opts.y != null ? opts.y : H / 3;
+  const parts = [];
+  for(let i = 0; i < N; i++){
+    const ang = Math.random() * Math.PI * 2, spd = 4 + Math.random() * 8;
+    parts.push({ x:cx, y:cy, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd - 7,
+      w:5+Math.random()*6, h:8+Math.random()*8, rot:Math.random()*6.28,
+      vr:(Math.random()-.5)*.4, col:colors[(Math.random()*colors.length)|0], life:1 });
+  }
+  let t0 = performance.now();
+  const draw = (t) => {
+    const dt = Math.min((t - t0) / 16.67, 3); t0 = t;
+    ctx.clearRect(0, 0, W, H);
+    let alive = false;
+    for(const p of parts){
+      p.vy += 0.22 * dt; p.vx *= 0.99;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+      p.life -= 0.006 * dt;
+      if(p.life > 0 && p.y < H + 40){
+        alive = true;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.globalAlpha = Math.max(0, p.life); ctx.fillStyle = p.col;
+        ctx.fillRect(-p.w/2, -p.h/2, p.w, p.h); ctx.restore();
+      }
+    }
+    if(alive) requestAnimationFrame(draw); else c.remove();
+  };
+  requestAnimationFrame(draw);
+}
+
+// ── Landing ambient particles (hand-rolled canvas) ──────────────────
+function initLandingParticles(){
+  const c = document.getElementById('landing-particles');
+  if(!c || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const ctx = c.getContext('2d');
+  const landing = document.getElementById('landing');
+  let W = 0, H = 0;
+  const resize = () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = landing.clientWidth; H = landing.clientHeight;
+    c.width = W * dpr; c.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  const N = Math.min(40, Math.max(16, Math.round((window.innerWidth * window.innerHeight) / 26000)));
+  const dots = Array.from({length:N}, () => ({
+    x:Math.random(), y:Math.random(), r:1 + Math.random()*2.4,
+    vx:(Math.random()-.5)*0.00028, vy:(Math.random()-.5)*0.00028,
+    a:0.12 + Math.random()*0.26,
+  }));
+  resize();
+  window.addEventListener('resize', resize);
+  const draw = () => {
+    if(!landing || landing.offsetParent === null){ requestAnimationFrame(draw); return; }
+    ctx.clearRect(0, 0, W, H);
+    const base = document.body.classList.contains('night') ? '150,170,255' : '90,120,220';
+    for(const d of dots){
+      d.x += d.vx; d.y += d.vy;
+      if(d.x < 0) d.x = 1; else if(d.x > 1) d.x = 0;
+      if(d.y < 0) d.y = 1; else if(d.y > 1) d.y = 0;
+      ctx.beginPath();
+      ctx.arc(d.x * W, d.y * H, d.r, 0, 6.2832);
+      ctx.fillStyle = `rgba(${base},${d.a})`;
+      ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+}
+initLandingParticles();
+
 function highlightWordAt(sentEl, charIdx){
   clearTtsWord();
   const words = sentEl.querySelectorAll('.word[data-char-start]');
@@ -2413,6 +2534,7 @@ function highlightWordAt(sentEl, charIdx){
   }
   if(best){
     best.classList.add('tts-word');
+    _moveKwUnderline(best);
     S.wordCs = +best.dataset.charStart;   // 记录当前词位置，供逐词前进/后退
     // 词对齐：朗读到的英文词 → 中文译文里对应字同步高亮
     if(S.bilin) _cnAlignHighlight(+sentEl.dataset.i, +best.dataset.charStart);
@@ -2521,6 +2643,9 @@ function togglePlay(){
 }
 
 function setIcon(playing){
+  const _pl = document.getElementById('player');
+  if(_pl) _pl.classList.toggle('playing', playing);   // drives progress-bar sheen
+  if(!playing) _hideKwUnderline();
   // Lottie play↔pause morph when mounted; SVG swap as offline fallback.
   if(_licons.play){ Licon.setState(_licons.play, playing); return; }
   const ico = document.getElementById('play-ico');
@@ -4044,6 +4169,7 @@ function kokStop(){
   _kokSoftPaused = false;
   kokSession++;
   _kokWaitHide();   // drop any wait indicator — request is being aborted
+  _hideKwUnderline();
   // Abort all in-flight /tts prefetch requests so the HF Space (2 vCPU) is freed
   // immediately — otherwise a voice/speed switch queues behind ~4 stale requests
   // (~20 s) and looks like a cold start.
@@ -4081,6 +4207,8 @@ async function kokPlay(){
   }
   if(kokSession === mySession){
     S.playing = false; S.paused = false; setIcon(false); saveProg();
+    // Reached the end of the book → celebrate
+    if(S.idx >= S.sents.length) confettiBurst({ y: window.innerHeight * 0.32 });
   }
 }
 
