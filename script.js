@@ -3787,10 +3787,12 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
     }
     const a = _kokAudioEl;
     let done = false;
+    let hlRaf = 0;
     const end = (ok) => {
       if(done) return;
       done = true;
       clearTimeout(guard);
+      cancelAnimationFrame(hlRaf);
       a.onended = a.onerror = a.oncanplay = a.ontimeupdate = null;
       // Only pause the element if this call still owns it. A stale end(false)
       // from a previous sentence's guard/error must not pause a new sentence's
@@ -3833,12 +3835,34 @@ function _edgePlayUrl(url, sentEl, startChar = 0){
     a.onended = () => end(true);
     a.onerror = () => end(false);
     if(sentEl){
+      // Smooth word highlight: poll currentTime every animation frame (~60fps)
+      // instead of the browser's ~4/s `timeupdate` event, which made the
+      // highlight advance in visible ~250 ms steps and feel laggy. A small lead
+      // offset keeps the highlight sitting on / just ahead of the audio rather
+      // than trailing it. Only re-runs highlightWordAt when the word changes.
       const tl = (a._sentText || '').length || sentEl.textContent.length;
-      a.ontimeupdate = () => {
+      const wordEls = [...sentEl.querySelectorAll('.word[data-char-start]')];
+      const LEAD = 0.05;   // seconds — perceptual sync compensation
+      let lastWord = null;
+      const track = () => {
+        if(done) return;
         const dur = a.duration;
-        if(!dur) return;
-        highlightWordAt(sentEl, Math.min(Math.floor((a.currentTime / dur) * tl), tl - 1));
+        if(dur && !a.paused){
+          const t = Math.min(a.currentTime + LEAD, dur);
+          const charIdx = Math.min(Math.floor((t / dur) * tl), tl - 1);
+          let w = null;
+          for(const el of wordEls){
+            if(+el.dataset.charStart > charIdx) break;
+            w = el;
+          }
+          if(w && w !== lastWord){
+            lastWord = w;
+            highlightWordAt(sentEl, +w.dataset.charStart);
+          }
+        }
+        hlRaf = requestAnimationFrame(track);
       };
+      hlRaf = requestAnimationFrame(track);
     }
     a.src = url;
     a.play().catch(err => {
