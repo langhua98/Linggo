@@ -2305,7 +2305,9 @@ function jump(i){
     injectWords(el);
     el.scrollIntoView({behavior:'smooth', block:'center'});
   }
-  document.getElementById('sent-preview-text').textContent = S.sents[i] || '';
+  const _pv = document.getElementById('sent-preview-text');
+  _pv.textContent = S.sents[i] || '';
+  _pv.classList.remove('pv-fade'); void _pv.offsetWidth; _pv.classList.add('pv-fade');
   updateProg(); saveProg();
   // While idle, warm the sentence the user just navigated to so pressing play
   // there is instant. Debounced so scrubbing only synthesizes the settled spot.

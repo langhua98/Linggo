@@ -59,6 +59,37 @@ body{
 @keyframes vt-fade-out{ from{opacity:1;} to{opacity:0;} }
 @keyframes vt-fade-in{ from{opacity:0;transform:scale(1.012);} to{opacity:1;transform:none;} }
 
+/* ── UI polish batch 2 (motion). All effects are additive and skipped when
+   the user prefers reduced motion. ── */
+@media (prefers-reduced-motion: no-preference){
+  /* Landing: staggered entrance rise (plays once on load / on return home) */
+  #landing > *{ animation: landingRise .6s cubic-bezier(.22,1,.36,1) both; }
+  #landing > *:nth-child(1){ animation-delay:.03s; }
+  #landing > *:nth-child(2){ animation-delay:.09s; }
+  #landing > *:nth-child(3){ animation-delay:.15s; }
+  #landing > *:nth-child(4){ animation-delay:.21s; }
+  #landing > *:nth-child(5){ animation-delay:.27s; }
+  #landing > *:nth-child(6){ animation-delay:.33s; }
+  #landing > *:nth-child(7){ animation-delay:.39s; }
+  #landing > *:nth-child(8){ animation-delay:.45s; }
+  #landing > *:nth-child(9){ animation-delay:.51s; }
+
+  /* Book covers: a soft light-sweep glides across on hover (desktop only,
+     clipped by the cover's overflow:hidden) */
+  .bk-cover::after, .gb-cover::after{
+    content:''; position:absolute; inset:0; pointer-events:none; z-index:2;
+    background:linear-gradient(105deg,transparent 35%,rgba(255,255,255,.28) 50%,transparent 65%);
+    transform:translateX(-130%);
+    transition:transform .7s cubic-bezier(.4,0,.2,1);
+  }
+  .bk:hover .bk-cover::after, .gb-card:hover .gb-cover::after{ transform:translateX(130%); }
+
+  /* Player: sentence preview crossfades when the sentence changes */
+  #sent-preview-text.pv-fade{ animation: previewFade .3s ease; }
+}
+@keyframes landingRise{ from{opacity:0;transform:translateY(18px);} to{opacity:1;transform:none;} }
+@keyframes previewFade{ from{opacity:.3;} to{opacity:1;} }
+
 /* ── TOP BAR ── */
 #topbar{
   position:fixed;top:0;left:0;right:0;z-index:100;
