@@ -2424,7 +2424,7 @@ function clearTtsWord(){
 }
 
 // ── Karaoke sliding underline: a single bar that glides under the current word
-let _kwBarEl = null;
+let _kwBarEl = null, _kwLastTop = null;
 function _moveKwUnderline(wordEl){
   if(!_kwBarEl){
     _kwBarEl = document.createElement('div');
@@ -2432,12 +2432,21 @@ function _moveKwUnderline(wordEl){
     document.body.appendChild(_kwBarEl);
   }
   const r = wordEl.getBoundingClientRect();
+  const newTop = r.bottom - 1;
+  // Same line → smooth horizontal slide (karaoke). Different line / sentence
+  // (or first show) → snap: no diagonal glide across other sentences.
+  const sameLine = _kwLastTop !== null && Math.abs(newTop - _kwLastTop) < 6 && _kwBarEl.style.opacity === '1';
+  _kwBarEl.classList.toggle('snap', !sameLine);
+  _kwLastTop = newTop;
   _kwBarEl.style.left  = r.left + 'px';
-  _kwBarEl.style.top   = (r.bottom - 1) + 'px';
+  _kwBarEl.style.top   = newTop + 'px';
   _kwBarEl.style.width = r.width + 'px';
   _kwBarEl.style.opacity = '1';
 }
-function _hideKwUnderline(){ if(_kwBarEl) _kwBarEl.style.opacity = '0'; }
+function _hideKwUnderline(){
+  if(_kwBarEl){ _kwBarEl.style.opacity = '0'; }
+  _kwLastTop = null;   // next appearance snaps into place instead of sliding
+}
 
 // ── Confetti burst (hand-rolled canvas, zero dependency) ────────────
 function confettiBurst(opts){

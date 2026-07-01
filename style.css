@@ -97,9 +97,12 @@ body{
   background:linear-gradient(90deg,var(--accent),#60a5fa);
   border-radius:2px; box-shadow:0 0 8px rgba(37,99,235,.5);
   opacity:0; pointer-events:none; z-index:90;
-  transition:left .16s cubic-bezier(.4,0,.2,1), top .16s cubic-bezier(.4,0,.2,1),
+  /* top snaps instantly (no diagonal glide across lines); left/width slide
+     smoothly only within a line — toggled in JS. */
+  transition:left .16s cubic-bezier(.4,0,.2,1),
              width .16s cubic-bezier(.4,0,.2,1), opacity .2s ease;
 }
+#kw-underline.snap{ transition:opacity .2s ease; }
 @media (prefers-reduced-motion: reduce){ #kw-underline{ display:none !important; } }
 
 /* Player progress: flowing "liquid" sheen while playing */
