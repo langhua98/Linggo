@@ -1,4 +1,4 @@
-import io, hashlib, struct, threading
+import io, hashlib, struct, threading, json, base64
 import numpy as np, soundfile as sf
 from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,6 +55,44 @@ def tts(
     return Response(content=wav, media_type="audio/wav",
                     headers={"Cache-Control":"public, max-age=86400",
                              "Access-Control-Allow-Origin":"*"})
+
+@app.get("/tts-timed")
+def tts_timed(
+    text:  str   = Query(..., max_length=500),
+    voice: str   = Query("af_heart"),
+    speed: float = Query(1.0, ge=0.5, le=2.0),
+):
+    # Same audio as /tts, plus per-word timestamps from Kokoro's own token
+    # output (result.tokens[].start_ts/.end_ts) so the client can highlight
+    # exactly in sync instead of estimating linearly. Additive endpoint —
+    # /tts and /tts-stream are unchanged, so an old client keeps working.
+    if voice not in VALID_VOICES:
+        voice = "af_heart"
+    ck = hashlib.md5(f"{voice}|{speed:.2f}|{text}".encode()).hexdigest()
+    pipeline = _get_pipeline(voice[0])
+    raw_chunks, words, offset = [], [], 0.0
+    for result in pipeline(text, voice=voice, speed=speed):
+        audio = result.audio
+        if audio is None or len(audio) == 0:
+            continue
+        for t in (getattr(result, "tokens", None) or []):
+            st, en, tx = getattr(t, "start_ts", None), getattr(t, "end_ts", None), getattr(t, "text", None)
+            if st is not None and en is not None and tx:
+                words.append([tx, round(offset + float(st), 3), round(offset + float(en), 3)])
+        raw_chunks.append(audio)
+        offset += len(audio) / 24000.0
+    if not raw_chunks:
+        return Response(status_code=204)
+    combined = np.concatenate(raw_chunks) if len(raw_chunks) > 1 else raw_chunks[0]
+    buf = io.BytesIO()
+    sf.write(buf, combined, 24000, format="WAV", subtype="PCM_16")
+    wav = buf.getvalue()
+    _cache_put(ck, wav)   # shares cache with /tts (same key)
+    return Response(
+        content=json.dumps({"audio": base64.b64encode(wav).decode("ascii"), "words": words}),
+        media_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"},
+    )
 
 @app.get("/tts-stream")
 def tts_stream(
