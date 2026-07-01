@@ -826,23 +826,32 @@ body{
   word-spacing:0.05em;
   cursor:pointer;
   display:inline;
-  border-radius:5px;
-  transition:background .15s;
+  border-radius:6px;
+  transition:background .25s ease, box-shadow .25s ease;
 }
 .sent:hover{ background:rgba(0,0,0,0.04); }
 .night .sent:hover{ background:rgba(255,255,255,0.05); }
 .sent.playing{
-  background:rgba(245,200,50,0.42);
-  border-radius:5px;
-  padding:2px 5px;
-  margin:0 -5px;
+  /* Warm highlighter-pen fill with a soft lift shadow */
+  background:rgba(255,206,74,0.46);
+  border-radius:7px;
+  padding:2px 6px;
+  margin:0 -6px;
+  box-shadow:0 2px 12px rgba(240,168,38,0.22);
   /* Each line gets its own background box — key for line-by-line highlight */
   -webkit-box-decoration-break:clone;
   box-decoration-break:clone;
 }
 .night .sent.playing{
-  background:rgba(245,180,30,0.28);
+  background:rgba(255,190,55,0.24);
+  box-shadow:0 2px 14px rgba(255,175,40,0.16);
 }
+/* Brief "ink settle" pulse when a sentence becomes active (works in both
+   themes via brightness, so it never fights the resting background color) */
+@media (prefers-reduced-motion: no-preference){
+  .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1); }
+}
+@keyframes sentSettle{ from{ filter:brightness(1.18); } to{ filter:brightness(1); } }
 .word{
   display:inline; cursor:pointer;
   border-radius:4px;
