@@ -41,7 +41,9 @@
 }
 
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
-html{height:100%;touch-action:manipulation;} /* manipulation = 禁止双击放大，保留滚动和单击 */
+/* pan-x pan-y = 允许平移滚动，但不含 pinch-zoom 手势（manipulation 反而会保留捏合缩放）；
+   同时和 manipulation 一样去掉双击缩放和 300ms 点击延迟 */
+html{height:100%;touch-action:pan-x pan-y;}
 body{
   font-family:'Nunito',sans-serif;
   background:var(--bg); color:var(--text);

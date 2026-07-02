@@ -3599,6 +3599,16 @@ window.addEventListener('unhandledrejection', e => {
 window.addEventListener('offline', () => toast('已离线，云端功能暂不可用'));
 window.addEventListener('online',  () => toast('网络已恢复'));
 
+// ── 禁止捏合缩放（PWA 应像原生 App，不缩放）
+// iOS Safari 从 10 起故意忽略 viewport 的 user-scalable=no / maximum-scale（无障碍策略，
+// 任何网页都无法通过 meta 标签关闭），CSS touch-action 是唯一真正生效的手段，这里再加
+// gesturestart（Safari 私有事件，捏合手势一开始就触发）兜底，覆盖旧版本对 touch-action
+// 支持不完整的情况。
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('touchmove', e => {
+  if(e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+
 // ── PWA: register service worker
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
