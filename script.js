@@ -2318,7 +2318,10 @@ function dl(name,content,type){
 function jump(i){
   document.querySelectorAll('.sent.playing').forEach(el=>el.classList.remove('playing'));
   clearTtsWord();
-  if(i !== S.idx) S.wordCs = 0;   // 换句时重置逐词位置
+  if(i !== S.idx){
+    S.wordCs = 0;          // 换句时重置逐词位置
+    _hideKwUnderline();    // 隐藏下划线，避免滞留在上一句；新句逐词高亮时会重新出现
+  }
   S.idx = i;
   const el = document.querySelector(`.sent[data-i="${i}"]`);
   if(el){
