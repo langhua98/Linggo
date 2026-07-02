@@ -2424,18 +2424,14 @@ function clearTtsWord(){
 }
 
 // ── Karaoke sliding underline: a single bar that glides under the current word
-let _kwBarEl = null, _kwLastTop = null;
-function _moveKwUnderline(wordEl){
-  if(!_kwBarEl){
-    _kwBarEl = document.createElement('div');
-    _kwBarEl.id = 'kw-underline';
-    document.body.appendChild(_kwBarEl);
-  }
+let _kwBarEl = null, _kwLastTop = null, _kwWordEl = null, _kwScrollHooked = false;
+function _kwPlace(wordEl, forceSnap){
   const r = wordEl.getBoundingClientRect();
   const newTop = r.bottom - 1;
-  // Same line → smooth horizontal slide (karaoke). Different line / sentence
-  // (or first show) → snap: no diagonal glide across other sentences.
-  const sameLine = _kwLastTop !== null && Math.abs(newTop - _kwLastTop) < 6 && _kwBarEl.style.opacity === '1';
+  // Same line → smooth horizontal slide (karaoke). Different line / sentence,
+  // first show, or scroll-follow → snap: no diagonal glide / no lag behind scroll.
+  const sameLine = !forceSnap && _kwLastTop !== null &&
+                   Math.abs(newTop - _kwLastTop) < 6 && _kwBarEl.style.opacity === '1';
   _kwBarEl.classList.toggle('snap', !sameLine);
   _kwLastTop = newTop;
   _kwBarEl.style.left  = r.left + 'px';
@@ -2443,9 +2439,33 @@ function _moveKwUnderline(wordEl){
   _kwBarEl.style.width = r.width + 'px';
   _kwBarEl.style.opacity = '1';
 }
+function _moveKwUnderline(wordEl){
+  if(!_kwBarEl){
+    _kwBarEl = document.createElement('div');
+    _kwBarEl.id = 'kw-underline';
+    document.body.appendChild(_kwBarEl);
+  }
+  _kwWordEl = wordEl;
+  // Follow the page as it auto-scrolls so the bar stays under the word instead
+  // of stranding at its old viewport position. Capture-phase catches scroll on
+  // body or any inner container; rAF-throttled; snaps so there's no lag.
+  if(!_kwScrollHooked){
+    _kwScrollHooked = true;
+    let raf = 0;
+    document.addEventListener('scroll', () => {
+      if(raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        if(_kwWordEl && _kwBarEl && _kwBarEl.style.opacity === '1') _kwPlace(_kwWordEl, true);
+      });
+    }, { passive: true, capture: true });
+  }
+  _kwPlace(wordEl, false);
+}
 function _hideKwUnderline(){
   if(_kwBarEl){ _kwBarEl.style.opacity = '0'; }
   _kwLastTop = null;   // next appearance snaps into place instead of sliding
+  _kwWordEl = null;    // stop scroll-follow while hidden
 }
 
 // ── Confetti burst (hand-rolled canvas, zero dependency) ────────────
