@@ -860,8 +860,10 @@ body{
   border-radius:9px;
   transition:background .25s ease, box-shadow .25s ease;
 }
-.sent:hover{ background:rgba(0,0,0,0.04); }
-.night .sent:hover{ background:rgba(255,255,255,0.05); }
+@media (hover: hover){
+  .sent:hover{ background:rgba(0,0,0,0.04); }
+  .night .sent:hover{ background:rgba(255,255,255,0.05); }
+}
 .sent.playing{
   /* Warm highlighter-pen fill with a soft lift shadow (padding/margin come from
      base .sent so becoming active causes no layout shift) */
@@ -884,7 +886,7 @@ body{
   transition:background .1s,box-shadow .1s;
   padding:1px 1px;
 }
-.word:hover{ background:rgba(37,99,235,0.11); }
+@media (hover: hover){ .word:hover{ background:rgba(37,99,235,0.11); } }
 .word.saved{ border-bottom:2px dashed #F97316; }
 /* clicked word: blue rounded box */
 .word.active{

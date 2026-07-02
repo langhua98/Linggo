@@ -2385,7 +2385,13 @@ function jump(i){
     el.classList.add('playing');
     // Inject words so highlighting works
     injectWords(el);
-    el.scrollIntoView({behavior:'smooth', block:'center'});
+    // Only recenter when the sentence is off-screen (behind the top bar or the
+    // player) — otherwise the smooth scroll fires every sentence and fights the
+    // user's own scrolling during playback.
+    const r = el.getBoundingClientRect();
+    if(r.top < 60 || r.bottom > window.innerHeight - 120){
+      el.scrollIntoView({behavior:'smooth', block:'center'});
+    }
   }
   updateProg(); saveProg();
   // While idle, warm the sentence the user just navigated to so pressing play
