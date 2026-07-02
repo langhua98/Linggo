@@ -1507,12 +1507,13 @@ let touchActive = false; // distinguish touch vs mouse
 let touchStartX = 0, touchStartY = 0, touchMoved = false;
 
 // ── MOBILE (touch) ──────────────────────────
-// Non-passive touchstart: e.preventDefault() blocks iOS long-press menu
+// Passive touchstart: iOS long-press menu / text-selection callout is already
+// suppressed via CSS on #content (-webkit-touch-callout: none; user-select: none),
+// so no preventDefault() is needed here — keeps scrolling on the compositor thread.
 area.addEventListener('touchstart', function(e){
   const sentEl = e.target.closest('.sent');
   if(!sentEl) return;
 
-  e.preventDefault(); // ← blocks browser text-selection callout
   touchActive = true;
   const _t0 = e.touches[0];
   if(_t0){ touchStartX = _t0.clientX; touchStartY = _t0.clientY; }
@@ -1542,7 +1543,7 @@ area.addEventListener('touchstart', function(e){
       S.idx = i; jump(i); playCurrent();
     }, 500);
   }
-}, { passive: false }); // ← must be non-passive to call preventDefault
+}, { passive: true });
 
 area.addEventListener('touchmove', (e)=>{
   const t = e.touches[0];
@@ -3587,13 +3588,10 @@ window.addEventListener('online',  () => toast('网络已恢复'));
 
 // ── 禁止捏合缩放（PWA 应像原生 App，不缩放）
 // iOS Safari 从 10 起故意忽略 viewport 的 user-scalable=no / maximum-scale（无障碍策略，
-// 任何网页都无法通过 meta 标签关闭），CSS touch-action 是唯一真正生效的手段，这里再加
-// gesturestart（Safari 私有事件，捏合手势一开始就触发）兜底，覆盖旧版本对 touch-action
-// 支持不完整的情况。
+// 任何网页都无法通过 meta 标签关闭），CSS touch-action（html 上的 pan-x pan-y）配合
+// gesturestart（Safari 私有事件，仅多指捏合手势触发，不影响单指滚动）已足以拦截捏合
+// 缩放，无需额外注册会阻塞合成线程滚动的 document 级 touchmove 监听。
 document.addEventListener('gesturestart', e => e.preventDefault());
-document.addEventListener('touchmove', e => {
-  if(e.touches.length > 1) e.preventDefault();
-}, { passive: false });
 
 // ── PWA: register service worker
 if ('serviceWorker' in navigator) {
