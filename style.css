@@ -85,28 +85,10 @@ body{
     transition:transform .7s cubic-bezier(.4,0,.2,1);
   }
   .bk:hover .bk-cover::after, .gb-card:hover .gb-cover::after{ transform:translateX(130%); }
-
-  /* Player: sentence preview crossfades when the sentence changes */
-  #sent-preview-text.pv-fade{ animation: previewFade .3s ease; }
 }
 @keyframes landingRise{ from{opacity:0;transform:translateY(18px);} to{opacity:1;transform:none;} }
-@keyframes previewFade{ from{opacity:.3;} to{opacity:1;} }
 
 /* ── UI polish batch 3 (effects) ── */
-/* Karaoke sliding underline that glides under the current TTS word */
-#kw-underline{
-  position:fixed; left:0; top:0; width:0; height:3px;
-  background:linear-gradient(90deg,var(--accent),#60a5fa);
-  border-radius:2px; box-shadow:0 0 8px rgba(37,99,235,.5);
-  opacity:0; pointer-events:none; z-index:90;
-  /* top snaps instantly (no diagonal glide across lines); left/width slide
-     smoothly only within a line — toggled in JS. */
-  transition:left .16s cubic-bezier(.4,0,.2,1),
-             width .16s cubic-bezier(.4,0,.2,1), opacity .2s ease;
-}
-#kw-underline.snap{ transition:opacity .2s ease; }
-@media (prefers-reduced-motion: reduce){ #kw-underline{ display:none !important; } }
-
 /* Player progress: flowing "liquid" sheen while playing */
 @media (prefers-reduced-motion: no-preference){
   #player.playing #prog-fill{
@@ -834,7 +816,7 @@ body{
   padding:82px 24px calc(var(--player-h) + 40px);
 }
 .para{
-  margin-bottom:1.6em;
+  margin-bottom:0.35em;   /* de-emphasize paragraphs — sentences carry the rhythm */
 }
 /* Prevent browser native text selection & long-press menu on reading area */
 #content{
@@ -866,27 +848,24 @@ body{
 .sent{
   font-family:'Lora',serif;
   font-size:var(--font-read);
-  line-height:2.05;
+  line-height:1.8;
   color:var(--text);
   letter-spacing:0.013em;
   word-spacing:0.05em;
   cursor:pointer;
-  display:inline;
-  border-radius:6px;
+  display:block;              /* one sentence per line — less dense than dense paragraphs */
+  padding:4px 10px;
+  margin:0 -10px 0.5em;       /* uniform box (so .playing adds no shift) + gap between sentences */
+  border-radius:9px;
   transition:background .25s ease, box-shadow .25s ease;
 }
 .sent:hover{ background:rgba(0,0,0,0.04); }
 .night .sent:hover{ background:rgba(255,255,255,0.05); }
 .sent.playing{
-  /* Warm highlighter-pen fill with a soft lift shadow */
+  /* Warm highlighter-pen fill with a soft lift shadow (padding/margin come from
+     base .sent so becoming active causes no layout shift) */
   background:rgba(255,206,74,0.46);
-  border-radius:7px;
-  padding:2px 6px;
-  margin:0 -6px;
   box-shadow:0 2px 12px rgba(240,168,38,0.22);
-  /* Each line gets its own background box — key for line-by-line highlight */
-  -webkit-box-decoration-break:clone;
-  box-decoration-break:clone;
 }
 .night .sent.playing{
   background:rgba(255,190,55,0.24);
@@ -1851,53 +1830,32 @@ body{
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
 /* ── PLAYER ── */
-:root{ --player-h: 148px; }
+:root{ --player-h: 116px; }
 #player{
   position:fixed;bottom:0;left:0;right:0;z-index:100;
   background:var(--player-bg);
   border-top:1px solid var(--border);
   backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
   box-shadow:0 -4px 24px var(--shadow);
-  padding:6px 20px 8px;
+  padding:10px 20px 8px;
   padding-bottom:max(8px,env(safe-area-inset-bottom));
-}
-/* ── sentence preview ── */
-#sent-preview{
-  display:flex;align-items:flex-start;gap:8px;
-  margin-bottom:6px;min-height:18px;
-}
-#sent-preview::before{
-  content:'"';
-  font-family:'Lora',serif;
-  font-size:28px;line-height:.85;
-  color:var(--accent);opacity:.5;
-  flex-shrink:0;margin-top:-2px;
-}
-#sent-preview-text{
-  font-family:'Lora',serif;
-  font-size:13.5px;color:var(--text-2);
-  line-height:1.55;flex:1;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
 }
 /* ── progress ── */
 .prog-row{
-  display:flex;align-items:center;gap:10px;
-  margin-bottom:6px;
+  display:flex;align-items:center;gap:12px;
+  margin-bottom:10px;
 }
 #prog-wrap{
-  flex:1;height:4px;background:var(--border);border-radius:4px;cursor:pointer;
-  transition:transform .15s ease;
+  flex:1;height:9px;background:var(--border);border-radius:6px;cursor:pointer;
 }
-/* Desktop affordance: seek bar thickens on hover (scaleY avoids reflow) */
-@media (hover:hover){ #prog-wrap:hover{ transform:scaleY(1.7); } }
 #prog-fill{
   height:100%;
   background:linear-gradient(90deg,var(--accent),#3b82f6);
-  border-radius:4px;transition:width .25s;pointer-events:none;
-  box-shadow:0 0 8px rgba(37,99,235,0.4);
+  border-radius:6px;transition:width .25s;pointer-events:none;
+  box-shadow:0 1px 8px rgba(37,99,235,0.45);
 }
-.night #prog-fill{box-shadow:0 0 8px rgba(96,165,250,0.5);}
-#prog-pct{ font-size:11px;font-weight:700;color:var(--text-3);width:28px;text-align:right; }
+.night #prog-fill{box-shadow:0 1px 8px rgba(96,165,250,0.5);}
+#prog-pct{ font-size:13px;font-weight:800;color:var(--text-2);width:38px;text-align:right; }
 /* ── controls — prev/play/next + speed all on one row ── */
 .ctrl-row{
   display:flex;align-items:center;justify-content:space-evenly;

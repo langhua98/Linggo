@@ -2318,10 +2318,7 @@ function dl(name,content,type){
 function jump(i){
   document.querySelectorAll('.sent.playing').forEach(el=>el.classList.remove('playing'));
   clearTtsWord();
-  if(i !== S.idx){
-    S.wordCs = 0;          // 换句时重置逐词位置
-    _hideKwUnderline();    // 隐藏下划线，避免滞留在上一句；新句逐词高亮时会重新出现
-  }
+  if(i !== S.idx) S.wordCs = 0;   // 换句时重置逐词位置
   S.idx = i;
   const el = document.querySelector(`.sent[data-i="${i}"]`);
   if(el){
@@ -2330,9 +2327,6 @@ function jump(i){
     injectWords(el);
     el.scrollIntoView({behavior:'smooth', block:'center'});
   }
-  const _pv = document.getElementById('sent-preview-text');
-  _pv.textContent = S.sents[i] || '';
-  _pv.classList.remove('pv-fade'); void _pv.offsetWidth; _pv.classList.add('pv-fade');
   updateProg(); saveProg();
   // While idle, warm the sentence the user just navigated to so pressing play
   // there is instant. Debounced so scrubbing only synthesizes the settled spot.
@@ -2426,50 +2420,6 @@ function clearTtsWord(){
   _cnClearHl();
 }
 
-// ── Karaoke sliding underline: a single bar that glides under the current word
-let _kwBarEl = null, _kwLastTop = null, _kwWordEl = null, _kwScrollHooked = false;
-function _kwPlace(wordEl, forceSnap){
-  const r = wordEl.getBoundingClientRect();
-  const newTop = r.bottom - 1;
-  // Same line → smooth horizontal slide (karaoke). Different line / sentence,
-  // first show, or scroll-follow → snap: no diagonal glide / no lag behind scroll.
-  const sameLine = !forceSnap && _kwLastTop !== null &&
-                   Math.abs(newTop - _kwLastTop) < 6 && _kwBarEl.style.opacity === '1';
-  _kwBarEl.classList.toggle('snap', !sameLine);
-  _kwLastTop = newTop;
-  _kwBarEl.style.left  = r.left + 'px';
-  _kwBarEl.style.top   = newTop + 'px';
-  _kwBarEl.style.width = r.width + 'px';
-  _kwBarEl.style.opacity = '1';
-}
-function _moveKwUnderline(wordEl){
-  if(!_kwBarEl){
-    _kwBarEl = document.createElement('div');
-    _kwBarEl.id = 'kw-underline';
-    document.body.appendChild(_kwBarEl);
-  }
-  _kwWordEl = wordEl;
-  // Follow the page as it auto-scrolls so the bar stays under the word instead
-  // of stranding at its old viewport position. Capture-phase catches scroll on
-  // body or any inner container; rAF-throttled; snaps so there's no lag.
-  if(!_kwScrollHooked){
-    _kwScrollHooked = true;
-    let raf = 0;
-    document.addEventListener('scroll', () => {
-      if(raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        if(_kwWordEl && _kwBarEl && _kwBarEl.style.opacity === '1') _kwPlace(_kwWordEl, true);
-      });
-    }, { passive: true, capture: true });
-  }
-  _kwPlace(wordEl, false);
-}
-function _hideKwUnderline(){
-  if(_kwBarEl){ _kwBarEl.style.opacity = '0'; }
-  _kwLastTop = null;   // next appearance snaps into place instead of sliding
-  _kwWordEl = null;    // stop scroll-follow while hidden
-}
 
 // ── Confetti burst (hand-rolled canvas, zero dependency) ────────────
 function confettiBurst(opts){
@@ -2566,7 +2516,6 @@ function highlightWordAt(sentEl, charIdx){
   }
   if(best){
     best.classList.add('tts-word');
-    _moveKwUnderline(best);
     S.wordCs = +best.dataset.charStart;   // 记录当前词位置，供逐词前进/后退
     // 词对齐：朗读到的英文词 → 中文译文里对应字同步高亮
     if(S.bilin) _cnAlignHighlight(+sentEl.dataset.i, +best.dataset.charStart);
@@ -2677,7 +2626,6 @@ function togglePlay(){
 function setIcon(playing){
   const _pl = document.getElementById('player');
   if(_pl) _pl.classList.toggle('playing', playing);   // drives progress-bar sheen
-  if(!playing) _hideKwUnderline();
   // Lottie play↔pause morph when mounted; SVG swap as offline fallback.
   if(_licons.play){ Licon.setState(_licons.play, playing); return; }
   const ico = document.getElementById('play-ico');
@@ -4240,7 +4188,6 @@ function kokStop(){
   _kokSoftPaused = false;
   kokSession++;
   _kokWaitHide();   // drop any wait indicator — request is being aborted
-  _hideKwUnderline();
   // Abort all in-flight /tts prefetch requests so the HF Space (2 vCPU) is freed
   // immediately — otherwise a voice/speed switch queues behind ~4 stale requests
   // (~20 s) and looks like a cold start.
