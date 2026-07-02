@@ -133,7 +133,7 @@ body{
 
 /* Landing: particle canvas sits behind the hero content */
 #landing{ position:relative; }
-#landing-particles{ position:absolute; inset:0; z-index:0; pointer-events:none; }
+#landing-particles{ position:absolute; inset:0; width:100%; height:100%; z-index:0; pointer-events:none; }
 #landing > *:not(#landing-particles){ position:relative; z-index:1; }
 
 /* ── TOP BAR ── */
