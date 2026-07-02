@@ -1504,6 +1504,7 @@ const area = document.getElementById('content');
 let pressTimer = null;
 let pressFired = false;
 let touchActive = false; // distinguish touch vs mouse
+let touchStartX = 0, touchStartY = 0, touchMoved = false;
 
 // ── MOBILE (touch) ──────────────────────────
 // Non-passive touchstart: e.preventDefault() blocks iOS long-press menu
@@ -1513,6 +1514,9 @@ area.addEventListener('touchstart', function(e){
 
   e.preventDefault(); // ← blocks browser text-selection callout
   touchActive = true;
+  const _t0 = e.touches[0];
+  if(_t0){ touchStartX = _t0.clientX; touchStartY = _t0.clientY; }
+  touchMoved = false;
   injectWords(sentEl);
 
   pressFired = false;
@@ -1540,14 +1544,18 @@ area.addEventListener('touchstart', function(e){
   }
 }, { passive: false }); // ← must be non-passive to call preventDefault
 
-area.addEventListener('touchmove', ()=>{
-  clearTimeout(pressTimer); // cancel long-press if finger moves (scroll)
+area.addEventListener('touchmove', (e)=>{
+  const t = e.touches[0];
+  if(t && (Math.abs(t.clientX - touchStartX) > 10 || Math.abs(t.clientY - touchStartY) > 10)){
+    touchMoved = true;
+    clearTimeout(pressTimer); // cancel long-press once it's clearly a scroll
+  }
 }, { passive: true });
 
 area.addEventListener('touchend', function(e){
   clearTimeout(pressTimer);
   touchActive = true;
-  if(!pressFired){
+  if(!pressFired && !touchMoved){
     // 用 elementFromPoint 而非 e.target：
     // touchstart 时 injectWords 重写了 DOM，e.target 还是旧的 .sent 节点，
     // elementFromPoint 拿到的才是重写后实际在手指下的 .word span
@@ -2232,11 +2240,41 @@ document.addEventListener('click', e => {
     document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
   }
 });
+// Read a single word with Kokoro (neural). Returns true if it played, false so
+// the caller falls back to system SpeechSynthesis. Reuses the gesture-blessed
+// _kokAudioEl (so iOS allows playback after the async synth) and only runs when
+// no sentence is currently playing, to avoid hijacking the reading player.
+async function _kokSpeakWord(word){
+  if(!kokActive || !kokTTSReady ||
+     KOK_SERVER_URL === 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space') return false;
+  if(S.playing || S.paused) return false;
+  _unlockAudio();  // bless _kokAudioEl within the click gesture (iOS requirement)
+  let url = null;
+  try {
+    url = await Promise.race([
+      _kokServerSynth(word).catch(()=>null),
+      new Promise(r => setTimeout(()=>r(null), 3500)),  // don't wait on a cold server
+    ]);
+  } catch(e){ return false; }
+  if(!url || !_kokAudioEl) return false;
+  try {
+    const a = _kokAudioEl;
+    try{ a.pause(); }catch(e){}
+    a.preservesPitch = a.mozPreservesPitch = a.webkitPreservesPitch = true;
+    a.playbackRate = 0.9;   // slightly slower for word clarity
+    a.src = url;
+    await a.play();
+    return true;
+  } catch(e){ return false; }
+}
 function speakWord(w){
-  const u = new SpeechSynthesisUtterance(w);
-  u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
-  if(!S.playing && !S.paused) synth.cancel();
-  synth.speak(u);
+  _kokSpeakWord(w).then(ok => {
+    if(ok) return;
+    const u = new SpeechSynthesisUtterance(w);
+    u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
+    if(!S.playing && !S.paused) synth.cancel();
+    synth.speak(u);
+  });
 }
 
 // ═══════════════════════════════════════════
@@ -3974,7 +4012,7 @@ function _edgePlayUrl(url, sentEl, startChar = 0, words = null){
       const sentText = sentEl.textContent;
       const tl = sentText.length;
       const wordEls = [...sentEl.querySelectorAll('.word[data-char-start]')];
-      const LEAD = 0.05;   // seconds — perceptual sync compensation
+      const LEAD = 0.12;   // seconds — perceptual sync compensation (120 ms)
       // Exact path: map each Kokoro token to a char offset in the sentence
       // (located in order) so we can drive the existing char→word highlight
       // by real timestamps. Null when the server returned no word timings.
