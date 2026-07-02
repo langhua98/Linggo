@@ -2169,6 +2169,7 @@ async function onWordClick(el){
 
   // position then show
   positionPopup(el);
+  _stopWordAudio();
   wpop.classList.add('vis');
   if(_licons && _licons.learn) _licons.learn.goToAndStop(0, true);   // reset heart to empty
 
@@ -2211,13 +2212,12 @@ async function onWordClick(el){
 }
 
 document.getElementById('wp-close').addEventListener('click', () => {
+  _stopWordAudio();
   wpop.classList.remove('vis');
   document.querySelectorAll('.word.active').forEach(w => w.classList.remove('active'));
 });
 document.getElementById('wp-spk').addEventListener('click', () => {
-  const w = document.getElementById('wp-word').textContent;
-  if(wpop._audio) new Audio(wpop._audio).play().catch(() => speakWord(w));
-  else speakWord(w);
+  playWordAudio(document.getElementById('wp-word').textContent, wpop._audio);
 });
 document.getElementById('wp-copy').addEventListener('click', () => {
   const word = document.getElementById('wp-word').textContent;
@@ -2231,51 +2231,72 @@ document.getElementById('wp-learn').addEventListener('click', () => {
   document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
 });
 document.getElementById('wp-play').addEventListener('click', () => {
-  const w = document.getElementById('wp-word').textContent;
-  if(wpop._audio) new Audio(wpop._audio).play().catch(()=> speakWord(w));
-  else speakWord(w);
+  playWordAudio(document.getElementById('wp-word').textContent, wpop._audio);
 });
 document.addEventListener('click', e => {
   if(!wpop.contains(e.target) && !e.target.classList.contains('word')){
+    _stopWordAudio();
     wpop.classList.remove('vis');
     document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
   }
 });
-// Read a single word with Kokoro (neural). Returns true if it played, false so
-// the caller falls back to system SpeechSynthesis. Reuses the gesture-blessed
-// _kokAudioEl (so iOS allows playback after the async synth) and only runs when
-// no sentence is currently playing, to avoid hijacking the reading player.
-async function _kokSpeakWord(word){
-  if(!kokActive || !kokTTSReady ||
-     KOK_SERVER_URL === 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space') return false;
-  if(S.playing || S.paused) return false;
-  _unlockAudio();  // bless _kokAudioEl within the click gesture (iOS requirement)
-  let url = null;
-  try {
-    url = await Promise.race([
-      _kokServerSynth(word).catch(()=>null),
-      new Promise(r => setTimeout(()=>r(null), 3500)),  // don't wait on a cold server
-    ]);
-  } catch(e){ return false; }
-  if(!url || !_kokAudioEl) return false;
-  try {
-    const a = _kokAudioEl;
-    try{ a.pause(); }catch(e){}
-    a.preservesPitch = a.mozPreservesPitch = a.webkitPreservesPitch = true;
-    a.playbackRate = 0.9;   // slightly slower for word clarity
-    a.src = url;
-    await a.play();
-    return true;
-  } catch(e){ return false; }
+// ── Word-card audio: one channel so a new play always stops the previous one
+//    (no residual overlap); priority Kokoro neural → dictionary MP3 → system.
+//    Uses a dedicated <audio> element (separate from the reading player's
+//    _kokAudioEl) so word playback never disrupts sentence reading.
+let _wordAudioEl = null;
+let _wordSeq = 0;
+let _wordUnlocked = false;
+
+function _stopWordAudio(){
+  _wordSeq++;                                    // invalidate any in-flight async play
+  if(_wordAudioEl){ try{ _wordAudioEl.pause(); }catch(e){} }
+  if(!S.playing && !S.paused){ try{ window.speechSynthesis.cancel(); }catch(e){} }
 }
-function speakWord(w){
-  _kokSpeakWord(w).then(ok => {
-    if(ok) return;
-    const u = new SpeechSynthesisUtterance(w);
-    u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
-    if(!S.playing && !S.paused) synth.cancel();
-    synth.speak(u);
-  });
+
+async function playWordAudio(word, mp3){
+  const mySeq = ++_wordSeq;
+  if(_wordAudioEl){ try{ _wordAudioEl.pause(); }catch(e){} }
+  if(!S.playing && !S.paused){ try{ window.speechSynthesis.cancel(); }catch(e){} }
+  if(!_wordAudioEl){
+    _wordAudioEl = new Audio();
+    _wordAudioEl.setAttribute('playsinline','');
+  }
+  if(!_wordUnlocked){                            // bless the element inside the click gesture (iOS)
+    _wordUnlocked = true;
+    try{
+      _wordAudioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA';
+      _wordAudioEl.play().catch(()=>{});
+    }catch(e){}
+  }
+  const playUrl = async (url, rate) => {
+    if(_wordSeq !== mySeq) return false;
+    try{
+      _wordAudioEl.pause();
+      _wordAudioEl.preservesPitch = _wordAudioEl.mozPreservesPitch = _wordAudioEl.webkitPreservesPitch = true;
+      _wordAudioEl.playbackRate = rate;
+      _wordAudioEl.src = url;
+      await _wordAudioEl.play();
+      return true;
+    }catch(e){ return false; }
+  };
+  // 1) Kokoro neural — priority when enabled
+  if(kokActive && kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+    const url = await Promise.race([
+      _kokServerSynth(word).catch(()=>null),
+      new Promise(r => setTimeout(()=>r(null), 3500)),   // don't wait on a cold server
+    ]);
+    if(_wordSeq !== mySeq) return;                       // a newer word was clicked → abandon
+    if(url && await playUrl(url, 0.95)) return;
+  }
+  // 2) Dictionary MP3
+  if(mp3 && _wordSeq === mySeq && await playUrl(mp3, 1)) return;
+  // 3) System voice fallback
+  if(_wordSeq !== mySeq) return;
+  const u = new SpeechSynthesisUtterance(word);
+  u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
+  try{ window.speechSynthesis.cancel(); }catch(e){}
+  window.speechSynthesis.speak(u);
 }
 
 // ═══════════════════════════════════════════
