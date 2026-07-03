@@ -2161,11 +2161,11 @@ body{
    (after the cover fly-in settles). Clipped by overflow:hidden. */
 .bprev-cover-wrap::after{
   content:'';position:absolute;inset:0;pointer-events:none;z-index:2;
-  background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.45) 50%,transparent 70%);
+  background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.55) 50%,transparent 70%);
   transform:translateX(-140%);
 }
 @media (prefers-reduced-motion: no-preference){
-  #book-prev.open .bprev-cover-wrap::after{ animation:coverShine .85s cubic-bezier(.4,0,.2,1) .45s 1; }
+  .bprev-cover-wrap.shine::after{ animation:coverShine .95s cubic-bezier(.4,0,.2,1) 1; }
 }
 @keyframes coverShine{ from{transform:translateX(-140%);} to{transform:translateX(140%);} }
 .bprev-fb{

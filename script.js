@@ -818,6 +818,12 @@ function openBookPreview(book, cardEl, opts){
   // carries `book-cover` in each snapshot (a dup would abort the transition).
   const _cardCover  = cardEl && cardEl.querySelector('.bk-cover, .gb-cover');
   const _sheetCover = sheet.querySelector('.bprev-cover-wrap');
+  const _shineCover = () => {
+    if(!_sheetCover) return;
+    _sheetCover.classList.remove('shine');
+    void _sheetCover.offsetWidth;   // reflow so the animation restarts each open
+    _sheetCover.classList.add('shine');
+  };
   const _doOpen = () => { overlay.classList.add('vis'); sheet.classList.add('open'); };
   if(document.startViewTransition && _cardCover && _sheetCover &&
      !matchMedia('(prefers-reduced-motion: reduce)').matches){
@@ -830,9 +836,11 @@ function openBookPreview(book, cardEl, opts){
     vt.finished.finally(() => {
       _cardCover.style.viewTransitionName = '';
       _sheetCover.style.viewTransitionName = '';
+      setTimeout(_shineCover, 90);
     });
   } else {
     _doOpen();
+    setTimeout(_shineCover, 340);
   }
 
   fetchBookDesc(book);
@@ -841,6 +849,8 @@ function openBookPreview(book, cardEl, opts){
 function closeBookPreview(){
   document.getElementById('book-prev-overlay').classList.remove('vis');
   document.getElementById('book-prev').classList.remove('open');
+  const _sc = document.querySelector('.bprev-cover-wrap');
+  if(_sc) _sc.classList.remove('shine');
   _previewBook = null;
 }
 
