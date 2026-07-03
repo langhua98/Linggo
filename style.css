@@ -203,6 +203,13 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .night #landing{
   background:radial-gradient(ellipse at 38% 28%, #1a1f40 0%, #1a1428 32%, #141210 68%);
 }
+/* 夜间提亮色停，避免深底发闷 */
+.night #landing h1{
+  background:linear-gradient(115deg,#60a5fa,#818cf8,#a78bfa,#93c5fd,#60a5fa);
+  background-size:300% 100%;background-position:0% 50%;
+  /* background 简写会重置 clip，必须补回，否则夜间标题变色块 */
+  -webkit-background-clip:text;background-clip:text;
+}
 .landing-logo{
   width:88px;height:88px;
   border-radius:22px;
@@ -213,9 +220,18 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   font-family:'Lora',serif;
   font-size:clamp(30px,7vw,48px);font-weight:700;
   line-height:1.1;margin-bottom:6px;
-  background:linear-gradient(150deg,#1d4ed8 0%,#4f46e5 55%,#7c3aed 100%);
+  background:linear-gradient(115deg,#1d4ed8,#4f46e5,#7c3aed,#2563eb,#1d4ed8);
+  background-size:300% 100%;background-position:0% 50%;
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;
   background-clip:text;
+}
+/* 极光流动：首尾同色，往返播放不跳变 */
+@keyframes auroraFlow{
+  0%{background-position:0% 50%;}
+  100%{background-position:100% 50%;}
+}
+@media (prefers-reduced-motion: no-preference){
+  #landing h1{animation:auroraFlow 8s ease-in-out infinite alternate;}
 }
 .landing-tagline{
   font-size:13px;font-weight:700;letter-spacing:.15em;
