@@ -61,6 +61,12 @@ body{
 @keyframes vt-fade-out{ from{opacity:1;} to{opacity:0;} }
 @keyframes vt-fade-in{ from{opacity:0;transform:scale(1.012);} to{opacity:1;transform:none;} }
 
+/* ── Night-mode circular reveal — overrides the crossfade above while the
+   toggle's own clip-path animation (driven from JS) plays instead ── */
+html.nt-reveal::view-transition-old(root){ animation:none; }
+html.nt-reveal::view-transition-new(root){ animation:none; mix-blend-mode:normal; }
+html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
+
 /* ── UI polish batch 2 (motion). All effects are additive and skipped when
    the user prefers reduced motion. ── */
 @media (prefers-reduced-motion: no-preference){
@@ -157,6 +163,23 @@ body{
 .tbtn:hover{background:var(--accent-2);color:var(--accent);transform:scale(1.08);}
 .tbtn:active{transform:scale(.92);}
 .tbtn svg{width:26px;height:26px;}
+
+/* ── 生词飞入动画：单词从原位置弧线飞向生词本按钮 ── */
+.fly-word{
+  position:fixed; top:0; left:0; z-index:6000; pointer-events:none;
+  font-family:'Nunito',sans-serif; font-weight:700; font-size:16px;
+  color:var(--accent); text-shadow:0 1px 6px rgba(37,99,235,0.35);
+  will-change:transform;
+}
+.night .fly-word{ text-shadow:0 1px 8px rgba(96,165,250,0.45); }
+@media (prefers-reduced-motion: no-preference){
+  #voc-tbtn.voc-pop{ animation:vocPop .45s cubic-bezier(.34,1.5,.64,1); }
+}
+@keyframes vocPop{
+  0%{ transform:scale(1); color:var(--text-2); }
+  40%{ transform:scale(1.3); color:var(--accent); }
+  100%{ transform:scale(1); color:var(--text-2); }
+}
 
 /* ── Lottie micro-interaction icons (licon.js) ── */
 .licon{display:inline-flex;align-items:center;justify-content:center;line-height:0;}
@@ -875,11 +898,15 @@ body{
   box-shadow:0 2px 14px rgba(255,175,40,0.16);
 }
 /* Brief "ink settle" pulse when a sentence becomes active (works in both
-   themes via brightness, so it never fights the resting background color) */
+   themes via brightness, so it never fights the resting background color),
+   followed by a slow breathing glow on the shadow while it stays active */
 @media (prefers-reduced-motion: no-preference){
-  .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1); }
+  .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1), sentBreathe 2.6s ease-in-out .4s infinite alternate; }
+  .night .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1), sentBreatheN 2.6s ease-in-out .4s infinite alternate; }
 }
 @keyframes sentSettle{ from{ filter:brightness(1.18); } to{ filter:brightness(1); } }
+@keyframes sentBreathe{ from{ box-shadow:0 2px 12px rgba(240,168,38,0.22); } to{ box-shadow:0 3px 22px rgba(240,168,38,0.42); } }
+@keyframes sentBreatheN{ from{ box-shadow:0 2px 14px rgba(255,175,40,0.16); } to{ box-shadow:0 3px 24px rgba(255,175,40,0.34); } }
 .word{
   display:inline; cursor:pointer;
   border-radius:4px;
@@ -895,12 +922,20 @@ body{
   outline-offset:2px;
   border-radius:4px;
 }
-/* TTS currently reading word: darker solid box */
+/* TTS currently reading word: darker solid box + soft outer glow */
 .word.tts-word{
   background:rgba(37,99,235,0.22);
-  border-radius:3px;
-  box-shadow:0 0 0 2px rgba(37,99,235,0.55);
+  border-radius:5px;
+  box-shadow:0 0 0 2px rgba(37,99,235,0.55), 0 0 0 3px rgba(37,99,235,0.10), 0 0 14px rgba(37,99,235,0.35);
 }
+.night .word.tts-word{
+  background:rgba(96,165,250,0.28);
+  box-shadow:0 0 0 2px rgba(96,165,250,0.6), 0 0 0 3px rgba(96,165,250,0.14), 0 0 16px rgba(96,165,250,0.45);
+}
+@media (prefers-reduced-motion: no-preference){
+  .word.tts-word{ animation: ttsWordIn .18s ease; }
+}
+@keyframes ttsWordIn{ from{ filter:brightness(1.35); } to{ filter:brightness(1); } }
 .tl-line{
   display:block;
   font-size:14px; color:var(--text-2);

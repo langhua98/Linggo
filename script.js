@@ -2235,7 +2235,9 @@ document.getElementById('wp-copy').addEventListener('click', () => {
 });
 document.getElementById('wp-learn').addEventListener('click', () => {
   const word = S.curWordData?.word; if(!word) return;
+  const fromEl = document.querySelector('.word.active') || document.getElementById('wp-word');
   addVocab(word, wpop._meaning||'');
+  flyWordToVocab(word, fromEl?.getBoundingClientRect());
   toast('「'+word+'」已加入生词本');
   wpop.classList.remove('vis');
   document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
@@ -2320,6 +2322,33 @@ function addVocab(word, meaning){
   area.querySelectorAll(`.word[data-w="${word}"]`).forEach(el=>el.classList.add('saved'));
   renderVoc(); saveProg(); toast(`已收藏 "${word}"`);
   cloudAddVocab(item); // 云端同步（静默）
+}
+// ── 生词飞入动画 ──
+function flyWordToVocab(word, fromRect){
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const target = document.getElementById('voc-tbtn');
+  if(!target || target.offsetParent === null) return;
+  const tRect = target.getBoundingClientRect();
+  if(!fromRect || !tRect.width) return;
+  const fromX = fromRect.left + fromRect.width/2, fromY = fromRect.top + fromRect.height/2;
+  const toX = tRect.left + tRect.width/2, toY = tRect.top + tRect.height/2;
+  const dx = toX - fromX, dy = toY - fromY;
+  const el = document.createElement('span');
+  el.className = 'fly-word';
+  el.textContent = word;
+  el.style.left = fromX + 'px';
+  el.style.top = fromY + 'px';
+  document.body.appendChild(el);
+  const anim = el.animate([
+    { transform:'translate(-50%,-50%) translate(0px,0px) scale(1)', opacity:1 },
+    { transform:`translate(-50%,-50%) translate(${dx*0.5}px,${dy-60}px) scale(.9)`, opacity:1, offset:.6 },
+    { transform:`translate(-50%,-50%) translate(${dx}px,${dy}px) scale(.25)`, opacity:0.15 }
+  ], { duration:650, easing:'cubic-bezier(.3,.1,.3,1)' });
+  anim.onfinish = () => {
+    el.remove();
+    target.classList.add('voc-pop');
+    target.addEventListener('animationend', () => target.classList.remove('voc-pop'), { once:true });
+  };
 }
 const VOC_PAGE = 100; // 单次最多渲染条数
 function _esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -2890,11 +2919,30 @@ function applyTextAlign(){
 
 // Night mode
 const nightToggle = document.getElementById('night-toggle');
-document.getElementById('night-btn').addEventListener('click', () => { S.night=!S.night; applyNight(); saveProg(); });
-nightToggle.addEventListener('click', () => { S.night=!S.night; applyNight(); saveProg(); });
+document.getElementById('night-btn').addEventListener('click', () => toggleNightReveal(document.getElementById('night-btn')));
+nightToggle.addEventListener('click', () => toggleNightReveal(nightToggle));
 function applyNight(){
   document.body.classList.toggle('night', S.night);
   nightToggle.classList.toggle('on', S.night);
+}
+// ── Night toggle: circular reveal expanding from the clicked button, via
+//    View Transitions API. No-op fallback keeps the old instant toggle.
+function toggleNightReveal(btnEl){
+  if(!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches){
+    S.night=!S.night; applyNight(); saveProg(); return;
+  }
+  const r = btnEl.getBoundingClientRect();
+  const x = r.left + r.width/2, y = r.top + r.height/2;
+  const radius = Math.hypot(Math.max(x, innerWidth-x), Math.max(y, innerHeight-y));
+  document.documentElement.classList.add('nt-reveal');
+  const vt = document.startViewTransition(() => { S.night=!S.night; applyNight(); });
+  vt.ready.then(() => {
+    document.documentElement.animate(
+      { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+      { duration: 480, easing: 'cubic-bezier(.4,0,.2,1)', pseudoElement: '::view-transition-new(root)' }
+    );
+  });
+  vt.finished.finally(() => { document.documentElement.classList.remove('nt-reveal'); saveProg(); });
 }
 
 // Modes
