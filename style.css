@@ -914,15 +914,11 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   box-shadow:0 2px 14px rgba(255,175,40,0.16);
 }
 /* Brief "ink settle" pulse when a sentence becomes active (works in both
-   themes via brightness, so it never fights the resting background color),
-   followed by a slow breathing glow on the shadow while it stays active */
+   themes via brightness, so it never fights the resting background color) */
 @media (prefers-reduced-motion: no-preference){
-  .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1), sentBreathe 2.6s ease-in-out .4s infinite alternate; }
-  .night .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1), sentBreatheN 2.6s ease-in-out .4s infinite alternate; }
+  .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1); }
 }
 @keyframes sentSettle{ from{ filter:brightness(1.18); } to{ filter:brightness(1); } }
-@keyframes sentBreathe{ from{ box-shadow:0 2px 12px rgba(240,168,38,0.22); } to{ box-shadow:0 3px 22px rgba(240,168,38,0.42); } }
-@keyframes sentBreatheN{ from{ box-shadow:0 2px 14px rgba(255,175,40,0.16); } to{ box-shadow:0 3px 24px rgba(255,175,40,0.34); } }
 .word{
   display:inline; cursor:pointer;
   border-radius:4px;
