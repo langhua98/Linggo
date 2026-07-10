@@ -1,10 +1,15 @@
 # Linggo 代码库说明
 
-> ## ⭐ 优先级第一（最高工作约定）
+> ## ⭐ 优先级第一（最高工作约定）：Plan Big, Execute Small
 > **Fable 5 你来负责设计和编排，请将实现交给 Sonnet 5。**
 >
-> 即：由 Fable 5 负责需求分析、方案设计与任务编排（诊断问题、给出精确的实现规格与验收标准），
-> 具体代码实现交由 Sonnet 5 子代理执行（通过 Agent 工具，model 指定为 sonnet）。此条优先于本文件其余所有约定。
+> 本项目遵循 Anthropic 官方 cookbook 的「协调者模式」（大模型规划、小模型执行），
+> 原文副本存于 `docs/CMA_plan_big_execute_small.ipynb`（来源：anthropics/claude-cookbooks，MIT 协议）。
+>
+> 具体分工：由 Fable 5 负责需求分析、方案设计与任务编排（诊断问题、给出精确的实现规格与验收标准），
+> 具体代码实现交由 Sonnet 5 子代理执行（通过 Agent 工具，model 指定为 sonnet）；
+> Fable 5 不直接写实现代码，但审查子代理产出、修补审查中发现的小缺陷属于编排职责。
+> 此条优先于本文件其余所有约定。
 
 ## 项目概述
 
