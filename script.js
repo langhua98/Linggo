@@ -1173,7 +1173,7 @@ document.getElementById('logo-btn').addEventListener('click', () => {
     player.style.display = 'none';
     document.getElementById('pct-badge').style.display = 'none';
     document.getElementById('chap-tbtn').style.display = 'none';
-    document.getElementById('filename').textContent = '未加载';
+    document.getElementById('filename').textContent = '';
     document.getElementById('landing').style.display = '';
   });
 });
@@ -2823,14 +2823,48 @@ function applySpeed(s){
 
 // ── ACCENT
 
-// ── PROGRESS BAR
-document.getElementById('prog-wrap').addEventListener('click', e=>{
-  const pct=e.offsetX/e.currentTarget.offsetWidth;
+// ── PROGRESS BAR (Pointer Events drag-to-seek: move previews fill/% only,
+//    the actual jump/restart happens on release — same as a plain click when
+//    there's no movement between down and up)
+let _progSeeking = false;
+const progWrapEl = document.getElementById('prog-wrap');
+const progFillEl = document.getElementById('prog-fill');
+const progPctEl = document.getElementById('prog-pct');
+function _progPctFromEvent(e){
+  const rect = progWrapEl.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+}
+function _progPreview(pct){
+  progFillEl.style.width = (pct*100).toFixed(1)+'%';
+  progPctEl.textContent = Math.round(pct*100)+'%';
+}
+function _progSeekTo(pct){
   S.idx=Math.max(0,Math.min(Math.floor(pct*S.sents.length),S.sents.length-1));
   jump(S.idx);
   if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); }
+}
+progWrapEl.addEventListener('pointerdown', e=>{
+  _progSeeking = true;
+  progWrapEl.classList.add('seeking');
+  progWrapEl.setPointerCapture(e.pointerId);
+  _progPreview(_progPctFromEvent(e));
+});
+progWrapEl.addEventListener('pointermove', e=>{
+  if(!_progSeeking) return;
+  _progPreview(_progPctFromEvent(e));
+});
+progWrapEl.addEventListener('pointerup', e=>{
+  if(!_progSeeking) return;
+  _progSeeking = false;
+  progWrapEl.classList.remove('seeking');
+  _progSeekTo(_progPctFromEvent(e));
+});
+progWrapEl.addEventListener('pointercancel', ()=>{
+  _progSeeking = false;
+  progWrapEl.classList.remove('seeking');
 });
 function updateProg(){
+  if(_progSeeking) return;
   const pct=S.sents.length?(S.idx/S.sents.length)*100:0;
   document.getElementById('prog-fill').style.width=pct.toFixed(1)+'%';
   document.getElementById('prog-pct').textContent=Math.round(pct)+'%';

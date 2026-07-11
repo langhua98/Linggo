@@ -1895,16 +1895,44 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   display:flex;align-items:center;gap:12px;
   margin-bottom:10px;
 }
+/* #prog-wrap: 视觉轨道只有 9px 高，但用 padding 把可点击/可拖动的命中区
+   撑到 25px（touch-action:none 防止拖动时页面跟着滚动）。真正的 9px 轨道
+   由 ::before 画出，#prog-fill 用绝对定位叠在轨道上，二者都在 wrap 内垂直居中 */
 #prog-wrap{
-  flex:1;height:9px;background:var(--border);border-radius:6px;cursor:pointer;
+  flex:1;position:relative;height:25px;padding:8px 0;
+  cursor:pointer;touch-action:none;
+}
+#prog-wrap::before{
+  content:'';position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);
+  height:9px;background:var(--border);border-radius:6px;
 }
 #prog-fill{
-  height:100%;
+  position:absolute;left:0;top:50%;transform:translateY(-50%);
+  height:9px;
   background:linear-gradient(90deg,var(--accent),#3b82f6);
   border-radius:6px;transition:width .25s;pointer-events:none;
   box-shadow:0 1px 8px rgba(37,99,235,0.45);
 }
+/* 拖动中禁用 width 过渡，预览要跟手，不能有延迟 */
+#prog-wrap.seeking #prog-fill{transition:none;}
+/* 拖拽把手：默认小而淡，悬停/拖动中放大突出（功能性交互反馈，不受 reduced-motion 限制） */
+#prog-fill::after{
+  content:'';position:absolute;right:-7px;top:50%;
+  width:14px;height:14px;border-radius:50%;
+  background:#fff;border:2px solid var(--accent);
+  box-shadow:0 1px 6px rgba(37,99,235,.4);
+  transform:translateY(-50%) scale(.75);
+  opacity:.9;
+  transition:transform .15s,opacity .15s;
+}
+#prog-wrap:hover #prog-fill::after,
+#prog-wrap.seeking #prog-fill::after{
+  transform:translateY(-50%) scale(1);
+  opacity:1;
+}
 .night #prog-fill{box-shadow:0 1px 8px rgba(96,165,250,0.5);}
+/* 夜间模式功能卡图标底色调暗：内联 style 写死了浅色底，!important 是压过内联样式的必要手段 */
+.night .feat-icon-wrap{ background:rgba(255,255,255,0.07)!important; }
 #prog-pct{ font-size:13px;font-weight:800;color:var(--text-2);width:38px;text-align:right; }
 /* ── controls — prev/play/next + speed all on one row ── */
 .ctrl-row{
