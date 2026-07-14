@@ -2261,6 +2261,19 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   border-left:3px solid var(--accent);
 }
 .bprev-desc{font-size:14px;line-height:1.8;color:var(--text-2);min-height:40px;}
+/* ── 封面页预加载状态区 ── */
+#bprev-prep{
+  border-top:1px solid var(--border);
+  padding:10px 20px;
+  display:flex;flex-direction:column;gap:7px;
+}
+.bprep-row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-2);}
+.bprep-ico{font-size:14px;}
+.bprep-label{flex-shrink:0;width:70px;}
+.bprep-status{margin-left:auto;}
+.bprep-status.ok{color:var(--green);}
+.bprep-bar{flex:1;height:4px;border-radius:2px;background:var(--border);overflow:hidden;}
+.bprep-bar .bprep-fill{height:100%;width:0;border-radius:2px;background:var(--accent);transition:width .2s;}
 .bprev-read-btn{
   display:block;width:calc(100% - 40px);margin:12px 20px 20px;
   padding:15px;border:none;border-radius:14px;
