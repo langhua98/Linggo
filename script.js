@@ -2062,10 +2062,6 @@ function _buildAlign(i){
   return res;
 }
 
-function _esc(s){
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 let _cnHlEl = null, _cnHlIdx = -1;
 function _cnClearHl(){
   if(_cnHlEl && S.trans[_cnHlIdx] != null) _cnHlEl.textContent = S.trans[_cnHlIdx];
@@ -2561,8 +2557,15 @@ function initLandingParticles(){
   }));
   resize();
   window.addEventListener('resize', resize);
+  let _pRaf = 0;
   const draw = () => {
-    if(!landing || landing.offsetParent === null){ requestAnimationFrame(draw); return; }
+    if(!landing || landing.offsetParent === null){
+      // Landing hidden (user is reading): stop the 60fps loop and poll slowly
+      // for it to be shown again, instead of spinning every frame (battery).
+      _pRaf = 0;
+      setTimeout(() => { if(!_pRaf) _pRaf = requestAnimationFrame(draw); }, 400);
+      return;
+    }
     ctx.clearRect(0, 0, W, H);
     const base = document.body.classList.contains('night') ? '150,170,255' : '90,120,220';
     for(const d of dots){
@@ -2574,9 +2577,9 @@ function initLandingParticles(){
       ctx.fillStyle = `rgba(${base},${d.a})`;
       ctx.fill();
     }
-    requestAnimationFrame(draw);
+    _pRaf = requestAnimationFrame(draw);
   };
-  requestAnimationFrame(draw);
+  _pRaf = requestAnimationFrame(draw);
 }
 initLandingParticles();
 

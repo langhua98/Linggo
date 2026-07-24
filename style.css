@@ -20,7 +20,7 @@
   --r-md:        16px;
   --r-lg:        24px;
   --font-read:   20px;
-  --player-h: 172px;
+  --player-h: 116px;
 }
 .night {
   --bg:         #141210;
@@ -1833,7 +1833,6 @@ body{
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
 /* ── PLAYER ── */
-:root{ --player-h: 116px; }
 #player{
   position:fixed;bottom:0;left:0;right:0;z-index:100;
   background:var(--player-bg);
