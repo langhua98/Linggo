@@ -61,6 +61,12 @@ body{
 @keyframes vt-fade-out{ from{opacity:1;} to{opacity:0;} }
 @keyframes vt-fade-in{ from{opacity:0;transform:scale(1.012);} to{opacity:1;transform:none;} }
 
+/* ── Night-mode circular reveal — overrides the crossfade above while the
+   toggle's own clip-path animation (driven from JS) plays instead ── */
+html.nt-reveal::view-transition-old(root){ animation:none; }
+html.nt-reveal::view-transition-new(root){ animation:none; mix-blend-mode:normal; }
+html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
+
 /* ── UI polish batch 2 (motion). All effects are additive and skipped when
    the user prefers reduced motion. ── */
 @media (prefers-reduced-motion: no-preference){
@@ -158,6 +164,23 @@ body{
 .tbtn:active{transform:scale(.92);}
 .tbtn svg{width:26px;height:26px;}
 
+/* ── 生词飞入动画：单词从原位置弧线飞向生词本按钮 ── */
+.fly-word{
+  position:fixed; top:0; left:0; z-index:6000; pointer-events:none;
+  font-family:'Nunito',sans-serif; font-weight:700; font-size:16px;
+  color:var(--accent); text-shadow:0 1px 6px rgba(37,99,235,0.35);
+  will-change:transform;
+}
+.night .fly-word{ text-shadow:0 1px 8px rgba(96,165,250,0.45); }
+@media (prefers-reduced-motion: no-preference){
+  #voc-tbtn.voc-pop{ animation:vocPop .45s cubic-bezier(.34,1.5,.64,1); }
+}
+@keyframes vocPop{
+  0%{ transform:scale(1); color:var(--text-2); }
+  40%{ transform:scale(1.3); color:var(--accent); }
+  100%{ transform:scale(1); color:var(--text-2); }
+}
+
 /* ── Lottie micro-interaction icons (licon.js) ── */
 .licon{display:inline-flex;align-items:center;justify-content:center;line-height:0;}
 .licon svg{width:100%;height:100%;display:block;}
@@ -180,6 +203,13 @@ body{
 .night #landing{
   background:radial-gradient(ellipse at 38% 28%, #1a1f40 0%, #1a1428 32%, #141210 68%);
 }
+/* 夜间提亮色停，避免深底发闷 */
+.night #landing h1{
+  background:linear-gradient(115deg,#60a5fa,#818cf8,#a78bfa,#93c5fd,#60a5fa);
+  background-size:300% 100%;background-position:0% 50%;
+  /* background 简写会重置 clip，必须补回，否则夜间标题变色块 */
+  -webkit-background-clip:text;background-clip:text;
+}
 .landing-logo{
   width:88px;height:88px;
   border-radius:22px;
@@ -190,9 +220,18 @@ body{
   font-family:'Lora',serif;
   font-size:clamp(30px,7vw,48px);font-weight:700;
   line-height:1.1;margin-bottom:6px;
-  background:linear-gradient(150deg,#1d4ed8 0%,#4f46e5 55%,#7c3aed 100%);
+  background:linear-gradient(115deg,#1d4ed8,#4f46e5,#7c3aed,#2563eb,#1d4ed8);
+  background-size:300% 100%;background-position:0% 50%;
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;
   background-clip:text;
+}
+/* 极光流动：首尾同色，往返播放不跳变 */
+@keyframes auroraFlow{
+  0%{background-position:0% 50%;}
+  100%{background-position:100% 50%;}
+}
+@media (prefers-reduced-motion: no-preference){
+  #landing h1{animation:auroraFlow 8s ease-in-out infinite alternate;}
 }
 .landing-tagline{
   font-size:13px;font-weight:700;letter-spacing:.15em;
@@ -895,12 +934,20 @@ body{
   outline-offset:2px;
   border-radius:4px;
 }
-/* TTS currently reading word: darker solid box */
+/* TTS currently reading word: darker solid box + soft outer glow */
 .word.tts-word{
   background:rgba(37,99,235,0.22);
-  border-radius:3px;
-  box-shadow:0 0 0 2px rgba(37,99,235,0.55);
+  border-radius:5px;
+  box-shadow:0 0 0 2px rgba(37,99,235,0.55), 0 0 0 3px rgba(37,99,235,0.10), 0 0 14px rgba(37,99,235,0.35);
 }
+.night .word.tts-word{
+  background:rgba(96,165,250,0.28);
+  box-shadow:0 0 0 2px rgba(96,165,250,0.6), 0 0 0 3px rgba(96,165,250,0.14), 0 0 16px rgba(96,165,250,0.45);
+}
+@media (prefers-reduced-motion: no-preference){
+  .word.tts-word{ animation: ttsWordIn .18s ease; }
+}
+@keyframes ttsWordIn{ from{ filter:brightness(1.35); } to{ filter:brightness(1); } }
 .tl-line{
   display:block;
   font-size:14px; color:var(--text-2);
@@ -1847,16 +1894,44 @@ body{
   display:flex;align-items:center;gap:12px;
   margin-bottom:10px;
 }
+/* #prog-wrap: 视觉轨道只有 9px 高，但用 padding 把可点击/可拖动的命中区
+   撑到 25px（touch-action:none 防止拖动时页面跟着滚动）。真正的 9px 轨道
+   由 ::before 画出，#prog-fill 用绝对定位叠在轨道上，二者都在 wrap 内垂直居中 */
 #prog-wrap{
-  flex:1;height:9px;background:var(--border);border-radius:6px;cursor:pointer;
+  flex:1;position:relative;height:25px;padding:8px 0;
+  cursor:pointer;touch-action:none;
+}
+#prog-wrap::before{
+  content:'';position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);
+  height:9px;background:var(--border);border-radius:6px;
 }
 #prog-fill{
-  height:100%;
+  position:absolute;left:0;top:50%;transform:translateY(-50%);
+  height:9px;
   background:linear-gradient(90deg,var(--accent),#3b82f6);
   border-radius:6px;transition:width .25s;pointer-events:none;
   box-shadow:0 1px 8px rgba(37,99,235,0.45);
 }
+/* 拖动中禁用 width 过渡，预览要跟手，不能有延迟 */
+#prog-wrap.seeking #prog-fill{transition:none;}
+/* 拖拽把手：默认小而淡，悬停/拖动中放大突出（功能性交互反馈，不受 reduced-motion 限制） */
+#prog-fill::after{
+  content:'';position:absolute;right:-7px;top:50%;
+  width:14px;height:14px;border-radius:50%;
+  background:#fff;border:2px solid var(--accent);
+  box-shadow:0 1px 6px rgba(37,99,235,.4);
+  transform:translateY(-50%) scale(.75);
+  opacity:.9;
+  transition:transform .15s,opacity .15s;
+}
+#prog-wrap:hover #prog-fill::after,
+#prog-wrap.seeking #prog-fill::after{
+  transform:translateY(-50%) scale(1);
+  opacity:1;
+}
 .night #prog-fill{box-shadow:0 1px 8px rgba(96,165,250,0.5);}
+/* 夜间模式功能卡图标底色调暗：内联 style 写死了浅色底，!important 是压过内联样式的必要手段 */
+.night .feat-icon-wrap{ background:rgba(255,255,255,0.07)!important; }
 #prog-pct{ font-size:13px;font-weight:800;color:var(--text-2);width:38px;text-align:right; }
 /* ── controls — prev/play/next + speed all on one row ── */
 .ctrl-row{
@@ -2185,6 +2260,19 @@ body{
   border-left:3px solid var(--accent);
 }
 .bprev-desc{font-size:14px;line-height:1.8;color:var(--text-2);min-height:40px;}
+/* ── 封面页预加载状态区 ── */
+#bprev-prep{
+  border-top:1px solid var(--border);
+  padding:10px 20px;
+  display:flex;flex-direction:column;gap:7px;
+}
+.bprep-row{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-2);}
+.bprep-ico{font-size:14px;}
+.bprep-label{flex-shrink:0;width:70px;}
+.bprep-status{margin-left:auto;}
+.bprep-status.ok{color:var(--green);}
+.bprep-bar{flex:1;height:4px;border-radius:2px;background:var(--border);overflow:hidden;}
+.bprep-bar .bprep-fill{height:100%;width:0;border-radius:2px;background:var(--accent);transition:width .2s;}
 .bprev-read-btn{
   display:block;width:calc(100% - 40px);margin:12px 20px 20px;
   padding:15px;border:none;border-radius:14px;

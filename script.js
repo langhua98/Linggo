@@ -844,6 +844,7 @@ function openBookPreview(book, cardEl, opts){
   }
 
   fetchBookDesc(book);
+  _prepStart(book);
 }
 
 function closeBookPreview(){
@@ -942,6 +943,44 @@ function _setZhDesc(book, text){
 
 document.getElementById('book-prev-overlay').addEventListener('click', closeBookPreview);
 
+// ── 封面页预加载 ──
+// 共享下载：书卡「开始阅读」和封面预览的预准备区可能对同一本书重复发起下载，
+// 用 inflight map 去重（同一 url 只发一次网络请求），并把进度广播给所有监听者。
+const _BOOK_INFLIGHT = new Map();   // url → { promise, listeners:[fn(pct)] }
+
+async function _downloadBook(book, onPct){
+  const url = book.url;
+  let entry = _BOOK_INFLIGHT.get(url);
+  if(entry){
+    if(onPct) entry.listeners.push(onPct);
+    return entry.promise;
+  }
+  entry = { listeners: onPct ? [onPct] : [] };
+  entry.promise = (async () => {
+    let txt = await fetchWithProgress(url, pct => {
+      entry.listeners.forEach(fn => { try{ fn(pct); }catch(e){} });
+    });
+    // Strip Gutenberg boilerplate
+    const si = txt.indexOf(book.mark);
+    if(si > 0) txt = txt.substring(si);
+    for(const m of ['*** END OF','***END OF','End of Project Gutenberg']){
+      const ei = txt.indexOf(m);
+      if(ei > 500){ txt = txt.substring(0,ei); break; }
+    }
+    // Save locally
+    await idbSave(url, txt);
+    return txt;
+  })();
+  _BOOK_INFLIGHT.set(url, entry);
+  // Settle bookkeeping on a side chain so a rejection here never surfaces as
+  // an unhandled rejection independent from the caller's own await/catch.
+  entry.promise.then(
+    () => _BOOK_INFLIGHT.delete(url),
+    () => _BOOK_INFLIGHT.delete(url)
+  );
+  return entry.promise;
+}
+
 // ── Load book: try cache first, then download
 async function loadBook(book, cardEl){
   if(book._se || book.url?.startsWith('se://')){ await loadSEBook(book,cardEl); return; }
@@ -954,26 +993,130 @@ async function loadBook(book, cardEl){
     }
   }catch(e){}
 
-  // 2. Download with real-time progress
+  // 2. Download with real-time progress (dedups with any preview-sheet preload
+  // already in flight for this url — see _downloadBook / _BOOK_INFLIGHT above)
   setCardAction(cardEl, 'downloading', 0);
   try{
-    let txt = await fetchWithProgress(book.url, pct => {
-      setCardAction(cardEl, 'downloading', pct);
-    });
-    // Strip Gutenberg boilerplate
-    const si = txt.indexOf(book.mark);
-    if(si > 0) txt = txt.substring(si);
-    for(const m of ['*** END OF','***END OF','End of Project Gutenberg']){
-      const ei = txt.indexOf(m);
-      if(ei > 500){ txt = txt.substring(0,ei); break; }
-    }
-    // Save locally
-    await idbSave(book.url, txt);
+    const txt = await _downloadBook(book, pct => setCardAction(cardEl, 'downloading', pct));
     setCardAction(cardEl, 'cached');
     openBook(book, txt);
   }catch(e){
     if(cardEl) setCardAction(cardEl, 'error', book.url);
     else toast('加载失败，请检查网络后重试');
+  }
+}
+
+// ── 封面页「准备状态区」：打开预览时静默预热书籍文本 / 神经语音 / 词对齐模型，
+// 减少用户点「开始阅读」后的等待感知。
+let _prepToken = 0;                // 代际标记：新预览覆盖旧预览未完成的异步回调
+let _kokWarmConfirmed = false;     // 本次会话是否已确认 Kokoro 语音服务已唤醒（避免重复探测）
+
+function _prepSetRow(id, opts){
+  opts = opts || {};
+  const row = document.getElementById(id);
+  if(!row) return;
+  if(opts.status != null){
+    const s = row.querySelector('.bprep-status');
+    if(s){ s.textContent = opts.status; s.classList.toggle('ok', !!opts.ok); }
+  }
+  const bar = row.querySelector('.bprep-bar');
+  if(bar){
+    if(opts.hideBar){
+      bar.style.display = 'none';
+    } else if(opts.barPct != null){
+      bar.style.display = '';
+      const fill = bar.querySelector('.bprep-fill');
+      if(fill) fill.style.width = opts.barPct + '%';
+    }
+  }
+}
+
+async function _prepStart(book){
+  const token = ++_prepToken;
+  const bookRow  = document.getElementById('bprep-book');
+  const ttsRow   = document.getElementById('bprep-tts');
+  const alignRow = document.getElementById('bprep-align');
+  if(!bookRow || !ttsRow || !alignRow) return;
+
+  // ── 书籍文本 ──
+  const isSE = book._se || book.url?.startsWith('se://');
+  if(isSE || !book.url){
+    bookRow.style.display = 'none';
+  } else {
+    bookRow.style.display = '';
+    let has = false;
+    try{ has = await idbHas(book.url); }catch(e){}
+    if(token !== _prepToken) return;
+    if(has){
+      _prepSetRow('bprep-book', { status:'✓ 已缓存', ok:true, hideBar:true });
+    } else {
+      _prepSetRow('bprep-book', { status:'下载中', barPct:0 });
+      // 不 await：书籍下载和下面的语音/词对齐预热并行推进
+      _downloadBook(book, pct => {
+        if(token !== _prepToken) return;
+        _prepSetRow('bprep-book', { status: pct+'%', barPct: pct });
+      }).then(() => {
+        if(token !== _prepToken) return;
+        _prepSetRow('bprep-book', { status:'✓ 已缓存', ok:true, hideBar:true });
+      }).catch(() => {
+        if(token !== _prepToken) return;
+        _prepSetRow('bprep-book', { status:'待阅读时重试', ok:false, hideBar:true });
+      });
+    }
+  }
+
+  // ── 神经语音（Kokoro HF Space）──
+  const kokDeployed = KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space';
+  if(!kokDeployed){
+    ttsRow.style.display = 'none';
+  } else {
+    ttsRow.style.display = '';
+    if(_kokWarmConfirmed){
+      _prepSetRow('bprep-tts', { status:'✓ 已就绪', ok:true });
+    } else {
+      _prepSetRow('bprep-tts', { status:'唤醒中…', ok:false });
+      const maxTries = 18;   // 18 × 5s ≈ 90s，覆盖 HF Space 冷启动时长
+      let tries = 0;
+      const tryPing = async () => {
+        if(token !== _prepToken) return;
+        tries++;
+        try{
+          const ctrl = new AbortController();
+          const tid  = setTimeout(()=>ctrl.abort(), 5000);
+          const resp = await fetch(`${KOK_SERVER_URL}/health`, { signal: ctrl.signal });
+          clearTimeout(tid);
+          if(token !== _prepToken) return;
+          if(!resp.ok) throw new Error('not ok');
+          _kokWarmConfirmed = true;
+          _prepSetRow('bprep-tts', { status:'✓ 已就绪', ok:true });
+        }catch(e){
+          if(token !== _prepToken) return;
+          if(tries >= maxTries) _prepSetRow('bprep-tts', { status:'稍后自动就绪', ok:false });
+          else setTimeout(tryPing, 5000);
+        }
+      };
+      tryPing();
+    }
+  }
+
+  // ── 词对齐模型（可选 · 高精度）──
+  if(!NALIGN.isEnabled()){
+    alignRow.style.display = 'none';
+  } else {
+    alignRow.style.display = '';
+    if(NALIGN.isReady()){
+      _prepSetRow('bprep-align', { status:'✓ 已就绪', ok:true, hideBar:true });
+    } else {
+      _prepSetRow('bprep-align', { status:'下载中', barPct:0 });
+      NALIGN.preload(pct => {
+        if(token !== _prepToken) return;
+        if(pct < 100) _prepSetRow('bprep-align', { status: pct+'%', barPct: pct });
+        else _prepSetRow('bprep-align', { status:'✓ 已就绪', ok:true, hideBar:true });
+      }).catch(() => {
+        if(token !== _prepToken) return;
+        _prepSetRow('bprep-align', { status:'加载失败，已回退词典', ok:false, hideBar:true });
+      });
+    }
   }
 }
 
@@ -1173,7 +1316,7 @@ document.getElementById('logo-btn').addEventListener('click', () => {
     player.style.display = 'none';
     document.getElementById('pct-badge').style.display = 'none';
     document.getElementById('chap-tbtn').style.display = 'none';
-    document.getElementById('filename').textContent = '未加载';
+    document.getElementById('filename').textContent = '';
     document.getElementById('landing').style.display = '';
   });
 });
@@ -1869,6 +2012,7 @@ const NALIGN = (() => {
   const pend = new Map();          // msgId → 句子下标
   const inflight = new Set();      // 正在对齐的句子下标
   let enabled = localStorage.getItem('nalign') === '1';
+  let progressListeners = [];      // 封面页预加载注册的回调：有监听者时跳过 toast，直接转发进度
 
   function _spawn(){
     if(ready) return Promise.resolve(true);
@@ -1882,9 +2026,16 @@ const NALIGN = (() => {
         const m = e.data;
         if(m.type === 'progress'){
           const pct = Math.floor(m.progress);
-          if(pct >= lastPct + 20){ lastPct = pct; toast(`正在下载词对齐模型 ${pct}%`); }
+          if(progressListeners.length){
+            progressListeners.forEach(fn => { try{ fn(pct); }catch(e){} });
+          } else if(pct >= lastPct + 20){ lastPct = pct; toast(`正在下载词对齐模型 ${pct}%`); }
         } else if(m.type === 'ready'){
-          ready = true; toast('神经词对齐已就绪 ✓'); resolve(true);
+          ready = true;
+          if(progressListeners.length){
+            progressListeners.forEach(fn => { try{ fn(100); }catch(e){} });
+            progressListeners = [];
+          } else toast('神经词对齐已就绪 ✓');
+          resolve(true);
         } else if(m.type === 'result'){
           const i = pend.get(m.id); pend.delete(m.id); inflight.delete(i);
           S.nalign[i] = m.align;
@@ -1922,7 +2073,14 @@ const NALIGN = (() => {
     }
   }
 
-  return { request, setEnabled, isEnabled: () => enabled };
+  // 封面页预加载：静默拉起模型下载，进度经 onProgress 回调，不走 toast
+  function preload(onProgress){
+    if(ready){ if(onProgress) onProgress(100); return Promise.resolve(true); }
+    if(onProgress) progressListeners.push(onProgress);
+    return _spawn();
+  }
+
+  return { request, setEnabled, isEnabled: () => enabled, preload, isReady: () => ready };
 })();
 
 // ═══════════════════════════════════════════
@@ -2231,7 +2389,9 @@ document.getElementById('wp-copy').addEventListener('click', () => {
 });
 document.getElementById('wp-learn').addEventListener('click', () => {
   const word = S.curWordData?.word; if(!word) return;
+  const fromEl = document.querySelector('.word.active') || document.getElementById('wp-word');
   addVocab(word, wpop._meaning||'');
+  flyWordToVocab(word, fromEl?.getBoundingClientRect());
   toast('「'+word+'」已加入生词本');
   wpop.classList.remove('vis');
   document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
@@ -2316,6 +2476,33 @@ function addVocab(word, meaning){
   area.querySelectorAll(`.word[data-w="${word}"]`).forEach(el=>el.classList.add('saved'));
   renderVoc(); saveProg(); toast(`已收藏 "${word}"`);
   cloudAddVocab(item); // 云端同步（静默）
+}
+// ── 生词飞入动画 ──
+function flyWordToVocab(word, fromRect){
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const target = document.getElementById('voc-tbtn');
+  if(!target || target.offsetParent === null) return;
+  const tRect = target.getBoundingClientRect();
+  if(!fromRect || !tRect.width) return;
+  const fromX = fromRect.left + fromRect.width/2, fromY = fromRect.top + fromRect.height/2;
+  const toX = tRect.left + tRect.width/2, toY = tRect.top + tRect.height/2;
+  const dx = toX - fromX, dy = toY - fromY;
+  const el = document.createElement('span');
+  el.className = 'fly-word';
+  el.textContent = word;
+  el.style.left = fromX + 'px';
+  el.style.top = fromY + 'px';
+  document.body.appendChild(el);
+  const anim = el.animate([
+    { transform:'translate(-50%,-50%) translate(0px,0px) scale(1)', opacity:1 },
+    { transform:`translate(-50%,-50%) translate(${dx*0.5}px,${dy-60}px) scale(.9)`, opacity:1, offset:.6 },
+    { transform:`translate(-50%,-50%) translate(${dx}px,${dy}px) scale(.25)`, opacity:0.15 }
+  ], { duration:650, easing:'cubic-bezier(.3,.1,.3,1)' });
+  anim.onfinish = () => {
+    el.remove();
+    target.classList.add('voc-pop');
+    target.addEventListener('animationend', () => target.classList.remove('voc-pop'), { once:true });
+  };
 }
 const VOC_PAGE = 100; // 单次最多渲染条数
 function _esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -2797,14 +2984,48 @@ function applySpeed(s){
 
 // ── ACCENT
 
-// ── PROGRESS BAR
-document.getElementById('prog-wrap').addEventListener('click', e=>{
-  const pct=e.offsetX/e.currentTarget.offsetWidth;
+// ── PROGRESS BAR (Pointer Events drag-to-seek: move previews fill/% only,
+//    the actual jump/restart happens on release — same as a plain click when
+//    there's no movement between down and up)
+let _progSeeking = false;
+const progWrapEl = document.getElementById('prog-wrap');
+const progFillEl = document.getElementById('prog-fill');
+const progPctEl = document.getElementById('prog-pct');
+function _progPctFromEvent(e){
+  const rect = progWrapEl.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+}
+function _progPreview(pct){
+  progFillEl.style.width = (pct*100).toFixed(1)+'%';
+  progPctEl.textContent = Math.round(pct*100)+'%';
+}
+function _progSeekTo(pct){
   S.idx=Math.max(0,Math.min(Math.floor(pct*S.sents.length),S.sents.length-1));
   jump(S.idx);
   if(S.playing||S.paused){ synth.cancel(); stopResumeTimer(); S.paused=false; S.playing=false; setIcon(false); playCurrent(); }
+}
+progWrapEl.addEventListener('pointerdown', e=>{
+  _progSeeking = true;
+  progWrapEl.classList.add('seeking');
+  progWrapEl.setPointerCapture(e.pointerId);
+  _progPreview(_progPctFromEvent(e));
+});
+progWrapEl.addEventListener('pointermove', e=>{
+  if(!_progSeeking) return;
+  _progPreview(_progPctFromEvent(e));
+});
+progWrapEl.addEventListener('pointerup', e=>{
+  if(!_progSeeking) return;
+  _progSeeking = false;
+  progWrapEl.classList.remove('seeking');
+  _progSeekTo(_progPctFromEvent(e));
+});
+progWrapEl.addEventListener('pointercancel', ()=>{
+  _progSeeking = false;
+  progWrapEl.classList.remove('seeking');
 });
 function updateProg(){
+  if(_progSeeking) return;
   const pct=S.sents.length?(S.idx/S.sents.length)*100:0;
   document.getElementById('prog-fill').style.width=pct.toFixed(1)+'%';
   document.getElementById('prog-pct').textContent=Math.round(pct)+'%';
@@ -2893,11 +3114,30 @@ function applyTextAlign(){
 
 // Night mode
 const nightToggle = document.getElementById('night-toggle');
-document.getElementById('night-btn').addEventListener('click', () => { S.night=!S.night; applyNight(); saveProg(); });
-nightToggle.addEventListener('click', () => { S.night=!S.night; applyNight(); saveProg(); });
+document.getElementById('night-btn').addEventListener('click', () => toggleNightReveal(document.getElementById('night-btn')));
+nightToggle.addEventListener('click', () => toggleNightReveal(nightToggle));
 function applyNight(){
   document.body.classList.toggle('night', S.night);
   nightToggle.classList.toggle('on', S.night);
+}
+// ── Night toggle: circular reveal expanding from the clicked button, via
+//    View Transitions API. No-op fallback keeps the old instant toggle.
+function toggleNightReveal(btnEl){
+  if(!document.startViewTransition || matchMedia('(prefers-reduced-motion: reduce)').matches){
+    S.night=!S.night; applyNight(); saveProg(); return;
+  }
+  const r = btnEl.getBoundingClientRect();
+  const x = r.left + r.width/2, y = r.top + r.height/2;
+  const radius = Math.hypot(Math.max(x, innerWidth-x), Math.max(y, innerHeight-y));
+  document.documentElement.classList.add('nt-reveal');
+  const vt = document.startViewTransition(() => { S.night=!S.night; applyNight(); });
+  vt.ready.then(() => {
+    document.documentElement.animate(
+      { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+      { duration: 480, easing: 'cubic-bezier(.4,0,.2,1)', pseudoElement: '::view-transition-new(root)' }
+    );
+  });
+  vt.finished.finally(() => { document.documentElement.classList.remove('nt-reveal'); saveProg(); });
 }
 
 // Modes
@@ -3615,6 +3855,13 @@ document.getElementById('um-logout').addEventListener('click', async ()=>{
   await loadUserBooks();
   SB.rpc('record_visit').catch(()=>{});
 })();
+
+// ── 启动预热：提前把 Kokoro HF Space 从睡眠中唤醒，用户还没打开封面页
+// 就已经开始冷启动倒计时（延迟 3s，避免与首屏关键资源抢带宽）
+setTimeout(() => {
+  if(KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space')
+    fetch(`${KOK_SERVER_URL}/health`, { mode:'no-cors' }).catch(()=>{});
+}, 3000);
 
 // ── 全局兜底：防止任何 unhandled rejection 显示为 "Script error."
 window.addEventListener('unhandledrejection', e => {
