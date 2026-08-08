@@ -1122,8 +1122,17 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .toggle-sw.on::after{ transform:translateX(20px); }
 /* 智能阅读总开关 */
-.sb-smart{ border-bottom:1px solid var(--border); }
-.sb-smart .sb-toggle-label{ font-weight:800; }
+/* 智能阅读：置顶总开关，用强调色底衬托出它是主功能入口 */
+.sb-smart{
+  background:var(--accent-2);
+  border:1.5px solid rgba(37,99,235,.22);
+  border-radius:var(--r-md);
+  padding:14px 14px 10px;
+  margin-bottom:6px;
+}
+.night .sb-smart{ border-color:rgba(96,165,250,.28); }
+.sb-smart .sb-toggle-label{ font-weight:800;font-size:15px;color:var(--text);display:block; }
+.sb-smart .sb-sublabel{ display:block;margin-top:3px;color:var(--text-2);font-size:11.5px;line-height:1.45;font-weight:600; }
 .sb-adv-btn{
   margin-top:10px;
   background:none;border:none;cursor:pointer;
