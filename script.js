@@ -2264,28 +2264,11 @@ const POS_ZH = {
 };
 
 function positionPopup(wordEl){
-  const rect    = wordEl.getBoundingClientRect();
-  const vh      = window.innerHeight;
-  const GAP     = 38;
-  const TOPBAR  = 54;
-  const playerH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--player-h')) || 196;
-  wpop.style.top    = 'auto';
-  wpop.style.bottom = 'auto';
-  if(rect.top < vh * 0.52){
-    // word in upper half → popup below
-    const below = rect.bottom + GAP;
-    const max   = vh - playerH - 16;
-    wpop.style.top = Math.min(below, max - 260) + 'px';
-    wpop.classList.replace('from-above','from-below');
-    wpop.classList.add('from-below');
-  } else {
-    // word in lower half → popup above
-    const above = vh - rect.top + GAP;
-    const max   = vh - TOPBAR - 16;
-    wpop.style.bottom = Math.min(above, max - 260) + 'px';
-    wpop.classList.replace('from-below','from-above');
-    wpop.classList.add('from-above');
-  }
+  // Popup is now a bottom-docked sheet (see #wpop in style.css) for one-handed
+  // reach — no per-word floating position is needed.
+  wpop.style.top = '';
+  wpop.style.bottom = '';
+  wpop.classList.remove('from-above','from-below');
 }
 
 async function onWordClick(el){
@@ -2406,6 +2389,27 @@ document.querySelectorAll('.wp-spd').forEach(btn => {
     playWordAudio(document.getElementById('wp-word').textContent, wpop._audio, +btn.dataset.rate);
   });
 });
+document.getElementById('wp-play').addEventListener('click', () => {
+  playWordAudio(document.getElementById('wp-word').textContent, wpop._audio, 1);
+});
+(function(){
+  let sy = 0, dragging = false;
+  wpop.addEventListener('touchstart', e => {
+    if(e.touches.length !== 1) return;
+    sy = e.touches[0].clientY; dragging = true;
+  }, { passive: true });
+  wpop.addEventListener('touchmove', e => {
+    if(!dragging || e.touches.length !== 1) return;
+    const dy = e.touches[0].clientY - sy;
+    if(dy > 70){
+      dragging = false;
+      wpop.classList.remove('vis');
+      document.querySelectorAll('.word.active').forEach(w => w.classList.remove('active'));
+      if(typeof _stopWordAudio === 'function') _stopWordAudio();
+    }
+  }, { passive: true });
+  wpop.addEventListener('touchend', () => { dragging = false; }, { passive: true });
+})();
 document.addEventListener('click', e => {
   if(!wpop.contains(e.target) && !e.target.classList.contains('word')){
     _stopWordAudio();
