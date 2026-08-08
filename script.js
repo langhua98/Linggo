@@ -2439,21 +2439,31 @@ async function playWordAudio(word, mp3, rate = 1){
     _wordAudioEl = new Audio();
     _wordAudioEl.setAttribute('playsinline','');
   }
-  if(!_wordUnlocked){                            // bless the element inside the click gesture (iOS)
+  if(!_wordUnlocked){
+    // Bless playback inside the click gesture (iOS). Use a THROWAWAY element:
+    // priming _wordAudioEl itself would race the real playback below and leave
+    // the silent clip as the winning src (killing both audio and playbackRate).
     _wordUnlocked = true;
     try{
-      _wordAudioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA';
-      _wordAudioEl.play().catch(()=>{});
+      const primer = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA');
+      primer.setAttribute('playsinline','');
+      primer.play().catch(()=>{});
     }catch(e){}
   }
   const playUrl = async (url, rate) => {
     if(_wordSeq !== mySeq) return false;
     try{
-      _wordAudioEl.pause();
-      _wordAudioEl.preservesPitch = _wordAudioEl.mozPreservesPitch = _wordAudioEl.webkitPreservesPitch = true;
-      _wordAudioEl.playbackRate = rate;
-      _wordAudioEl.src = url;
-      await _wordAudioEl.play();
+      const a = _wordAudioEl;
+      a.pause();
+      a.preservesPitch = a.mozPreservesPitch = a.webkitPreservesPitch = true;
+      a.src = url;
+      // Assigning .src resets playbackRate to 1, so the rate must be applied
+      // AFTER the new source is set — and again once metadata loads, since
+      // some browsers reset it a second time during load.
+      a.playbackRate = rate;
+      a.onloadedmetadata = () => { a.playbackRate = rate; };
+      await a.play();
+      a.playbackRate = rate;
       return true;
     }catch(e){ return false; }
   };
