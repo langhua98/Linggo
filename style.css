@@ -1185,6 +1185,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--surface);
   border-radius:22px 22px 0 0;
   width:auto;
+  height:62vh;
   max-height:62vh;
   overflow:hidden;
   box-shadow:0 -6px 40px rgba(0,0,0,0.18);
@@ -1252,6 +1253,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   font-family:'Nunito',sans-serif;
   flex-shrink:0;
   line-height:1.2;
+  max-height:64px;
+  overflow-y:auto;
 }
 .wp-meaning.loading{
   font-size:14px;color:var(--text-3);font-weight:400;
@@ -1266,9 +1269,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   padding:0 18px 12px;
   font-size:14px;line-height:1.7;color:var(--text-2);
   font-family:'Lora',serif;
-  flex-shrink:1;
+  flex:1 1 auto;
+  min-height:0;
   overflow-y:auto;
-  max-height:120px;
 }
 .wp-context strong{color:var(--text);font-weight:700;}
 /* drag handle — swipe-down-to-close affordance */
@@ -1277,30 +1280,37 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--border);
   margin:8px auto 2px;flex-shrink:0;
 }
-/* Radial fan dial: a quarter-circle of annulus (ring) sectors centered at
-   the sheet's bottom-right corner, matching a right thumb's natural sweep.
-   Each .wp-seg is a square anchored so its bottom-right corner sits at the
-   dial pivot; its own ::before is clipped to a ring-sector polygon sampled
-   along the inner/outer arcs (CSS has no arc primitive for clip-path). */
+/* Radial fan dial: a single ring band of five wedges sweeping counter-
+   clockwise (bottom → left → top) around a full circular play button that
+   is half-embedded off the sheet's right edge. Unlike the old per-ring
+   quarter-disc layout, every element here (circle included) is a square
+   whose CENTER — not corner — sits at the shared dial pivot, because the
+   band's angle range (-30°..142°) sweeps past vertical/horizontal on both
+   ends; a corner-anchored box only spans a clean 0–90° quadrant and would
+   truncate the wedge tips against its own edges. --pr/--pb (set once on
+   .wp-actions) is the pivot's (right, bottom) offset from the container;
+   each .wp-seg centers its own R×R*2 box on that same point via
+   right:pr-R; bottom:pb-R. */
 .wp-actions{
   position:relative; flex-shrink:0;
-  height:264px; padding:0;
+  height:300px; padding:0;
   background:var(--surface);
   border-top:1px solid var(--border);
   overflow:hidden;
+  --pr:64px; --pb:100px;
 }
 .wp-seg{
   position:absolute;
-  right:var(--pr,14px); bottom:var(--pb,10px);
+  right:calc(var(--pr) - var(--R)); bottom:calc(var(--pb) - var(--R));
   width:calc(var(--R) * 2); height:calc(var(--R) * 2);
   border:none; background:none; padding:0; margin:0;
   cursor:pointer;
   -webkit-tap-highlight-color:transparent;
   transition:filter .14s, transform .14s;
   /* clip-path on the button itself restricts hit-testing to the wedge
-     (not just the painted ::before), so overlapping oversized squares
-     from other rings don't steal clicks meant for the segment beneath */
-  -webkit-clip-path:var(--clip); clip-path:var(--clip);
+     (not just the painted ::before), so the oversized shared-size boxes
+     of neighbouring segments don't steal clicks meant for one another */
+  -webkit-clip-path:var(--clip,none); clip-path:var(--clip,none);
 }
 /* the visible painted wedge lives in ::before, clipped to the same shape */
 .wp-seg::before{
@@ -1308,12 +1318,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--bg);
   border:1.5px solid var(--border);
   border-radius:14px;
-  -webkit-clip-path:var(--clip); clip-path:var(--clip);
+  -webkit-clip-path:var(--clip,none); clip-path:var(--clip,none);
   box-shadow:0 1px 4px rgba(0,0,0,.05);
 }
 /* label sits at the wedge's mid-angle / mid-radius: --lx/--ly are the
-   precomputed Cartesian offset (px) from the segment box's center to that
-   point (dx = R - r*cos(a), dy = R - r*sin(a)), so no runtime trig needed. */
+   precomputed Cartesian offset (px) from the segment box's center (=pivot)
+   to that point: dx = -r*cos(a), dy = -r*sin(a); no runtime trig needed. */
 .wp-seg-in{
   position:absolute; left:50%; top:50%;
   transform: translate(calc(-50% + var(--lx,0px)), calc(-50% + var(--ly,0px)));
@@ -1326,12 +1336,14 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .wp-seg:active{ filter:brightness(.93); transform:scale(.985); }
 @media (hover:hover){ .wp-seg:hover::before{ border-color:var(--accent); } }
 
-/* ── primary: solid blue core disc sector (🔊, biggest, thumb rest) ── */
+/* ── primary: full circle, centered on the pivot, half-cropped by the
+   sheet's right edge (.wp-actions{overflow:hidden}) ── */
 .wp-seg-main{
-  --R:118px; --lx:64.26px; --ly:64.26px;
-  --clip:polygon(100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 99.17% 52.55%, 90.13% 53.58%, 81.46% 56.32%, 73.46% 60.66%, 66.44% 66.44%, 60.66% 73.46%, 56.32% 81.46%, 53.58% 90.13%, 52.55% 99.17%);
+  --R:70px; --clip:circle(50%);
+  --lx:-18px; --ly:0px;
 }
 .wp-seg-main::before{
+  border-radius:50%;
   background:linear-gradient(145deg,var(--accent),#3b82f6);
   border:none;
   box-shadow:0 4px 18px rgba(37,99,235,.4);
@@ -1339,30 +1351,37 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .wp-seg-main .wp-seg-in{ color:#fff; }
 .wp-seg-main svg{ width:34px; height:34px; }
 
-/* ── inner ring: 学习 (heart) and 复制 ── */
-.wp-seg-i1, .wp-seg-i2{ --R:186px; }
-.wp-seg-i1{
-  --lx:45.07px; --ly:129.06px;
-  --clip:polygon(66.67% 99.42%, 66.86% 96.37%, 67.34% 93.35%, 68.08% 90.39%, 69.09% 87.51%, 70.37% 84.74%, 71.89% 82.09%, 73.64% 79.59%, 75.62% 77.27%, 64.61% 67%, 61.74% 70.38%, 59.19% 74%, 56.98% 77.84%, 55.14% 81.87%, 53.67% 86.06%, 52.58% 90.35%, 51.9% 94.73%, 51.62% 99.16%);
+/* ── single band: 学习 → 复制 → 1× → 0.75× → 0.5×, one continuous ring
+   (r 86→150) wrapping counter-clockwise from below the circle, up its
+   left side, to above it ── */
+.wp-seg-i1, .wp-seg-i2, .wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:150px; }
+.wp-seg-i1{ /* 学习, a:-30..2 */
+  --lx:-114.49px; --ly:28.55px;
+  --clip:polygon(25.17% 64.33%, 24.11% 62.31%, 23.21% 60.21%, 22.48% 58.04%, 21.93% 55.82%, 21.56% 53.56%, 21.36% 51.29%, 21.35% 49%, 0.03% 48.26%, 0.05% 52.24%, 0.39% 56.22%, 1.04% 60.15%, 2.01% 64.02%, 3.28% 67.8%, 4.84% 71.47%, 6.7% 75%);
 }
-.wp-seg-i2{
-  --lx:129.06px; --ly:45.07px;
-  --clip:polygon(77.27% 75.62%, 79.59% 73.64%, 82.09% 71.89%, 84.74% 70.37%, 87.51% 69.09%, 90.39% 68.08%, 93.35% 67.34%, 96.37% 66.86%, 99.42% 66.67%, 99.16% 51.62%, 94.73% 51.9%, 90.35% 52.58%, 86.06% 53.67%, 81.87% 55.14%, 77.84% 56.98%, 74% 59.19%, 70.38% 61.74%, 67% 64.61%);
+.wp-seg-i2{ /* 复制, a:5..37 */
+  --lx:-110.16px; --ly:-42.29px;
+  --clip:polygon(21.44% 47.5%, 21.73% 45.23%, 22.2% 43%, 22.85% 40.8%, 23.67% 38.67%, 24.66% 36.6%, 25.8% 34.63%, 27.11% 32.75%, 10.07% 19.91%, 7.8% 23.19%, 5.79% 26.64%, 4.07% 30.23%, 2.64% 33.96%, 1.52% 37.78%, 0.7% 41.69%, 0.19% 45.64%);
 }
-
-/* ── outer ring: speed options, three wedges over 0–90deg ── */
-.wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:252px; }
-.wp-seg-o1{
-  --lx:41.43px; --ly:195.58px;
-  --clip:polygon(61.91% 99.34%, 62.02% 97.09%, 62.25% 94.86%, 62.62% 92.65%, 63.12% 90.46%, 63.74% 88.31%, 64.49% 86.19%, 65.37% 84.13%, 66.36% 82.12%, 56.9% 77.09%, 55.63% 79.66%, 54.51% 82.31%, 53.55% 85.02%, 52.75% 87.78%, 52.11% 90.58%, 51.64% 93.42%, 51.33% 96.28%, 51.2% 99.15%);
+.wp-seg-o1{ /* 1×, a:40..72 */
+  --lx:-65.98px; --ly:-97.83px;
+  --clip:polygon(28.04% 31.57%, 29.58% 29.88%, 31.25% 28.32%, 33.03% 26.89%, 34.93% 25.61%, 36.92% 24.49%, 39% 23.53%, 41.14% 22.74%, 34.55% 2.45%, 30.81% 3.83%, 27.19% 5.51%, 23.72% 7.47%, 20.41% 9.7%, 17.29% 12.18%, 14.38% 14.91%, 11.7% 17.86%);
 }
-.wp-seg-o2{
-  --lx:97.85px; --ly:97.85px;
-  --clip:polygon(67.35% 80.38%, 68.6% 78.42%, 69.98% 76.55%, 71.47% 74.76%, 73.06% 73.06%, 74.76% 71.47%, 76.55% 69.98%, 78.42% 68.6%, 80.38% 67.35%, 74.86% 58.16%, 72.35% 59.77%, 69.95% 61.54%, 67.66% 63.44%, 65.49% 65.49%, 63.44% 67.66%, 61.54% 69.95%, 59.77% 72.35%, 58.16% 74.86%);
+.wp-seg-o2{ /* 0.75×, a:75..107 */
+  --lx:2.06px; --ly:-117.98px;
+  --clip:polygon(42.58% 22.31%, 44.81% 21.81%, 47.07% 21.48%, 49.36% 21.34%, 51.64% 21.38%, 53.92% 21.6%, 56.17% 22.01%, 58.38% 22.59%, 64.62% 2.18%, 60.76% 1.17%, 56.84% 0.47%, 52.87% 0.08%, 48.88% 0.01%, 44.9% 0.26%, 40.95% 0.83%, 37.06% 1.7%);
 }
-.wp-seg-o3{
-  --lx:195.58px; --ly:41.43px;
-  --clip:polygon(82.12% 66.36%, 84.13% 65.37%, 86.19% 64.49%, 88.31% 63.74%, 90.46% 63.12%, 92.65% 62.62%, 94.86% 62.25%, 97.09% 62.02%, 99.34% 61.91%, 99.15% 51.2%, 96.28% 51.33%, 93.42% 51.64%, 90.58% 52.11%, 87.78% 52.75%, 85.02% 53.55%, 82.31% 54.51%, 79.66% 55.63%, 77.09% 56.9%);
+.wp-seg-o3{ /* 0.5×, a:110..142 */
+  /* label biased toward the wedge's inner/near edge (r=99,a=117 instead
+     of the geometric mid r=118,a=126) — the pivot sits close to the
+     sheet's right edge for the play-circle crop, and this wedge's true
+     mid-angle point would land off-screen. r/a were grid-searched so the
+     label's full bounding box (all 4 corners, not just its center) stays
+     inside both the viewport AND the wedge's own clip-path — otherwise
+     the wedge's clip-path (which also clips its own label child) truncates
+     the rendered text even though the center point still hit-tests fine. */
+  --lx:44.95px; --ly:-88.21px;
+  --clip:polygon(59.8% 23.06%, 61.92% 23.93%, 63.96% 24.96%, 65.91% 26.15%, 67.76% 27.5%, 69.5% 28.99%, 71.11% 30.61%, 72.59% 32.35%, 89.4% 19.22%, 86.82% 16.17%, 84.01% 13.35%, 80.98% 10.75%, 77.75% 8.41%, 74.35% 6.33%, 70.79% 4.53%, 67.1% 3.02%);
 }
 .wp-spd .wp-seg-in{ font-size:13px; color:var(--text-3); }
 .wp-speeds{ display:contents; }
