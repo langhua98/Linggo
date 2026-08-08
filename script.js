@@ -2335,6 +2335,11 @@ async function onWordClick(el){
   positionPopup(el);
   _stopWordAudio();
   wpop.classList.add('vis');
+  // Pre-warm Kokoro for this word so tapping play uses the neural voice
+  // instantly (cache hit) instead of timing out and falling back to MP3.
+  if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+    _kokServerSynth(word).catch(()=>{});
+  }
   if(_licons && _licons.learn) _licons.learn.goToAndStop(0, true);   // reset heart to empty
 
   // async: dictionary → POS + meaning in Chinese
