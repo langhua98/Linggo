@@ -2401,8 +2401,10 @@ document.getElementById('wp-learn').addEventListener('click', () => {
   wpop.classList.remove('vis');
   document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
 });
-document.getElementById('wp-play').addEventListener('click', () => {
-  playWordAudio(document.getElementById('wp-word').textContent, wpop._audio);
+document.querySelectorAll('.wp-spd').forEach(btn => {
+  btn.addEventListener('click', () => {
+    playWordAudio(document.getElementById('wp-word').textContent, wpop._audio, +btn.dataset.rate);
+  });
 });
 document.addEventListener('click', e => {
   if(!wpop.contains(e.target) && !e.target.classList.contains('word')){
@@ -2425,7 +2427,7 @@ function _stopWordAudio(){
   if(!S.playing && !S.paused){ try{ window.speechSynthesis.cancel(); }catch(e){} }
 }
 
-async function playWordAudio(word, mp3){
+async function playWordAudio(word, mp3, rate = 1){
   const mySeq = ++_wordSeq;
   if(_wordAudioEl){ try{ _wordAudioEl.pause(); }catch(e){} }
   if(!S.playing && !S.paused){ try{ window.speechSynthesis.cancel(); }catch(e){} }
@@ -2458,14 +2460,14 @@ async function playWordAudio(word, mp3){
       new Promise(r => setTimeout(()=>r(null), 3500)),   // don't wait on a cold server
     ]);
     if(_wordSeq !== mySeq) return;                       // a newer word was clicked → abandon
-    if(url && await playUrl(url, 0.95)) return;
+    if(url && await playUrl(url, rate)) return;
   }
   // 2) Dictionary MP3
-  if(mp3 && _wordSeq === mySeq && await playUrl(mp3, 1)) return;
+  if(mp3 && _wordSeq === mySeq && await playUrl(mp3, rate)) return;
   // 3) System voice fallback
   if(_wordSeq !== mySeq) return;
   const u = new SpeechSynthesisUtterance(word);
-  u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = 0.85;
+  u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = rate < 1 ? rate : 0.85;
   try{ window.speechSynthesis.cancel(); }catch(e){}
   window.speechSynthesis.speak(u);
 }

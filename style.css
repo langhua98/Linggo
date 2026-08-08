@@ -1281,6 +1281,15 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--accent);color:#fff;border-color:var(--accent);
 }
 #wp-learn:hover{background:#1d4ed8;border-color:#1d4ed8;}
+.wp-speeds{ display:flex; gap:6px; margin-left:auto; }
+.wp-spd{
+  font-family:'Nunito',sans-serif; font-size:12px; font-weight:700;
+  padding:6px 10px; border-radius:10px; cursor:pointer;
+  border:1.5px solid var(--border); background:var(--bg); color:var(--text-2);
+  transition:background .15s,color .15s,border-color .15s,transform .1s;
+}
+.wp-spd:hover{ border-color:var(--accent); color:var(--accent); }
+.wp-spd:active{ transform:scale(.92); background:var(--accent-2); }
 
 /* ── VOCAB FLASH BUTTON ── */
 .voc-flash-btn{
