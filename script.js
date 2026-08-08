@@ -3169,14 +3169,62 @@ document.getElementById('bilin-toggle').addEventListener('click', () => {
   _syncNalignRow();
   saveProg();
   if(S.bilin) toast('中英对照已开启');
+  _syncSmartToggle();
 });
 document.getElementById('nalign-toggle').addEventListener('click', () => {
   const on = !NALIGN.isEnabled();
   NALIGN.setEnabled(on);
   document.getElementById('nalign-toggle').classList.toggle('on', on);
   toast(on ? '神经词对齐已开启，正在准备模型…' : '已切回词典对齐');
+  _syncSmartToggle();
 });
 _syncNalignRow();
+
+// ── 智能阅读：中英对照 + 神经词对齐 + 神经语音 三合一总开关
+function _smartIsOn(){
+  const kokEl = document.getElementById('kok-toggle');
+  return !!(S.bilin && NALIGN.isEnabled() && kokEl && kokEl.checked);
+}
+function _syncSmartToggle(){
+  const btn = document.getElementById('smart-toggle');
+  if(btn) btn.classList.toggle('on', _smartIsOn());
+}
+function _setSmart(on){
+  // 1) 中英对照
+  if(S.bilin !== on){
+    S.bilin = on;
+    applyBilin();
+    saveProg();
+  }
+  // 2) 神经词对齐
+  if(NALIGN.isEnabled() !== on){
+    NALIGN.setEnabled(on);
+    const nb = document.getElementById('nalign-toggle');
+    if(nb) nb.classList.toggle('on', on);
+  }
+  // 3) 神经语音（复用 kok-toggle 既有的 change 处理，含预热/重启等副作用）
+  const kokEl = document.getElementById('kok-toggle');
+  if(kokEl && kokEl.checked !== on){
+    kokEl.checked = on;
+    kokEl.dispatchEvent(new Event('change'));
+  }
+  _syncNalignRow();
+  _syncSmartToggle();
+}
+document.getElementById('smart-toggle').addEventListener('click', () => {
+  const on = !_smartIsOn();
+  _setSmart(on);
+  toast(on ? '智能阅读已开启' : '智能阅读已关闭');
+});
+// 高级设置展开/收起
+document.getElementById('sb-adv-btn').addEventListener('click', function(){
+  const wrap = document.getElementById('sb-adv-wrap');
+  const open = wrap.style.display === 'none';
+  wrap.style.display = open ? '' : 'none';
+  this.setAttribute('aria-expanded', open ? 'true' : 'false');
+  this.textContent = open ? '高级设置 ▴' : '高级设置 ▾';
+});
+_syncSmartToggle();
 
 function applyMode(){
   document.querySelectorAll('.word').forEach(w => w.classList.remove('w-blur'));
@@ -4591,6 +4639,7 @@ document.getElementById('kok-toggle').addEventListener('change', e => {
     toast('已切换回系统语音');
   }
   _syncKokVoiceRow();
+  if(typeof _syncSmartToggle==='function') _syncSmartToggle();
 });
 
 function _syncKokVoiceRow(){

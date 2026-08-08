@@ -1121,6 +1121,16 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   box-shadow:0 1px 4px rgba(0,0,0,.2);
 }
 .toggle-sw.on::after{ transform:translateX(20px); }
+/* 智能阅读总开关 */
+.sb-smart{ border-bottom:1px solid var(--border); }
+.sb-smart .sb-toggle-label{ font-weight:800; }
+.sb-adv-btn{
+  margin-top:10px;
+  background:none;border:none;cursor:pointer;
+  font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;
+  color:var(--text-3);padding:4px 0;
+}
+.sb-adv-btn:active{ opacity:.6; }
 /* nested sub-toggle (neural alignment under bilingual) */
 .sb-subrow{ margin-top:12px;padding-top:12px;border-top:1px solid var(--border); }
 .sb-subrow .sb-toggle-label{ display:flex;flex-direction:column;gap:2px;font-size:13.5px; }
