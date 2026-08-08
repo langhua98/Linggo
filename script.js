@@ -2294,6 +2294,11 @@ async function onWordClick(el){
   meaningEl.textContent = '…';
   meaningEl.className   = 'wp-meaning loading';
 
+  // English definition (filled in below once the dictionary entry arrives)
+  const enDefEl = document.getElementById('wp-endef');
+  enDefEl.textContent = '';
+  enDefEl.style.display = 'none';
+
   // context excerpt from current playing sentence
   const isPlaying = S.playing || S.paused;
   const ctxIdx    = isPlaying ? S.idx : S.curWordData.sentIdx;
@@ -2342,6 +2347,12 @@ async function onWordClick(el){
     const rawPos = entry.meanings?.[0]?.partOfSpeech || '';
     const zhPos  = POS_ZH[rawPos] || rawPos;
     if(zhPos){ posEl.textContent = zhPos; posEl.style.display = ''; }
+
+    const enDef = entry.meanings?.[0]?.definitions?.[0]?.definition || '';
+    if(enDef && document.getElementById('wp-word').textContent === word){
+      enDefEl.textContent = enDef;
+      enDefEl.style.display = '';
+    }
 
     // 直接翻译单词本身（与整句翻译同源 = Google 翻译），简洁不啰嗦
     const zh = await translate(word);

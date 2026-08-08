@@ -1208,12 +1208,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* header: word + 🔊 + ✕ */
 .wp-header{
   display:flex;align-items:center;
-  padding:15px 10px 6px 18px;
+  padding:10px 10px 2px 16px;
   gap:6px;flex-shrink:0;
 }
 .wp-word{
   font-family:'Lora',serif;
-  font-size:22px;font-weight:700;color:var(--text);
+  font-size:20px;font-weight:700;color:var(--text);
   flex:1;line-height:1.15;
 }
 .wp-spk-inline{
@@ -1235,7 +1235,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* POS tag row */
 .wp-meta{
   display:flex;align-items:center;gap:8px;
-  padding:0 18px 8px;flex-shrink:0;
+  padding:0 16px 4px;flex-shrink:0;
 }
 .wp-ph{font-size:13px;color:var(--text-3);font-family:'Nunito',sans-serif;}
 .pos{
@@ -1247,13 +1247,13 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 /* Chinese meaning — prominent */
 .wp-meaning{
-  padding:4px 18px 12px;
-  font-size:26px;font-weight:700;
+  padding:2px 16px 6px;
+  font-size:22px;font-weight:700;
   color:var(--text);
   font-family:'Nunito',sans-serif;
   flex-shrink:0;
   line-height:1.2;
-  max-height:64px;
+  max-height:54px;
   overflow-y:auto;
 }
 .wp-meaning.loading{
@@ -1262,23 +1262,36 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* divider */
 .wp-divider{
   height:1px;background:var(--border);
-  margin:0 18px 10px;flex-shrink:0;
+  margin:0 18px 6px;flex-shrink:0;
 }
 /* context excerpt */
 .wp-context{
-  padding:0 18px 12px;
-  font-size:14px;line-height:1.7;color:var(--text-2);
+  padding:6px 16px;
+  font-size:13px;line-height:1.7;color:var(--text-2);
   font-family:'Lora',serif;
   flex:1 1 auto;
   min-height:0;
   overflow-y:auto;
 }
 .wp-context strong{color:var(--text);font-weight:700;}
+/* English definition — fills the free space to the LEFT of the radial
+   dial, which occupies the bottom-right of the sheet; max-width keeps
+   the text clear of the dial band (pivot at --pr:6px, band radius up
+   to 150px, so reserve roughly the right 200px of this row). */
+.wp-endef{
+  padding:8px 16px 0;
+  max-width:calc(100% - 190px);
+  font-size:12.5px; line-height:1.5;
+  color:var(--text-3);
+  font-family:'Lora',serif;
+  overflow-y:auto;
+  flex:1 1 auto; min-height:0;
+}
 /* drag handle — swipe-down-to-close affordance */
 .wp-handle{
   width:38px;height:4px;border-radius:3px;
   background:var(--border);
-  margin:8px auto 2px;flex-shrink:0;
+  margin:5px auto 2px;flex-shrink:0;
 }
 /* Radial fan dial: a single ring band of five wedges sweeping counter-
    clockwise (bottom → left → top) around a full circular play button that
