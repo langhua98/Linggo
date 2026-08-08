@@ -2447,7 +2447,7 @@ async function playWordAudio(word, mp3){
     }catch(e){ return false; }
   };
   // 1) Kokoro neural — priority when enabled
-  if(kokActive && kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+  if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     const url = await Promise.race([
       _kokServerSynth(word).catch(()=>null),
       new Promise(r => setTimeout(()=>r(null), 3500)),   // don't wait on a cold server
