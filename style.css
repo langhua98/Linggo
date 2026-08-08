@@ -1185,7 +1185,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--surface);
   border-radius:22px 22px 0 0;
   width:auto;
-  max-height:52vh;
+  max-height:62vh;
   overflow:hidden;
   box-shadow:0 -6px 40px rgba(0,0,0,0.18);
   display:none;
@@ -1277,70 +1277,95 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--border);
   margin:8px auto 2px;flex-shrink:0;
 }
-/* Thumb arc: circular buttons on an arc centered at the sheet's bottom-right
-   corner, matching a right thumb's natural sweep. --a = angle along the arc
-   (0deg = straight right/along the bottom, 90deg = straight up). */
+/* Radial fan dial: a quarter-circle of annulus (ring) sectors centered at
+   the sheet's bottom-right corner, matching a right thumb's natural sweep.
+   Each .wp-seg is a square anchored so its bottom-right corner sits at the
+   dial pivot; its own ::before is clipped to a ring-sector polygon sampled
+   along the inner/outer arcs (CSS has no arc primitive for clip-path). */
 .wp-actions{
-  position:relative;
-  flex-shrink:0;
-  height:190px;                 /* room for the arc */
-  padding:0;
+  position:relative; flex-shrink:0;
+  height:264px; padding:0;
   background:var(--surface);
   border-top:1px solid var(--border);
+  overflow:hidden;
 }
-/* Positions are precomputed polar coords (angle/radius from the bottom-right
-   thumb pivot) expressed as plain right/bottom offsets — fully predictable,
-   never overflows the sheet. */
-.wp-arc, .wp-spd{
+.wp-seg{
   position:absolute;
-  right:var(--x); bottom:var(--y);
-  border-radius:50%;
+  right:var(--pr,14px); bottom:var(--pb,10px);
+  width:calc(var(--R) * 2); height:calc(var(--R) * 2);
+  border:none; background:none; padding:0; margin:0;
   cursor:pointer;
-  display:flex;align-items:center;justify-content:center;
-  font-family:'Nunito',sans-serif;font-weight:700;
-  transition:transform .14s cubic-bezier(.34,1.2,.64,1), background .15s, color .15s, border-color .15s;
+  -webkit-tap-highlight-color:transparent;
+  transition:filter .14s, transform .14s;
+  /* clip-path on the button itself restricts hit-testing to the wedge
+     (not just the painted ::before), so overlapping oversized squares
+     from other rings don't steal clicks meant for the segment beneath */
+  -webkit-clip-path:var(--clip); clip-path:var(--clip);
 }
-.wp-arc{
-  width:58px;height:58px;
+/* the visible painted wedge lives in ::before, clipped to the same shape */
+.wp-seg::before{
+  content:''; position:absolute; inset:0;
+  background:var(--bg);
   border:1.5px solid var(--border);
-  background:var(--bg);color:var(--text-2);
-  font-size:12px;
-  flex-direction:column;gap:2px;
+  border-radius:14px;
+  -webkit-clip-path:var(--clip); clip-path:var(--clip);
+  box-shadow:0 1px 4px rgba(0,0,0,.05);
 }
-.wp-arc-t{ font-size:11px;line-height:1; }
-.wp-arc .wbtn-ico{ width:18px;height:18px;display:flex;align-items:center;justify-content:center; }
-.wp-arc:active{ transform:scale(.9); }
-/* arc seats: 🔊 mid-arc (thumb rest), 学习 low/right, 复制 high/left */
-#wp-play{ --x:74px;  --y:78px; }
-#wp-learn{ --x:20px; --y:20px; }
-#wp-copy{ --x:132px; --y:22px; }
-/* primary = pronunciation, biggest, sits mid-arc where the thumb rests */
-.wp-arc-main{
-  width:68px;height:68px;
-  border:none;
+/* label sits at the wedge's mid-angle / mid-radius: --lx/--ly are the
+   precomputed Cartesian offset (px) from the segment box's center to that
+   point (dx = R - r*cos(a), dy = R - r*sin(a)), so no runtime trig needed. */
+.wp-seg-in{
+  position:absolute; left:50%; top:50%;
+  transform: translate(calc(-50% + var(--lx,0px)), calc(-50% + var(--ly,0px)));
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+  font-family:'Nunito',sans-serif; font-weight:700; font-size:13px;
+  color:var(--text-2); white-space:nowrap; pointer-events:none;
+}
+.wp-seg-t{ font-size:12px; line-height:1; }
+.wp-seg-ico, .wp-seg .wbtn-ico{ width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
+.wp-seg:active{ filter:brightness(.93); transform:scale(.985); }
+@media (hover:hover){ .wp-seg:hover::before{ border-color:var(--accent); } }
+
+/* ── primary: solid blue core disc sector (🔊, biggest, thumb rest) ── */
+.wp-seg-main{
+  --R:118px; --lx:64.26px; --ly:64.26px;
+  --clip:polygon(100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 99.17% 52.55%, 90.13% 53.58%, 81.46% 56.32%, 73.46% 60.66%, 66.44% 66.44%, 60.66% 73.46%, 56.32% 81.46%, 53.58% 90.13%, 52.55% 99.17%);
+}
+.wp-seg-main::before{
   background:linear-gradient(145deg,var(--accent),#3b82f6);
-  color:#fff;
-  box-shadow:0 4px 18px rgba(37,99,235,.45);
+  border:none;
+  box-shadow:0 4px 18px rgba(37,99,235,.4);
 }
-.wp-arc-main svg{ width:28px;height:28px; }
-/* speed pills ride a wider arc, smaller */
+.wp-seg-main .wp-seg-in{ color:#fff; }
+.wp-seg-main svg{ width:34px; height:34px; }
+
+/* ── inner ring: 学习 (heart) and 复制 ── */
+.wp-seg-i1, .wp-seg-i2{ --R:186px; }
+.wp-seg-i1{
+  --lx:45.07px; --ly:129.06px;
+  --clip:polygon(66.67% 99.42%, 66.86% 96.37%, 67.34% 93.35%, 68.08% 90.39%, 69.09% 87.51%, 70.37% 84.74%, 71.89% 82.09%, 73.64% 79.59%, 75.62% 77.27%, 64.61% 67%, 61.74% 70.38%, 59.19% 74%, 56.98% 77.84%, 55.14% 81.87%, 53.67% 86.06%, 52.58% 90.35%, 51.9% 94.73%, 51.62% 99.16%);
+}
+.wp-seg-i2{
+  --lx:129.06px; --ly:45.07px;
+  --clip:polygon(77.27% 75.62%, 79.59% 73.64%, 82.09% 71.89%, 84.74% 70.37%, 87.51% 69.09%, 90.39% 68.08%, 93.35% 67.34%, 96.37% 66.86%, 99.42% 66.67%, 99.16% 51.62%, 94.73% 51.9%, 90.35% 52.58%, 86.06% 53.67%, 81.87% 55.14%, 77.84% 56.98%, 74% 59.19%, 70.38% 61.74%, 67% 64.61%);
+}
+
+/* ── outer ring: speed options, three wedges over 0–90deg ── */
+.wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:252px; }
+.wp-seg-o1{
+  --lx:41.43px; --ly:195.58px;
+  --clip:polygon(61.91% 99.34%, 62.02% 97.09%, 62.25% 94.86%, 62.62% 92.65%, 63.12% 90.46%, 63.74% 88.31%, 64.49% 86.19%, 65.37% 84.13%, 66.36% 82.12%, 56.9% 77.09%, 55.63% 79.66%, 54.51% 82.31%, 53.55% 85.02%, 52.75% 87.78%, 52.11% 90.58%, 51.64% 93.42%, 51.33% 96.28%, 51.2% 99.15%);
+}
+.wp-seg-o2{
+  --lx:97.85px; --ly:97.85px;
+  --clip:polygon(67.35% 80.38%, 68.6% 78.42%, 69.98% 76.55%, 71.47% 74.76%, 73.06% 73.06%, 74.76% 71.47%, 76.55% 69.98%, 78.42% 68.6%, 80.38% 67.35%, 74.86% 58.16%, 72.35% 59.77%, 69.95% 61.54%, 67.66% 63.44%, 65.49% 65.49%, 63.44% 67.66%, 61.54% 69.95%, 59.77% 72.35%, 58.16% 74.86%);
+}
+.wp-seg-o3{
+  --lx:195.58px; --ly:41.43px;
+  --clip:polygon(82.12% 66.36%, 84.13% 65.37%, 86.19% 64.49%, 88.31% 63.74%, 90.46% 63.12%, 92.65% 62.62%, 94.86% 62.25%, 97.09% 62.02%, 99.34% 61.91%, 99.15% 51.2%, 96.28% 51.33%, 93.42% 51.64%, 90.58% 52.11%, 87.78% 52.75%, 85.02% 53.55%, 82.31% 54.51%, 79.66% 55.63%, 77.09% 56.9%);
+}
+.wp-spd .wp-seg-in{ font-size:13px; color:var(--text-3); }
 .wp-speeds{ display:contents; }
-.wp-spd{
-  width:44px;height:44px;
-  border:1.5px solid var(--border);
-  background:var(--bg);color:var(--text-3);
-  font-size:11px;
-  padding:0;
-}
-/* speed pills ride an outer arc, same pivot */
-.wp-spd:nth-child(1){ --x:32px;  --y:96px; }   /* 0.5×  — high */
-.wp-spd:nth-child(2){ --x:100px; --y:142px; }  /* 0.75× — mid  */
-.wp-spd:nth-child(3){ --x:172px; --y:104px; }  /* 1×    — left */
-.wp-spd:active{ transform:scale(.9); }
-@media (hover:hover){
-  .wp-arc:hover, .wp-spd:hover{ border-color:var(--accent); color:var(--accent); }
-}
-}
 
 /* ── VOCAB FLASH BUTTON ── */
 .voc-flash-btn{

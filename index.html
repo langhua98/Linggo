@@ -480,20 +480,27 @@
   <div class="wp-divider"></div>
   <div class="wp-context" id="wp-context"></div>
   <div class="wp-actions" id="wp-actions">
-    <button class="wp-arc wp-arc-main" id="wp-play" aria-label="播放发音" style="--a:52deg">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+    <button class="wp-seg wp-seg-main" id="wp-play" aria-label="播放发音">
+      <span class="wp-seg-in">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+      </span>
     </button>
-    <button class="wp-arc" id="wp-learn" aria-label="加入生词本" style="--a:20deg">
-      <span class="wbtn-ico" id="wp-learn-ico"></span>
-      <span class="wp-arc-t">学习</span>
+    <button class="wp-seg wp-seg-i1" id="wp-learn" aria-label="加入生词本">
+      <span class="wp-seg-in">
+        <span class="wbtn-ico" id="wp-learn-ico"></span>
+        <span class="wp-seg-t">学习</span>
+      </span>
     </button>
-    <button class="wp-arc" id="wp-copy" aria-label="复制" style="--a:84deg">
-      <span class="wp-arc-t">复制</span>
+    <button class="wp-seg wp-seg-i2" id="wp-copy" aria-label="复制">
+      <span class="wp-seg-in">
+        <svg class="wp-seg-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <span class="wp-seg-t">复制</span>
+      </span>
     </button>
     <div class="wp-speeds" id="wp-speeds">
-      <button class="wp-spd" data-rate="0.5">0.5×</button>
-      <button class="wp-spd" data-rate="0.75">0.75×</button>
-      <button class="wp-spd" data-rate="1">1×</button>
+      <button class="wp-spd wp-seg wp-seg-o1" data-rate="1"><span class="wp-seg-in">1×</span></button>
+      <button class="wp-spd wp-seg wp-seg-o2" data-rate="0.75"><span class="wp-seg-in">0.75×</span></button>
+      <button class="wp-spd wp-seg wp-seg-o3" data-rate="0.5"><span class="wp-seg-in">0.5×</span></button>
     </div>
   </div>
 </div>
