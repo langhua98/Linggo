@@ -1278,14 +1278,18 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    dial, which occupies the bottom-right of the sheet; max-width keeps
    the text clear of the dial band (pivot at --pr:6px, band radius up
    to 150px, so reserve roughly the right 200px of this row). */
+/* English definition overlays the dial row's empty left half, so it gets the
+   full remaining height instead of being squeezed above the 300px dial. */
 .wp-endef{
-  padding:8px 16px 0;
-  max-width:calc(100% - 190px);
-  font-size:12.5px; line-height:1.5;
+  position:absolute;
+  left:0; right:190px;            /* clear of the dial on the right */
+  top:0; bottom:10px;
+  padding:10px 16px 0;
+  font-size:12.5px; line-height:1.55;
   color:var(--text-3);
   font-family:'Lora',serif;
   overflow-y:auto;
-  flex:1 1 auto; min-height:0;
+  pointer-events:auto;
 }
 /* drag handle — swipe-down-to-close affordance */
 .wp-handle{
