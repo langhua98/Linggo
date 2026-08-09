@@ -1185,8 +1185,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--surface);
   border-radius:22px 22px 0 0;
   width:auto;
-  height:62vh;
-  max-height:62vh;
+  height:52vh;
+  max-height:52vh;
   overflow:hidden;
   box-shadow:0 -6px 40px rgba(0,0,0,0.18);
   display:none;
@@ -1213,31 +1213,35 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .wp-word{
   font-family:'Lora',serif;
-  font-size:20px;font-weight:700;color:var(--text);
+  font-size:24px;font-weight:700;color:var(--text);
   flex:1;line-height:1.15;
 }
 .wp-spk-inline{
-  width:36px;height:36px;flex-shrink:0;
+  width:42px;height:42px;flex-shrink:0;
   border:none;background:var(--bg);border-radius:50%;
-  cursor:pointer;font-size:16px;
+  cursor:pointer;font-size:19px;
   display:flex;align-items:center;justify-content:center;
-  transition:background .15s;color:var(--text-2);
+  transition:transform .12s, background .12s;color:var(--text-2);
+  -webkit-tap-highlight-color:transparent;
 }
 .wp-spk-inline:hover{background:var(--accent-2);}
+.wp-spk-inline:active{background:var(--border);transform:scale(.88);}
 .wp-close-btn{
-  width:32px;height:32px;flex-shrink:0;
+  width:40px;height:40px;flex-shrink:0;
   border:none;background:var(--bg);border-radius:50%;cursor:pointer;
-  font-size:13px;color:var(--text-3);
+  font-size:17px;color:var(--text-3);
   display:flex;align-items:center;justify-content:center;
-  transition:background .15s;
+  transition:transform .12s, background .12s;
+  -webkit-tap-highlight-color:transparent;
 }
 .wp-close-btn:hover{background:var(--border);color:var(--text);}
+.wp-close-btn:active{background:var(--border);transform:scale(.88);}
 /* POS tag row */
 .wp-meta{
   display:flex;align-items:center;gap:8px;
   padding:0 16px 4px;flex-shrink:0;
 }
-.wp-ph{font-size:13px;color:var(--text-3);font-family:'Nunito',sans-serif;}
+.wp-ph{font-size:14px;color:var(--text-3);font-family:'Nunito',sans-serif;}
 .pos{
   display:inline-flex;align-items:center;
   background:var(--accent-2);color:var(--accent);
@@ -1248,12 +1252,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* Chinese meaning — prominent */
 .wp-meaning{
   padding:2px 16px 6px;
-  font-size:22px;font-weight:700;
+  font-size:24px;font-weight:700;
   color:var(--text);
   font-family:'Nunito',sans-serif;
   flex-shrink:0;
   line-height:1.2;
-  max-height:54px;
+  max-height:62px;
   overflow-y:auto;
 }
 .wp-meaning.loading{
@@ -1267,7 +1271,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* context excerpt */
 .wp-context{
   padding:6px 16px;
-  font-size:13px;line-height:1.7;color:var(--text-2);
+  font-size:15px;line-height:1.6;color:var(--text-2);
   font-family:'Lora',serif;
   flex:1 1 auto;
   min-height:0;
@@ -1282,10 +1286,10 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    full remaining height instead of being squeezed above the 300px dial. */
 .wp-endef{
   position:absolute;
-  left:0; right:190px;            /* clear of the dial on the right */
+  left:0; right:166px;            /* clear of the dial on the right */
   top:0; bottom:10px;
   padding:10px 16px 0;
-  font-size:12.5px; line-height:1.55;
+  font-size:14px; line-height:1.6;
   color:var(--text-3);
   font-family:'Lora',serif;
   overflow-y:auto;
@@ -1310,12 +1314,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    right:pr-R; bottom:pb-R. */
 .wp-actions{
   position:relative; flex-shrink:0;
-  height:300px; padding:0;
+  height:250px; padding:0;
   background:var(--surface);
   border-top:1px solid var(--border);
   overflow:hidden;
   /* pivot on the sheet's right edge so the play circle is half-cropped */
-  --pr:6px; --pb:126px;
+  --pr:6px; --pb:106px;
 }
 .wp-seg{
   position:absolute;
@@ -1346,18 +1350,18 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   position:absolute; left:50%; top:50%;
   transform: translate(calc(-50% + var(--lx,0px)), calc(-50% + var(--ly,0px)));
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
-  font-family:'Nunito',sans-serif; font-weight:700; font-size:13px;
+  font-family:'Nunito',sans-serif; font-weight:700; font-size:14px;
   color:var(--text-2); white-space:nowrap; pointer-events:none;
 }
-.wp-seg-t{ font-size:12px; line-height:1; }
+.wp-seg-t{ font-size:13px; line-height:1; }
 .wp-seg-ico, .wp-seg .wbtn-ico{ width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
-.wp-seg:active{ filter:brightness(.93); transform:scale(.985); }
+.wp-seg:active{ filter:brightness(.88); transform:scale(.96); }
 @media (hover:hover){ .wp-seg:hover::before{ border-color:var(--accent); } }
 
 /* ── primary: full circle, centered on the pivot, half-cropped by the
    sheet's right edge (.wp-actions{overflow:hidden}) ── */
 .wp-seg-main{
-  --R:70px; --clip:circle(50%);
+  --R:62px; --clip:circle(50%);
   --lx:-18px; --ly:0px;
 }
 .wp-seg-main::before{
@@ -1368,32 +1372,34 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .wp-seg-main .wp-seg-in{ color:#fff; }
 .wp-seg-main svg{ width:34px; height:34px; }
+.wp-seg-main:active{ transform:scale(.94); }
+.wp-seg-main:active::before{ box-shadow:0 2px 10px rgba(37,99,235,.55); }
 
 /* ── single band: 学习 → 复制 → 1× → 0.75× → 0.5×, one continuous ring
-   (r 86→150) wrapping counter-clockwise from below the circle, up its
+   (r 72→126) wrapping counter-clockwise from below the circle, up its
    left side, to above it ── */
-.wp-seg-i1, .wp-seg-i2, .wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:150px; }
+.wp-seg-i1, .wp-seg-i2, .wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:126px; }
 .wp-seg-o1{ /* 1×, a:-58.00..-33.00 */
-  --lx:-82.71px; --ly:84.16px;
-  --clip:polygon(34.81% 74.31%, 33.51% 73.45%, 32.25% 72.51%, 31.05% 71.51%, 29.91% 70.45%, 28.82% 69.32%, 27.80% 68.14%, 26.84% 66.90%, 25.96% 65.61%, 8.07% 77.23%, 9.61% 79.48%, 11.28% 81.64%, 13.06% 83.70%, 14.95% 85.66%, 16.95% 87.52%, 19.05% 89.27%, 21.23% 90.89%, 23.50% 92.40%);
+  --lx:-69.39px; --ly:70.61px;
+  --clip:polygon(34.86% 74.23%, 33.56% 73.37%, 32.31% 72.44%, 31.11% 71.44%, 29.97% 70.38%, 28.89% 69.26%, 27.87% 68.08%, 26.92% 66.84%, 26.04% 65.56%, 8.07% 77.23%, 9.61% 79.48%, 11.28% 81.64%, 13.06% 83.70%, 14.95% 85.66%, 16.95% 87.52%, 19.05% 89.27%, 21.23% 90.89%, 23.50% 92.40%);
 }
 .wp-seg-o2{ /* 0.75×, a:-31.75..-6.75 */
-  --lx:-111.40px; --ly:38.90px;
-  --clip:polygon(25.62% 65.08%, 24.84% 63.73%, 24.13% 62.34%, 23.49% 60.91%, 22.94% 59.45%, 22.46% 57.96%, 22.07% 56.45%, 21.76% 54.92%, 21.53% 53.37%, 0.35% 55.88%, 0.74% 58.57%, 1.28% 61.25%, 1.97% 63.89%, 2.80% 66.48%, 3.76% 69.03%, 4.87% 71.53%, 6.11% 73.95%, 7.48% 76.31%);
+  --lx:-93.46px; --ly:32.64px;
+  --clip:polygon(25.70% 65.03%, 24.92% 63.69%, 24.21% 62.30%, 23.58% 60.88%, 23.03% 59.42%, 22.55% 57.94%, 22.16% 56.43%, 21.85% 54.90%, 21.63% 53.36%, 0.35% 55.88%, 0.74% 58.57%, 1.28% 61.25%, 1.97% 63.89%, 2.80% 66.48%, 3.76% 69.03%, 4.87% 71.53%, 6.11% 73.95%, 7.48% 76.31%);
 }
 .wp-seg-o3{ /* 0.5×, a:-5.50..19.50 */
-  --lx:-117.12px; --ly:-14.38px;
-  --clip:polygon(21.47% 52.75%, 21.36% 51.19%, 21.34% 49.62%, 21.40% 48.06%, 21.55% 46.51%, 21.78% 44.96%, 22.10% 43.43%, 22.50% 41.92%, 22.98% 40.43%, 2.87% 33.31%, 2.03% 35.90%, 1.33% 38.54%, 0.78% 41.21%, 0.37% 43.91%, 0.11% 46.62%, 0.00% 49.35%, 0.04% 52.07%, 0.23% 54.79%);
+  --lx:-98.26px; --ly:-12.07px;
+  --clip:polygon(21.56% 52.74%, 21.45% 51.18%, 21.43% 49.63%, 21.49% 48.07%, 21.64% 46.52%, 21.87% 44.98%, 22.19% 43.45%, 22.59% 41.95%, 23.07% 40.46%, 2.87% 33.31%, 2.03% 35.90%, 1.33% 38.54%, 0.78% 41.21%, 0.37% 43.91%, 0.11% 46.62%, 0.00% 49.35%, 0.04% 52.07%, 0.23% 54.79%);
 }
 .wp-seg-i2{ /* 复制, a:20.75..45.75 */
-  --lx:-98.68px; --ly:-64.70px;
-  --clip:polygon(23.19% 39.84%, 23.79% 38.40%, 24.46% 36.99%, 25.21% 35.61%, 26.03% 34.28%, 26.92% 33.00%, 27.88% 31.77%, 28.91% 30.59%, 30.00% 29.47%, 15.11% 14.18%, 13.21% 16.14%, 11.42% 18.20%, 9.74% 20.35%, 8.19% 22.59%, 6.75% 24.91%, 5.45% 27.30%, 4.28% 29.76%, 3.24% 32.29%);
+  --lx:-82.79px; --ly:-54.28px;
+  --clip:polygon(23.28% 39.88%, 23.87% 38.44%, 24.54% 37.03%, 25.29% 35.66%, 26.11% 34.33%, 27.00% 33.06%, 27.95% 31.83%, 28.98% 30.65%, 30.06% 29.53%, 15.11% 14.18%, 13.21% 16.14%, 11.42% 18.20%, 9.74% 20.35%, 8.19% 22.59%, 6.75% 24.91%, 5.45% 27.30%, 4.28% 29.76%, 3.24% 32.29%);
 }
 .wp-seg-i1{ /* 学习, a:47.00..72.00 */
-  --lx:-59.89px; --ly:-101.67px;
-  --clip:polygon(30.45% 29.03%, 31.62% 28.00%, 32.85% 27.03%, 34.13% 26.13%, 35.45% 25.30%, 36.82% 24.54%, 38.23% 23.86%, 39.67% 23.26%, 41.14% 22.74%, 34.55% 2.45%, 31.98% 3.36%, 29.46% 4.41%, 27.01% 5.60%, 24.62% 6.92%, 22.31% 8.37%, 20.08% 9.94%, 17.94% 11.63%, 15.90% 13.43%);
+  --lx:-50.25px; --ly:-85.30px;
+  --clip:polygon(30.51% 29.10%, 31.68% 28.07%, 32.91% 27.11%, 34.18% 26.21%, 35.50% 25.38%, 36.86% 24.63%, 38.27% 23.95%, 39.70% 23.35%, 41.17% 22.83%, 34.55% 2.45%, 31.98% 3.36%, 29.46% 4.41%, 27.01% 5.60%, 24.62% 6.92%, 22.31% 8.37%, 20.08% 9.94%, 17.94% 11.63%, 15.90% 13.43%);
 }
-.wp-spd .wp-seg-in{ font-size:13px; color:var(--text-3); }
+.wp-spd .wp-seg-in{ font-size:14px; color:var(--text-3); }
 .wp-speeds{ display:contents; }
 
 /* ── VOCAB FLASH BUTTON ── */
