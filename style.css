@@ -1354,7 +1354,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   color:var(--text-2); white-space:nowrap; pointer-events:none;
 }
 .wp-seg-t{ font-size:13px; line-height:1; }
-.wp-seg-ico, .wp-seg .wbtn-ico{ width:20px; height:20px; display:flex; align-items:center; justify-content:center; }
+.wp-seg-ico, .wp-seg .wbtn-ico{ width:17px; height:17px; display:flex; align-items:center; justify-content:center; }
 .wp-seg:active{ filter:brightness(.88); transform:scale(.96); }
 @media (hover:hover){ .wp-seg:hover::before{ border-color:var(--accent); } }
 
@@ -1392,11 +1392,11 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   --clip:polygon(21.56% 52.74%, 21.45% 51.18%, 21.43% 49.63%, 21.49% 48.07%, 21.64% 46.52%, 21.87% 44.98%, 22.19% 43.45%, 22.59% 41.95%, 23.07% 40.46%, 2.87% 33.31%, 2.03% 35.90%, 1.33% 38.54%, 0.78% 41.21%, 0.37% 43.91%, 0.11% 46.62%, 0.00% 49.35%, 0.04% 52.07%, 0.23% 54.79%);
 }
 .wp-seg-i2{ /* 复制, a:20.75..45.75 */
-  --lx:-82.79px; --ly:-54.28px;
+  --lx:-93.66px; --ly:-61.41px;
   --clip:polygon(23.28% 39.88%, 23.87% 38.44%, 24.54% 37.03%, 25.29% 35.66%, 26.11% 34.33%, 27.00% 33.06%, 27.95% 31.83%, 28.98% 30.65%, 30.06% 29.53%, 15.11% 14.18%, 13.21% 16.14%, 11.42% 18.20%, 9.74% 20.35%, 8.19% 22.59%, 6.75% 24.91%, 5.45% 27.30%, 4.28% 29.76%, 3.24% 32.29%);
 }
 .wp-seg-i1{ /* 学习, a:47.00..72.00 */
-  --lx:-50.25px; --ly:-85.30px;
+  --lx:-56.84px; --ly:-96.50px;
   --clip:polygon(30.51% 29.10%, 31.68% 28.07%, 32.91% 27.11%, 34.18% 26.21%, 35.50% 25.38%, 36.86% 24.63%, 38.27% 23.95%, 39.70% 23.35%, 41.17% 22.83%, 34.55% 2.45%, 31.98% 3.36%, 29.46% 4.41%, 27.01% 5.60%, 24.62% 6.92%, 22.31% 8.37%, 20.08% 9.94%, 17.94% 11.63%, 15.90% 13.43%);
 }
 .wp-spd .wp-seg-in{ font-size:14px; color:var(--text-3); }
