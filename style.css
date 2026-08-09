@@ -1185,8 +1185,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--surface);
   border-radius:22px 22px 0 0;
   width:auto;
-  height:52vh;
-  max-height:52vh;
+  height:49vh;
+  max-height:49vh;
   overflow:hidden;
   box-shadow:0 -6px 40px rgba(0,0,0,0.18);
   display:none;
@@ -1238,8 +1238,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .wp-close-btn:active{background:var(--border);transform:scale(.88);}
 /* POS tag row */
 .wp-meta{
-  display:flex;align-items:center;gap:8px;
-  padding:0 16px 4px;flex-shrink:0;
+  display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;
+  padding:0 16px 2px;flex-shrink:0;
 }
 .wp-ph{font-size:14px;color:var(--text-3);font-family:'Nunito',sans-serif;}
 .pos{
@@ -1250,14 +1250,15 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   font-family:'Nunito',sans-serif;
 }
 /* Chinese meaning — prominent */
+/* 中文释义通常很短，让它只占自身宽度、紧跟音标行，不再独占一整行 */
 .wp-meaning{
-  padding:2px 16px 6px;
-  font-size:24px;font-weight:700;
+  padding:0 16px 4px;
+  font-size:23px;font-weight:700;
   color:var(--text);
   font-family:'Nunito',sans-serif;
   flex-shrink:0;
-  line-height:1.2;
-  max-height:62px;
+  line-height:1.25;
+  max-height:56px;
   overflow-y:auto;
 }
 .wp-meaning.loading{
@@ -1266,15 +1267,15 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* divider */
 .wp-divider{
   height:1px;background:var(--border);
-  margin:0 18px 6px;flex-shrink:0;
+  margin:2px 18px 4px;flex-shrink:0;
 }
 /* context excerpt */
 .wp-context{
-  padding:6px 16px;
-  font-size:15px;line-height:1.6;color:var(--text-2);
+  padding:2px 16px 6px;
+  font-size:15px;line-height:1.5;color:var(--text-2);
   font-family:'Lora',serif;
-  flex:1 1 auto;
-  min-height:0;
+  flex:0 0 auto;
+  min-height:calc(1.5em * 2 + 8px);   /* 至少两行，不被挤没 */
   overflow-y:auto;
 }
 .wp-context strong{color:var(--text);font-weight:700;}
@@ -1314,7 +1315,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    right:pr-R; bottom:pb-R. */
 .wp-actions{
   position:relative; flex-shrink:0;
-  height:250px; padding:0;
+  height:236px; padding:0;
   background:var(--surface);
   border-top:1px solid var(--border);
   overflow:hidden;
