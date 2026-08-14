@@ -2359,9 +2359,13 @@ function _splitAffixes(word){
     }
   }
   for(const p of _PREFIXES){
-    if(lower.startsWith(p) && _plausibleStem(w.slice(p.length, end))){
-      pre = w.slice(0, p.length); start = p.length; break;
-    }
+    if(!lower.startsWith(p)) continue;
+    const rest = w.slice(p.length, end);
+    if(!_plausibleStem(rest)) continue;
+    // A doubled consonant right after the prefix means the letters belong to
+    // the root, not to a prefix (commanded is command+ed, not co+mmand+ed).
+    if(/^([bcdfghjklmnpqrstvwxz])\1/i.test(rest)) continue;
+    pre = w.slice(0, p.length); start = p.length; break;
   }
   const stem = w.slice(start, end);
   if(!stem) return { pre:'', stem:w, suf:'' };
@@ -2383,6 +2387,44 @@ function _syllabify(word){
     const parts = _hypher.hyphenate(w.toLowerCase());
     return (parts && parts.length > 1) ? parts : null;
   }catch(e){ return null; }
+}
+
+// Fetch a dictionary entry, retrying once on a transient network failure and
+// then falling back to the word's base form (the API has no entry for many
+// inflections, e.g. "studies" -> "study"). Returns null when nothing is found,
+// so the caller can keep its existing translate-only fallback.
+async function _fetchDictEntry(word){
+  const get = async (w) => {
+    const r = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(w));
+    if(!r.ok) return null;
+    const j = await r.json();
+    return Array.isArray(j) ? j[0] : null;
+  };
+  for(const w of [word, ..._baseForms(word)]){
+    for(let attempt = 0; attempt < 2; attempt++){
+      try{
+        const e = await get(w);
+        if(e) return e;
+        break;                       // 404 for this form — try the next form
+      }catch(err){
+        if(attempt === 0) await new Promise(r => setTimeout(r, 400));  // retry once
+      }
+    }
+  }
+  return null;
+}
+// Candidate base forms for a possibly-inflected word (rough, English only).
+function _baseForms(w){
+  const out = [];
+  const add = s => { if(s && s.length >= 3 && s !== w && !out.includes(s)) out.push(s); };
+  if(/ies$/.test(w))       add(w.slice(0, -3) + 'y');
+  if(/(ses|xes|zes|ches|shes)$/.test(w)) add(w.slice(0, -2));
+  if(/s$/.test(w) && !/ss$/.test(w))     add(w.slice(0, -1));
+  if(/ied$/.test(w))       add(w.slice(0, -3) + 'y');
+  if(/ed$/.test(w)){ add(w.slice(0, -2)); add(w.slice(0, -1)); }
+  if(/ing$/.test(w)){ add(w.slice(0, -3)); add(w.slice(0, -3) + 'e'); }
+  if(/(er|est)$/.test(w))  add(w.replace(/(er|est)$/, ''));
+  return out;
 }
 
 async function onWordClick(el){
@@ -2469,11 +2511,7 @@ async function onWordClick(el){
 
   // async: dictionary → POS + meaning in Chinese
   try{
-    const r = await fetch(
-      'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)
-    );
-    if(!r.ok) throw new Error('dict ' + r.status);
-    const entry = (await r.json())[0];
+    const entry = await _fetchDictEntry(word);
     if(!entry) throw new Error('no entry');
 
     const ph = entry.phonetics?.find(p => p.text)?.text || '';
