@@ -1,0 +1,53 @@
+name: Supabase Keepalive
+
+# Supabase 免费版项目闲置约 7 天会自动暂停，一旦暂停，登录 / 生词云同步 /
+# 我的书架 / 访问统计全部失效。这个定时任务每 3 天访问一次数据库，
+# 保持项目活跃，避免再次被暂停。
+#
+# 用的是客户端本来就公开的 publishable(anon) key，受 RLS 保护，
+# 因此无需配置任何 GitHub Secret。
+
+on:
+  schedule:
+    # 每 3 天的 03:17 UTC 跑一次（错开整点，避开 GitHub 高峰期排队）
+    - cron: '17 3 */3 * *'
+  workflow_dispatch:        # 也支持在 Actions 页面手动触发
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping Supabase
+        env:
+          SB_URL: https://ueskojxtupmxwolzxdxa.supabase.co
+          SB_KEY: sb_publishable_-hbkl0aTVPGCfSL8rk6WPQ_mzGQ52O-
+        run: |
+          set -uo pipefail
+
+          # 真正查询一张表（而不是只 ping 域名）——只有实际的数据库查询
+          # 才算作活跃，光访问 REST 根路径不足以阻止暂停。
+          code=$(curl -sS -o /tmp/body.txt -w '%{http_code}' --max-time 30 \
+            "$SB_URL/rest/v1/user_books?select=id&limit=1" \
+            -H "apikey: $SB_KEY" \
+            -H "Authorization: Bearer $SB_KEY" || echo "000")
+
+          echo "HTTP $code"
+          head -c 300 /tmp/body.txt || true
+          echo
+
+          # 2xx = 正常；401/403 说明 RLS 拒绝了匿名读取，但请求已经打到数据库、
+          # 同样算活跃，因此也视为成功。
+          case "$code" in
+            2*|401|403)
+              echo "✅ 数据库有响应，保活成功"
+              ;;
+            000)
+              echo "❌ 连不上——项目可能已被暂停，请到 Supabase 控制台恢复"
+              exit 1
+              ;;
+            *)
+              echo "⚠️ 非预期状态码 $code"
+              exit 1
+              ;;
+          esac
