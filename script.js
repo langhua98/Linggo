@@ -2275,6 +2275,74 @@ function positionPopup(wordEl){
   wpop.classList.remove('from-above','from-below');
 }
 
+// Split an IPA transcription into syllables. IPA marks stress with ˈ (primary)
+// and ˌ (secondary) at the START of a syllable, so those are hard boundaries.
+// Between stress marks we split after each vowel nucleus, keeping following
+// consonants with the next syllable when one follows (a rough maximal-onset
+// rule). Heuristic — good on common words, not a phonological parser.
+function _ipaSyllables(ipa){
+  const raw = String(ipa || '').trim();
+  const inner = raw.replace(/^[\/\[]|[\/\]]$/g, '');       // drop / / or [ ]
+  if(!inner) return null;
+  const VOWELS = 'iɪeɛæaɑɒɔoʊuʌəɜɐyøœɶɤɯ';                  // incl. schwa
+  const parts = [];
+  let cur = '';
+  let seenNucleus = false;
+  for(let i = 0; i < inner.length; i++){
+    const ch = inner[i];
+    // stress mark always begins a new syllable
+    if(ch === 'ˈ' || ch === 'ˌ'){
+      if(cur.trim()) parts.push(cur);
+      cur = ch; seenNucleus = false; continue;
+    }
+    if(ch === '.'){                                        // explicit boundary
+      if(cur.trim()) parts.push(cur);
+      cur = ''; seenNucleus = false; continue;
+    }
+    const isVowel = VOWELS.includes(ch);
+    // a new vowel after we already have a nucleus (and at least one consonant
+    // since) starts the next syllable; give that syllable its onset consonant
+    if(isVowel && seenNucleus){
+      const m = cur.match(/([^ˈˌ]*?)([bcdfghjklmnpqrstvwxzðθʃʒŋɹɾʧʤ]+)$/);
+      if(m && m[2] && m[2].length >= 1 && m[1] !== ''){
+        const onset = m[2].length > 1 ? m[2].slice(-1) : m[2];
+        cur = cur.slice(0, cur.length - onset.length);
+        if(cur.trim()) parts.push(cur);
+        cur = onset + ch;
+      } else {
+        if(cur.trim()) parts.push(cur);
+        cur = ch;
+      }
+      seenNucleus = true; continue;
+    }
+    cur += ch;
+    if(isVowel) seenNucleus = true;
+  }
+  if(cur.trim()) parts.push(cur);
+  const out = parts.map(s => s.trim()).filter(Boolean);
+  return out.length > 1 ? out : null;                       // null = don't bother
+}
+
+// Common English affixes. Longest-match-first; we only strip an affix when a
+// reasonable stem remains, so "read"/"prefer" aren't mangled.
+const _PREFIXES = ['counter','inter','trans','under','super','anti','auto','over','semi','mis','non','pre','pro','sub','dis','out','un','re','in','im','il','ir','de','en','em','ex','co'];
+const _SUFFIXES = ['ationally','ability','ibility','ization','fulness','ousness','iveness','ational','ization','ations','ically','ation','ition','ities','ments','ously','ition','able','ible','ance','ence','ment','ness','less','ful','ish','ive','ize','ise','ity','ous','ial','ian','ary','ery','ory','ing','ers','est','ed','er','ly','al','ic','es','s'];
+// Returns {pre, stem, suf} — pre/suf may be ''
+function _splitAffixes(word){
+  const w = String(word || '');
+  const lower = w.toLowerCase();
+  let pre = '', suf = '', start = 0, end = w.length;
+  for(const p of _PREFIXES){
+    if(lower.startsWith(p) && (w.length - p.length) >= 3){ pre = w.slice(0, p.length); start = p.length; break; }
+  }
+  for(const s of _SUFFIXES){
+    if(lower.endsWith(s) && (end - s.length - start) >= 3){ suf = w.slice(w.length - s.length); end = w.length - s.length; break; }
+  }
+  const stem = w.slice(start, end);
+  if(!stem) return { pre:'', stem:w, suf:'' };
+  return { pre, stem, suf };
+}
+
 async function onWordClick(el){
   const word = el.dataset.w.replace(/[^a-z]/g,'');
   if(!word || word.length < 2) return;
@@ -2288,7 +2356,13 @@ async function onWordClick(el){
   S.curWordData = { word, sent: sentText, sentIdx: sentEl ? +sentEl.dataset.i : -1 };
 
   // header
-  document.getElementById('wp-word').textContent = word;
+  const wordEl = document.getElementById('wp-word');
+  wordEl.textContent = '';
+  { const seg = _splitAffixes(word);
+    if(seg.pre) wordEl.append(Object.assign(document.createElement('span'), {className:'w-affix', textContent:seg.pre}));
+    wordEl.append(document.createTextNode(seg.stem));
+    if(seg.suf) wordEl.append(Object.assign(document.createElement('span'), {className:'w-affix', textContent:seg.suf}));
+  }
   document.getElementById('wp-ph').textContent   = '';
   const posEl = document.getElementById('wp-pos');
   posEl.style.display = 'none';
@@ -2345,7 +2419,19 @@ async function onWordClick(el){
 
     const ph = entry.phonetics?.find(p => p.text)?.text || '';
     const au = entry.phonetics?.find(p => p.audio?.length > 0)?.audio || '';
-    document.getElementById('wp-ph').textContent = ph;
+    const phEl = document.getElementById('wp-ph');
+    const syl = _ipaSyllables(ph);
+    if(syl){
+      phEl.textContent = '';
+      phEl.append('/');
+      syl.forEach((s, i) => {
+        if(i) phEl.append(Object.assign(document.createElement('span'), {className:'ph-dot', textContent:'·'}));
+        phEl.append(Object.assign(document.createElement('span'), {className:'ph-syl', textContent:s}));
+      });
+      phEl.append('/');
+    } else {
+      phEl.textContent = ph;
+    }
     wpop._audio = au;
 
     const rawPos = entry.meanings?.[0]?.partOfSpeech || '';
