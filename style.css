@@ -1311,6 +1311,28 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   margin:2px 18px 4px;flex-shrink:0;
 }
 /* context excerpt */
+/* 例句/释义前的小图章，一眼区分两类内容 */
+.wp-context::before{
+  content:'例句';
+  display:inline-flex;align-items:center;justify-content:center;
+  height:17px;padding:0 6px;margin-right:7px;
+  border-radius:5px;
+  background:rgba(37,99,235,.10);
+  color:var(--accent);
+  font-family:'Nunito',sans-serif;font-size:10.5px;font-weight:800;
+  letter-spacing:.04em;vertical-align:2px;
+}
+.endef-stamp{
+  display:inline-flex;align-items:center;justify-content:center;
+  height:17px;padding:0 6px;margin-right:7px;
+  border-radius:5px;
+  background:rgba(22,163,74,.12);
+  color:var(--green);
+  font-family:'Nunito',sans-serif;font-size:10.5px;font-weight:800;
+  letter-spacing:.04em;vertical-align:2px;
+}
+.night .wp-context::before{ background:rgba(96,165,250,.16); color:#7fb0ff; }
+.night .endef-stamp{ background:rgba(74,222,128,.16); color:#4ade80; }
 .wp-context{
   padding:2px 16px 6px;
   font-size:15px;line-height:1.5;color:var(--text-2);

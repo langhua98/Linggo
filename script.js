@@ -2525,7 +2525,11 @@ async function onWordClick(el){
 
     const enDef = entry.meanings?.[0]?.definitions?.[0]?.definition || '';
     if(enDef && document.getElementById('wp-word').textContent === word){
-      enDefEl.textContent = enDef;
+      // 前置「释义」图章（用 span 而非 ::before —— 后者已被绕排占位占用）
+      enDefEl.textContent = '';
+      enDefEl.append(Object.assign(document.createElement('span'),
+        {className:'endef-stamp', textContent:'释义'}));
+      enDefEl.append(document.createTextNode(enDef));
       enDefEl.style.display = '';
     }
 
