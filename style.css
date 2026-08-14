@@ -1504,6 +1504,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .night .wp-seg-i1{ --sc-tint:rgba(249,115,22,.16); --sc-bd:rgba(249,115,22,.40); --sc-fg:#FDBA74; }
 .night .wp-seg-i2{ --sc-tint:rgba(139,92,246,.16); --sc-bd:rgba(139,92,246,.40); --sc-fg:#C4B5FD; }
 .night .wp-seg-o2, .night .wp-seg-o3{ --sc-tint:rgba(34,197,94,.15); --sc-bd:rgba(34,197,94,.38); --sc-fg:#86EFAC; }
+/* ── 已收藏：学习扇块底色加深 ── */
+.wp-seg-i1.saved{ --sc-tint:rgba(249,115,22,.22); }
+.night .wp-seg-i1.saved{ --sc-tint:rgba(249,115,22,.30); }
 .wp-spd .wp-seg-in{ font-size:15px; color:var(--sc-fg, var(--text-2)); }
 .wp-speeds{ display:contents; }
 

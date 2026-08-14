@@ -2507,7 +2507,7 @@ async function onWordClick(el){
   if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     _kokServerSynth(word).catch(()=>{});
   }
-  if(_licons && _licons.learn) _licons.learn.goToAndStop(0, true);   // reset heart to empty
+  _wpSetLearnState(S.savedWords.has(word), false);   // 按当前是否已收藏初始化按钮状态
 
   // async: dictionary → POS + meaning in Chinese
   try{
@@ -2565,12 +2565,31 @@ document.getElementById('wp-copy').addEventListener('click', () => {
   const word = document.getElementById('wp-word').textContent;
   navigator.clipboard?.writeText(word).then(()=> toast(`已复制 "${word}"`)).catch(()=> toast('复制失败'));
 });
+// ── 学习按钮：加入 ↔ 取消 状态切换 ──
+function _wpSetLearnState(saved, animate){
+  const btn = document.getElementById('wp-learn');
+  if(!btn) return;
+  btn.classList.toggle('saved', saved);
+  const t = btn.querySelector('.wp-seg-t');
+  if(t) t.textContent = saved ? '取消' : '学习';
+  const a = _licons && _licons.learn;
+  if(!a) return;
+  if(animate) Licon.setState(a, saved);                    // 正放=填充 / 倒放=还原
+  else a.goToAndStop(saved ? Math.max(0, a.totalFrames - 1) : 0, true);
+}
 document.getElementById('wp-learn').addEventListener('click', () => {
   const word = S.curWordData?.word; if(!word) return;
-  const fromEl = document.querySelector('.word.active') || document.getElementById('wp-word');
-  addVocab(word, wpop._meaning||'');
-  flyWordToVocab(word, fromEl?.getBoundingClientRect());
-  toast('「'+word+'」已加入生词本');
+  if(S.savedWords.has(word)){
+    removeVocab(word);
+    _wpSetLearnState(false, true);
+    toast('「'+word+'」已移出生词本');
+  } else {
+    const fromEl = document.querySelector('.word.active') || document.getElementById('wp-word');
+    addVocab(word, wpop._meaning||'');
+    flyWordToVocab(word, fromEl?.getBoundingClientRect());   // 飞入动画只在"加入"时播
+    _wpSetLearnState(true, true);
+    toast('「'+word+'」已加入生词本');
+  }
   wpop.classList.remove('vis');
   document.querySelectorAll('.word.active').forEach(w=>w.classList.remove('active'));
 });
@@ -2679,14 +2698,51 @@ async function playWordAudio(word, mp3, rate = 1){
 // ═══════════════════════════════════════════
 //  VOCAB
 // ═══════════════════════════════════════════
+// ── 生词高亮同步 ──
+// injectWords 是懒注入：句子默认是纯文本，只有用户触碰/播放/翻译到该句
+// 才生成 .word span 并在注入时打上 .saved（见 injectWords 里的判断）。
+// 所以收藏/取消收藏时只 querySelectorAll 已注入的 span 是不够的——文章
+// 其它段落要等用户点到那句才会变色。这里主动把含该词的句子也注入一遍。
+function _refreshSavedWord(word, saved){
+  // 已注入的句子：直接切类，覆盖当前视口，立即可见
+  area.querySelectorAll(`.word[data-w="${word}"]`)
+      .forEach(el => el.classList.toggle('saved', saved));
+  if(!saved) return;   // 取消收藏时，未注入的句子本来就没高亮，无需处理
+  // 未注入的句子：找出含该词的句子，主动注入（注入时自然带上 .saved），
+  // 分批让出主线程，长书里命中几百句也不会卡顿
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re  = new RegExp(`\\b${esc}\\b`, 'i');
+  const hits = [];
+  for(let i = 0; i < S.sents.length; i++) if(re.test(S.sents[i])) hits.push(i);
+  let p = 0;
+  (function step(){
+    const end = Math.min(p + 40, hits.length);
+    for(; p < end; p++){
+      const sp = area.querySelector(`.sent[data-i="${hits[p]}"]`);
+      if(sp) injectWords(sp);
+    }
+    if(p < hits.length) setTimeout(step, 0);
+  })();
+}
 function addVocab(word, meaning){
   if(!word||word.length<2||S.vocab.some(v=>v.word===word)) return;
   const item = {word, meaning, sent:S.curWordData?.sent||'', time:Date.now()};
   S.vocab.push(item);
   S.savedWords.add(word);
-  area.querySelectorAll(`.word[data-w="${word}"]`).forEach(el=>el.classList.add('saved'));
-  renderVoc(); saveProg(); toast(`已收藏 "${word}"`);
+  _refreshSavedWord(word, true);
+  renderVoc(); saveProg();
   cloudAddVocab(item); // 云端同步（静默）
+}
+// ── 生词本删除（🗑 / 取消学习 共用） ──
+function removeVocab(word){
+  const idx = S.vocab.findIndex(v => v.word === word);
+  if(idx === -1) return false;
+  S.vocab.splice(idx, 1);
+  S.savedWords.delete(word);          // 原 🗑 处理器漏了这步，导致已删的词会被重新高亮
+  _refreshSavedWord(word, false);
+  cloudDeleteVocab(word);
+  renderVoc(); saveProg();
+  return true;
 }
 // ── 生词飞入动画 ──
 function flyWordToVocab(word, fromRect){
@@ -2749,15 +2805,7 @@ function renderVoc(){
     list.innerHTML += `<div style="text-align:center;padding:10px;color:var(--text-3);font-size:12px;">共 ${filtered.length} 词，已显示前 ${VOC_PAGE} 条，输入搜索可快速定位</div>`;
   }
   list.querySelectorAll('.vi-del').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const w = btn.dataset.w;
-      const idx = S.vocab.findIndex(x => x.word === w);
-      if(idx === -1) return;
-      S.vocab.splice(idx, 1);
-      document.querySelectorAll(`.word[data-w="${w}"]`).forEach(el => el.classList.remove('saved'));
-      cloudDeleteVocab(w);
-      renderVoc(); saveProg();
-    });
+    btn.addEventListener('click', () => { removeVocab(btn.dataset.w); });
   });
 }
 document.getElementById('voc-tbtn').addEventListener('click',()=>{ document.getElementById('voc').classList.add('open'); document.getElementById('overlay').classList.add('vis'); renderVoc(); });
@@ -3140,9 +3188,8 @@ async function _initLicons(){
   _licons.voc = await Licon.mount($('voc-tbtn'), 'bookmark');
   $('voc-tbtn').addEventListener('click', () => Licon.nudge(_licons.voc));
 
-  // Word popup: heart pop when adding to vocabulary
+  // Word popup: heart fill↔empty 由 _wpSetLearnState 按加入/取消方向驱动
   _licons.learn = await Licon.mount($('wp-learn-ico'), 'heart');
-  $('wp-learn').addEventListener('click', () => Licon.nudge(_licons.learn));
 }
 _initLicons();
 

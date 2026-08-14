@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════
 //  FLASHCARD SYSTEM — SRS + Swipe + Animations
 // ═══════════════════════════════════════════
-// 依赖（script.js 先加载）：S, synth, getVoice, toast, closeVoc, addVocab, closeSidebar
+// 依赖（script.js 先加载）：S, synth, getVoice, toast, closeVoc, addVocab, removeVocab, closeSidebar
 // 依赖（sb.js 先加载）：SB, currentUser
 // 依赖（词库文件先加载）：CET4, CET6, OGDEN850
 const SRS_INTERVALS = { again: 10*60*1000, hard: 86400000, good: 3*86400000, easy: 7*86400000 };
@@ -509,8 +509,10 @@ document.getElementById('fc-star').addEventListener('click', e=>{
   const v=fcDeck[fcIdx];
   if(!v) return;
   const inV=S.vocab.some(x=>x.word===v.word);
-  if(inV){ S.vocab.splice(S.vocab.findIndex(x=>x.word===v.word),1); }
-  else   { addVocab(v.word, v.meaning||''); }
+  // 走 removeVocab/addVocab 而不是直接动 S.vocab：它们会一并清理 savedWords、
+  // 刷新正文高亮、存盘并同步云端（直接 splice 会漏掉这些）
+  if(inV){ removeVocab(v.word); toast('「'+v.word+'」已移出生词本'); }
+  else   { addVocab(v.word, v.meaning||''); toast('「'+v.word+'」已加入生词本'); }
   e.currentTarget.classList.toggle('starred',!inV);
 });
 
