@@ -1414,29 +1414,29 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
      (not just the painted ::before), so the oversized shared-size boxes
      of neighbouring segments don't steal clicks meant for one another */
   -webkit-clip-path:var(--clip,none); clip-path:var(--clip,none);
+  /* 明暗层的默认（日间）取值，供 ::before 的立体渐变使用；
+     夜间由 .night .wp-seg 覆盖这两个变量，而不是整条重写 background，
+     这样才不会压过 .wp-seg-main::before 自己声明的蓝色渐变 */
+  --wedge-hi:rgba(255,255,255,.9); --wedge-lo:rgba(0,0,0,.028);
 }
 /* the visible painted wedge lives in ::before, clipped to the same shape */
 .wp-seg::before{
   content:''; position:absolute; inset:0;
-  /* 顶部微亮 → 底部微沉的渐变，让扇块有轻微的立体感 */
+  /* 顶部微亮 → 底部微沉的渐变，让扇块有轻微的立体感；
+     中间层用扇块自己的主题色（--sc-tint）透出淡淡的底色 */
   background:linear-gradient(160deg,
-              rgba(255,255,255,.9) 0%,
-              var(--bg) 42%,
-              rgba(0,0,0,.028) 100%),
+              var(--wedge-hi) 0%,
+              transparent 42%,
+              var(--wedge-lo) 100%),
+             linear-gradient(var(--sc-tint,transparent), var(--sc-tint,transparent)),
              var(--bg);
-  border:1.5px solid var(--border);
+  border:1.5px solid var(--sc-bd, var(--border));
   border-radius:16px;
   -webkit-clip-path:var(--clip,none); clip-path:var(--clip,none);
   box-shadow:0 2px 6px rgba(0,0,0,.06);
   transition:filter .14s, box-shadow .14s;
 }
-.night .wp-seg::before{
-  background:linear-gradient(160deg,
-              rgba(255,255,255,.07) 0%,
-              var(--bg) 45%,
-              rgba(0,0,0,.18) 100%),
-             var(--bg);
-}
+.night .wp-seg{ --wedge-hi:rgba(255,255,255,.07); --wedge-lo:rgba(0,0,0,.18); }
 /* label sits at the wedge's mid-angle / mid-radius: --lx/--ly are the
    precomputed Cartesian offset (px) from the segment box's center (=pivot)
    to that point: dx = -r*cos(a), dy = -r*sin(a); no runtime trig needed. */
@@ -1445,12 +1445,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   transform: translate(calc(-50% + var(--lx,0px)), calc(-50% + var(--ly,0px)));
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
   font-family:'Nunito',sans-serif; font-weight:700; font-size:16px;
-  color:var(--text-2); white-space:nowrap; pointer-events:none;
+  color:var(--sc-fg, var(--text-2)); white-space:nowrap; pointer-events:none;
 }
 .wp-seg-t{ font-size:14px; line-height:1; }
 .wp-seg-ico, .wp-seg .wbtn-ico{ width:21px; height:21px; display:flex; align-items:center; justify-content:center; }
 .wp-seg:active{ filter:brightness(.88); transform:scale(.96); }
-@media (hover:hover){ .wp-seg:hover::before{ border-color:var(--accent); } }
+@media (hover:hover){ .wp-seg:hover::before{ border-color:var(--sc-fg, var(--accent)); } }
 
 /* ── primary: full circle, centered on the pivot, half-cropped by the
    sheet's right edge (.wp-actions{overflow:hidden}) ── */
@@ -1480,23 +1480,31 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    (r 72→126) wrapping counter-clockwise from below the circle, up its
    left side, to above it ── */
 .wp-seg-i1, .wp-seg-i2, .wp-seg-o2, .wp-seg-o3{ --R:144px; }
-.wp-seg-o2{ /* 0.75×, a:-42.00..-17.27 */
+.wp-seg-o2{ /* 0.75×, a:-42.00..-17.27 —— 慢速档:绿，呼应音节徽章 --green，语义上"放慢=更容易" */
   --lx:-102.56px; --ly:58.35px;
+  --sc-tint:rgba(22,163,74,.10); --sc-bd:rgba(22,163,74,.38); --sc-fg:#15803D;
   --clip:polygon(26.26% 71.38%, 25.14% 70.06%, 24.10% 68.69%, 23.13% 67.27%, 22.23% 65.80%, 21.42% 64.28%, 20.70% 62.72%, 20.05% 61.12%, 19.50% 59.49%, 2.26% 64.85%, 3.13% 67.40%, 4.13% 69.90%, 5.27% 72.35%, 6.54% 74.73%, 7.94% 77.03%, 9.46% 79.26%, 11.09% 81.40%, 12.84% 83.46%);
 }
-.wp-seg-o3{ /* 0.5×, a:-15.57..9.15 */
+.wp-seg-o3{ /* 0.5×, a:-15.57..9.15 —— 慢速档:绿 */
   --lx:-117.81px; --ly:6.61px;
+  --sc-tint:rgba(22,163,74,.10); --sc-bd:rgba(22,163,74,.38); --sc-fg:#15803D;
   --clip:polygon(19.23% 58.58%, 18.81% 56.91%, 18.48% 55.21%, 18.25% 53.51%, 18.11% 51.79%, 18.06% 50.07%, 18.10% 48.35%, 18.23% 46.63%, 18.46% 44.92%, 0.64% 42.05%, 0.28% 44.72%, 0.07% 47.41%, 0.00% 50.11%, 0.08% 52.80%, 0.30% 55.49%, 0.67% 58.16%, 1.18% 60.81%, 1.84% 63.42%);
 }
-.wp-seg-i2{ /* 复制, a:10.85..35.58 */
+.wp-seg-i2{ /* 复制, a:10.85..35.58 —— 紫，呼应首页"背单词"按钮的紫色渐变 */
   --lx:-115.80px; --ly:-49.66px;
+  --sc-tint:rgba(124,58,237,.09); --sc-bd:rgba(124,58,237,.38); --sc-fg:#6D28D9;
   --clip:polygon(18.63% 43.99%, 19.00% 42.30%, 19.46% 40.64%, 20.01% 39.01%, 20.64% 37.41%, 21.36% 35.84%, 22.17% 34.32%, 23.05% 32.84%, 24.02% 31.42%, 9.33% 20.91%, 7.82% 23.15%, 6.44% 25.46%, 5.18% 27.84%, 4.05% 30.29%, 3.05% 32.80%, 2.19% 35.36%, 1.47% 37.95%, 0.89% 40.59%);
 }
-.wp-seg-i1{ /* 学习, a:37.28..62.00 */
+.wp-seg-i1{ /* 学习, a:37.28..62.00 —— 橙，呼应生词高亮 #F97316 和"我的书架"琥珀色 */
   --lx:-81.60px; --ly:-96.01px;
+  --sc-tint:rgba(249,115,22,.10); --sc-bd:rgba(249,115,22,.42); --sc-fg:#C2410C;
   --clip:polygon(24.58% 30.65%, 25.66% 29.31%, 26.81% 28.03%, 28.03% 26.81%, 29.31% 25.66%, 30.65% 24.58%, 32.05% 23.57%, 33.50% 22.64%, 35.00% 21.79%, 26.53% 5.85%, 24.18% 7.18%, 21.91% 8.64%, 19.72% 10.21%, 17.62% 11.90%, 15.61% 13.70%, 13.71% 15.61%, 11.90% 17.62%, 10.21% 19.72%);
 }
-.wp-spd .wp-seg-in{ font-size:15px; color:var(--text-2); }
+/* ── 夜间模式：暗底上需要更亮的前景色 + 略强的底色 ── */
+.night .wp-seg-i1{ --sc-tint:rgba(249,115,22,.16); --sc-bd:rgba(249,115,22,.40); --sc-fg:#FDBA74; }
+.night .wp-seg-i2{ --sc-tint:rgba(139,92,246,.16); --sc-bd:rgba(139,92,246,.40); --sc-fg:#C4B5FD; }
+.night .wp-seg-o2, .night .wp-seg-o3{ --sc-tint:rgba(34,197,94,.15); --sc-bd:rgba(34,197,94,.38); --sc-fg:#86EFAC; }
+.wp-spd .wp-seg-in{ font-size:15px; color:var(--sc-fg, var(--text-2)); }
 .wp-speeds{ display:contents; }
 
 /* ── VOCAB FLASH BUTTON ── */
