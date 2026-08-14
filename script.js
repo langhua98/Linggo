@@ -2328,15 +2328,40 @@ function _ipaSyllables(ipa){
 const _PREFIXES = ['counter','inter','trans','under','super','anti','auto','over','semi','mis','non','pre','pro','sub','dis','out','un','re','in','im','il','ir','de','en','em','ex','co'];
 const _SUFFIXES = ['ationally','ability','ibility','ization','fulness','ousness','iveness','ational','ization','ations','ically','ation','ition','ities','ments','ously','ition','able','ible','ance','ence','ment','ness','less','ful','ish','ive','ize','ise','ity','ous','ial','ian','ary','ery','ory','ing','ers','est','ed','er','ly','al','ic','es','s'];
 // Returns {pre, stem, suf} — pre/suf may be ''
+// Words whose ROOT merely looks like it starts with a prefix — never split.
+const _NOT_AFFIXED = new Set([
+  'under','understand','understood','uncle','income','index','indeed','into',
+  'region','result','research','reason','ready','real','really','realize',
+  'record','red','rest','return','remain','repeat','report','remember',
+  'expect','explain','example','exist','extra','company','complete','common',
+  'consider','continue','country','course','contain','import','important',
+  'interest','internal','prepare','present','pretty','prevent','price',
+  'promise','protect','proud','provide','problem','process','produce',
+  'discover','distance','district','disease','submit','subject','outside',
+  'over','overcome','proper','probably','deep','decide','desire','depend',
+  'develop','degree','delight','deliver','demand','district','enough','enter',
+  'entire','english','extreme','coast','colour','color','count','cover','corner',
+]);
+// A stem must look like a real root: long enough, has a vowel, isn't a fragment.
+function _plausibleStem(s){
+  return s.length >= 4 && /[aeiouy]/i.test(s);
+}
 function _splitAffixes(word){
   const w = String(word || '');
   const lower = w.toLowerCase();
+  if(_NOT_AFFIXED.has(lower) || w.length < 5) return { pre:'', stem:w, suf:'' };
   let pre = '', suf = '', start = 0, end = w.length;
-  for(const p of _PREFIXES){
-    if(lower.startsWith(p) && (w.length - p.length) >= 3){ pre = w.slice(0, p.length); start = p.length; break; }
-  }
+  // Suffix FIRST: stripping a prefix first can hide the suffix (e.g. "reading"
+  // -> "re"+"ading" would block "ing" from ever matching).
   for(const s of _SUFFIXES){
-    if(lower.endsWith(s) && (end - s.length - start) >= 3){ suf = w.slice(w.length - s.length); end = w.length - s.length; break; }
+    if(lower.endsWith(s) && _plausibleStem(w.slice(0, w.length - s.length))){
+      suf = w.slice(w.length - s.length); end = w.length - s.length; break;
+    }
+  }
+  for(const p of _PREFIXES){
+    if(lower.startsWith(p) && _plausibleStem(w.slice(p.length, end))){
+      pre = w.slice(0, p.length); start = p.length; break;
+    }
   }
   const stem = w.slice(start, end);
   if(!stem) return { pre:'', stem:w, suf:'' };
