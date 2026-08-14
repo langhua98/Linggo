@@ -43,6 +43,9 @@ async function idbHas(url){
 const BOOKS = [
   // ── 🟢 BEGINNER ──
   [
+    {t:"Robinson Crusoe",a:"Daniel Defoe",y:1719,cat:["classic","adventure"],
+     url:"https://www.gutenberg.org/files/521/521-0.txt",mark:"I was born in the Year",
+     isbn:"9780141439822",pal:["#F6AD55","#276749"]},
     {t:"Alice's Adventures in Wonderland",a:"Lewis Carroll",y:1865,cat:["classic","fantasy"],
      url:"https://www.gutenberg.org/files/11/11-0.txt",mark:"CHAPTER I.",
      isbn:"9780141439761",pal:["#7B6CF6","#B794F4"]},
@@ -199,9 +202,6 @@ const BOOKS = [
     {t:"The Hound of the Baskervilles",a:"Arthur Conan Doyle",y:1902,cat:["mystery"],
      url:"https://www.gutenberg.org/files/2852/2852-0.txt",mark:"Mr. Sherlock Holmes",
      isbn:"9780192836878",pal:["#4A5568","#A0AEC0"]},
-    {t:"Robinson Crusoe",a:"Daniel Defoe",y:1719,cat:["classic","adventure"],
-     url:"https://www.gutenberg.org/files/521/521-0.txt",mark:"I was born in the Year",
-     isbn:"9780141439822",pal:["#F6AD55","#276749"]},
     {t:"Oliver Twist",a:"Charles Dickens",y:1837,cat:["classic"],
      url:"https://www.gutenberg.org/files/730/730-0.txt",mark:"Among other public buildings",
      isbn:"9780141439747",pal:["#718096","#2D3748"]},
