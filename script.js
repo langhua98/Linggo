@@ -2484,7 +2484,7 @@ async function onWordClick(el){
   const ctxFull   = (S.sents[ctxIdx] || sentText).trim();
   const esc       = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const matchPos  = ctxFull.search(new RegExp('\\b' + esc + '\\b', 'i'));
-  const WIN = 110;
+  const WIN = 190;   // 语境窗口：够放下大多数整句，减少省略号
   let excerpt = ctxFull;
   if(ctxFull.length > WIN){
     const center = matchPos >= 0 ? matchPos : Math.floor(ctxFull.length/2);
