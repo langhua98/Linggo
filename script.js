@@ -2406,7 +2406,9 @@ async function onWordClick(el){
     if(seg.suf) wordEl.append(Object.assign(document.createElement('span'), {className:'w-affix', textContent:seg.suf}));
   }
   const sylEl = document.getElementById('wp-syl');
+  const sylCountEl = document.getElementById('wp-syl-count');
   sylEl.textContent = ''; sylEl.style.display = 'none';
+  sylCountEl.textContent = ''; sylCountEl.style.display = 'none';
   { const syls = _syllabify(word);
     if(syls){
       sylEl.textContent = '';
@@ -2414,8 +2416,10 @@ async function onWordClick(el){
         if(i) sylEl.append(Object.assign(document.createElement('span'), {className:'syl-dot', textContent:'·'}));
         sylEl.append(Object.assign(document.createElement('span'), {className:'syl-part', textContent:s}));
       });
-      sylEl.append(Object.assign(document.createElement('span'), {className:'syl-count', textContent:` ${syls.length} 音节`}));
       sylEl.style.display = '';
+      // 音节数：绿框徽章，跟在音标后面
+      sylCountEl.textContent = `${syls.length} 音节`;
+      sylCountEl.style.display = '';
     }
   }
   document.getElementById('wp-ph').textContent   = '';
