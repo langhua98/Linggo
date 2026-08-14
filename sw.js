@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v168';
+const CACHE = 'linggo-v169';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',

@@ -1195,8 +1195,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--surface);
   border-radius:22px 22px 0 0;
   width:auto;
-  height:49vh;
-  max-height:49vh;
+  height:53vh;
+  max-height:53vh;
   overflow:hidden;
   box-shadow:0 -6px 40px rgba(0,0,0,0.18);
   display:none;
@@ -1315,8 +1315,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   padding:2px 16px 6px;
   font-size:15px;line-height:1.5;color:var(--text-2);
   font-family:'Lora',serif;
+  /* 固定两行高：例句再长也只在自身区域滚动，不会撑高卡片顶走扇盘 */
   flex:0 0 auto;
-  min-height:calc(1.5em * 2 + 8px);   /* 至少两行，不被挤没 */
+  height:calc(1.5em * 2 + 8px);   /* 至少两行，不被挤没 */
   overflow-y:auto;
 }
 .wp-context strong{color:var(--text);font-weight:700;}
