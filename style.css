@@ -926,7 +926,17 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   padding:1px 1px;
 }
 @media (hover: hover){ .word:hover{ background:rgba(37,99,235,0.11); } }
-.word.saved{ border-bottom:2px dashed #F97316; }
+/* 生词：荧光笔式色块。用偏红的橙，与朗读整句的淡琥珀底(255,206,74,.46)
+   拉开色相，叠在高亮句上时依然能一眼认出。 */
+.word.saved{
+  background:rgba(249,115,22,0.20);
+  border-radius:5px;
+  padding:1px 3px;
+  margin:0 -1px;
+  box-decoration-break:clone;
+  -webkit-box-decoration-break:clone;
+}
+.night .word.saved{ background:rgba(251,146,60,0.26); }
 /* clicked word: blue rounded box */
 .word.active{
   background:rgba(37,99,235,0.16);
