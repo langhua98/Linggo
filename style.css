@@ -1254,6 +1254,15 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .wp-ph{font-size:14px;color:var(--text-3);font-family:'Nunito',sans-serif;}
 .ph-syl{ }
 .ph-dot{ color:var(--text-3); opacity:.55; margin:0 2px; }
+.wp-syl{
+  padding:0 16px 4px;
+  font-family:'Nunito',sans-serif;
+  font-size:15px; font-weight:700;
+  color:var(--text-2);
+  letter-spacing:.02em;
+}
+.syl-dot{ color:var(--text-3); opacity:.5; margin:0 3px; }
+.syl-count{ font-size:11.5px; font-weight:700; color:var(--text-3); margin-left:8px; }
 /* affixes: tinted, stem stays default so the root reads plainly */
 .w-affix{ color:var(--accent); }
 .night .w-affix{ color:#7fb0ff; }

@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v163';
+const CACHE = 'linggo-v164';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -12,6 +12,8 @@ const SHELL = [
   '/Linggo/ecdict.js',
   '/Linggo/licon.js',
   '/Linggo/vendor/lottie.min.js',
+  '/Linggo/vendor/hyphenation.en-us.js',
+  '/Linggo/vendor/hypher.js',
   '/Linggo/lottie/playPause.json',
   '/Linggo/lottie/skipBack.json',
   '/Linggo/lottie/skipForward.json',

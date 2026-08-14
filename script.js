@@ -2368,6 +2368,23 @@ function _splitAffixes(word){
   return { pre, stem, suf };
 }
 
+// Syllable split via Hypher + the en-US Liang patterns (the same approach TeX
+// uses). Falls back to null when the library is unavailable or the word does
+// not split, so callers can simply hide the line.
+let _hypher = null;
+function _syllabify(word){
+  const w = String(word || '').trim();
+  if(!w || w.length < 3) return null;
+  try{
+    if(!_hypher){
+      if(typeof Hypher === 'undefined' || typeof window.hyphenationEnUs === 'undefined') return null;
+      _hypher = new Hypher(window.hyphenationEnUs);
+    }
+    const parts = _hypher.hyphenate(w.toLowerCase());
+    return (parts && parts.length > 1) ? parts : null;
+  }catch(e){ return null; }
+}
+
 async function onWordClick(el){
   const word = el.dataset.w.replace(/[^a-z]/g,'');
   if(!word || word.length < 2) return;
@@ -2387,6 +2404,19 @@ async function onWordClick(el){
     if(seg.pre) wordEl.append(Object.assign(document.createElement('span'), {className:'w-affix', textContent:seg.pre}));
     wordEl.append(document.createTextNode(seg.stem));
     if(seg.suf) wordEl.append(Object.assign(document.createElement('span'), {className:'w-affix', textContent:seg.suf}));
+  }
+  const sylEl = document.getElementById('wp-syl');
+  sylEl.textContent = ''; sylEl.style.display = 'none';
+  { const syls = _syllabify(word);
+    if(syls){
+      sylEl.textContent = '';
+      syls.forEach((s, i) => {
+        if(i) sylEl.append(Object.assign(document.createElement('span'), {className:'syl-dot', textContent:'·'}));
+        sylEl.append(Object.assign(document.createElement('span'), {className:'syl-part', textContent:s}));
+      });
+      sylEl.append(Object.assign(document.createElement('span'), {className:'syl-count', textContent:` ${syls.length} 音节`}));
+      sylEl.style.display = '';
+    }
   }
   document.getElementById('wp-ph').textContent   = '';
   const posEl = document.getElementById('wp-pos');
@@ -2444,19 +2474,7 @@ async function onWordClick(el){
 
     const ph = entry.phonetics?.find(p => p.text)?.text || '';
     const au = entry.phonetics?.find(p => p.audio?.length > 0)?.audio || '';
-    const phEl = document.getElementById('wp-ph');
-    const syl = _ipaSyllables(ph);
-    if(syl){
-      phEl.textContent = '';
-      phEl.append('/');
-      syl.forEach((s, i) => {
-        if(i) phEl.append(Object.assign(document.createElement('span'), {className:'ph-dot', textContent:'·'}));
-        phEl.append(Object.assign(document.createElement('span'), {className:'ph-syl', textContent:s}));
-      });
-      phEl.append('/');
-    } else {
-      phEl.textContent = ph;
-    }
+    document.getElementById('wp-ph').textContent = ph;
     wpop._audio = au;
 
     const rawPos = entry.meanings?.[0]?.partOfSpeech || '';
