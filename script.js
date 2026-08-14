@@ -1996,6 +1996,10 @@ function applyBilin(){
     content.querySelectorAll('.sent').forEach(sp => _bilinObs.observe(sp));
   } else {
     content.classList.remove('bilin');
+    // .tl-line is display:block on its own, so dropping the .bilin class only
+    // restyles the translations — they must actually be removed or they stay
+    // visible under the English text.
+    content.querySelectorAll('.tl-line').forEach(el => el.remove());
     _cnClearHl();
   }
   if(typeof _syncNalignRow === 'function') _syncNalignRow();
