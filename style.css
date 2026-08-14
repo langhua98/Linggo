@@ -1263,12 +1263,13 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .syl-dot{ color:var(--text-3); opacity:.5; margin:0 3px; }
 /* 音节数：绿框徽章，跟在音标后面 */
+/* 与 .pos 完全同尺寸（同 padding / 字号 / 圆角），仅配色不同 */
 .syl-badge{
-  display:inline-flex;align-items:center;
-  background:rgba(22,163,74,0.10);
+  display:inline-flex;align-items:center;justify-content:center;
+  height:20px;line-height:1;
+  background:rgba(22,163,74,0.12);
   color:var(--green);
-  border:1.5px solid rgba(22,163,74,0.35);
-  border-radius:6px;padding:1px 8px;
+  border-radius:6px;padding:2px 9px;
   font-size:11px;font-weight:700;letter-spacing:.04em;
   font-family:'Nunito',sans-serif;
   white-space:nowrap;
@@ -1282,7 +1283,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .w-affix{ color:var(--accent); }
 .night .w-affix{ color:#7fb0ff; }
 .pos{
-  display:inline-flex;align-items:center;
+  display:inline-flex;align-items:center;justify-content:center;
+  height:20px;line-height:1;
   background:var(--accent-2);color:var(--accent);
   border-radius:6px;padding:2px 9px;
   font-size:11px;font-weight:700;letter-spacing:.04em;
@@ -1359,7 +1361,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   border-top:1px solid var(--border);
   overflow:hidden;
   /* pivot on the sheet's right edge so the play circle is half-cropped */
-  --pr:6px; --pb:106px;
+  --pr:40px; --pb:104px;
 }
 .wp-seg{
   position:absolute;
@@ -1377,11 +1379,24 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* the visible painted wedge lives in ::before, clipped to the same shape */
 .wp-seg::before{
   content:''; position:absolute; inset:0;
-  background:var(--bg);
+  /* 顶部微亮 → 底部微沉的渐变，让扇块有轻微的立体感 */
+  background:linear-gradient(160deg,
+              rgba(255,255,255,.9) 0%,
+              var(--bg) 42%,
+              rgba(0,0,0,.028) 100%),
+             var(--bg);
   border:1.5px solid var(--border);
-  border-radius:14px;
+  border-radius:16px;
   -webkit-clip-path:var(--clip,none); clip-path:var(--clip,none);
-  box-shadow:0 1px 4px rgba(0,0,0,.05);
+  box-shadow:0 2px 6px rgba(0,0,0,.06);
+  transition:filter .14s, box-shadow .14s;
+}
+.night .wp-seg::before{
+  background:linear-gradient(160deg,
+              rgba(255,255,255,.07) 0%,
+              var(--bg) 45%,
+              rgba(0,0,0,.18) 100%),
+             var(--bg);
 }
 /* label sits at the wedge's mid-angle / mid-radius: --lx/--ly are the
    precomputed Cartesian offset (px) from the segment box's center (=pivot)
@@ -1390,11 +1405,11 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   position:absolute; left:50%; top:50%;
   transform: translate(calc(-50% + var(--lx,0px)), calc(-50% + var(--ly,0px)));
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
-  font-family:'Nunito',sans-serif; font-weight:700; font-size:14px;
+  font-family:'Nunito',sans-serif; font-weight:700; font-size:16px;
   color:var(--text-2); white-space:nowrap; pointer-events:none;
 }
-.wp-seg-t{ font-size:13px; line-height:1; }
-.wp-seg-ico, .wp-seg .wbtn-ico{ width:17px; height:17px; display:flex; align-items:center; justify-content:center; }
+.wp-seg-t{ font-size:14px; line-height:1; }
+.wp-seg-ico, .wp-seg .wbtn-ico{ width:21px; height:21px; display:flex; align-items:center; justify-content:center; }
 .wp-seg:active{ filter:brightness(.88); transform:scale(.96); }
 @media (hover:hover){ .wp-seg:hover::before{ border-color:var(--accent); } }
 
@@ -1406,9 +1421,16 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .wp-seg-main::before{
   border-radius:50%;
-  background:linear-gradient(145deg,var(--accent),#3b82f6);
+  /* 顶部高光 + 主渐变，配合内描边做出玻璃质感 */
+  background:radial-gradient(120% 100% at 30% 12%,
+              rgba(255,255,255,.32) 0%,
+              rgba(255,255,255,0) 55%),
+             linear-gradient(145deg,#3b82f6 0%,var(--accent) 55%,#1d4ed8 100%);
   border:none;
-  box-shadow:0 4px 18px rgba(37,99,235,.4);
+  box-shadow:0 6px 22px rgba(37,99,235,.42),
+             0 2px 6px rgba(37,99,235,.28),
+             inset 0 1px 0 rgba(255,255,255,.35),
+             inset 0 -2px 6px rgba(0,0,0,.12);
 }
 .wp-seg-main .wp-seg-in{ color:#fff; }
 .wp-seg-main svg{ width:42px; height:42px; }
@@ -1418,28 +1440,28 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* ── single band: 学习 → 复制 → 1× → 0.75× → 0.5×, one continuous ring
    (r 72→126) wrapping counter-clockwise from below the circle, up its
    left side, to above it ── */
-.wp-seg-i1, .wp-seg-i2, .wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:136px; }
-.wp-seg-o1{ /* 1×, a:-58..-33 */
-  --lx:-79.90px; --ly:81.31px;
-  --clip:polygon(32.08% 78.68%, 30.54% 77.66%, 29.06% 76.56%, 27.64% 75.38%, 26.29% 74.12%, 25.01% 72.80%, 23.81% 71.40%, 22.68% 69.94%, 21.63% 68.42%, 8.07% 77.23%, 9.61% 79.48%, 11.28% 81.64%, 13.06% 83.70%, 14.95% 85.66%, 16.95% 87.52%, 19.05% 89.27%, 21.23% 90.89%, 23.50% 92.40%);
+.wp-seg-i1, .wp-seg-i2, .wp-seg-o1, .wp-seg-o2, .wp-seg-o3{ --R:144px; }
+.wp-seg-o1{ /* 1×, a:-42.00..-22.40 */
+  --lx:-99.85px; --ly:62.88px;
+  --clip:polygon(26.26% 71.38%, 25.37% 70.34%, 24.52% 69.27%, 23.72% 68.16%, 22.97% 67.02%, 22.27% 65.85%, 21.61% 64.65%, 21.01% 63.42%, 20.47% 62.17%, 3.77% 69.05%, 4.63% 71.01%, 5.57% 72.93%, 6.59% 74.81%, 7.69% 76.64%, 8.87% 78.43%, 10.12% 80.16%, 11.45% 81.84%, 12.84% 83.46%);
 }
-.wp-seg-o2{ /* 0.75×, a:-31.75..-6.75 */
-  --lx:-107.63px; --ly:37.58px;
-  --clip:polygon(21.24% 67.80%, 20.31% 66.20%, 19.47% 64.56%, 18.72% 62.88%, 18.07% 61.15%, 17.51% 59.39%, 17.04% 57.61%, 16.68% 55.80%, 16.41% 53.98%, 0.35% 55.88%, 0.74% 58.57%, 1.28% 61.25%, 1.97% 63.89%, 2.80% 66.48%, 3.76% 69.03%, 4.87% 71.53%, 6.11% 73.95%, 7.48% 76.31%);
+.wp-seg-o2{ /* 0.75×, a:-20.90..-1.30 */
+  --lx:-115.79px; --ly:22.72px;
+  --clip:polygon(20.16% 61.40%, 19.70% 60.11%, 19.29% 58.81%, 18.94% 57.48%, 18.65% 56.15%, 18.42% 54.80%, 18.24% 53.45%, 18.12% 52.09%, 18.06% 50.72%, 0.01% 51.13%, 0.11% 53.27%, 0.29% 55.40%, 0.57% 57.52%, 0.94% 59.63%, 1.39% 61.71%, 1.94% 63.78%, 2.57% 65.82%, 3.29% 67.84%);
 }
-.wp-seg-o3{ /* 0.5×, a:-5.5..19.5 */
-  --lx:-113.15px; --ly:-13.89px;
-  --clip:polygon(16.33% 53.24%, 16.21% 51.40%, 16.18% 49.56%, 16.25% 47.71%, 16.43% 45.88%, 16.70% 44.05%, 17.08% 42.25%, 17.55% 40.46%, 18.12% 38.71%, 2.87% 33.31%, 2.03% 35.90%, 1.33% 38.54%, 0.78% 41.21%, 0.37% 43.91%, 0.11% 46.62%, 0.00% 49.35%, 0.04% 52.07%, 0.23% 54.79%);
+.wp-seg-o3{ /* 0.5×, a:0.20..19.80 */
+  --lx:-116.21px; --ly:-20.49px;
+  --clip:polygon(18.06% 49.89%, 18.09% 48.52%, 18.18% 47.16%, 18.33% 45.80%, 18.54% 44.45%, 18.81% 43.11%, 19.13% 41.79%, 19.51% 40.47%, 19.94% 39.18%, 2.96% 33.06%, 2.27% 35.09%, 1.68% 37.14%, 1.18% 39.22%, 0.76% 41.32%, 0.43% 43.43%, 0.20% 45.56%, 0.05% 47.69%, 0.00% 49.83%);
 }
-.wp-seg-i2{ /* 复制, a:20.75..45.75 */
-  --lx:-103.70px; --ly:-67.99px;
-  --clip:polygon(18.37% 38.02%, 19.07% 36.31%, 19.86% 34.64%, 20.74% 33.02%, 21.71% 31.45%, 22.77% 29.94%, 23.90% 28.49%, 25.11% 27.09%, 26.40% 25.77%, 15.11% 14.18%, 13.21% 16.14%, 11.42% 18.20%, 9.74% 20.35%, 8.19% 22.59%, 6.75% 24.91%, 5.45% 27.30%, 4.28% 29.76%, 3.24% 32.29%);
+.wp-seg-i2{ /* 复制, a:21.30..40.90 */
+  --lx:-107.89px; --ly:-65.08px;
+  --clip:polygon(20.24% 38.40%, 20.76% 37.13%, 21.34% 35.90%, 21.97% 34.68%, 22.65% 33.50%, 23.38% 32.35%, 24.16% 31.22%, 24.98% 30.14%, 25.85% 29.08%, 12.21% 17.26%, 10.84% 18.91%, 9.55% 20.61%, 8.33% 22.37%, 7.19% 24.17%, 6.12% 26.03%, 5.14% 27.92%, 4.23% 29.86%, 3.42% 31.84%);
 }
-.wp-seg-i1{ /* 学习, a:47..72 */
-  --lx:-62.93px; --ly:-106.84px;
-  --clip:polygon(26.93% 25.26%, 28.32% 24.04%, 29.76% 22.90%, 31.27% 21.84%, 32.83% 20.86%, 34.45% 19.96%, 36.11% 19.16%, 37.81% 18.45%, 39.55% 17.83%, 34.55% 2.45%, 31.98% 3.36%, 29.46% 4.41%, 27.01% 5.60%, 24.62% 6.92%, 22.31% 8.37%, 20.08% 9.94%, 17.94% 11.63%, 15.90% 13.43%);
+.wp-seg-i1{ /* 学习, a:42.40..62.00 */
+  --lx:-77.23px; --ly:-99.56px;
+  --clip:polygon(26.41% 28.46%, 27.35% 27.47%, 28.34% 26.52%, 29.36% 25.62%, 30.42% 24.76%, 31.52% 23.95%, 32.65% 23.18%, 33.81% 22.46%, 35.00% 21.79%, 26.53% 5.85%, 24.66% 6.90%, 22.84% 8.02%, 21.07% 9.22%, 19.35% 10.49%, 17.69% 11.84%, 16.09% 13.25%, 14.55% 14.74%, 13.08% 16.28%);
 }
-.wp-spd .wp-seg-in{ font-size:14px; color:var(--text-3); }
+.wp-spd .wp-seg-in{ font-size:15px; color:var(--text-2); }
 .wp-speeds{ display:contents; }
 
 /* ── VOCAB FLASH BUTTON ── */
