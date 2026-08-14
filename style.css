@@ -1327,16 +1327,30 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    to 150px, so reserve roughly the right 200px of this row). */
 /* English definition overlays the dial row's empty left half, so it gets the
    full remaining height instead of being squeezed above the 300px dial. */
+/* 释义占满整行宽度，用一个浮动的圆形占位把文字沿扇盘边缘挤开——
+   短释义不再浪费左侧空白，长释义可横向铺满、几乎不用滚动。 */
 .wp-endef{
   position:absolute;
-  left:0; right:166px;            /* clear of the dial on the right */
-  top:0; bottom:10px;
+  left:0; right:0;
+  top:0; bottom:8px;
   padding:10px 16px 0;
   font-size:14px; line-height:1.6;
   color:var(--text-3);
   font-family:'Lora',serif;
   overflow-y:auto;
-  pointer-events:auto;
+  /* 文字区可滚动；扇盘在更高层级(z-index)上仍可点 */
+  z-index:1;
+}
+/* 右浮动的避让占位：圆心/半径对应扇盘，文字自然绕着它排 */
+.wp-endef::before{
+  content:'';
+  float:right;
+  /* 占位宽度=扇盘在文字区内的横向投影；shape-outside 用扇盘的真实圆心/半径，
+     文字便沿弧线缩进，越靠圆心的行缩得越多 */
+  width:200px; height:226px;
+  shape-outside:circle(158px at 200px 104px);
+  -webkit-shape-outside:circle(158px at 200px 104px);
+  shape-margin:14px;
 }
 /* drag handle — swipe-down-to-close affordance */
 .wp-handle{
@@ -1366,6 +1380,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .wp-seg{
   position:absolute;
+  z-index:2;                      /* 高于释义文字，保证可点 */
   right:calc(var(--pr) - var(--R)); bottom:calc(var(--pb) - var(--R));
   width:calc(var(--R) * 2); height:calc(var(--R) * 2);
   border:none; background:none; padding:0; margin:0;
