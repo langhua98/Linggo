@@ -271,6 +271,13 @@ async function showFcCard(instant){
   fcCardShowTime = Date.now();
   fcAutoPlay = true;
 
+  // 提前让 Kokoro 合成这个词，等用户点播放时已在缓存里，避免每张卡都等一次
+  // （和单词卡打开时的预热逻辑一致，见 script.js 中 onWordClick 里的调用）
+  if(typeof _kokServerSynth === 'function' && typeof KOK_SERVER_URL !== 'undefined'
+     && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+    _kokServerSynth(v.word).catch(()=>{});
+  }
+
   // Fetch dictionary data (async; also pre-buffers audio element)
   fetchFcWord(v.word, !!v.ph);
 }
@@ -292,7 +299,9 @@ async function fetchFcWord(word, skipPh=false){
     const audioSrc = e.phonetics?.find(p=>p.audio?.length>0)?.audio||'';
     const pos    = e.meanings?.[0]?.partOfSpeech||'';
     const enDef  = e.meanings?.[0]?.definitions?.[0]?.definition||'';
-    // 预缓冲音频，消除点击时的加载延迟
+    // 预缓冲音频：playFcAudio/fireFcPlay 现在统一走 playWordAudio（Kokoro 优先），
+    // 不再直接播放这个 audioEl；这里保留只是为了提前把 MP3 塞进浏览器 HTTP 缓存，
+    // playWordAudio 走到词典 MP3 兜底那一档时用同一个 URL 能秒开，不是死代码
     let audioEl = null;
     if(audioSrc){
       audioEl = new Audio(audioSrc);
@@ -345,23 +354,21 @@ function applyFcCache(word, data, skipPh=false){
   }
 }
 
-// 统一播放函数：优先用预缓冲 Audio（readyState≥2 才用），否则 TTS
+// 统一播放函数：走 script.js 的播放链（Kokoro 神经语音 → 词典 MP3 → 系统语音）
 function fireFcPlay(word, data){
   if(document.getElementById('fc-word').textContent !== word) return;
   const btn = document.getElementById('fc-spk');
   btn.classList.add('spk-active');
   const done = () => btn.classList.remove('spk-active');
-  const el = data?.audioEl;
-  if(el && el.readyState >= 2){
-    el.currentTime = 0;
-    el.onended = done; el.onerror = done;
-    el.play().catch(() => { speakWordFc(word); done(); });
+  if(typeof playWordAudio === 'function'){
+    playWordAudio(word, data?.audioSrc || '', 1).catch(()=>{}).finally(done);
   } else {
-    speakWordFc(word); setTimeout(done, 1200);
+    speakWordFc(word); setTimeout(done, 1200);   // 极端兜底：script.js 未就绪
   }
 }
 
-// TTS 播放：固定使用用户选定音源，不随机漂移
+// TTS 播放：仅作极端兜底（script.js 的 playWordAudio 不可用时才会走到这里），
+// 正常播放已交给 playWordAudio 的三级链（Kokoro → 词典 MP3 → 系统语音）
 function speakWordFc(w){
   const u = new SpeechSynthesisUtterance(w);
   u.lang = S.accentUS ? 'en-US' : 'en-GB';
@@ -743,15 +750,12 @@ function playFcAudio(btn){
   const d = FC_CACHE.get(w);
   btn.classList.add('spk-active');
   const done = () => btn.classList.remove('spk-active');
-  const el = d?.audioEl;
-  // readyState >= 2：浏览器已缓冲足够数据，可立即播放；否则同步走 TTS
-  // 注意：TTS 必须在此同步调用（用户手势上下文），放入 .catch() 的异步回调 iOS 会静默拒绝
-  if(el && el.readyState >= 2){
-    el.currentTime = 0;
-    el.onended = done; el.onerror = done;
-    el.play().catch(() => { speakWordFc(w); done(); });
+  // 走 script.js 的统一播放链：Kokoro 神经语音 → 词典 MP3 → 系统语音。
+  // 闪卡原本自己实现了一套只有「MP3 → 系统语音」的播放，Kokoro 从来没被用上。
+  if(typeof playWordAudio === 'function'){
+    playWordAudio(w, d?.audioSrc || '', 1).catch(()=>{}).finally(done);
   } else {
-    speakWordFc(w); setTimeout(done, 1200);
+    speakWordFc(w); setTimeout(done, 1200);   // 极端兜底：script.js 未就绪
   }
 }
 document.getElementById('fc-spk').addEventListener('click', e=>{
