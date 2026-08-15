@@ -198,7 +198,20 @@ function openFlashcard(){
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
   fc.classList.add('open');
   document.getElementById('fc-title').textContent = `生词本背诵 · ${fcTotal}词`;
-  showFcCard(true);
+  showFcCard(true);   // 预取由 showFcCard 内部统一发起，这里不用重复调
+}
+
+// ── 预取闪卡语音：一轮的词表是已知的短列表，趁用户看当前卡时把后面几张合成好。
+// _kokServerSynth 自带两级缓存，重复调用同一个词不会重复请求，所以可以放心多调。
+function _fcPrefetchAudio(from, n = 3){
+  if(typeof _kokServerSynth !== 'function') return;
+  if(typeof KOK_SERVER_URL === 'undefined'
+     || KOK_SERVER_URL === 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space') return;
+  const stop = Math.min(from + n, fcDeck.length);
+  for(let i = from; i < stop; i++){
+    const w = fcDeck[i] && fcDeck[i].word;
+    if(w) _kokServerSynth(w).catch(()=>{});
+  }
 }
 
 async function showFcCard(instant){
@@ -271,12 +284,8 @@ async function showFcCard(instant){
   fcCardShowTime = Date.now();
   fcAutoPlay = true;
 
-  // 提前让 Kokoro 合成这个词，等用户点播放时已在缓存里，避免每张卡都等一次
-  // （和单词卡打开时的预热逻辑一致，见 script.js 中 onWordClick 里的调用）
-  if(typeof _kokServerSynth === 'function' && typeof KOK_SERVER_URL !== 'undefined'
-     && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
-    _kokServerSynth(v.word).catch(()=>{});
-  }
+  // 当前卡 + 后两张一起备好：用户看当前卡的这几秒，正好够把下一张合成完
+  _fcPrefetchAudio(fcIdx, 3);
 
   // Fetch dictionary data (async; also pre-buffers audio element)
   fetchFcWord(v.word, !!v.ph);
