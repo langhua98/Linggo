@@ -1,7 +1,9 @@
 /* ── TOKENS ── */
 :root {
-  --bg:          #F7F4EF;
-  --surface:     #FFFFFF;
+  /* 底色压深一档，是为了给暖白表面（--surface）留出对比空间——
+     二者必须成对调整，否则底浅、面又暖，卡片会"浮"不起来 */
+  --bg:          #EFEBE3;
+  --surface:     #FCF9F3;
   --border:      rgba(0,0,0,0.08);
   --text:        #1C1917;
   --text-2:      #78716C;
@@ -11,7 +13,7 @@
   --green:       #16A34A;
   --hl-sent:     rgba(254,240,138,0.7);
   --hl-word:     rgba(37,99,235,0.12);
-  --player-bg:   rgba(255,255,255,0.97);
+  --player-bg:   rgba(252,249,243,0.97);
   --shadow-sm:   0 1px 3px rgba(0,0,0,0.08);
   --shadow-md:   0 4px 16px rgba(0,0,0,0.10);
   --shadow-lg:   0 12px 40px rgba(0,0,0,0.13);
@@ -201,7 +203,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:80px 24px 48px;text-align:center;
   gap:0;
-  background:radial-gradient(ellipse at 38% 28%, #c7d5ff 0%, #e4dcfc 32%, #F7F4EF 68%);
+  background:radial-gradient(ellipse at 38% 28%, #c7d5ff 0%, #e4dcfc 32%, #EFEBE3 68%);
 }
 .night #landing{
   background:radial-gradient(ellipse at 38% 28%, #1a1f40 0%, #1a1428 32%, #141210 68%);
@@ -1638,7 +1640,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   /* 卡面加极轻的受光渐变：顶部微亮 → 底部微沉，模拟实体卡片受光，
      幅度要克制，否则看起来像脏了而不是有厚度 */
   background:linear-gradient(168deg,
-              #fff 0%,
+              #FFFDF8 0%,
               var(--surface) 38%,
               rgba(0,0,0,.012) 100%),
              var(--surface);
