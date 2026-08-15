@@ -50,6 +50,9 @@ body{
   min-height:100vh;
   transition:background .3s,color .3s;
   overflow-x:hidden;
+  /* 关掉浏览器的下拉刷新：读到顶还想往下拉时容易误触发，一刷新就丢掉当前视图退回首页。
+     只拦「过度滚动」，正常滚动不受影响 */
+  overscroll-behavior-y:contain;
 }
 
 /* ── Native view transitions (landing ↔ reader) — refined crossfade with a
@@ -1528,6 +1531,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:var(--bg);
   flex-direction:column;
   display:none;
+  /* 不把滚动链传给视口：否则在闪卡里下拉会触发浏览器的下拉刷新，页面一刷新就回到首页 */
+  overscroll-behavior:contain;
 }
 #flashcard.open{display:flex;animation:fadeIn .2s ease;}
 
@@ -1600,6 +1605,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-stack.n0 i, .fc-stack.n1 i:nth-child(2){ opacity:0; transform:translateY(0) scaleX(.9); }
 .fc-card{
   user-select:none; -webkit-user-select:none;   /* 鼠标拖动时别把卡面文字刷成选区 */
+  /* 必须显式声明：否则卡片的有效 touch-action 是 auto，浏览器会在拖动刚开始时
+     判定为滚动手势、发出 pointercancel 把横滑掐断（卡面本身没有可滚动内容） */
+  touch-action:none;
   width:100%;
   height:min(440px,56vh);
   position:relative;
@@ -1726,6 +1734,10 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-back-body{
   flex:1;display:flex;flex-direction:column;
   padding:20px 24px 16px;overflow-y:auto;
+  /* 它是滚动容器，浏览器查 touch-action 时会停在这里、看不到 .fc-card 的 none，
+     于是把横滑当成滚动手势抢走（pointercancel）。显式放行：纵向滚长释义，横向留给滑动评分 */
+  touch-action:pan-y;
+  overscroll-behavior:contain;
 }
 .fc-back-word{
   font-family:'Lora',serif;font-size:18px;font-weight:600;
