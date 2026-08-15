@@ -536,6 +536,7 @@
   <!-- header -->
   <div class="fc-head">
     <button class="fc-back-btn" id="fc-exit">←</button>
+    <button class="fc-undo-btn" id="fc-undo" title="撤销上一次评分" style="display:none">↩</button>
     <div class="fc-head-mid">
       <div class="fc-title" id="fc-title">生词本背诵</div>
       <div class="fc-prog-bar"><div class="fc-prog-fill" id="fc-prog-fill"></div></div>
@@ -598,7 +599,7 @@
 
           <!-- 滑动提示：翻面后才有效，此前完全没有任何地方告诉用户可以左右滑评分 -->
           <!-- 与评分按钮一并移入卡片背面：backface-visibility:hidden 保证只在翻到背面时可见，不再常驻屏幕底部 -->
-          <div class="fc-swipe-tip" id="fc-swipe-tip" aria-hidden="true">← 不认识　·　认识 →</div>
+          <div class="fc-swipe-tip" id="fc-swipe-tip" aria-hidden="true">← 不认识　·　认识 →　·　↑ 较难</div>
 
           <!-- rating buttons -->
           <div class="fc-ratings" id="fc-ratings">
@@ -641,6 +642,7 @@
       <div class="fc-swipe-hint" aria-hidden="true">
         <span class="fc-sh fc-sh-good">认识</span>
         <span class="fc-sh fc-sh-again">不认识</span>
+        <span class="fc-sh fc-sh-hard">较难</span>
       </div>
     </div>
   </div>

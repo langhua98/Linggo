@@ -21,6 +21,7 @@ let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排
 let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
 let fcSRS       = {};  // word → { nextReview, interval }
 let fcMode      = 'book'; // 'book' | 'deck'
+let fcHistory   = []; // 撤销栈：rateFcCard 打分前的完整快照，最多存 20 条，超出丢弃最旧的
 // 本轮抽词数量：生词本背诵一次抽多少词，0 = 全部；读到 NaN（脏值/未设置）就回落 12
 let fcSize      = parseInt(localStorage.getItem('fcSize') ?? '12', 10);
 if(isNaN(fcSize)) fcSize = 12;
@@ -191,6 +192,7 @@ function openFlashcard(){
   fcOrigTotal = fcDeck.length;
   fcDoneCount = 0;
   fcMode = 'book'; // 确保不被上一次词库练习的 'deck' 状态污染
+  fcHistory = []; updateFcUndoBtn(); // 新一轮开始，上一轮的撤销记录作废
 
   const fc = document.getElementById('flashcard');
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
@@ -399,8 +401,27 @@ function flipFcCard(){
 
 function rateFcCard(rating){
   if(!fcFlipped) return;
+  const v = fcDeck[fcIdx];
+
+  // 撤销用快照：必须在任何状态被改动之前抓（因此放在 markStudiedToday 之前），
+  // 且要深到能完整还原
+  fcHistory.push({
+    word:  v.word,
+    mode:  fcMode,
+    // 该词评分前的记录（可能是 undefined，表示这是它的第一次评分）
+    prevRec: fcMode==='deck'
+      ? (vpProgress[v.word] ? JSON.parse(JSON.stringify(vpProgress[v.word])) : undefined)
+      : (fcSRS[v.word]      ? JSON.parse(JSON.stringify(fcSRS[v.word]))      : undefined),
+    idx:   fcIdx,
+    deck:  fcDeck.slice(),          // 浅拷贝即可：元素只读，again 重排会 splice 数组本身
+    counts:{...fcCounts},
+    done:  fcDoneCount,
+    total: fcTotal
+  });
+  if(fcHistory.length > 20) fcHistory.shift();
+  updateFcUndoBtn();
+
   markStudiedToday();
-  const v   = fcDeck[fcIdx];
   const now = Date.now();
 
   // FSRS 调度：把当前记录（含上次的 fsrs 卡片状态）喂给算法，拿回新的 nextReview/interval/fsrs
@@ -456,6 +477,45 @@ function rateFcCard(rating){
   setTimeout(()=> { fcIdx++; showFcCard(false); }, isBad ? 420 : 340);
 }
 
+// 撤销按钮的显隐：有历史可退才显示
+function updateFcUndoBtn(){
+  const b = document.getElementById('fc-undo');
+  if(b) b.style.display = fcHistory.length ? '' : 'none';
+}
+
+// 撤销上一次评分：弹出最近一条快照，把 SRS 记录 / 牌组状态 / 计数全部还原
+function undoFcRating(){
+  const h = fcHistory.pop();
+  if(!h) return;
+  // 还原该词的 SRS 记录（原本没有记录就删掉，不能留下空壳）
+  if(h.mode === 'deck'){
+    if(h.prevRec) vpProgress[h.word] = h.prevRec; else delete vpProgress[h.word];
+    saveVpProgress(vpDeck);
+    // 已知限制：pushVpWord 开头 `if(!data) return;`——记录被撤销删掉后它会静默跳过，
+    // 云端会暂时残留撤销前的旧值，等下次对这个词重新评分时才会被覆盖，可接受
+    pushVpWord(vpDeck, h.word);
+  } else {
+    if(h.prevRec) fcSRS[h.word] = h.prevRec; else delete fcSRS[h.word];
+    saveSRS();
+    // 同上已知限制：pushFcSRSWord 遇到已删除的记录也会静默跳过，云端旧值等下次评分覆盖
+    pushFcSRSWord(h.word);
+  }
+  fcDeck = h.deck; fcIdx = h.idx; fcCounts = h.counts;
+  fcDoneCount = h.done; fcTotal = h.total;
+
+  // 结果页可能已经弹出（撤销最后一张时），要收回去；flashcard 本体也可能被
+  // showFcResult 一并隐藏了，这里连同复原，否则撤销后卡片区是空的
+  const res = document.getElementById('fc-result');
+  if(res){ res.classList.remove('open'); res.style.display='none'; }
+  const fc = document.getElementById('flashcard');
+  fc.style.display = '';
+  fc.classList.add('open');
+
+  updateFcUndoBtn();
+  showFcCard(true);
+  toast('已撤销「'+h.word+'」的评分');
+}
+
 function showFcResult(){
   document.getElementById('flashcard').classList.remove('open');
   document.getElementById('flashcard').style.display = 'none';
@@ -501,7 +561,8 @@ function closeFcAll(){
 (()=>{
   const card = document.getElementById('fc-card');
   let sx=0, sy=0, dx=0, dy=0, moving=false, movedAny=false, dragging=false, downTarget=null, pid=null;
-  let lastX=0, lastT=0, vx=0;   // vx: 横向速度，px/ms，用于识别"快速轻扫"
+  let lastX=0, lastY=0, lastT=0, vx=0, vy=0;   // vx/vy：横向/纵向速度，px/ms，用于识别"快速轻扫"
+  let axis=null; // 本次手势锁定的轴：'x' | 'y'；越过起手门槛前是 null
 
   // 判定距离：随卡片宽度自适应（原先写死 100px ≈ 卡宽 29%，偏大）
   function swipeDist(){
@@ -512,26 +573,28 @@ function closeFcAll(){
   // 拖动判定提示：跟手写入 --sw 与方向类；只在已翻面（会真的评分）时才给承诺
   function updateSwipeHint(scn){
     if(fcFlipped){
-      const r = Math.min(1, Math.abs(dx)/swipeDist());
+      const _d = axis==='y' ? dy : dx;
+      const r = Math.min(1, Math.abs(_d)/swipeDist());
       scn.style.setProperty('--sw', r);
-      scn.classList.toggle('sw-right', dx>0);
-      scn.classList.toggle('sw-left', dx<0);
+      scn.classList.toggle('sw-right', axis==='x' && dx>0);
+      scn.classList.toggle('sw-left',  axis==='x' && dx<0);
+      scn.classList.toggle('sw-up',    axis==='y' && dy<0);
     } else {
       scn.style.setProperty('--sw', 0);
-      scn.classList.remove('sw-right','sw-left');
+      scn.classList.remove('sw-right','sw-left','sw-up');
     }
   }
   function clearSwipeHint(scn){
     scn.style.setProperty('--sw', 0);
-    scn.classList.remove('sw-right','sw-left');
+    scn.classList.remove('sw-right','sw-left','sw-up');
   }
 
   card.addEventListener('pointerdown', e=>{
     if(e.pointerType==='mouse' && e.button!==0) return; // 只响应左键
     sx=e.clientX; sy=e.clientY;
-    dx=0; dy=0; moving=false; movedAny=false; dragging=true;
+    dx=0; dy=0; moving=false; movedAny=false; dragging=true; axis=null;
     downTarget=e.target; pid=e.pointerId;
-    lastX=e.clientX; lastT=e.timeStamp||performance.now(); vx=0; // 重置速度，避免残留上一次拖动的速度
+    lastX=e.clientX; lastY=e.clientY; lastT=e.timeStamp||performance.now(); vx=0; vy=0; // 重置速度，避免残留上一次拖动的速度
     // 注意：这里不能 setPointerCapture —— 一旦捕获，后续 pointer 事件连同 click
     // 都会重定向到卡片本身，卡上的发音/收藏按钮既收不到点击、又会被误判成"点卡片翻转"。
     // 捕获推迟到 pointermove 里真正判定为拖动之后再做。
@@ -544,23 +607,40 @@ function closeFcAll(){
     dy=e.clientY-sy;
     // 只要明显移动过（任意方向）就不再算"点按"：竖滑不评分，但也绝不能被当成点击去翻牌
     if(Math.abs(dx)>8 || Math.abs(dy)>8) movedAny=true;
-    // 拇指自然滑动是弧线，横向严格大于纵向过苛；放宽到 70% 让弧线也能起手
-    // （不能更松，否则会抢走背面长释义的纵向滚动）
-    if(Math.abs(dx)<Math.abs(dy)*0.7 && !moving) return;
-    if(Math.abs(dx)<6 && !moving) return;
+
+    // 起手门槛：任一方向位移首次超过 6px 时锁定本次手势的轴向（取位移较大的那个），
+    // 此后整次手势只按锁定的轴响应，不再像老版本那样横纵混判
+    if(!axis){
+      if(Math.abs(dx) > 6 || Math.abs(dy) > 6){
+        axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+      } else {
+        return; // 还没过门槛，先不判定方向
+      }
+    }
+
+    // 纵向只接受向上：axis 锁定为 y 之后如果是往下（dy>0），视作无效手势——
+    // 不位移、不显示戳记、松手不评分，等同于现在的下滑
+    if(axis==='y' && dy>0) return;
+
     // 确认是拖动了才抢占指针：此后手指/鼠标滑出卡片也能继续收到事件，
     // 而单纯点按（never moving）全程不捕获，按钮的 click 照常派发
     if(!moving){ moving=true; try{ card.setPointerCapture(pid); }catch(err){} }
     const scn = card.closest('.fc-scene');
-    scn.style.transform=`translateX(${dx}px) rotate(${dx*0.03}deg)`;
+    if(axis==='x'){
+      scn.style.transform=`translateX(${dx}px) rotate(${dx*0.03}deg)`;
+    } else {
+      scn.style.transform=`translateY(${dy}px)`; // 上滑（较难）不旋转
+    }
     updateSwipeHint(scn);
-    // 更新横向速度（指数平滑，避免最后一帧抖动单独决定结果）
+    // 更新横/纵向速度（指数平滑，避免最后一帧抖动单独决定结果）
     const _t = e.timeStamp || performance.now();
     const _dt = _t - lastT;
     if(_dt > 0){
-      const inst = (e.clientX - lastX) / _dt;
-      vx = vx ? vx*0.7 + inst*0.3 : inst;
-      lastX = e.clientX; lastT = _t;
+      const instX = (e.clientX - lastX) / _dt;
+      const instY = (e.clientY - lastY) / _dt;
+      vx = vx ? vx*0.7 + instX*0.3 : instX;
+      vy = vy ? vy*0.7 + instY*0.3 : instY;
+      lastX = e.clientX; lastY = e.clientY; lastT = _t;
     }
   });
 
@@ -570,24 +650,35 @@ function closeFcAll(){
     if(moving){ try{ card.releasePointerCapture(pid); }catch(err){} }
     if(!moving){
       scn.style.transition='';
-      // 竖滑/斜滑没达到横向拖动门槛：什么都不做。若在这里翻牌，用户竖滑一下卡片就
-      // 翻回正面，而正面滑动不评分 —— 表现就是"上下滑一下之后左右滑就不灵了"
+      // 没达到起手门槛，或整程都是无效的向下手势：什么都不做。若在这里翻牌，
+      // 用户轻轻晃一下卡片就会误触发翻转 —— 表现就是"晃一下之后滑动就不灵了"
       if(movedAny) return;
       // 用按下时的原始落点判断，而不是 e.target：结束事件的 target 可能已被指针捕获改写
       if(downTarget && downTarget.closest('button')) return;
       flipFcCard(); return;
     }
-    const _far  = Math.abs(dx) > swipeDist();
+    // axis 锁定为纵向、但最终落点在起点下方（dy>0）：无效手势，等同下滑，只回弹不评分
+    // （拖动过程中会被 pointermove 拦下不更新 transform，但反向拖回起点以下时 dy 仍会
+    // 跟着更新，所以这里要单独兜底判断，不能只指望 pointermove 的早退）
+    if(axis==='y' && dy>0){ bounceBack(scn); return; }
+
+    const _d  = axis==='y' ? dy : dx;
+    const _v  = axis==='y' ? vy : vx;
+    const _far  = Math.abs(_d) > swipeDist();
     // 快速轻扫：速度够快且方向一致，即使位移不大也算数（真人最常用的手势）
-    const _fast = Math.abs(vx) > 0.45 && Math.abs(dx) > 24 && Math.sign(vx) === Math.sign(dx);
+    const _fast = Math.abs(_v) > 0.45 && Math.abs(_d) > 24 && Math.sign(_v) === Math.sign(_d);
     if((_far || _fast) && fcFlipped){
-      // 滑出屏幕：scene 飞走
-      const dir = dx>0?1:-1;
+      // 滑出屏幕：横向沿原方向飞出，纵向（较难）向上飞出
       scn.style.transition='transform .25s ease, opacity .25s ease';
-      scn.style.transform =`translateX(${dir*110}%)`;
+      if(axis==='y'){
+        scn.style.transform='translateY(-110%)';
+      } else {
+        const dir = dx>0?1:-1;
+        scn.style.transform=`translateX(${dir*110}%)`;
+      }
       scn.style.opacity   ='0';
       clearSwipeHint(scn);
-      const rating = dx>0?'good':'again';
+      const rating = axis==='y' ? 'hard' : (dx>0?'good':'again');
       setTimeout(()=>{
         scn.style.transition='none';
         scn.style.transform='';
@@ -640,6 +731,7 @@ document.querySelectorAll('#voc-size-row .vp-nb').forEach(btn=>{
   if(match) match.classList.add('on');
 })();
 document.getElementById('fc-exit').addEventListener('click', closeFcAll);
+document.getElementById('fc-undo').addEventListener('click', undoFcRating);
 document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
 document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
 document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('good'));
@@ -797,6 +889,7 @@ function startDeckSession(){
   fcOrigTotal = fcDeck.length;
   fcDoneCount = 0;
   fcMode  = 'deck';
+  fcHistory = []; updateFcUndoBtn(); // 新一轮开始，上一轮的撤销记录作废
 
   if(!fcDeck.length){ toast('今日没有待复习单词，明天再来！'); return; }
 

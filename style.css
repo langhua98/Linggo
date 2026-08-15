@@ -1558,6 +1558,16 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   flex-shrink:0;transition:background .15s;
 }
 .fc-back-btn:hover{background:var(--border);}
+/* ── 撤销上一次评分：评错了要能救回来 ── */
+.fc-undo-btn{
+  width:38px;height:38px;flex-shrink:0;
+  border:none;border-radius:50%;
+  background:var(--surface);color:var(--text-2);
+  font-size:18px;line-height:1;cursor:pointer;
+  box-shadow:var(--shadow-sm);
+  -webkit-tap-highlight-color:transparent;
+}
+.fc-undo-btn:active{ transform:scale(.92); }
 .fc-head-mid{flex:1;min-width:0;}
 .fc-title{
   font-family:'Lora',serif;font-size:14px;font-weight:600;
@@ -1702,6 +1712,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-sh-again{ right:22px; color:#DC2626; transform:rotate(12deg);  }
 .night .fc-sh-good { color:#4ADE80; }
 .night .fc-sh-again{ color:#F87171; }
+/* 上滑档：戳记贴卡片下缘（上滑时卡片上半移出视野，下缘才留得住） */
+/* 上滑时卡片上半移出视野，戳记要贴下缘才留得住；但评分条和提示行已经占了卡底
+   约 134px，所以再往上让开，免得盖在「较难」按钮上 */
+.fc-sh-hard{ top:auto; bottom:152px; left:50%; margin-left:-38px; color:#D97706; transform:rotate(-6deg); }
+.night .fc-sh-hard{ color:#FBBF24; }
+.fc-scene.sw-up .fc-sh-hard{ opacity:var(--sw,0); }
 /* --sw 由 JS 按拖动距离写入 0~1；方向类决定亮哪一个 */
 .fc-scene.sw-right .fc-sh-good { opacity:var(--sw,0); }
 .fc-scene.sw-left  .fc-sh-again{ opacity:var(--sw,0); }
@@ -1823,6 +1839,10 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   pointer-events:none;
 }
 .fc-swipe-tip.show{ opacity:1; }
+/* 三档文案（← 不认识 · 认识 → · ↑ 较难）比两档长，窄屏一行放不下就缩字号并禁止换行 */
+@media(max-width:390px){
+  .fc-swipe-tip{ font-size:12px; white-space:nowrap; }
+}
 
 /* ── rating buttons */
 .fc-ratings{
