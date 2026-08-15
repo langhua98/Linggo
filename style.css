@@ -1571,10 +1571,12 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 
 /* ── card area */
+/* 卡片改为贴底对齐，缩短「释义→评分按钮」的视线/拇指跨度（原来居中会把卡片吊在正中，
+   下方留一大截空白够不着评分条） */
 .fc-area{
   flex:1;
-  display:flex;align-items:center;justify-content:center;
-  padding:20px 20px 8px;
+  display:flex;align-items:flex-end;justify-content:center;
+  padding:20px 20px 38px;   /* 底部留 38px：给卡组虚影露出的 8/22px 留出空间，且不贴死评分条 */
   overflow:hidden;
   touch-action:pan-y;
   position:relative;
@@ -1586,9 +1588,11 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 
 /* ── 卡组堆叠：卡片后垫两张虚影，制造"还有一沓"的体感 ── */
+/* 卡片改贴底对齐后虚影同步改为贴底，bottom 值必须和 .fc-area 的 padding-bottom 一致 */
 .fc-stack{
-  position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-  width:calc(100% - 40px); max-width:400px; height:min(440px,56vh);
+  position:absolute; left:50%; bottom:38px; top:auto;
+  transform:translateX(-50%);
+  width:calc(100% - 40px); max-width:400px; height:min(470px,56vh);
   pointer-events:none; z-index:0;
 }
 .fc-stack i{
@@ -1609,7 +1613,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
      判定为滚动手势、发出 pointercancel 把横滑掐断（卡面本身没有可滚动内容） */
   touch-action:none;
   width:100%;
-  height:min(440px,56vh);
+  /* 卡片贴底 + 内容垂直居中，把「释义→评分按钮」的跨度从 377px 压到约 250px；
+     高度不宜再压：卡片过矮会在头部下方留出大片空白，屏幕显得没填满 */
+  height:min(470px,56vh);
   position:relative;
   transform-style:preserve-3d;
   transition:transform .48s cubic-bezier(.35,0,.25,1);
@@ -1683,19 +1689,13 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-icon-btn.starred svg{fill:#F59E0B;stroke:#F59E0B;}
 .fc-icon-btn.starred{box-shadow:0 4px 18px rgba(245,158,11,.25), 0 1px 4px rgba(0,0,0,.06);}
 .fc-icon-btn.spk-active{box-shadow:0 4px 18px rgba(37,99,235,.28), 0 1px 4px rgba(0,0,0,.06);}
-/* 翻转胶囊 CTA */
-.fc-flip-hint{
-  flex:1;height:52px;border:none;cursor:pointer;
-  background:linear-gradient(135deg,#2563EB 0%,#7C3AED 100%);
-  border-radius:26px;
-  display:flex;align-items:center;justify-content:center;gap:8px;
-  color:#fff;font-family:'Nunito',sans-serif;font-size:14px;font-weight:700;
-  box-shadow:0 4px 18px rgba(37,99,235,.32);
-  transition:transform .18s cubic-bezier(.34,1.56,.64,1), box-shadow .18s;
-  letter-spacing:.02em;
+/* 翻转提示文案：原「点击翻转」胶囊按钮已删除（点卡片本身就能翻，按钮纯属重复且占了正面
+   最好的拇指位置），改成一行低调文字，放在星标和发音按钮中间；pointer-events:none 避免
+   挡住"点卡片翻转"这个手势 */
+.fc-flip-tip{
+  font-size:13px;color:var(--text-3);font-family:'Nunito',sans-serif;
+  pointer-events:none;text-align:center;
 }
-.fc-flip-hint:active{transform:scale(.95);box-shadow:0 2px 8px rgba(37,99,235,.22);}
-.fc-flip-hint svg{width:18px;height:18px;flex-shrink:0;}
 .fc-icon-btn.spk-active{
   color:var(--accent);
   box-shadow:0 0 0 3px rgba(37,99,235,.18), 0 4px 16px rgba(37,99,235,.22);
@@ -1732,7 +1732,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 
 /* back face */
 .fc-back-body{
-  flex:1;display:flex;flex-direction:column;
+  flex:1;display:flex;flex-direction:column;justify-content:center;
   padding:20px 24px 16px;overflow-y:auto;
   /* 它是滚动容器，浏览器查 touch-action 时会停在这里、看不到 .fc-card 的 none，
      于是把横滑当成滚动手势抢走（pointercancel）。显式放行：纵向滚长释义，横向留给滑动评分 */
@@ -1767,6 +1767,16 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
 }
 
+/* ── 滑动提示：告诉用户翻面后可以左右滑评分（此前完全没有任何提示） ── */
+.fc-swipe-tip{
+  flex-shrink:0; text-align:center;
+  font-family:'Nunito',sans-serif; font-size:12.5px; letter-spacing:.03em;
+  color:var(--text-3); padding:0 0 8px;
+  opacity:0; transition:opacity .25s;
+  pointer-events:none;
+}
+.fc-swipe-tip.show{ opacity:1; }
+
 /* ── rating buttons */
 .fc-ratings{
   flex-shrink:0;
@@ -1791,7 +1801,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   width:28px;height:28px;display:flex;align-items:center;justify-content:center;
 }
 .fc-rbtn-icon svg{width:26px;height:26px;}
-.fc-rbtn-label{font-size:13px;font-weight:800;font-family:'Nunito',sans-serif;line-height:1;}
+/* 字号比英文短词时代小 1px，且强制不换行：中文「很简单」三字比英文单词更容易挤到第二行 */
+.fc-rbtn-label{font-size:12px;font-weight:800;font-family:'Nunito',sans-serif;line-height:1;white-space:nowrap;}
 .fc-rbtn-time{font-size:11px;font-weight:600;font-family:'Nunito',sans-serif;opacity:.72;line-height:1;}
 /* Again — red */
 .fc-r-again{

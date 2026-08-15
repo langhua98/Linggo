@@ -218,6 +218,7 @@ async function showFcCard(instant){
   card.style.transform  = '';   // ensure CSS class is sole transform owner
   card.classList.remove('flipped','shake');
   ratings.classList.remove('show');
+  document.getElementById('fc-swipe-tip')?.classList.remove('show');
   document.getElementById('fc-fb-front').classList.remove('show');
   document.getElementById('fc-fb-back').classList.remove('show');
 
@@ -371,11 +372,15 @@ function flipFcCard(){
   fcFlipShadeTimer = setTimeout(()=> card.classList.remove('flipping'), 480);
 
   if(fcFlipped){
-    // 翻到背面：280ms 后显示评级按钮
-    setTimeout(()=> ratings.classList.add('show'), 280);
+    // 翻到背面：280ms 后显示评级按钮 + 滑动提示（滑动评分只在背面有效）
+    setTimeout(()=> {
+      ratings.classList.add('show');
+      document.getElementById('fc-swipe-tip')?.classList.toggle('show', true);
+    }, 280);
   } else {
-    // 翻回正面：立刻隐藏评级按钮
+    // 翻回正面：立刻隐藏评级按钮 + 滑动提示
     ratings.classList.remove('show');
+    document.getElementById('fc-swipe-tip')?.classList.toggle('show', false);
   }
 }
 
@@ -458,19 +463,19 @@ function showFcResult(){
   document.getElementById('fc-res-stats').innerHTML = `
     <div class="fc-stat" style="background:#FEE2E2">
       <div class="fc-stat-n" style="color:#DC2626">${fcCounts.again}</div>
-      <div class="fc-stat-l" style="color:#DC2626">Again</div>
+      <div class="fc-stat-l" style="color:#DC2626">不认识</div>
     </div>
     <div class="fc-stat" style="background:#FEF3C7">
       <div class="fc-stat-n" style="color:#D97706">${fcCounts.hard}</div>
-      <div class="fc-stat-l" style="color:#D97706">Hard</div>
+      <div class="fc-stat-l" style="color:#D97706">较难</div>
     </div>
     <div class="fc-stat" style="background:#D1FAE5">
       <div class="fc-stat-n" style="color:#059669">${fcCounts.good}</div>
-      <div class="fc-stat-l" style="color:#059669">Good</div>
+      <div class="fc-stat-l" style="color:#059669">认识</div>
     </div>
     <div class="fc-stat" style="background:#DBEAFE">
       <div class="fc-stat-n" style="color:#2563EB">${fcCounts.easy}</div>
-      <div class="fc-stat-l" style="color:#2563EB">Easy</div>
+      <div class="fc-stat-l" style="color:#2563EB">很简单</div>
     </div>`;
 }
 
@@ -596,12 +601,6 @@ function closeFcAll(){
     bounceBack(card.closest('.fc-scene'));
   });
 })();
-
-// 翻转胶囊按钮
-document.getElementById('fc-flip-cta').addEventListener('click', (e)=>{
-  e.stopPropagation();
-  flipFcCard();
-});
 
 // ── Button listeners
 document.getElementById('voc-flash-btn').addEventListener('click', openFlashcard);

@@ -557,12 +557,8 @@
                 <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
               </svg>
             </button>
-            <button class="fc-flip-hint" id="fc-flip-cta">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
-                <path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/>
-              </svg>
-              点击翻转
-            </button>
+            <!-- 点卡片任意位置即可翻转，此处只放低调提示文字，不再是重复的按钮 -->
+            <div class="fc-flip-tip">轻点卡片查看释义</div>
             <button class="fc-icon-btn" id="fc-spk" title="播放发音">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
                 <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
@@ -606,6 +602,9 @@
     </div>
   </div>
 
+  <!-- 滑动提示：翻面后才有效，此前完全没有任何地方告诉用户可以左右滑评分 -->
+  <div class="fc-swipe-tip" id="fc-swipe-tip" aria-hidden="true">← 不认识　·　认识 →</div>
+
   <!-- rating buttons -->
   <div class="fc-ratings" id="fc-ratings">
     <button class="fc-rbtn fc-r-again" id="fc-again">
@@ -615,7 +614,7 @@
           <path d="M3 3v5h5"/>
         </svg>
       </span>
-      <span class="fc-rbtn-label">Again</span>
+      <span class="fc-rbtn-label">不认识</span>
       <span class="fc-rbtn-time">10分钟</span>
     </button>
     <button class="fc-rbtn fc-r-hard" id="fc-hard">
@@ -625,7 +624,7 @@
           <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
         </svg>
       </span>
-      <span class="fc-rbtn-label">Hard</span>
+      <span class="fc-rbtn-label">较难</span>
       <span class="fc-rbtn-time">1天</span>
     </button>
     <button class="fc-rbtn fc-r-good" id="fc-good">
@@ -634,7 +633,7 @@
           <path d="M20 6 9 17l-5-5"/>
         </svg>
       </span>
-      <span class="fc-rbtn-label">Good</span>
+      <span class="fc-rbtn-label">认识</span>
       <span class="fc-rbtn-time">3天</span>
     </button>
     <button class="fc-rbtn fc-r-easy" id="fc-easy">
@@ -643,7 +642,7 @@
           <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
         </svg>
       </span>
-      <span class="fc-rbtn-label">Easy</span>
+      <span class="fc-rbtn-label">很简单</span>
       <span class="fc-rbtn-time">7天</span>
     </button>
   </div>
