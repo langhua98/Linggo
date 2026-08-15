@@ -487,11 +487,18 @@ function closeFcAll(){
 (()=>{
   const card = document.getElementById('fc-card');
   let sx=0, sy=0, dx=0, moving=false, dragging=false, downTarget=null, pid=null;
+  let lastX=0, lastT=0, vx=0;   // vx: 横向速度，px/ms，用于识别"快速轻扫"
+
+  // 判定距离：随卡片宽度自适应（原先写死 100px ≈ 卡宽 29%，偏大）
+  function swipeDist(){
+    const w = card.getBoundingClientRect().width || 350;
+    return Math.max(56, w * 0.22);
+  }
 
   // 拖动判定提示：跟手写入 --sw 与方向类；只在已翻面（会真的评分）时才给承诺
   function updateSwipeHint(scn){
     if(fcFlipped){
-      const r = Math.min(1, Math.abs(dx)/100);
+      const r = Math.min(1, Math.abs(dx)/swipeDist());
       scn.style.setProperty('--sw', r);
       scn.classList.toggle('sw-right', dx>0);
       scn.classList.toggle('sw-left', dx<0);
@@ -510,6 +517,7 @@ function closeFcAll(){
     sx=e.clientX; sy=e.clientY;
     dx=0; moving=false; dragging=true;
     downTarget=e.target; pid=e.pointerId;
+    lastX=e.clientX; lastT=e.timeStamp||performance.now(); vx=0; // 重置速度，避免残留上一次拖动的速度
     // 注意：这里不能 setPointerCapture —— 一旦捕获，后续 pointer 事件连同 click
     // 都会重定向到卡片本身，卡上的发音/收藏按钮既收不到点击、又会被误判成"点卡片翻转"。
     // 捕获推迟到 pointermove 里真正判定为拖动之后再做。
@@ -520,14 +528,24 @@ function closeFcAll(){
     if(!dragging) return;
     dx=e.clientX-sx;
     const dy=e.clientY-sy;
-    if(Math.abs(dx)<Math.abs(dy) && !moving) return;
-    if(Math.abs(dx)<10 && !moving) return;
+    // 拇指自然滑动是弧线，横向严格大于纵向过苛；放宽到 70% 让弧线也能起手
+    // （不能更松，否则会抢走背面长释义的纵向滚动）
+    if(Math.abs(dx)<Math.abs(dy)*0.7 && !moving) return;
+    if(Math.abs(dx)<6 && !moving) return;
     // 确认是拖动了才抢占指针：此后手指/鼠标滑出卡片也能继续收到事件，
     // 而单纯点按（never moving）全程不捕获，按钮的 click 照常派发
     if(!moving){ moving=true; try{ card.setPointerCapture(pid); }catch(err){} }
     const scn = card.closest('.fc-scene');
     scn.style.transform=`translateX(${dx}px) rotate(${dx*0.03}deg)`;
     updateSwipeHint(scn);
+    // 更新横向速度（指数平滑，避免最后一帧抖动单独决定结果）
+    const _t = e.timeStamp || performance.now();
+    const _dt = _t - lastT;
+    if(_dt > 0){
+      const inst = (e.clientX - lastX) / _dt;
+      vx = vx ? vx*0.7 + inst*0.3 : inst;
+      lastX = e.clientX; lastT = _t;
+    }
   });
 
   function endDrag(e){
@@ -540,7 +558,10 @@ function closeFcAll(){
       if(downTarget && downTarget.closest('button')) return;
       flipFcCard(); return;
     }
-    if(Math.abs(dx)>100 && fcFlipped){
+    const _far  = Math.abs(dx) > swipeDist();
+    // 快速轻扫：速度够快且方向一致，即使位移不大也算数（真人最常用的手势）
+    const _fast = Math.abs(vx) > 0.45 && Math.abs(dx) > 24 && Math.sign(vx) === Math.sign(dx);
+    if((_far || _fast) && fcFlipped){
       // 滑出屏幕：scene 飞走
       const dir = dx>0?1:-1;
       scn.style.transition='transform .25s ease, opacity .25s ease';
