@@ -491,7 +491,7 @@ function closeFcAll(){
 // 拖拽位移施加在 .fc-scene 上，card 本身只做 rotateY 翻转，互不干扰
 (()=>{
   const card = document.getElementById('fc-card');
-  let sx=0, sy=0, dx=0, moving=false, dragging=false, downTarget=null, pid=null;
+  let sx=0, sy=0, dx=0, dy=0, moving=false, movedAny=false, dragging=false, downTarget=null, pid=null;
   let lastX=0, lastT=0, vx=0;   // vx: 横向速度，px/ms，用于识别"快速轻扫"
 
   // 判定距离：随卡片宽度自适应（原先写死 100px ≈ 卡宽 29%，偏大）
@@ -520,7 +520,7 @@ function closeFcAll(){
   card.addEventListener('pointerdown', e=>{
     if(e.pointerType==='mouse' && e.button!==0) return; // 只响应左键
     sx=e.clientX; sy=e.clientY;
-    dx=0; moving=false; dragging=true;
+    dx=0; dy=0; moving=false; movedAny=false; dragging=true;
     downTarget=e.target; pid=e.pointerId;
     lastX=e.clientX; lastT=e.timeStamp||performance.now(); vx=0; // 重置速度，避免残留上一次拖动的速度
     // 注意：这里不能 setPointerCapture —— 一旦捕获，后续 pointer 事件连同 click
@@ -532,7 +532,9 @@ function closeFcAll(){
   card.addEventListener('pointermove', e=>{
     if(!dragging) return;
     dx=e.clientX-sx;
-    const dy=e.clientY-sy;
+    dy=e.clientY-sy;
+    // 只要明显移动过（任意方向）就不再算"点按"：竖滑不评分，但也绝不能被当成点击去翻牌
+    if(Math.abs(dx)>8 || Math.abs(dy)>8) movedAny=true;
     // 拇指自然滑动是弧线，横向严格大于纵向过苛；放宽到 70% 让弧线也能起手
     // （不能更松，否则会抢走背面长释义的纵向滚动）
     if(Math.abs(dx)<Math.abs(dy)*0.7 && !moving) return;
@@ -559,6 +561,9 @@ function closeFcAll(){
     if(moving){ try{ card.releasePointerCapture(pid); }catch(err){} }
     if(!moving){
       scn.style.transition='';
+      // 竖滑/斜滑没达到横向拖动门槛：什么都不做。若在这里翻牌，用户竖滑一下卡片就
+      // 翻回正面，而正面滑动不评分 —— 表现就是"上下滑一下之后左右滑就不灵了"
+      if(movedAny) return;
       // 用按下时的原始落点判断，而不是 e.target：结束事件的 target 可能已被指针捕获改写
       if(downTarget && downTarget.closest('button')) return;
       flipFcCard(); return;

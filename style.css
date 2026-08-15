@@ -1734,9 +1734,11 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-back-body{
   flex:1;display:flex;flex-direction:column;justify-content:center;
   padding:20px 24px 16px;overflow-y:auto;
-  /* 它是滚动容器，浏览器查 touch-action 时会停在这里、看不到 .fc-card 的 none，
-     于是把横滑当成滚动手势抢走（pointercancel）。显式放行：纵向滚长释义，横向留给滑动评分 */
-  touch-action:pan-y;
+  /* 它有 overflow-y:auto，浏览器查 touch-action 时会停在这里、看不到 .fc-card 的 none。
+     早先给的是 pan-y，但实测这块内容从不真的滚动（子元素会先被压缩，scrollHeight 始终
+     等于 clientHeight），所以 pan-y 只有害处：竖滑会被浏览器当滚动抢走并 pointercancel，
+     牵动滚动/回弹机制，紧接着的横滑就滑不动了。改成 none —— 卡片内本来也没有要滚的东西 */
+  touch-action:none;
   overscroll-behavior:contain;
 }
 .fc-back-word{
