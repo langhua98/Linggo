@@ -1604,7 +1604,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-stack i{
   position:absolute; inset:0; display:block; border-radius:28px;
   background:var(--surface); border:1px solid var(--border);
-  box-shadow:0 6px 28px var(--shadow);
+  /* 弱一号的多层阴影：呼应 .fc-face 的体积感，但比真卡浅，
+     否则垫底的虚影抢戏，和最上面那张真卡的层次会打架 */
+  box-shadow:0 2px 6px rgba(0,0,0,.05), 0 10px 22px rgba(0,0,0,.06);
   transition:transform .3s cubic-bezier(.34,1.4,.64,1), opacity .3s;
 }
 /* 只横向收窄、不整体缩放：scale() 从中心缩小的量会大于下移量，虚影会整个藏到卡片背后；
@@ -1633,15 +1635,50 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   position:absolute;inset:0;
   backface-visibility:hidden;
   -webkit-backface-visibility:hidden;
-  background:var(--surface);
+  /* 卡面加极轻的受光渐变：顶部微亮 → 底部微沉，模拟实体卡片受光，
+     幅度要克制，否则看起来像脏了而不是有厚度 */
+  background:linear-gradient(168deg,
+              #fff 0%,
+              var(--surface) 38%,
+              rgba(0,0,0,.012) 100%),
+             var(--surface);
   border-radius:28px;
-  border:1px solid var(--border);
-  box-shadow:0 6px 28px var(--shadow);
+  border:1px solid rgba(0,0,0,.06);   /* 比 --border 更贴合卡面的浅描边 */
+  /* 多层递进阴影：近处紧实、远处发散才是"有体积"的关键，单层阴影是平的；
+     最后一条 inset 是上边缘内高光，让卡片接住光、显出厚度而不是贴在背景上 */
+  box-shadow:
+    0 1px 2px rgba(0,0,0,.05),
+    0 3px 6px rgba(0,0,0,.05),
+    0 10px 20px rgba(0,0,0,.07),
+    0 22px 44px rgba(0,0,0,.06),
+    inset 0 1px 0 rgba(255,255,255,.85);
   display:flex;flex-direction:column;
   overflow:hidden;
   will-change:transform;
 }
-.fc-back-face{transform:rotateY(180deg);}
+/* 两个面本来共处 z=0 同一平面。当前 Chrome 下靠 backface-visibility 剔除得很干净，
+   但共面正是 z-fighting 的典型诱因（部分 iOS Safari 版本上会让背面隐约透出），
+   各沿自身法线推出 1px 作预防，位移小到看不出来 */
+.fc-front-face{transform:translateZ(1px);}
+.fc-back-face{transform:rotateY(180deg) translateZ(1px);}
+/* 夜间：暗色下白色高光和黑色阴影都要重调，否则要么高光刺眼要么阴影糊成一片 */
+.night .fc-face{
+  background:linear-gradient(168deg,
+              rgba(255,255,255,.06) 0%,
+              var(--surface) 38%,
+              rgba(0,0,0,.16) 100%),
+             var(--surface);
+  border-color:rgba(255,255,255,.09);
+  box-shadow:
+    0 1px 2px rgba(0,0,0,.35),
+    0 3px 6px rgba(0,0,0,.3),
+    0 10px 20px rgba(0,0,0,.35),
+    0 22px 44px rgba(0,0,0,.3),
+    inset 0 1px 0 rgba(255,255,255,.07);
+}
+.night .fc-stack i{
+  box-shadow:0 2px 6px rgba(0,0,0,.25), 0 10px 22px rgba(0,0,0,.3);
+}
 
 /* 翻转时接住光线：暗部一闪，不能用 transform（会和 rotateY 打架），只用 filter */
 @media (prefers-reduced-motion: no-preference){
@@ -2445,6 +2482,13 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   transition:opacity .15s;
 }
 .vp-start-btn:hover{opacity:.9;}
+
+/* ── 本轮抽词数量：复用词库练习的 .vp-nb 按钮样式 ── */
+.voc-size-row{
+  display:flex;align-items:center;gap:8px;
+  padding:0 16px 10px;
+}
+.voc-size-lb{ font-size:13px;color:var(--text-2);flex-shrink:0; }
 
 /* ── STREAK BADGE */
 .vp-streak{

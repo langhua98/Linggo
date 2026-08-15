@@ -21,6 +21,9 @@ let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排
 let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
 let fcSRS       = {};  // word → { nextReview, interval }
 let fcMode      = 'book'; // 'book' | 'deck'
+// 本轮抽词数量：生词本背诵一次抽多少词，0 = 全部；读到 NaN（脏值/未设置）就回落 12
+let fcSize      = parseInt(localStorage.getItem('fcSize') ?? '12', 10);
+if(isNaN(fcSize)) fcSize = 12;
 let fcFlipShadeTimer = null; // 翻转光影动效的清除计时器，防止快速连翻时动画卡住
 
 // ── FSRS 调度（ts-fsrs，见 vendor/）──
@@ -180,6 +183,8 @@ function openFlashcard(){
   const later = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview > now);
 
   fcDeck = [...shuffle(due), ...shuffle(newW), ...shuffle(later)];
+  // 本轮只抽 fcSize 个（0 = 全部）；到期的排在前面，所以截断后仍优先复习该复习的
+  if(fcSize > 0 && fcDeck.length > fcSize) fcDeck = fcDeck.slice(0, fcSize);
   fcIdx  = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
@@ -613,6 +618,27 @@ function closeFcAll(){
 
 // ── Button listeners
 document.getElementById('voc-flash-btn').addEventListener('click', openFlashcard);
+
+// 本轮抽词数量：0 = 全部
+document.querySelectorAll('#voc-size-row .vp-nb').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('#voc-size-row .vp-nb').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+    fcSize = parseInt(btn.dataset.fcn, 10) || 0;
+    localStorage.setItem('fcSize', String(fcSize));
+  });
+});
+// 页面初始化：按存回来的值点亮对应按钮，找不到匹配（脏值）就点亮 12 词那个
+(function initVocSizeBtn(){
+  const btns = document.querySelectorAll('#voc-size-row .vp-nb');
+  let match = null;
+  btns.forEach(b=>{
+    b.classList.remove('on');
+    if(parseInt(b.dataset.fcn, 10) === fcSize) match = b;
+  });
+  if(!match) match = document.querySelector('#voc-size-row .vp-nb[data-fcn="12"]');
+  if(match) match.classList.add('on');
+})();
 document.getElementById('fc-exit').addEventListener('click', closeFcAll);
 document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
 document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
@@ -801,9 +827,11 @@ document.querySelectorAll('.vp-deck').forEach(el=>{
 });
 
 // Session count selector
-document.querySelectorAll('.vp-nb').forEach(btn=>{
+// 注意：必须限定在 .vp-session-btns 容器内 —— 生词本背诵的「本轮」选择器
+// 也复用了 .vp-nb 这个 class，若不加限定，点这里会把那边的高亮状态清掉
+document.querySelectorAll('.vp-session-btns .vp-nb').forEach(btn=>{
   btn.addEventListener('click', ()=>{
-    document.querySelectorAll('.vp-nb').forEach(b=>b.classList.remove('on'));
+    document.querySelectorAll('.vp-session-btns .vp-nb').forEach(b=>b.classList.remove('on'));
     btn.classList.add('on');
     vpCount = parseInt(btn.dataset.n, 10);
   });
