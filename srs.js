@@ -4,7 +4,6 @@
 // 依赖（script.js 先加载）：S, synth, getVoice, toast, closeVoc, addVocab, removeVocab, closeSidebar
 // 依赖（sb.js 先加载）：SB, currentUser
 // 依赖（词库文件先加载）：CET4, CET6, OGDEN850
-const SRS_INTERVALS = { again: 10*60*1000, hard: 86400000, good: 3*86400000, easy: 7*86400000 };
 function shuffle(arr){
   const a=[...arr];
   for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
@@ -23,13 +22,56 @@ let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
 let fcSRS       = {};  // word → { nextReview, interval }
 let fcMode      = 'book'; // 'book' | 'deck'
 
-// ── 动态间隔计算（类 Anki：间隔随正确次数成倍增长）
-function calcNextInterval(rating, prevInterval){
-  if(rating === 'again') return SRS_INTERVALS.again;
-  if(rating === 'hard')  return Math.round(Math.max(SRS_INTERVALS.hard, (prevInterval || SRS_INTERVALS.hard)  * 1.2));
-  if(rating === 'good')  return Math.round(Math.max(SRS_INTERVALS.good, (prevInterval || SRS_INTERVALS.good)  * 2.5));
-  if(rating === 'easy')  return Math.round(Math.max(SRS_INTERVALS.easy, (prevInterval || SRS_INTERVALS.easy)  * 4.0));
-  return SRS_INTERVALS.good;
+// ── FSRS 调度（ts-fsrs，见 vendor/）──
+// 记录里额外存一份 fsrs 卡片状态（含 stability/difficulty），
+// nextReview/interval 两个旧字段保留不动 —— 组卡、云同步、按钮预览都还在用它们。
+// 库按 licon.js / Hypher 的既有约定做降级守卫：vendor 脚本万一没加载，
+// 闪卡退回固定间隔照常可用，而不是让整个 srs.js 在顶层抛错、整套背词功能消失。
+const _FSRS_RATING  = { again:1, hard:2, good:3, easy:4 };   // = FSRS.Rating.Again/Hard/Good/Easy
+const _FALLBACK_IV  = { again:10*60*1000, hard:86400000, good:3*86400000, easy:7*86400000 };
+let _fsrsInst = null;
+function _sched(){
+  if(_fsrsInst) return _fsrsInst;
+  if(typeof FSRS === 'undefined') return null;
+  return (_fsrsInst = FSRS.fsrs());
+}
+
+// JSON 存回来的 due/last_review 是字符串，必须复活成 Date
+function _reviveFsrsCard(rec){
+  const c = rec && rec.fsrs;
+  if(!c) return FSRS.createEmptyCard();
+  return { ...c, due:new Date(c.due), last_review: c.last_review ? new Date(c.last_review) : undefined };
+}
+function _serializeFsrsCard(c){
+  return { ...c, due:new Date(c.due).toISOString(),
+           last_review: c.last_review ? new Date(c.last_review).toISOString() : undefined };
+}
+
+// 实际评分：喂入当前记录 + 评分，返回新的 nextReview/interval/fsrs 三个字段
+function applyFsrs(rec, rating, nowMs){
+  const s = _sched();
+  if(!s){                                   // 降级：库没加载，退回固定间隔
+    const iv = _FALLBACK_IV[rating] ?? _FALLBACK_IV.good;
+    return { nextReview: nowMs + iv, interval: iv, fsrs: rec && rec.fsrs };
+  }
+  const now = new Date(nowMs);
+  const nc  = s.next(_reviveFsrsCard(rec), now, _FSRS_RATING[rating] ?? _FSRS_RATING.good).card;
+  const due = +new Date(nc.due);
+  return { nextReview: due, interval: Math.max(0, due - nowMs), fsrs: _serializeFsrsCard(nc) };
+}
+
+// 按钮预览：一次性算出 again/hard/good/easy 四档的间隔（ms），供 showFcCard 显示
+function previewFsrs(rec, nowMs){
+  const s = _sched();
+  if(!s) return { ..._FALLBACK_IV };         // 降级：库没加载，按钮显示固定间隔
+  const now = new Date(nowMs);
+  const rep = s.repeat(_reviveFsrsCard(rec), now);
+  const out = {};
+  for(const k in _FSRS_RATING){
+    const it = rep[_FSRS_RATING[k]];
+    out[k] = it ? Math.max(0, +new Date(it.card.due) - nowMs) : 0;
+  }
+  return out;
 }
 function fmtInterval(ms){
   const m = Math.round(ms/60000);
@@ -47,6 +89,13 @@ let vpDeck     = 'cet4';
 let vpCount    = 10;
 
 function loadVpProgress(deck){
+  // 同上：一次性迁移到 FSRS，用 vpVer 标记避免每次加载都重置。
+  // 三个词库（cet4/cet6/ogden）共用一个标记，第一次加载任意词库时一并清空全部，
+  // 避免只清了当前 deck、切换到另一个 deck 时又漏掉。
+  if(localStorage.getItem('vpVer') !== 'fsrs1'){
+    ['cet4','cet6','ogden'].forEach(d => localStorage.removeItem('vp_'+d));
+    localStorage.setItem('vpVer', 'fsrs1');
+  }
   try{ vpProgress = JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ vpProgress={}; }
 }
 function saveVpProgress(deck){
@@ -56,6 +105,8 @@ async function syncVpFromSupabase(deck){
   if(!currentUser) return;
   try{
     const rows = await SB.selectVocabProgress(currentUser.id, deck);
+    // 同 syncFcSRSFromSupabase：云端老记录没有 fsrs 字段，会被当新卡处理，这是升级后
+    // "重置为新卡"的预期行为，不是 bug。
     rows.forEach(r=>{
       vpProgress[r.word] = { nextReview: new Date(r.next_review).getTime(), correct: r.correct_count||0, wrong: r.wrong_count||0, interval: r.interval_ms||0 };
     });
@@ -76,6 +127,13 @@ async function pushVpWord(deck, word){
 
 function loadSRS(){
   try{ fcSRS = JSON.parse(localStorage.getItem('fc_srs')||'{}'); }catch(e){ fcSRS={}; }
+  // 一次性迁移：换算法（旧固定倍数 → FSRS）后老数据没有可比性，直接清空重来，
+  // 用 fcSRSVer 标记避免每次加载都重置
+  if(localStorage.getItem('fcSRSVer') !== 'fsrs1'){
+    fcSRS = {};
+    localStorage.removeItem('fc_srs');
+    localStorage.setItem('fcSRSVer', 'fsrs1');
+  }
 }
 function saveSRS(){
   localStorage.setItem('fc_srs', JSON.stringify(fcSRS));
@@ -90,6 +148,8 @@ async function syncFcSRSFromSupabase(){
       if(!isNaN(cloudNext)){
         const local = fcSRS[r.word];
         // 取云端与本地中较新的 nextReview
+        // 注：云端拉回来的老记录没有 fsrs 字段，_reviveFsrsCard 会把它当新卡处理——
+        // 这正是升级到 FSRS 后"重置为新卡"想要的效果，不是 bug，不需要特殊处理。
         if(!local || cloudNext > local.nextReview){
           fcSRS[r.word] = { nextReview: cloudNext, interval: r.interval_ms || 0 };
         }
@@ -181,14 +241,14 @@ async function showFcCard(instant){
   document.getElementById('fc-prog-fill').style.width = pct+'%';
   document.getElementById('fc-count').textContent = fcDoneCount+'/'+fcOrigTotal;
 
-  // 动态更新评分按钮的时间标签
-  const _prevIv = fcMode==='deck'
-    ? (vpProgress[v.word]?.interval || 0)
-    : (fcSRS[v.word]?.interval || 0);
-  document.querySelector('#fc-again .fc-rbtn-time').textContent = fmtInterval(SRS_INTERVALS.again);
-  document.querySelector('#fc-hard .fc-rbtn-time').textContent  = fmtInterval(calcNextInterval('hard', _prevIv));
-  document.querySelector('#fc-good .fc-rbtn-time').textContent  = fmtInterval(calcNextInterval('good', _prevIv));
-  document.querySelector('#fc-easy .fc-rbtn-time').textContent  = fmtInterval(calcNextInterval('easy', _prevIv));
+  // 动态更新评分按钮的时间标签：一次性向 FSRS 要四档预览（again 档也由 FSRS 给出，
+  // 不再是写死的 10 分钟）
+  const _rec = fcMode==='deck' ? vpProgress[v.word] : fcSRS[v.word];
+  const _pv  = previewFsrs(_rec, Date.now());
+  document.querySelector('#fc-again .fc-rbtn-time').textContent = fmtInterval(_pv.again);
+  document.querySelector('#fc-hard .fc-rbtn-time').textContent  = fmtInterval(_pv.hard);
+  document.querySelector('#fc-good .fc-rbtn-time').textContent  = fmtInterval(_pv.good);
+  document.querySelector('#fc-easy .fc-rbtn-time').textContent  = fmtInterval(_pv.easy);
 
   // Fade in — opacity only; transform is 100% owned by CSS class
   card.style.transition = 'opacity .22s ease';
@@ -311,24 +371,23 @@ function rateFcCard(rating){
   const v   = fcDeck[fcIdx];
   const now = Date.now();
 
-  // 动态间隔（基于上次间隔成倍增长）
-  const prevInterval = fcMode==='deck'
-    ? (vpProgress[v.word]?.interval || 0)
-    : (fcSRS[v.word]?.interval || 0);
-  const interval = calcNextInterval(rating, prevInterval);
+  // FSRS 调度：把当前记录（含上次的 fsrs 卡片状态）喂给算法，拿回新的 nextReview/interval/fsrs
+  const rec = fcMode==='deck' ? vpProgress[v.word] : fcSRS[v.word];
+  const nx  = applyFsrs(rec, rating, now);
 
   if(fcMode === 'deck'){
     const prev = vpProgress[v.word] || { correct:0, wrong:0, interval:0 };
     vpProgress[v.word] = {
-      nextReview: now + interval,
-      interval,
+      nextReview: nx.nextReview,
+      interval:   nx.interval,
+      fsrs:       nx.fsrs,
       correct: prev.correct + (rating !== 'again' ? 1 : 0),
       wrong:   prev.wrong   + (rating === 'again' ? 1 : 0)
     };
     saveVpProgress(vpDeck);
     pushVpWord(vpDeck, v.word);
   } else {
-    fcSRS[v.word] = { nextReview: now + interval, interval, lastRating: rating };
+    fcSRS[v.word] = { nextReview: nx.nextReview, interval: nx.interval, fsrs: nx.fsrs, lastRating: rating };
     saveSRS();
     pushFcSRSWord(v.word);
   }
