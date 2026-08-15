@@ -539,6 +539,8 @@
 
   <!-- card area -->
   <div class="fc-area" id="fc-area">
+    <!-- 卡组堆叠：两张虚影，制造"还有一沓"的体感 -->
+    <div class="fc-stack" id="fc-stack" aria-hidden="true"><i></i><i></i></div>
     <div class="fc-scene">
       <div class="fc-card" id="fc-card">
 
@@ -595,6 +597,12 @@
         </div>
 
       </div><!-- /fc-card -->
+
+      <!-- 拖动判定提示：跟手显示松手会评成什么 -->
+      <div class="fc-swipe-hint" aria-hidden="true">
+        <span class="fc-sh fc-sh-good">认识</span>
+        <span class="fc-sh fc-sh-again">不认识</span>
+      </div>
     </div>
   </div>
 

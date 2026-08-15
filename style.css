@@ -1572,12 +1572,34 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   padding:20px 20px 8px;
   overflow:hidden;
   touch-action:pan-y;
+  position:relative;
 }
 .fc-scene{
   width:100%;max-width:400px;
   perspective:1200px;
+  position:relative;z-index:1;
 }
+
+/* ── 卡组堆叠：卡片后垫两张虚影，制造"还有一沓"的体感 ── */
+.fc-stack{
+  position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+  width:calc(100% - 40px); max-width:400px; height:min(440px,56vh);
+  pointer-events:none; z-index:0;
+}
+.fc-stack i{
+  position:absolute; inset:0; display:block; border-radius:28px;
+  background:var(--surface); border:1px solid var(--border);
+  box-shadow:0 6px 28px var(--shadow);
+  transition:transform .3s cubic-bezier(.34,1.4,.64,1), opacity .3s;
+}
+/* 只横向收窄、不整体缩放：scale() 从中心缩小的量会大于下移量，虚影会整个藏到卡片背后；
+   scaleX 保持等高，下移多少就露出多少，且不依赖卡片的具体像素高度 */
+.fc-stack i:nth-child(1){ transform:translateY(14px) scaleX(.94); opacity:.55; }
+.fc-stack i:nth-child(2){ transform:translateY(28px) scaleX(.87); opacity:.3; }
+/* 剩余卡片不足时相应隐藏，数量要诚实 */
+.fc-stack.n0 i, .fc-stack.n1 i:nth-child(2){ opacity:0; transform:translateY(0) scaleX(.9); }
 .fc-card{
+  user-select:none; -webkit-user-select:none;   /* 鼠标拖动时别把卡面文字刷成选区 */
   width:100%;
   height:min(440px,56vh);
   position:relative;
@@ -1600,6 +1622,30 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   will-change:transform;
 }
 .fc-back-face{transform:rotateY(180deg);}
+
+/* 翻转时接住光线：暗部一闪，不能用 transform（会和 rotateY 打架），只用 filter */
+@media (prefers-reduced-motion: no-preference){
+  .fc-card.flipping .fc-face{ animation:fcFlipShade .48s ease; }
+}
+@keyframes fcFlipShade{ 0%,100%{ filter:brightness(1); } 50%{ filter:brightness(.93); } }
+
+/* ── 拖动判定提示：跟手显示松手会评成什么 ── */
+.fc-swipe-hint{ position:absolute; inset:0; pointer-events:none; z-index:2; }
+.fc-sh{
+  position:absolute; top:26px;
+  font-family:'Nunito',sans-serif; font-weight:800; font-size:24px;
+  padding:6px 16px; border-radius:12px; border:3px solid currentColor;
+  opacity:0; transition:opacity .12s;
+}
+/* 戳记放在拖动时仍留在视野内的一侧：右滑（认识）时卡片右半移出屏幕，
+   所以「认识」贴左边缘；左滑同理贴右边缘 —— 否则戳记刚亮起就被拖出屏幕 */
+.fc-sh-good { left:22px;  color:#16A34A; transform:rotate(-12deg); }
+.fc-sh-again{ right:22px; color:#DC2626; transform:rotate(12deg);  }
+.night .fc-sh-good { color:#4ADE80; }
+.night .fc-sh-again{ color:#F87171; }
+/* --sw 由 JS 按拖动距离写入 0~1；方向类决定亮哪一个 */
+.fc-scene.sw-right .fc-sh-good { opacity:var(--sw,0); }
+.fc-scene.sw-left  .fc-sh-again{ opacity:var(--sw,0); }
 
 /* front face */
 .fc-front-body{
@@ -1727,7 +1773,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   -webkit-tap-highlight-color:transparent;user-select:none;
   box-shadow:0 2px 8px rgba(0,0,0,.08);
 }
-.fc-rbtn:active{transform:scale(.88);box-shadow:none;}
+.fc-rbtn:active{transform:scale(.94);box-shadow:0 1px 4px rgba(0,0,0,.10);}
+@media (hover:hover){ .fc-rbtn:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,.13);} }
 .fc-rbtn-icon{
   width:28px;height:28px;display:flex;align-items:center;justify-content:center;
 }

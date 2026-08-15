@@ -21,6 +21,7 @@ let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排
 let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
 let fcSRS       = {};  // word → { nextReview, interval }
 let fcMode      = 'book'; // 'book' | 'deck'
+let fcFlipShadeTimer = null; // 翻转光影动效的清除计时器，防止快速连翻时动画卡住
 
 // ── FSRS 调度（ts-fsrs，见 vendor/）──
 // 记录里额外存一份 fsrs 卡片状态（含 stability/difficulty），
@@ -241,6 +242,11 @@ async function showFcCard(instant){
   document.getElementById('fc-prog-fill').style.width = pct+'%';
   document.getElementById('fc-count').textContent = fcDoneCount+'/'+fcOrigTotal;
 
+  // 卡组堆叠：按剩余张数切换虚影数量，数量要诚实
+  const _left = Math.max(0, fcDeck.length - fcIdx - 1);
+  const _stk = document.getElementById('fc-stack');
+  if(_stk) _stk.className = 'fc-stack' + (_left === 0 ? ' n0' : _left === 1 ? ' n1' : '');
+
   // 动态更新评分按钮的时间标签：一次性向 FSRS 要四档预览（again 档也由 FSRS 给出，
   // 不再是写死的 10 分钟）
   const _rec = fcMode==='deck' ? vpProgress[v.word] : fcSRS[v.word];
@@ -356,6 +362,14 @@ function flipFcCard(){
   card.style.transform  = '';
   fcFlipped = !fcFlipped;
   card.classList.toggle('flipped', fcFlipped);
+
+  // 翻转光影：接住光线的暗部一闪；快速连翻时先清掉上一次的计时器，避免动画卡住
+  clearTimeout(fcFlipShadeTimer);
+  card.classList.remove('flipping');
+  void card.offsetWidth; // 强制 reflow，确保重新加 class 能重触发 animation
+  card.classList.add('flipping');
+  fcFlipShadeTimer = setTimeout(()=> card.classList.remove('flipping'), 480);
+
   if(fcFlipped){
     // 翻到背面：280ms 后显示评级按钮
     setTimeout(()=> ratings.classList.add('show'), 280);
@@ -468,32 +482,62 @@ function closeFcAll(){
   if(fcMode === 'deck') openVocabPanel();
 }
 
-// ── Card swipe gesture
+// ── Card swipe gesture（Pointer Events：触屏 + 桌面鼠标统一处理）
 // 拖拽位移施加在 .fc-scene 上，card 本身只做 rotateY 翻转，互不干扰
 (()=>{
   const card = document.getElementById('fc-card');
-  let sx=0, sy=0, dx=0, moving=false;
+  let sx=0, sy=0, dx=0, moving=false, dragging=false, downTarget=null, pid=null;
 
-  card.addEventListener('touchstart', e=>{
-    sx=e.touches[0].clientX; sy=e.touches[0].clientY;
-    dx=0; moving=false;
+  // 拖动判定提示：跟手写入 --sw 与方向类；只在已翻面（会真的评分）时才给承诺
+  function updateSwipeHint(scn){
+    if(fcFlipped){
+      const r = Math.min(1, Math.abs(dx)/100);
+      scn.style.setProperty('--sw', r);
+      scn.classList.toggle('sw-right', dx>0);
+      scn.classList.toggle('sw-left', dx<0);
+    } else {
+      scn.style.setProperty('--sw', 0);
+      scn.classList.remove('sw-right','sw-left');
+    }
+  }
+  function clearSwipeHint(scn){
+    scn.style.setProperty('--sw', 0);
+    scn.classList.remove('sw-right','sw-left');
+  }
+
+  card.addEventListener('pointerdown', e=>{
+    if(e.pointerType==='mouse' && e.button!==0) return; // 只响应左键
+    sx=e.clientX; sy=e.clientY;
+    dx=0; moving=false; dragging=true;
+    downTarget=e.target; pid=e.pointerId;
+    // 注意：这里不能 setPointerCapture —— 一旦捕获，后续 pointer 事件连同 click
+    // 都会重定向到卡片本身，卡上的发音/收藏按钮既收不到点击、又会被误判成"点卡片翻转"。
+    // 捕获推迟到 pointermove 里真正判定为拖动之后再做。
     card.closest('.fc-scene').style.transition='none';
-  },{passive:true});
+  });
 
-  card.addEventListener('touchmove', e=>{
-    dx=e.touches[0].clientX-sx;
-    const dy=e.touches[0].clientY-sy;
+  card.addEventListener('pointermove', e=>{
+    if(!dragging) return;
+    dx=e.clientX-sx;
+    const dy=e.clientY-sy;
     if(Math.abs(dx)<Math.abs(dy) && !moving) return;
     if(Math.abs(dx)<10 && !moving) return;
-    moving=true;
-    card.closest('.fc-scene').style.transform=`translateX(${dx}px) rotate(${dx*0.03}deg)`;
-  },{passive:true});
-
-  card.addEventListener('touchend', (e)=>{
+    // 确认是拖动了才抢占指针：此后手指/鼠标滑出卡片也能继续收到事件，
+    // 而单纯点按（never moving）全程不捕获，按钮的 click 照常派发
+    if(!moving){ moving=true; try{ card.setPointerCapture(pid); }catch(err){} }
     const scn = card.closest('.fc-scene');
+    scn.style.transform=`translateX(${dx}px) rotate(${dx*0.03}deg)`;
+    updateSwipeHint(scn);
+  });
+
+  function endDrag(e){
+    const scn = card.closest('.fc-scene');
+    dragging=false;
+    if(moving){ try{ card.releasePointerCapture(pid); }catch(err){} }
     if(!moving){
       scn.style.transition='';
-      if(e.target.closest('button')) return;
+      // 用按下时的原始落点判断，而不是 e.target：结束事件的 target 可能已被指针捕获改写
+      if(downTarget && downTarget.closest('button')) return;
       flipFcCard(); return;
     }
     if(Math.abs(dx)>100 && fcFlipped){
@@ -502,6 +546,7 @@ function closeFcAll(){
       scn.style.transition='transform .25s ease, opacity .25s ease';
       scn.style.transform =`translateX(${dir*110}%)`;
       scn.style.opacity   ='0';
+      clearSwipeHint(scn);
       const rating = dx>0?'good':'again';
       setTimeout(()=>{
         scn.style.transition='none';
@@ -510,17 +555,24 @@ function closeFcAll(){
         rateFcCard(rating);
       }, 270);
     } else {
-      // 回弹：scene 归位即可，card 的 rotateY 由 CSS class 全程控制，无需修改
-      scn.style.transition='transform .35s cubic-bezier(.34,1.4,.64,1)';
-      scn.style.transform='';
-      setTimeout(()=>{ scn.style.transition=''; }, 380);
+      bounceBack(scn);
     }
-  },{passive:true});
+  }
 
-  // 桌面端点击翻转（排除按钮）
-  card.addEventListener('click', (e)=>{
-    if(e.target.closest('button')) return;
-    if(window.matchMedia('(pointer:fine)').matches) flipFcCard();
+  // 回弹：scene 归位即可，card 的 rotateY 由 CSS class 全程控制，无需修改；同时清掉拖动提示
+  function bounceBack(scn){
+    scn.style.transition='transform .35s cubic-bezier(.34,1.4,.64,1)';
+    scn.style.transform='';
+    clearSwipeHint(scn);
+    setTimeout(()=>{ scn.style.transition=''; }, 380);
+  }
+
+  card.addEventListener('pointerup', endDrag);
+
+  // 指针被系统中断（如来电、切窗口）：一律按回弹处理，不触发翻转/评分
+  card.addEventListener('pointercancel', ()=>{
+    dragging=false;
+    bounceBack(card.closest('.fc-scene'));
   });
 })();
 
