@@ -15,7 +15,7 @@ const FC_CACHE_MAX = 200;
 let fcDeck      = [];
 let fcIdx       = 0;
 let fcFlipped   = false;
-let fcCounts    = { again:0, hard:0, good:0, easy:0 };
+let fcCounts    = { again:0, hard:0, good:0 };
 let fcTotal     = 0;
 let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排）
 let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
@@ -181,7 +181,7 @@ function openFlashcard(){
 
   fcDeck = [...shuffle(due), ...shuffle(newW), ...shuffle(later)];
   fcIdx  = 0; fcFlipped = false;
-  fcCounts = {again:0,hard:0,good:0,easy:0};
+  fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
   fcOrigTotal = fcDeck.length;
   fcDoneCount = 0;
@@ -255,7 +255,6 @@ async function showFcCard(instant){
   document.querySelector('#fc-again .fc-rbtn-time').textContent = fmtInterval(_pv.again);
   document.querySelector('#fc-hard .fc-rbtn-time').textContent  = fmtInterval(_pv.hard);
   document.querySelector('#fc-good .fc-rbtn-time').textContent  = fmtInterval(_pv.good);
-  document.querySelector('#fc-easy .fc-rbtn-time').textContent  = fmtInterval(_pv.easy);
 
   // Fade in — opacity only; transform is 100% owned by CSS class
   card.style.transition = 'opacity .22s ease';
@@ -319,8 +318,17 @@ function applyFcCache(word, data, skipPh=false){
     badge.textContent = data.pos;
     document.getElementById('fc-badge-row').appendChild(badge);
   }
-  if(data.enDef)
-    document.getElementById('fc-en-def').textContent = data.enDef;
+  if(data.enDef){
+    // 该词没有中文释义时，addVocab 会把英文定义存进 v.meaning 兜底，
+    // 这里再把同一段 data.enDef 填进英文解释区就会两遍显示完全相同的英文——
+    // 归一化（去首尾空白、转小写、压缩连续空格）后比对，撞了就不重复填，直接留空
+    const _norm = s => s.trim().toLowerCase().replace(/\s+/g, ' ');
+    const _meaningTxt = document.getElementById('fc-meaning').textContent;
+    if(_norm(data.enDef) === _norm(_meaningTxt))
+      document.getElementById('fc-en-def').textContent = '';
+    else
+      document.getElementById('fc-en-def').textContent = data.enDef;
+  }
 
   // 自动播放：等动画完成后触发（至少距卡片出现 320ms）
   if(fcAutoPlay){
@@ -435,8 +443,8 @@ function rateFcCard(rating){
     fb.classList.add('show');
   } else {
     const fb = document.getElementById('fc-fb-back');
-    fb.textContent = rating==='easy'?'★':'✓';
-    fb.style.background = rating==='easy'?'rgba(37,99,235,.1)':'rgba(5,150,105,.1)';
+    fb.textContent = '✓';
+    fb.style.background = 'rgba(5,150,105,.1)';
     fb.classList.add('show');
   }
 
@@ -449,8 +457,8 @@ function showFcResult(){
   const res = document.getElementById('fc-result');
   res.style.display = 'flex'; res.classList.add('open');
 
-  const total = fcCounts.again+fcCounts.hard+fcCounts.good+fcCounts.easy;
-  const known = fcCounts.good+fcCounts.easy;
+  const total = fcCounts.again+fcCounts.hard+fcCounts.good;
+  const known = fcCounts.good;
   const pct   = total ? Math.round(known/total*100) : 0;
 
   const emoji = pct>=80?'🎉':pct>=50?'💪':'📚';
@@ -472,10 +480,6 @@ function showFcResult(){
     <div class="fc-stat" style="background:#D1FAE5">
       <div class="fc-stat-n" style="color:#059669">${fcCounts.good}</div>
       <div class="fc-stat-l" style="color:#059669">认识</div>
-    </div>
-    <div class="fc-stat" style="background:#DBEAFE">
-      <div class="fc-stat-n" style="color:#2563EB">${fcCounts.easy}</div>
-      <div class="fc-stat-l" style="color:#2563EB">很简单</div>
     </div>`;
 }
 
@@ -613,7 +617,6 @@ document.getElementById('fc-exit').addEventListener('click', closeFcAll);
 document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
 document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
 document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('good'));
-document.getElementById('fc-easy') .addEventListener('click', ()=>rateFcCard('easy'));
 
 function playFcAudio(btn){
   clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
@@ -673,7 +676,6 @@ document.addEventListener('keydown', e=>{
   if(e.key==='1') rateFcCard('again');
   if(e.key==='2') rateFcCard('hard');
   if(e.key==='3') rateFcCard('good');
-  if(e.key==='4') rateFcCard('easy');
   if(e.key==='Escape') closeFcAll();
 });
 
@@ -764,7 +766,7 @@ function startDeckSession(){
 
   fcDeck  = pool.slice(0, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
   fcIdx   = 0; fcFlipped = false;
-  fcCounts = {again:0,hard:0,good:0,easy:0};
+  fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
   fcOrigTotal = fcDeck.length;
   fcDoneCount = 0;

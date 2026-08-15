@@ -1533,6 +1533,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   display:none;
   /* 不把滚动链传给视口：否则在闪卡里下拉会触发浏览器的下拉刷新，页面一刷新就回到首页 */
   overscroll-behavior:contain;
+  /* 闪卡内没有任何需要滚动的东西，禁掉纵向滑动避免误触发页面滚动/下拉刷新 */
+  touch-action:none;
+  overflow:hidden;
 }
 #flashcard.open{display:flex;animation:fadeIn .2s ease;}
 
@@ -1575,24 +1578,27 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
    下方留一大截空白够不着评分条） */
 .fc-area{
   flex:1;
-  display:flex;align-items:flex-end;justify-content:center;
-  padding:20px 20px 38px;   /* 底部留 38px：给卡组虚影露出的 8/22px 留出空间，且不贴死评分条 */
+  /* 改为 stretch：卡片撑满可用高度，不再贴底浮空 */
+  display:flex;align-items:stretch;justify-content:center;
+  padding:14px 16px max(20px,env(safe-area-inset-bottom));
   overflow:hidden;
   touch-action:pan-y;
   position:relative;
 }
 .fc-scene{
-  width:100%;max-width:400px;
+  width:100%;max-width:420px;
   perspective:1200px;
   position:relative;z-index:1;
 }
 
 /* ── 卡组堆叠：卡片后垫两张虚影，制造"还有一沓"的体感 ── */
-/* 卡片改贴底对齐后虚影同步改为贴底，bottom 值必须和 .fc-area 的 padding-bottom 一致 */
+/* 卡片改为填满可用高度后，虚影盒子同步改为跟随 .fc-area 的上下 padding，
+   而不再是固定像素高度 */
 .fc-stack{
-  position:absolute; left:50%; bottom:38px; top:auto;
-  transform:translateX(-50%);
-  width:calc(100% - 40px); max-width:400px; height:min(470px,56vh);
+  position:absolute; left:50%; transform:translateX(-50%);
+  top:14px; bottom:max(20px,env(safe-area-inset-bottom));   /* 与 .fc-area 的上下 padding 一致 */
+  height:auto;
+  width:calc(100% - 32px); max-width:420px;
   pointer-events:none; z-index:0;
 }
 .fc-stack i{
@@ -1613,9 +1619,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
      判定为滚动手势、发出 pointercancel 把横滑掐断（卡面本身没有可滚动内容） */
   touch-action:none;
   width:100%;
-  /* 卡片贴底 + 内容垂直居中，把「释义→评分按钮」的跨度从 377px 压到约 250px；
-     高度不宜再压：卡片过矮会在头部下方留出大片空白，屏幕显得没填满 */
-  height:min(470px,56vh);
+  /* 卡片改为填满 .fc-scene 的整个可用高度（由 .fc-area 的 stretch 撑出），
+     不再限死具体像素/视口比例，充分利用屏幕空间 */
+  height:100%;
   position:relative;
   transform-style:preserve-3d;
   transition:transform .48s cubic-bezier(.35,0,.25,1);
@@ -1782,8 +1788,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* ── rating buttons */
 .fc-ratings{
   flex-shrink:0;
-  padding:10px 12px max(18px,env(safe-area-inset-bottom));
-  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;
+  /* 现在挪进了卡片背面，底部安全区已由 .fc-area 的 padding 兜底，这里只留常规内边距 */
+  padding:8px 14px 16px;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
   opacity:0;pointer-events:none;transform:translateY(14px);
   transition:opacity .3s ease,transform .3s ease;
 }
@@ -1825,16 +1832,10 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   box-shadow:0 3px 12px rgba(5,150,105,.16);
 }
 /* Easy — blue */
-.fc-r-easy{
-  background:linear-gradient(160deg,#DBEAFE 0%,#BFDBFE 100%);
-  color:#2563EB;
-  box-shadow:0 3px 12px rgba(37,99,235,.18);
-}
 /* night */
 .night .fc-r-again{background:linear-gradient(160deg,#7F1D1D,#991B1B);color:#FCA5A5;box-shadow:0 3px 12px rgba(220,38,38,.25);}
 .night .fc-r-hard {background:linear-gradient(160deg,#78350F,#92400E);color:#FDE68A;box-shadow:0 3px 12px rgba(217,119,6,.22);}
 .night .fc-r-good {background:linear-gradient(160deg,#064E3B,#065F46);color:#6EE7B7;box-shadow:0 3px 12px rgba(5,150,105,.22);}
-.night .fc-r-easy {background:linear-gradient(160deg,#1E3A8A,#1D4ED8);color:#93C5FD;box-shadow:0 3px 12px rgba(37,99,235,.28);}
 
 /* ── feedback overlays */
 .fc-feedback{
@@ -1885,7 +1886,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .fc-res-sub{font-size:14px;color:var(--text-3);margin-bottom:24px;}
 .fc-res-stats{
-  display:grid;grid-template-columns:repeat(4,1fr);
+  display:grid;grid-template-columns:repeat(3,1fr);
   gap:8px;margin-bottom:28px;
 }
 .fc-stat{
