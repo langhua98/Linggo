@@ -2464,9 +2464,11 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   cursor:pointer;
   transition:border-color .15s,box-shadow .15s;
 }
+/* 选中态：只靠边框太弱，补一层主色底，扫一眼就知道选的是哪本 */
 .vp-deck.on{
   border-color:var(--accent);
-  box-shadow:0 0 0 3px var(--accent-2);
+  background:var(--accent-2);
+  box-shadow:0 0 0 3px var(--accent-2), 0 4px 14px rgba(37,99,235,.10);
 }
 .vp-deck.vp-deck-soon{
   opacity:.5;pointer-events:none;
@@ -2478,6 +2480,16 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   color:#fff;font-weight:700;font-size:13px;
   display:flex;align-items:center;justify-content:center;
   flex-shrink:0;
+  /* 分层外阴影 + 上边内高光，和 .fc-face / .wp-seg-main 同一套厚度语言 */
+  box-shadow:0 1px 2px rgba(0,0,0,.08),
+             0 4px 10px rgba(0,0,0,.10),
+             inset 0 1px 0 rgba(255,255,255,.35);
+}
+/* 夜间：外阴影加深压住暗底，内高光收弱免得发白 */
+.night .vp-dk-badge{
+  box-shadow:0 1px 2px rgba(0,0,0,.28),
+             0 4px 12px rgba(0,0,0,.34),
+             inset 0 1px 0 rgba(255,255,255,.16);
 }
 .vp-badge-6{
   background:linear-gradient(135deg,#7C3AED,#A78BFA);
@@ -2495,11 +2507,20 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .vp-dk-info{flex:1;min-width:0;}
 .vp-dk-name{font-weight:600;font-size:15px;color:var(--text);margin-bottom:4px;}
 .vp-dk-sub{font-size:12px;color:var(--text-2);}
+/* 裸「✓」字符太细太飘，改成实心圆徽章，选中时弹出 */
 .vp-dk-check{
-  color:var(--accent);font-size:20px;
-  opacity:0;transition:opacity .15s;
+  width:24px;height:24px;border-radius:50%;
+  background:var(--accent);color:#fff;
+  font-size:14px;line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;
+  opacity:0;
 }
-.vp-deck.on .vp-dk-check{opacity:1;}
+.vp-deck.on .vp-dk-check{ opacity:1; }
+@media (prefers-reduced-motion: no-preference){
+  .vp-dk-check{ transform:scale(.6); transition:opacity .18s, transform .18s cubic-bezier(.34,1.5,.64,1); }
+  .vp-deck.on .vp-dk-check{ transform:scale(1); }
+}
 .vp-session{
   padding:0 20px 20px;
 }
@@ -2511,15 +2532,28 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   display:flex;gap:10px;
 }
 .vp-nb{
-  flex:1;padding:10px 0;
-  border:2px solid var(--border);border-radius:var(--r-sm);
-  background:var(--surface);color:var(--text);
-  font-size:14px;font-weight:600;cursor:pointer;
-  transition:border-color .15s,background .15s,color .15s;
+  flex:1;padding:12px 0;
+  border:1.5px solid var(--border);border-radius:12px;
+  background:var(--surface);color:var(--text-2);
+  font-size:15px;font-weight:700;cursor:pointer;
+  box-shadow:var(--shadow-sm);
+  -webkit-tap-highlight-color:transparent;
+  transition:background .18s, color .18s, border-color .18s, box-shadow .18s, transform .12s;
 }
+/* 选中：实心渐变 + 主色投影，和全站主按钮同一套语言，一眼能看出选了哪个 */
 .vp-nb.on{
-  border-color:var(--accent);background:var(--accent-2);color:var(--accent);
+  border-color:transparent;
+  background:linear-gradient(135deg,#3b82f6,var(--accent));
+  color:#fff;
+  box-shadow:0 4px 14px rgba(37,99,235,.30);
 }
+/* 夜间 --accent 本身是亮蓝，渐变起点 #3b82f6 在暗底上偏沉，整体提亮一档 */
+.night .vp-nb.on{
+  background:linear-gradient(135deg,#60A5FA,#3B82F6);
+  box-shadow:0 4px 14px rgba(96,165,250,.28);
+}
+/* 按压反馈属功能性，不包 reduced-motion */
+.vp-nb:active{ transform:scale(.96); }
 .vp-start-btn{
   display:block;
   margin:0 16px 32px;
@@ -2559,12 +2593,14 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 
 /* ── DECK PROGRESS BAR */
 .vp-dk-bar{
-  height:4px;border-radius:2px;
-  background:var(--border);
+  /* 新用户三个词库全是 0%，太细的轨道就是三条灰线；加粗并换暖一点的轨道色 */
+  height:6px;border-radius:3px;
+  background:rgba(0,0,0,.06);
   margin-top:8px;overflow:hidden;
 }
+.night .vp-dk-bar{ background:rgba(255,255,255,.08); }
 .vp-dk-bar-fill{
-  height:100%;border-radius:2px;
+  height:100%;border-radius:3px;
   background:linear-gradient(90deg,#2563EB,#60A5FA);
   width:0%;
   transition:width .7s cubic-bezier(.4,0,.2,1);

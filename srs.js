@@ -94,7 +94,7 @@ function fmtInterval(ms){
 // ── Vocab deck progress
 let vpProgress = {};  // word → { nextReview, correct, wrong }
 let vpDeck     = 'cet4';
-let vpCount    = 10;
+let vpCount    = 12;   // 与生词本 fcSize 的默认值保持一致
 
 function loadVpProgress(deck){
   // 同上：一次性迁移到 FSRS，用 vpVer 标记避免每次加载都重置。
