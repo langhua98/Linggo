@@ -1773,7 +1773,7 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 
 /* ── 播放动效：合成中转圈，出声后逐音节点亮 ── */
-.fcw-syl{ transition:color .12s ease, text-shadow .12s ease; }
+.fcw-syl{ transition:color .06s ease, text-shadow .06s ease; }
 .fcw-syl.lit{ color:var(--accent); text-shadow:0 0 18px rgba(37,99,235,.22); }
 .night .fcw-syl.lit{ text-shadow:0 0 20px rgba(96,165,250,.3); }
 /* 合成等待：慢速呼吸，和"正在发声"的快脉冲明确区分 */

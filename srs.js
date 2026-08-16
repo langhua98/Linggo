@@ -392,9 +392,43 @@ function _fcRenderWord(el, word){
   }
 }
 
+// ── 测量音频的真实发声区间 ──
+// 服务器报的 word 时间戳终点偏晚（实测 serendipity 报 1.4s，实际 1.155s 就读完），
+// 而整段时长里有一半以上是首尾静音（实测前导 363ms、尾部 520ms，占全长 53%）。
+// 所以别信时间戳，直接解码波形自己量首尾非静音位置。
+// 注意：这里只解码分析，播放仍然走 <audio>——之前 Web Audio 接管播放在 iOS 上静音过，
+// 那套方案已经拆除，这个 AudioContext 绝不 resume、绝不连 destination。
+const _FC_SPAN = new Map();      // src URL → {t0, t1}
+let _fcDecodeCtx = null;
+async function _fcMeasureSpan(src){
+  if(_FC_SPAN.has(src)) return _FC_SPAN.get(src);
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return null;
+    if(!_fcDecodeCtx) _fcDecodeCtx = new Ctx();      // 只解码，不 resume、不连 destination
+    const buf = await fetch(src).then(r => r.arrayBuffer());
+    const audio = await _fcDecodeCtx.decodeAudioData(buf);
+    const ch = audio.getChannelData(0);
+    let peak = 0;
+    for(let i = 0; i < ch.length; i++){ const v = Math.abs(ch[i]); if(v > peak) peak = v; }
+    if(peak <= 0) return null;
+    const thr = peak * 0.02;                          // 2% 峰值阈值：与实测所用一致
+    let a = 0, b = ch.length - 1;
+    while(a < ch.length && Math.abs(ch[a]) < thr) a++;
+    while(b > a && Math.abs(ch[b]) < thr) b--;
+    if(b <= a) return null;
+    const span = { t0: a / audio.sampleRate, t1: b / audio.sampleRate };
+    _FC_SPAN.set(src, span);
+    if(_FC_SPAN.size > 60) _FC_SPAN.delete(_FC_SPAN.keys().next().value);   // 简单上限
+    return span;
+  }catch(e){ return null; }
+}
+
 // ── 播放动效：合成中 = 等待态，出声后按播放进度逐字扫亮 ──
 let _fcHlRaf = null;
+let _fcHlSeq = 0;                // 代际标记：停止/换词后，迟到的解码结果不得再写回
 function _fcStopHl(){
+  _fcHlSeq++;
   if(_fcHlRaf) cancelAnimationFrame(_fcHlRaf);
   _fcHlRaf = null;
   document.querySelectorAll('#fc-word .fcw-syl.lit').forEach(e => e.classList.remove('lit'));
@@ -404,13 +438,26 @@ function _fcStartHl(wordEl, audioEl, word){
   if(matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const syls = [...wordEl.querySelectorAll('.fcw-syl')];
   if(!syls.length) return;
-  // 发声区间：优先用 Kokoro 返回的真实起止（不含首尾静音），否则退回整段时长
+  const mySeq = _fcHlSeq;        // _fcStopHl 刚自增过，这一轮扫亮认这个代际
+  // 发声区间：先拿估计值立刻起跑（等解码会让开头僵住），
+  // 优先 Kokoro 起点、终点夹到整段时长内；都没有就整段时长
   let t0 = 0, t1 = 0;
   try{
     const w = (typeof KOK_WORDS !== 'undefined' && typeof _kokKey === 'function')
       ? KOK_WORDS.get(_kokKey(word)) : null;
-    if(w && w.length){ t0 = +w[0][1] || 0; t1 = +w[0][2] || 0; }
+    if(w && w.length){
+      t0 = +w[0][1] || 0; t1 = +w[0][2] || 0;
+      const d = +audioEl.duration;
+      if(d > 0 && t1 > d) t1 = d;
+    }
   }catch(e){}
+  // 解码测量是异步的（通常 10ms 内回来），量到真实区间就地替换 t0/t1，
+  // 下一帧起立刻按准确区间扫；期间被取消（代际变了）则整个结果丢弃
+  const src = audioEl.currentSrc || audioEl.src;
+  if(src) _fcMeasureSpan(src).then(sp => {
+    if(!sp || mySeq !== _fcHlSeq) return;
+    t0 = sp.t0; t1 = sp.t1;
+  }).catch(() => {});
   // 按音节字符数分配权重，长音节占更长时间，比均分自然
   const lens  = syls.map(s => Math.max(1, s.textContent.length));
   const total = lens.reduce((a, b) => a + b, 0);
