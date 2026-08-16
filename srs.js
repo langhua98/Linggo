@@ -21,6 +21,9 @@ let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排
 let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
 let fcSRS       = {};  // word → { nextReview, interval }
 let fcMode      = 'book'; // 'book' | 'deck'
+// book 模式是从哪儿进来的，决定退出闪卡后回到哪一屏：
+// 'voc' = 生词本面板（#voc），'panel' = 背单词页（#vocab-panel 的「我的生词」）
+let fcOrigin    = 'voc';
 let fcHistory   = []; // 撤销栈：rateFcCard 打分前的完整快照，最多存 20 条，超出丢弃最旧的
 // 本轮抽词数量：生词本背诵一次抽多少词，0 = 全部；读到 NaN（脏值/未设置）就回落 12
 let fcSize      = parseInt(localStorage.getItem('fcSize') ?? '12', 10);
@@ -172,7 +175,8 @@ async function pushFcSRSWord(word){
 }
 window._syncFcSRS = syncFcSRSFromSupabase;
 
-function openFlashcard(){
+function openFlashcard(origin){
+  fcOrigin = origin || 'voc';
   if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
   loadSRS();
   closeVoc();
@@ -198,6 +202,8 @@ function openFlashcard(){
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
   fc.classList.add('open');
   document.getElementById('fc-title').textContent = `生词本背诵 · ${fcTotal}词`;
+  // 结果页返回按钮的文案跟着来源走（startDeckSession 会把它改成「返回词库」，这里改回来）
+  document.getElementById('fc-res-back').textContent = fcOrigin === 'panel' ? '返回词库' : '返回生词本';
   showFcCard(true);   // 预取由 showFcCard 内部统一发起，这里不用重复调
 }
 
@@ -691,7 +697,8 @@ function closeFcAll(){
   document.getElementById('flashcard').style.display = 'none';
   document.getElementById('fc-result').classList.remove('open');
   document.getElementById('fc-result').style.display = 'none';
-  if(fcMode === 'deck') openVocabPanel();
+  // 词库练习、以及从背单词页进来的「我的生词」，退出后都回背单词页
+  if(fcMode === 'deck' || fcOrigin === 'panel') openVocabPanel();
 }
 
 // ── Card swipe gesture（Pointer Events：触屏 + 桌面鼠标统一处理）
@@ -845,7 +852,8 @@ function closeFcAll(){
 })();
 
 // ── Button listeners
-document.getElementById('voc-flash-btn').addEventListener('click', openFlashcard);
+// 注意：必须包一层箭头函数 —— 直接传 openFlashcard 会把 Event 对象当成 origin 参数
+document.getElementById('voc-flash-btn').addEventListener('click', ()=>openFlashcard('voc'));
 
 // 本轮抽词数量：0 = 全部
 document.querySelectorAll('#voc-size-row .vp-nb').forEach(btn=>{
@@ -912,11 +920,12 @@ document.getElementById('fc-res-again').addEventListener('click', ()=>{
   document.getElementById('fc-result').classList.remove('open');
   document.getElementById('fc-result').style.display='none';
   if(fcMode === 'deck') startDeckSession();
-  else openFlashcard();
+  else openFlashcard(fcOrigin);   // 保持来源，不传参会被重置成 'voc'
 });
 document.getElementById('fc-res-back').addEventListener('click', ()=>{
   closeFcAll();
-  if(fcMode !== 'deck'){
+  // 只有从生词本面板进来的才弹回生词本；'panel' 来源已由 closeFcAll 回到背单词页
+  if(fcMode !== 'deck' && fcOrigin === 'voc'){
     document.getElementById('voc').classList.add('open');
     document.getElementById('overlay').classList.add('vis');
   }
@@ -938,7 +947,9 @@ document.addEventListener('keydown', e=>{
 // ═══════════════════════════════════════════
 function openVocabPanel(){
   loadVpProgress(vpDeck);
+  loadSRS();          // 「我的生词」那一行的统计要读最新的 fcSRS
   updateVpStats();
+  updateMineRow();
   updateStreakUI();
   document.getElementById('vocab-panel').style.display = 'block';
   document.getElementById('landing').style.display = 'none';
@@ -1008,6 +1019,37 @@ function updateVpStats(){
   });
 }
 
+// ── 「我的生词」那一行：显示条件 + 统计
+// 显示条件：已登录（生词可能还没同步下来，也该看到入口）或本地已有生词。
+// 两者都没有才隐藏 —— 空空如也时不必占一行。
+function updateMineRow(){
+  const row = document.getElementById('vp-deck-mine');
+  if(!row) return;
+  const show = !!(typeof currentUser !== 'undefined' && currentUser) || S.vocab.length > 0;
+  row.style.display = show ? '' : 'none';
+  if(!show){
+    // 隐藏时若正好选中它，退回默认词库，免得开始按钮走进一条看不见的路
+    if(vpDeck === 'mine'){
+      vpDeck = 'cet4';
+      document.querySelectorAll('.vp-deck').forEach(d=>d.classList.toggle('on', d.dataset.deck==='cet4'));
+      loadVpProgress(vpDeck);
+      updateVpStats();
+    }
+    return;
+  }
+  const now      = Date.now();
+  const total    = S.vocab.length;
+  const dueCount = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview <= now).length;
+  const newCount = S.vocab.filter(v => !fcSRS[v.word]).length;
+  const pct      = total > 0 ? Math.round((total - newCount) / total * 100) : 0;
+  const el = document.getElementById('mine-progress');
+  if(el) el.innerHTML =
+    `新词 ${newCount} · 待复习 ${dueCount}<br>` +
+    `<span style="color:#D97706;font-weight:700">共 ${total} 词</span>`;
+  const bar = document.getElementById('mine-bar');
+  if(bar) bar.style.width = pct + '%';
+}
+
 function startDeckSession(){
   _vpSyncWarnShown = false;
   const wordList = getDeckWordList(vpDeck);
@@ -1040,8 +1082,19 @@ function startDeckSession(){
 
 // ── Vocab panel event listeners
 document.getElementById('deck-open-btn').addEventListener('click', openVocabPanel);
+// 首页「🃏 闪卡背词」卡片也进背单词页
+document.getElementById('feat-flash')?.addEventListener('click', openVocabPanel);
 document.getElementById('vp-close').addEventListener('click', closeVocabPanel);
-document.getElementById('vp-start').addEventListener('click', startDeckSession);
+document.getElementById('vp-start').addEventListener('click', ()=>{
+  if(vpDeck === 'mine'){
+    // 我的生词走生词本闪卡那条路（FSRS + fcSize），不是词库题库
+    if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
+    document.getElementById('vocab-panel').style.display = 'none';
+    openFlashcard('panel');   // 记住是从背单词页进来的，退出时才回得对
+  } else {
+    startDeckSession();
+  }
+});
 
 // Deck selector
 document.querySelectorAll('.vp-deck').forEach(el=>{
@@ -1049,10 +1102,25 @@ document.querySelectorAll('.vp-deck').forEach(el=>{
     document.querySelectorAll('.vp-deck').forEach(d=>d.classList.remove('on'));
     el.classList.add('on');
     vpDeck = el.dataset.deck;
-    loadVpProgress(vpDeck);
-    updateVpStats();
+    if(vpDeck === 'mine'){
+      // 切到「我的生词」：把当前高亮的数量同步进 fcSize（生词本闪卡用的是它，不是 vpCount）。
+      // 切走时不动 fcSize，免得覆盖生词本面板里选好的值。
+      syncMineSize();
+      updateMineRow();
+    } else {
+      loadVpProgress(vpDeck);
+      updateVpStats();
+    }
   });
 });
+
+// 把 .vp-session-btns 当前高亮的数量写进 fcSize
+function syncMineSize(){
+  const on = document.querySelector('.vp-session-btns .vp-nb.on');
+  if(!on) return;
+  fcSize = parseInt(on.dataset.n, 10) || 0;
+  localStorage.setItem('fcSize', String(fcSize));
+}
 
 // Session count selector
 // 注意：必须限定在 .vp-session-btns 容器内 —— 生词本背诵的「本轮」选择器
@@ -1062,6 +1130,8 @@ document.querySelectorAll('.vp-session-btns .vp-nb').forEach(btn=>{
     document.querySelectorAll('.vp-session-btns .vp-nb').forEach(b=>b.classList.remove('on'));
     btn.classList.add('on');
     vpCount = parseInt(btn.dataset.n, 10);
+    // 选中「我的生词」时，这个数量作用在 fcSize 上（生词本闪卡按 fcSize 抽词）
+    if(vpDeck === 'mine') syncMineSize();
   });
 });
 

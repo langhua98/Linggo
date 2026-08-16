@@ -405,7 +405,7 @@
       <div class="feat-title">点词查义</div>
       <div class="feat-desc">音标例句</div>
     </div>
-    <div class="feat">
+    <div class="feat" id="feat-flash" role="button">
       <div class="feat-icon-wrap" style="background:#FAF5FF"><span>🃏</span></div>
       <div class="feat-title">闪卡背词</div>
       <div class="feat-desc">SRS复习</div>
@@ -714,6 +714,16 @@
     </div>
   </div>
   <div class="vp-decks">
+    <!-- 我的生词：走生词本闪卡那条路（FSRS），默认隐藏，由 updateMineRow() 决定是否显示 -->
+    <div class="vp-deck vp-deck-mine" data-deck="mine" id="vp-deck-mine" style="display:none">
+      <div class="vp-dk-badge vp-badge-mine">生词</div>
+      <div class="vp-dk-info">
+        <div class="vp-dk-name">我的生词</div>
+        <div class="vp-dk-sub" id="mine-progress">—</div>
+        <div class="vp-dk-bar"><div class="vp-dk-bar-fill" id="mine-bar"></div></div>
+      </div>
+      <div class="vp-dk-check">✓</div>
+    </div>
     <div class="vp-deck on" data-deck="cet4">
       <div class="vp-dk-badge">CET-4</div>
       <div class="vp-dk-info">
