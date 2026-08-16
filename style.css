@@ -1858,6 +1858,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* 三档文案（← 不认识 · 认识 → · ↑ 较难）比两档长，窄屏一行放不下就缩字号并禁止换行 */
 @media(max-width:390px){
   .fc-swipe-tip{ font-size:12px; white-space:nowrap; }
+  /* 正面提示同理：它夹在星标与发音按钮之间，两侧各去掉 52px，
+     窄屏下 13px 的「轻点看释义 · 滑动直接评分」会折行，缩到 12px 并禁止换行 */
+  .fc-flip-tip{ font-size:12px; white-space:nowrap; }
 }
 
 /* ── rating buttons */

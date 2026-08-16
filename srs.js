@@ -521,7 +521,7 @@ function flipFcCard(){
   fcFlipShadeTimer = setTimeout(()=> card.classList.remove('flipping'), 480);
 
   if(fcFlipped){
-    // 翻到背面：280ms 后显示评级按钮 + 滑动提示（滑动评分只在背面有效）
+    // 翻到背面：280ms 后显示评级按钮 + 滑动提示（正面也能滑动评分，正面的提示写在 .fc-flip-tip）
     setTimeout(()=> {
       ratings.classList.add('show');
       document.getElementById('fc-swipe-tip')?.classList.toggle('show', true);
@@ -534,7 +534,10 @@ function flipFcCard(){
 }
 
 function rateFcCard(rating){
-  if(!fcFlipped) return;
+  // 这里原来有 `if(!fcFlipped) return;` 的守卫，现已删除：正面也允许直接滑动评分
+  //（一眼就认识的词不该被强制翻面）。放开不会带来误触发 —— 三个评分按钮本身长在
+  // 背面，未翻面时 .fc-ratings 是 opacity:0 + pointer-events:none，既看不见也点不到；
+  // 因此实际受益的只有「正面滑动」和键盘 1/2/3 快捷键。
   const v = fcDeck[fcIdx];
 
   // 撤销用快照：必须在任何状态被改动之前抓（因此放在 markStudiedToday 之前），
@@ -594,15 +597,16 @@ function rateFcCard(rating){
   // Feedback animation
   const isBad = rating === 'again' || rating === 'hard';
   const scene = document.getElementById('fc-card').closest('.fc-scene');
+  // ✓/✗ 反馈必须打在「当前朝上的那一面」：两个面都是 backface-visibility:hidden，
+  // 正面评分时若仍写背面的 #fc-fb-back，动画会被藏在卡背后，用户什么也看不到
+  const fb = document.getElementById(fcFlipped ? 'fc-fb-back' : 'fc-fb-front');
   if(isBad){
     // Shake the scene wrapper — never touch card's own transform
     scene.classList.add('shake');
     scene.addEventListener('animationend', ()=> scene.classList.remove('shake'), {once:true});
-    const fb = document.getElementById('fc-fb-back');
     fb.textContent = '✗'; fb.style.background = 'rgba(220,38,38,.12)';
     fb.classList.add('show');
   } else {
-    const fb = document.getElementById('fc-fb-back');
     fb.textContent = '✓';
     fb.style.background = 'rgba(5,150,105,.1)';
     fb.classList.add('show');
@@ -704,19 +708,17 @@ function closeFcAll(){
     return Math.max(56, w * 0.22);
   }
 
-  // 拖动判定提示：跟手写入 --sw 与方向类；只在已翻面（会真的评分）时才给承诺
+  // 拖动判定提示：跟手写入 --sw 与方向类。戳记层 .fc-swipe-hint 挂在 .fc-scene 内、
+  // 覆盖整张卡，正反两面都能看见，所以不再区分是否已翻面 —— 正面滑动同样会真的评分，
+  // 该给的承诺就得给。唯一例外是下滑：它依然是无操作，给戳记等于给假承诺。
   function updateSwipeHint(scn){
-    if(fcFlipped){
-      const _d = axis==='y' ? dy : dx;
-      const r = Math.min(1, Math.abs(_d)/swipeDist());
-      scn.style.setProperty('--sw', r);
-      scn.classList.toggle('sw-right', axis==='x' && dx>0);
-      scn.classList.toggle('sw-left',  axis==='x' && dx<0);
-      scn.classList.toggle('sw-up',    axis==='y' && dy<0);
-    } else {
-      scn.style.setProperty('--sw', 0);
-      scn.classList.remove('sw-right','sw-left','sw-up');
-    }
+    if(axis==='y' && dy>0){ clearSwipeHint(scn); return; }
+    const _d = axis==='y' ? dy : dx;
+    const r = Math.min(1, Math.abs(_d)/swipeDist());
+    scn.style.setProperty('--sw', r);
+    scn.classList.toggle('sw-right', axis==='x' && dx>0);
+    scn.classList.toggle('sw-left',  axis==='x' && dx<0);
+    scn.classList.toggle('sw-up',    axis==='y' && dy<0);
   }
   function clearSwipeHint(scn){
     scn.style.setProperty('--sw', 0);
@@ -801,7 +803,8 @@ function closeFcAll(){
     const _far  = Math.abs(_d) > swipeDist();
     // 快速轻扫：速度够快且方向一致，即使位移不大也算数（真人最常用的手势）
     const _fast = Math.abs(_v) > 0.45 && Math.abs(_d) > 24 && Math.sign(_v) === Math.sign(_d);
-    if((_far || _fast) && fcFlipped){
+    // 正反两面都可以滑动评分（正面滑动 = 不用翻面直接给结论）
+    if(_far || _fast){
       // 滑出屏幕：横向沿原方向飞出，纵向（较难）向上飞出
       scn.style.transition='transform .25s ease, opacity .25s ease';
       if(axis==='y'){
