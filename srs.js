@@ -243,7 +243,9 @@ async function showFcCard(instant){
   document.getElementById('fc-fb-back').classList.remove('show');
 
   // Fill front
-  document.getElementById('fc-word').textContent     = v.word;
+  // 拆成音节 span，供播放时逐音节点亮；不插任何分隔字符，
+  // 保证 textContent 仍等于原单词（有 4 处代码拿它当"还是同一张卡吗"的判据）
+  _fcRenderWord(document.getElementById('fc-word'), v.word);
   document.getElementById('fc-ph-front').textContent = v.ph || '';
   document.getElementById('fc-badge-row').innerHTML  = '';
 
@@ -364,16 +366,85 @@ function applyFcCache(word, data, skipPh=false){
 }
 
 // 统一播放函数：走 script.js 的播放链（Kokoro 神经语音 → 词典 MP3 → 系统语音）
+// 按钮的播放态不在这里加，统一交给下方 setWordAudioHook 订阅驱动（两边都改会打架）
 function fireFcPlay(word, data){
   if(document.getElementById('fc-word').textContent !== word) return;
-  const btn = document.getElementById('fc-spk');
-  btn.classList.add('spk-active');
-  const done = () => btn.classList.remove('spk-active');
   if(typeof playWordAudio === 'function'){
-    playWordAudio(word, data?.audioSrc || '', 1).catch(()=>{}).finally(done);
+    playWordAudio(word, data?.audioSrc || '', 1).catch(()=>{});
   } else {
-    speakWordFc(word); setTimeout(done, 1200);   // 极端兜底：script.js 未就绪
+    speakWordFc(word);   // 极端兜底：script.js 未就绪
   }
+}
+
+// ── 正面单词的音节切分渲染 ──
+function _fcRenderWord(el, word){
+  if(!el) return;
+  el.textContent = '';
+  // 按字符切，不按音节切：一是 Hypher 给的是「断行点」不是语音音节，很多词（ephemeral、
+  // labyrinth、quixotic）根本切不开，整词一次性亮起等于没效果；二是为了不破坏
+  // textContent（有 4 处拿它当"还是同一张卡吗"的判据）我们不能插分隔符，
+  // 用户本来就看不见音节边界，逐字符反而让每个词都能平滑扫过。
+  for(const ch of word){
+    const s = document.createElement('span');
+    s.className = 'fcw-syl';
+    s.textContent = ch;
+    el.appendChild(s);
+  }
+}
+
+// ── 播放动效：合成中 = 等待态，出声后按播放进度逐字扫亮 ──
+let _fcHlRaf = null;
+function _fcStopHl(){
+  if(_fcHlRaf) cancelAnimationFrame(_fcHlRaf);
+  _fcHlRaf = null;
+  document.querySelectorAll('#fc-word .fcw-syl.lit').forEach(e => e.classList.remove('lit'));
+}
+function _fcStartHl(wordEl, audioEl, word){
+  _fcStopHl();
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const syls = [...wordEl.querySelectorAll('.fcw-syl')];
+  if(!syls.length) return;
+  // 发声区间：优先用 Kokoro 返回的真实起止（不含首尾静音），否则退回整段时长
+  let t0 = 0, t1 = 0;
+  try{
+    const w = (typeof KOK_WORDS !== 'undefined' && typeof _kokKey === 'function')
+      ? KOK_WORDS.get(_kokKey(word)) : null;
+    if(w && w.length){ t0 = +w[0][1] || 0; t1 = +w[0][2] || 0; }
+  }catch(e){}
+  // 按音节字符数分配权重，长音节占更长时间，比均分自然
+  const lens  = syls.map(s => Math.max(1, s.textContent.length));
+  const total = lens.reduce((a, b) => a + b, 0);
+  const step = () => {
+    const dur = (t1 > t0) ? (t1 - t0) : (audioEl.duration || 0);
+    const beg = (t1 > t0) ? t0 : 0;
+    if(dur > 0){
+      const p = Math.max(0, Math.min(1, (audioEl.currentTime - beg) / dur));
+      let acc = 0;
+      syls.forEach((s, i) => { acc += lens[i]; s.classList.toggle('lit', p >= (acc - lens[i]) / total); });
+    }
+    if(!audioEl.paused && !audioEl.ended) _fcHlRaf = requestAnimationFrame(step);
+    else _fcStopHl();
+  };
+  _fcHlRaf = requestAnimationFrame(step);
+}
+if(typeof setWordAudioHook === 'function'){
+  setWordAudioHook((state, word, el) => {
+    const btns = [document.getElementById('fc-spk'), document.getElementById('fc-spk-back')].filter(Boolean);
+    const wordEl = document.getElementById('fc-word');
+    // 只在闪卡开着、且事件属于当前这张卡时才响应（单词卡也走同一条播放链）
+    const active = document.getElementById('flashcard')?.classList.contains('open')
+                   && wordEl && wordEl.textContent === word;
+    if(!active){
+      // 卡片已翻页/闪卡已关掉，或事件根本来自单词卡：收干净残留状态，别把动效挂死
+      btns.forEach(b => b.classList.remove('spk-loading', 'spk-active'));
+      _fcStopHl();
+      return;
+    }
+    btns.forEach(b => { b.classList.toggle('spk-loading', state === 'loading');
+                        b.classList.toggle('spk-active',  state === 'playing'); });
+    if(state === 'playing' && el) _fcStartHl(wordEl, el, word);
+    if(state !== 'playing') _fcStopHl();
+  });
 }
 
 // TTS 播放：仅作极端兜底（script.js 的 playWordAudio 不可用时才会走到这里），
@@ -752,27 +823,28 @@ document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('ag
 document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
 document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('good'));
 
-function playFcAudio(btn){
+// 参数已去掉：按钮状态改由播放状态订阅统一驱动，正反面两个键一起切，
+// 不再依赖"是哪个键被点的"
+function playFcAudio(){
   clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
   fcAutoPlay = false; // 阻止 API 延迟返回后再次触发自动播放
   const w = document.getElementById('fc-word').textContent;
   const d = FC_CACHE.get(w);
-  btn.classList.add('spk-active');
-  const done = () => btn.classList.remove('spk-active');
   // 走 script.js 的统一播放链：Kokoro 神经语音 → 词典 MP3 → 系统语音。
   // 闪卡原本自己实现了一套只有「MP3 → 系统语音」的播放，Kokoro 从来没被用上。
+  // 按钮的等待/发声状态由 setWordAudioHook 订阅驱动，这里不再手动切类。
   if(typeof playWordAudio === 'function'){
-    playWordAudio(w, d?.audioSrc || '', 1).catch(()=>{}).finally(done);
+    playWordAudio(w, d?.audioSrc || '', 1).catch(()=>{});
   } else {
-    speakWordFc(w); setTimeout(done, 1200);   // 极端兜底：script.js 未就绪
+    speakWordFc(w);   // 极端兜底：script.js 未就绪
   }
 }
 document.getElementById('fc-spk').addEventListener('click', e=>{
-  e.stopPropagation(); playFcAudio(e.currentTarget);
+  e.stopPropagation(); playFcAudio();
 });
 document.getElementById('fc-spk-back').addEventListener('click', e=>{
   e.stopPropagation();
-  playFcAudio(e.currentTarget);
+  playFcAudio();
 });
 document.getElementById('fc-star').addEventListener('click', e=>{
   e.stopPropagation();

@@ -2634,14 +2634,28 @@ let _wordAudioEl = null;
 let _wordSeq = 0;
 let _wordUnlocked = false;
 
+// ── 播放状态广播：让 UI 能区分「还在合成」和「真的在发声」──
+// 点击到出声之间有 1~2 秒的合成等待，此前 UI 一点击就播动效，等于在骗用户。
+// 支持多个订阅者（闪卡按钮 + 单词卡播放键各订阅一个，互不覆盖）。
+const _wordAudioHooks = [];
+function setWordAudioHook(fn){ if(typeof fn === 'function') _wordAudioHooks.push(fn); }
+function _emitWordAudio(state, word, el){
+  for(const fn of _wordAudioHooks){ try{ fn(state, word, el); }catch(e){} }
+}
+let _wordAudioCur = '';   // 当前（或最近一次）播放的词，供 _stopWordAudio 收尾用
+
 function _stopWordAudio(){
   _wordSeq++;                                    // invalidate any in-flight async play
   if(_wordAudioEl){ try{ _wordAudioEl.pause(); }catch(e){} }
   if(!S.playing && !S.paused){ try{ window.speechSynthesis.cancel(); }catch(e){} }
+  // 手动叫停不会触发 audio 的 ended 事件，这里补一发，否则 UI 会一直停在播放态
+  if(_wordAudioCur) _emitWordAudio('ended', _wordAudioCur);
 }
 
 async function playWordAudio(word, mp3, rate = 1){
   const mySeq = ++_wordSeq;
+  _wordAudioCur = word;
+  _emitWordAudio('loading', word);
   if(_wordAudioEl){ try{ _wordAudioEl.pause(); }catch(e){} }
   if(!S.playing && !S.paused){ try{ window.speechSynthesis.cancel(); }catch(e){} }
   if(!_wordAudioEl){
@@ -2664,6 +2678,7 @@ async function playWordAudio(word, mp3, rate = 1){
     try{
       const a = _wordAudioEl;
       a.pause();
+      a.onended = null;                    // 复用元素，先清掉上一次的收尾回调
       a.preservesPitch = a.mozPreservesPitch = a.webkitPreservesPitch = true;
       a.src = url;
       // Assigning .src resets playbackRate to 1, so the rate must be applied
@@ -2673,6 +2688,11 @@ async function playWordAudio(word, mp3, rate = 1){
       a.onloadedmetadata = () => { a.playbackRate = rate; };
       await a.play();
       a.playbackRate = rate;
+      // 到这一步才是「真的出声了」——UI 的播放动效以此为准
+      if(_wordSeq === mySeq){
+        a.onended = () => { if(_wordSeq === mySeq) _emitWordAudio('ended', word); };
+        _emitWordAudio('playing', word, a);
+      }
       return true;
     }catch(e){ return false; }
   };
@@ -2691,9 +2711,31 @@ async function playWordAudio(word, mp3, rate = 1){
   if(_wordSeq !== mySeq) return;
   const u = new SpeechSynthesisUtterance(word);
   u.lang = S.accentUS ? 'en-US' : 'en-GB'; u.rate = rate < 1 ? rate : 0.85;
+  // 系统语音没有 audio 元素可跟进度，只广播起止；UI 侧收到 el=null 就只切按钮态
+  u.onstart = () => { if(_wordSeq === mySeq) _emitWordAudio('playing', word, null); };
+  u.onend   = () => { if(_wordSeq === mySeq) _emitWordAudio('ended', word); };
   try{ window.speechSynthesis.cancel(); }catch(e){}
-  window.speechSynthesis.speak(u);
+  try{
+    window.speechSynthesis.speak(u);
+  }catch(e){
+    // 三条路径全挂：也要收尾，否则 UI 永远卡在 loading
+    if(_wordSeq === mySeq) _emitWordAudio('ended', word);
+  }
 }
+
+// ── 播放动效：单词卡播放键也区分「合成中」和「正在发声」──
+// 原本点了完全没反馈，合成那 1~2 秒里用户以为没点上，会连点。
+// 注意：这条订阅必须写在 _wordAudioHooks 声明之后（const 有 TDZ，写在上面会直接抛错）。
+setWordAudioHook((state, word) => {
+  const btn = document.getElementById('wp-play');
+  if(!btn) return;
+  const cur = document.getElementById('wp-word');
+  // 闪卡走的是同一条播放链，事件不一定属于本弹窗：弹窗可见且词对得上才响应
+  const mine = wpop.classList.contains('vis') && cur && cur.textContent === word;
+  if(!mine){ btn.classList.remove('wp-loading', 'wp-playing'); return; }
+  btn.classList.toggle('wp-loading', state === 'loading');
+  btn.classList.toggle('wp-playing', state === 'playing');
+});
 
 // ═══════════════════════════════════════════
 //  VOCAB
