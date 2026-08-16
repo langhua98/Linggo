@@ -2473,76 +2473,20 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .vp-deck.vp-deck-soon{
   opacity:.5;pointer-events:none;
 }
-/* 词书徽章：不要纯平色块，做成一本竖着的小书（书脊 + 页缘） */
+/* 词书图标：不再统一用「书」，改成按内容语义选图（笔记 / 学士帽 / 大脑 / 灯泡），
+   四个图形轮廓差异大，扫一眼就能分辨，取自 vendor/emoji 里的真实素材（Fluent Emoji，MIT） */
 .vp-dk-badge{
-  /* 书本比例：高 > 宽 */
-  width:50px;height:64px;
-  /* 左侧书脊侧直角、右侧翻口圆角 —— 这是「书」的关键剪影 */
-  border-radius:3px 8px 8px 3px;
-  position:relative;overflow:hidden;
-  background:linear-gradient(135deg,#2563EB,#60A5FA);
-  color:#fff;font-weight:700;font-size:12px;letter-spacing:-.02em;
+  width:52px;height:52px;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;
-  flex-shrink:0;
-  /* 左让开书脊、右让开页缘，文字才不会压在装饰上 */
-  padding:0 8px;
-  /* 分层外阴影 + 上边内高光，和 .fc-face / .wp-seg-main 同一套厚度语言 */
-  box-shadow:0 1px 2px rgba(0,0,0,.10),
-             0 5px 12px rgba(0,0,0,.14),
-             inset 0 1px 0 rgba(255,255,255,.30);
 }
-/* 书脊：左侧压深的一条，内侧一道高光做出转折 */
-.vp-dk-badge::before{
-  content:'';position:absolute;left:0;top:0;bottom:0;width:8px;
-  border-radius:3px 0 0 3px;
-  background:rgba(0,0,0,.22);
-  box-shadow:inset -1px 0 0 rgba(255,255,255,.22);
+.vp-dk-badge img{
+  width:100%;height:100%;display:block;
+  /* 素材自带立体感，这里只补一点落地阴影让它贴在行上 */
+  filter:drop-shadow(0 2px 4px rgba(0,0,0,.18));
 }
-/* 页缘：右侧内几道细线，模拟书页断口 */
-.vp-dk-badge::after{
-  content:'';position:absolute;right:3px;top:6px;bottom:6px;width:4px;
-  border-radius:1px;
-  background:repeating-linear-gradient(90deg,
-              rgba(255,255,255,.55) 0 1px,
-              rgba(255,255,255,.12) 1px 2px);
-}
-/* CET-4 / CET-6 是 5 字符，50px 减去书脊+页缘只剩 34px，单独降一档字号防溢出 */
-.vp-deck[data-deck="cet4"] .vp-dk-badge,
-.vp-deck[data-deck="cet6"] .vp-dk-badge{ font-size:11px; }
-/* 夜间：外阴影加深压住暗底，内高光收弱免得发白 */
-.night .vp-dk-badge{
-  box-shadow:0 1px 2px rgba(0,0,0,.28),
-             0 5px 14px rgba(0,0,0,.34),
-             inset 0 1px 0 rgba(255,255,255,.16);
-}
-/* 夜间暗底上白页缘会扎眼，透明度降一档 */
-.night .vp-dk-badge::after{
-  background:repeating-linear-gradient(90deg,
-              rgba(255,255,255,.34) 0 1px,
-              rgba(255,255,255,.07) 1px 2px);
-}
-.vp-badge-6{
-  background:linear-gradient(135deg,#7C3AED,#A78BFA);
-}
-.vp-badge-og{
-  background:linear-gradient(135deg,#0891B2,#67E8F9);
-}
-/* 我的生词：沿用全站「生词」的琥珀/橙语义（同 .lv-mine / .badge-mine 取色） */
-.vp-badge-mine{
-  background:linear-gradient(135deg,#D97706,#FCD34D);
-}
-.night .vp-badge-mine{
-  background:linear-gradient(135deg,#92400E,#D97706);
-}
-/* 我的生词：不是出版物，是自己攒的本子，加一条从书顶垂下的书签带 */
-.vp-deck[data-deck="mine"] .vp-dk-badge{ overflow:visible; }
-.vp-deck[data-deck="mine"] .vp-dk-badge > .vp-dk-ribbon{
-  position:absolute;top:-2px;right:10px;width:8px;height:22px;
-  background:linear-gradient(180deg,#DC2626,#B91C1C);
-  border-radius:1px 1px 0 0;
-  /* 下端剪出燕尾 */
-  clip-path:polygon(0 0, 100% 0, 100% 100%, 50% 82%, 0 100%);
-  box-shadow:0 1px 3px rgba(0,0,0,.25);
+/* 夜间：暗底吃光，落地阴影放大加深才看得出来 */
+.night .vp-dk-badge img{
+  filter:drop-shadow(0 2px 6px rgba(0,0,0,.45));
 }
 .vp-dk-info{flex:1;min-width:0;}
 .vp-dk-name{font-weight:600;font-size:15px;color:var(--text);margin-bottom:4px;}

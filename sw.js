@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v192';
+const CACHE = 'linggo-v194';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -15,6 +15,10 @@ const SHELL = [
   '/Linggo/vendor/hyphenation.en-us.js',
   '/Linggo/vendor/hypher.js',
   '/Linggo/vendor/ts-fsrs.umd.js',
+  '/Linggo/vendor/emoji/deck-cet4.svg',
+  '/Linggo/vendor/emoji/deck-cet6.svg',
+  '/Linggo/vendor/emoji/deck-ogden.svg',
+  '/Linggo/vendor/emoji/deck-mine.svg',
   '/Linggo/lottie/playPause.json',
   '/Linggo/lottie/skipBack.json',
   '/Linggo/lottie/skipForward.json',
