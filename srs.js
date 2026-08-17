@@ -9,6 +9,24 @@ function shuffle(arr){
   for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
   return a;
 }
+// 一轮牌组的组装：due 优先，但不能把名额吃光 —— 留一部分给新词。
+// 否则 due 攒够一轮的量之后就再也见不到新词，每轮都是同一批（用户实际反馈的问题）。
+const DUE_SHARE = 0.7;   // 待复习卡最多占一轮的 70%
+
+function buildSession(due, newW, n, filler){
+  filler = filler || [];
+  const d = shuffle(due), w = shuffle(newW), f = shuffle(filler);
+  if(!(n > 0)) return [...d, ...w, ...f];        // n<=0 表示「全部」，保持原语义
+
+  const dueTaken = Math.min(d.length, Math.max(1, Math.ceil(n * DUE_SHARE)));
+  const out = d.slice(0, dueTaken);
+  // 名额没填满：先补新词，新词不够再回头多拿 due，还不够才拿未到期的
+  for(const src of [w, d.slice(dueTaken), f]){
+    for(const item of src){ if(out.length >= n) break; out.push(item); }
+    if(out.length >= n) break;
+  }
+  return shuffle(out);   // 最后再打散，免得前半场全是复习卡
+}
 const FC_CACHE = new Map(); // word → { ph, audioSrc, audioEl, pos, enDef }；FIFO 上限 200
 const FC_CACHE_MAX = 200;
 
@@ -181,15 +199,13 @@ function openFlashcard(origin){
   loadSRS();
   closeVoc();
 
-  // Build deck: due cards first, then new cards, shuffled within each group
+  // 组装本轮牌组：due 优先复习，但给新词留固定名额，避免 due 攒多了新词永远进不来
   const now = Date.now();
   const due = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview <= now);
   const newW = S.vocab.filter(v => !fcSRS[v.word]);
   const later = S.vocab.filter(v => fcSRS[v.word] && fcSRS[v.word].nextReview > now);
 
-  fcDeck = [...shuffle(due), ...shuffle(newW), ...shuffle(later)];
-  // 本轮只抽 fcSize 个（0 = 全部）；到期的排在前面，所以截断后仍优先复习该复习的
-  if(fcSize > 0 && fcDeck.length > fcSize) fcDeck = fcDeck.slice(0, fcSize);
+  fcDeck = buildSession(due, newW, fcSize, later);
   fcIdx  = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
@@ -1057,9 +1073,8 @@ function startDeckSession(){
   const now = Date.now();
   const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
   const newW = wordList.filter(w => !vpProgress[w.w]);
-  const pool = [...shuffle(due), ...shuffle(newW)];
 
-  fcDeck  = pool.slice(0, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
+  fcDeck  = buildSession(due, newW, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
   fcIdx   = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
