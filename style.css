@@ -1800,6 +1800,14 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   margin-bottom:14px;min-height:22px;
   letter-spacing:.03em;
 }
+/* ── 闪卡：词根族归属（仅按词根编排的词书出现，如「词霸天下38000之一」） ── */
+.fc-root{
+  font-size:12px;color:var(--text-3);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.02em;text-align:center;
+  margin-bottom:10px;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 .fc-badge-row{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;}
 .fc-badge{
   padding:4px 12px;border-radius:20px;

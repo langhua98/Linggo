@@ -303,6 +303,20 @@ async function showFcCard(instant){
   document.getElementById('fc-ph-front').textContent = v.ph || '';
   document.getElementById('fc-badge-row').innerHTML  = '';
 
+  // 词根族信息：只有带 root 的词书（按词根编排的教材）才显示
+  const rootTxt = v.root
+    ? (() => {
+        const e = fcMode === 'deck' ? rootIndexFor(vpDeck).get(v.word) : null;
+        return e ? `${v.root} · ${e.pos} / ${e.size}` : v.root;
+      })()
+    : '';
+  ['fc-root-front','fc-root-back'].forEach(id => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = rootTxt;
+    el.style.display = rootTxt ? '' : 'none';
+  });
+
   // Star button
   const starBtn = document.getElementById('fc-star');
   starBtn.classList.toggle('starred', S.vocab.some(x=>x.word===v.word));
@@ -1048,6 +1062,30 @@ function getDeckWordList(deck){
   return [];
 }
 
+// 词根族内位置索引：word → { pos, size }，按词书缓存。
+// 词表是按词根分段排好的（每个词根连续出现一段），所以顺序扫一遍即可。
+// 7424 词的大词书，每张卡都重算一遍是浪费，所以按 deck 缓存住。
+const _ROOT_INDEX = {};
+function rootIndexFor(deck){
+  if(_ROOT_INDEX[deck]) return _ROOT_INDEX[deck];
+  const list = getDeckWordList(deck);
+  const idx = new Map();
+  // 词表是 fetch 来的，首次调用时可能还没载入完（list.length === 0）。
+  // 这种情况下不能把空索引写进缓存，否则载入完成后也永远拿不到正确结果 —— 只有真的建好索引才缓存；
+  // 而"词表已载入但压根没有 root 字段"（cet4/cet6/ogden 等）是稳定事实，可以放心缓存空索引。
+  if(!list.length) return idx;
+  if(!list.some(w => w.root)) return (_ROOT_INDEX[deck] = idx);
+  let start = 0;
+  for(let i = 0; i <= list.length; i++){
+    if(i === list.length || list[i].root !== list[start].root){
+      const size = i - start;
+      for(let j = start; j < i; j++) idx.set(list[j].w, { pos: j - start + 1, size });
+      start = i;
+    }
+  }
+  return (_ROOT_INDEX[deck] = idx);
+}
+
 function updateVpStats(){
   const now = Date.now();
   // 用户导入的词书追加在内置四本之后，deck id 形如 'user:<id>'
@@ -1135,7 +1173,7 @@ function startDeckSession(){
     const newW = wordList.filter(w => !vpProgress[w.w]);
     pool = buildSession(due, newW, vpCount);
   }
-  fcDeck  = pool.map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
+  fcDeck  = pool.map(w => ({ word:w.w, ph:w.ph, meaning:w.cn, root:w.root }));
   fcIdx   = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
