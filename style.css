@@ -2010,6 +2010,74 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 }
 .fcf-go:active{transform:scale(.98);}
 
+/* ── 闪卡：辨析题（整组顺序词书的新词，给中文释义、从本组同族词里选正确形式，
+     测的是词根辨析力，不是自评式的"认识/不认识"） ── */
+#fc-quiz{
+  flex:1;flex-direction:column;
+  padding:28px 22px max(24px,env(safe-area-inset-bottom));
+  overflow-y:auto;
+}
+.fq-root{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:14px;font-weight:700;letter-spacing:.03em;
+  color:var(--text-3);text-align:center;
+  margin:4px 0 14px;flex-shrink:0;
+}
+.fq-ask{
+  font-family:'Nunito',sans-serif;font-weight:800;
+  font-size:clamp(20px,6vw,24px);color:var(--text);
+  text-align:center;line-height:1.4;
+  margin-bottom:22px;flex-shrink:0;
+}
+.fq-opts{
+  display:flex;flex-direction:column;gap:10px;
+  overflow-y:auto;
+}
+.fq-opts button{
+  width:100%;padding:14px 16px;border-radius:var(--r-md);
+  border:1.5px solid var(--border);background:var(--surface);
+  color:var(--text);font-family:'Lora',serif;font-size:17px;font-weight:600;
+  text-align:center;cursor:pointer;
+  transition:transform .15s ease,box-shadow .15s ease,background .15s ease,border-color .15s ease;
+  -webkit-tap-highlight-color:transparent;
+}
+.fq-opts:not(.answered) button:active{transform:scale(.97);}
+@media(hover:hover){
+  .fq-opts:not(.answered) button:hover{border-color:var(--accent);box-shadow:var(--shadow-sm);}
+}
+.fq-opts.answered button{pointer-events:none;}
+.fq-opts button.right{
+  background:linear-gradient(160deg,#D1FAE5 0%,#A7F3D0 100%);
+  border-color:#059669;color:#059669;
+}
+.fq-opts button.wrong{
+  background:linear-gradient(160deg,#FEE2E2 0%,#FECACA 100%);
+  border-color:#DC2626;color:#DC2626;
+}
+.night .fq-opts button{background:var(--surface);color:var(--text);border-color:var(--border);}
+.night .fq-opts button.right{background:linear-gradient(160deg,#064E3B,#065F46);border-color:#059669;color:#6EE7B7;}
+.night .fq-opts button.wrong{background:linear-gradient(160deg,#7F1D1D,#991B1B);border-color:#DC2626;color:#FCA5A5;}
+.fq-after{margin-top:20px;flex-shrink:0;}
+.fq-reveal{text-align:center;margin-bottom:16px;}
+.fq-reveal .fcf-word{font-size:22px;} /* 复用对照表的拆解样式，字号在这里放大一档突出揭晓感 */
+.fq-reveal-mean{
+  font-size:14px;color:var(--text-2);font-family:'Nunito',sans-serif;
+  margin-top:8px;
+}
+.fq-next{
+  width:100%;padding:15px;border:none;border-radius:var(--r-md);
+  background:var(--accent);color:#fff;
+  font-size:16px;font-weight:700;font-family:'Nunito',sans-serif;
+  cursor:pointer;box-shadow:var(--shadow-md);
+}
+.fq-next:active{transform:scale(.98);}
+/* 手机优先：390 宽下 6 个候选项 + 释义要能放下，选项区允许滚动兜底 */
+@media(max-width:390px){
+  .fq-ask{font-size:19px;margin-bottom:16px;}
+  .fq-opts button{padding:12px 14px;font-size:15px;}
+  .fq-opts{gap:8px;}
+}
+
 /* ── result screen */
 #fc-result{
   position:fixed;inset:0;z-index:501;

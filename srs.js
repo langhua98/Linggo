@@ -247,6 +247,7 @@ function openFlashcard(origin){
   fcHistory = []; updateFcUndoBtn(); // 新一轮开始，上一轮的撤销记录作废
   _fcLastGroup = null; _fcPendingGroup = null; // 生词本背诵没有 _grp，但清一下防止跨会话残留
   hideFamilyIntro();
+  hideQuiz();   // 生词本背诵没有辨析题，但上一轮词库练习若停在辨析题屏，得把它收回去
 
   const fc = document.getElementById('flashcard');
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
@@ -276,6 +277,9 @@ function _fcPrefetchAudio(from, n = 3){
 //                    发卡在此期间是暂停的，showFcCard 提前 return，fcIdx 不动
 let _fcLastGroup    = null;
 let _fcPendingGroup = null;
+// 辨析题当前这一题是否已作答（防连点：答过之后再点选项/正确项不应重复触发），
+// showQuiz 每次出新题时重置为 false
+let _fqAnswered     = false;
 
 // ── 组前对照表：新组开始前，把整组词的拆解 + 释义一次性摆出来 ──
 // grp = { root, words:[{w,cn}, ...] }（本组全部词，含不出测试卡的已掌握词）
@@ -334,6 +338,36 @@ function _fcfSplitEl(word, root){
   return el;
 }
 
+// ── 辨析题：给中文释义，从本组同族词（_sibs）里选出正确形式 ──
+// 只有整组顺序词书的新词会走到这里（分流条件见 showFcCard），复习词仍走闪卡自评。
+function hideQuiz(){
+  const q = document.getElementById('fc-quiz');
+  if(q) q.style.display = 'none';
+  const area = document.getElementById('fc-area');
+  if(area) area.style.display = '';
+}
+
+function showQuiz(v){
+  _fcSyncProgress();
+  _fqAnswered = false;
+  document.getElementById('fq-root').textContent = v.root || '';
+  document.getElementById('fq-ask').textContent = v.meaning || '';
+  const opts = document.getElementById('fq-opts');
+  opts.textContent = '';
+  opts.classList.remove('answered');
+  shuffle(v._sibs).forEach(s => {
+    const btn = document.createElement('button');
+    btn.textContent = s.w;      // textContent，防 XSS
+    btn.dataset.w = s.w;
+    opts.appendChild(btn);
+  });
+  document.getElementById('fq-after').style.display = 'none';
+  document.getElementById('fq-reveal').textContent = '';
+
+  document.getElementById('fc-area').style.display = 'none';
+  document.getElementById('fc-quiz').style.display = 'flex';
+}
+
 async function showFcCard(instant){
   clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
   if(fcIdx >= fcDeck.length){ showFcResult(); return; }
@@ -350,6 +384,26 @@ async function showFcCard(instant){
     }
     _fcLastGroup = v._grp;
   }
+
+  // 辨析题分流：整组顺序词书里没学过的新词，走「给中文释义、从本组同族词里选
+  // 正确形式」的选择题，而不是自评闪卡 —— 自评测不出 provincial / provincially /
+  // provincialism 分不清这种真正的失败点。复习词（vpProgress 里已有记录）仍走
+  // 闪卡自评（快）。少于 2 个候选项没有辨析意义，也退回闪卡。
+  // fcAutoPlay 在这条路径上不会触发：它是本函数下面（约 60 行之后）才置 true 的
+  // 一条语句，这里提前 return 根本执行不到那一行；上一张卡片消费完 fcAutoPlay 后
+  // 早已被 applyFcCache/fetchFcWord 复位为 false，所以也不存在"沿用上次的 true"。
+  // 辨析题问的就是"这是哪个词"，读出发音等于直接报答案，因此这条路径绝不能出声——
+  // 也正因为提前 return，下面调用 fetchFcWord 的那行同样不会执行，词典音频不会预缓冲。
+  const _quizzable = fcMode === 'deck'
+    && REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered
+    && v._sibs && v._sibs.length >= 2
+    && !vpProgress[v.word];
+  if(_quizzable){
+    hideFamilyIntro();
+    showQuiz(v);
+    return;
+  }
+  hideQuiz();
 
   fcFlipped = false;
 
@@ -873,9 +927,10 @@ function closeFcAll(){
   document.getElementById('flashcard').style.display = 'none';
   document.getElementById('fc-result').classList.remove('open');
   document.getElementById('fc-result').style.display = 'none';
-  // 万一是在对照表面板停留时退出：收掉面板、还原卡片区，别让内联 display 残留到下一轮
+  // 万一是在对照表面板/辨析题面板停留时退出：收掉面板、还原卡片区，别让内联 display 残留到下一轮
   document.getElementById('fc-family').style.display = 'none';
   document.getElementById('fc-area').style.display = '';
+  hideQuiz();
   _fcPendingGroup = null;
   // 词库练习、以及从背单词页进来的「我的生词」，退出后都回背单词页
   if(fcMode === 'deck' || fcOrigin === 'panel') openVocabPanel();
@@ -1059,9 +1114,48 @@ document.getElementById('fc-exit').addEventListener('click', closeFcAll);
 // 组前对照表看完了：收面板、还原卡片区、把「上一组」记为当前组，再正常发卡
 document.getElementById('fcf-go')?.addEventListener('click', ()=>{
   hideFamilyIntro();
+  hideQuiz();   // 防御性收尾：理论上对照表和辨析题不会同屏，但退出留残影的坑已经踩过一次了
   _fcLastGroup = _fcPendingGroup;
   _fcPendingGroup = null;
   showFcCard(true);
+});
+
+// 辨析题答题：事件委托绑在 #fq-opts 上，选项按钮是 showQuiz 动态生成的
+document.getElementById('fq-opts')?.addEventListener('click', e=>{
+  if(_fqAnswered) return;
+  const btn = e.target.closest('button');
+  if(!btn) return;
+  const v = fcDeck[fcIdx];
+  if(!v) return;
+
+  _fqAnswered = true;
+  const opts = document.getElementById('fq-opts');
+  opts.classList.add('answered');   // CSS 靠这个类把所有选项按钮置为不可再点
+
+  if(btn.dataset.w === v.word){
+    // 答对：绿色反馈，短暂延时后按「认识」记分并继续
+    btn.classList.add('right');
+    setTimeout(()=>{ hideQuiz(); rateFcCard('good'); }, 600);
+  } else {
+    // 答错：所选项标红，正确项标绿，揭晓拆解 + 释义，等用户点「继续」再按「不认识」记分
+    btn.classList.add('wrong');
+    const rightBtn = [...opts.children].find(b => b.dataset.w === v.word);
+    if(rightBtn) rightBtn.classList.add('right');
+
+    const reveal = document.getElementById('fq-reveal');
+    reveal.textContent = '';
+    reveal.appendChild(_fcfSplitEl(v.word, v.root));
+    const mean = document.createElement('div');
+    mean.className = 'fq-reveal-mean';
+    mean.textContent = v.meaning || '';
+    reveal.appendChild(mean);
+
+    document.getElementById('fq-after').style.display = '';
+  }
+});
+document.getElementById('fq-next')?.addEventListener('click', ()=>{
+  hideQuiz();
+  rateFcCard('again');
 });
 document.getElementById('fc-undo').addEventListener('click', undoFcRating);
 document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
@@ -1455,6 +1549,7 @@ function startDeckSession(){
   fcHistory = []; updateFcUndoBtn(); // 新一轮开始，上一轮的撤销记录作废
   _fcLastGroup = null; _fcPendingGroup = null; // 新一轮开始，组对照的「上一组」记忆也要清零
   hideFamilyIntro();                             // 面板本身也要收回，光清标记不够
+  hideQuiz();                                    // 同理：上一轮若停在辨析题屏，得收回去
 
   if(!fcDeck.length){ toast('今日没有待复习单词，明天再来！'); return; }
 
