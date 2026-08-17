@@ -558,6 +558,8 @@
             <div class="fc-word"  id="fc-word"></div>
             <div class="fc-ph-front" id="fc-ph-front"></div>
             <div class="fc-badge-row" id="fc-badge-row"></div>
+            <!-- 同族对照条：仅整组顺序词书（如「词霸天下38000之一」）出卡时有内容 -->
+            <div class="fc-sibs" id="fc-sibs"></div>
           </div>
           <div class="fc-front-actions">
             <button class="fc-icon-btn" id="fc-star" title="加入生词本">
@@ -648,6 +650,13 @@
         <span class="fc-sh fc-sh-hard">较难</span>
       </div>
     </div>
+  </div>
+
+  <!-- 组前对照表：整组顺序词书（按词根编排）新组开始前，先看一遍全组词的拆解 + 释义 -->
+  <div id="fc-family" style="display:none">
+    <div class="fcf-root" id="fcf-root"></div>
+    <div class="fcf-list" id="fcf-list"></div>
+    <button class="fcf-go" id="fcf-go">开始测试</button>
   </div>
 </div>
 

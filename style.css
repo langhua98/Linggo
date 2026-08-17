@@ -1779,6 +1779,8 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fcw-syl{ transition:color .06s ease, text-shadow .06s ease; }
 .fcw-syl.lit{ color:var(--accent); text-shadow:0 0 18px rgba(37,99,235,.22); }
 .night .fcw-syl.lit{ text-shadow:0 0 20px rgba(96,165,250,.3); }
+/* ── 单词里的词根本体：只用颜色 + 字重区分，不用背景块（会挡朗读扫亮的视觉） ── */
+.fcw-root{ color:var(--accent); font-weight:800; }
 /* 合成等待：慢速呼吸，和"正在发声"的快脉冲明确区分 */
 .fc-icon-btn.spk-loading{ color:var(--text-3); }
 @media (prefers-reduced-motion: no-preference){
@@ -1817,6 +1819,25 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .fc-badge-pos{background:var(--accent-2);color:var(--accent);}
 .fc-badge-lvl{background:#F3F4F6;color:#6B7280;}
 .night .fc-badge-lvl{background:#374151;color:#9CA3AF;}
+
+/* ── 闪卡：同族对照条（底部一排小 chip，横向可滚动不换行，参考 .lib-cats-bar） ── */
+.fc-sibs{
+  display:flex;gap:6px;max-width:100%;
+  overflow-x:auto;white-space:nowrap;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch;
+  margin-top:14px;padding:2px;
+}
+.fc-sibs::-webkit-scrollbar{display:none;}
+.fc-sibs .chip{
+  flex-shrink:0;display:inline-block;
+  padding:5px 12px;border-radius:14px;
+  border:1.5px solid var(--border);background:var(--surface);
+  font-size:12px;font-weight:700;color:var(--text-3);
+  font-family:'Nunito',sans-serif;
+}
+.fc-sibs .chip.on{
+  background:var(--accent);border-color:var(--accent);color:#fff;
+}
 
 /* back face */
 .fc-back-body{
@@ -1950,6 +1971,44 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 /* Shake applied to the scene wrapper, NOT to fc-card,
    so the card's own rotateY(180deg) is never disturbed */
 .fc-scene.shake{animation:fc-shake .4s ease;}
+
+/* ── 闪卡：组前对照表（按词根编排词书，新组开始前先看全貌再逐词测试） ── */
+#fc-family{
+  flex:1;flex-direction:column;
+  padding:28px 22px max(24px,env(safe-area-inset-bottom));
+  overflow-y:auto;
+}
+.fcf-root{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:clamp(22px,6vw,30px);font-weight:700;
+  color:var(--accent);text-align:center;letter-spacing:.02em;
+  margin:8px 0 22px;
+}
+.fcf-list{
+  flex:1;display:flex;flex-direction:column;
+}
+.fcf-row{
+  display:flex;align-items:baseline;justify-content:space-between;gap:16px;
+  padding:14px 4px;border-bottom:1px solid var(--border);
+}
+.fcf-row:last-child{border-bottom:none;}
+.fcf-word{
+  font-family:'Lora',serif;font-size:19px;font-weight:700;color:var(--text);
+  letter-spacing:-.01em;flex-shrink:0;
+}
+.fcf-stem{color:var(--accent);font-weight:800;}
+.fcf-mean{
+  font-size:14px;color:var(--text-2);font-family:'Nunito',sans-serif;
+  text-align:right;line-height:1.4;
+}
+.fcf-go{
+  margin-top:22px;flex-shrink:0;width:100%;
+  padding:15px;border:none;border-radius:var(--r-md);
+  background:var(--accent);color:#fff;
+  font-size:16px;font-weight:700;font-family:'Nunito',sans-serif;
+  cursor:pointer;box-shadow:var(--shadow-md);
+}
+.fcf-go:active{transform:scale(.98);}
 
 /* ── result screen */
 #fc-result{

@@ -245,6 +245,8 @@ function openFlashcard(origin){
   fcDoneCount = 0;
   fcMode = 'book'; // 确保不被上一次词库练习的 'deck' 状态污染
   fcHistory = []; updateFcUndoBtn(); // 新一轮开始，上一轮的撤销记录作废
+  _fcLastGroup = null; _fcPendingGroup = null; // 生词本背诵没有 _grp，但清一下防止跨会话残留
+  hideFamilyIntro();
 
   const fc = document.getElementById('flashcard');
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
@@ -268,10 +270,87 @@ function _fcPrefetchAudio(from, n = 3){
   }
 }
 
+// 整组顺序词书（按词根编排）用到的两个模块级标记：
+// _fcLastGroup   —— 本轮里上一张卡所在的组序号（_grp），null 表示本轮还没展示过任何组
+// _fcPendingGroup —— 对照表面板正等着用户点「开始测试」时，暂存的组序号；
+//                    发卡在此期间是暂停的，showFcCard 提前 return，fcIdx 不动
+let _fcLastGroup    = null;
+let _fcPendingGroup = null;
+
+// ── 组前对照表：新组开始前，把整组词的拆解 + 释义一次性摆出来 ──
+// grp = { root, words:[{w,cn}, ...] }（本组全部词，含不出测试卡的已掌握词）
+// 头部的「已完成/总数」和进度条。抽出来是因为对照表那一屏也要用 ——
+// 它出现在本组第一张卡之前，那时 showFcCard 还没跑过，
+// 不同步的话头部会停在 0/0、而进度条因为没设过 width 被 CSS 画成满的。
+function _fcSyncProgress(){
+  const pct = fcOrigTotal ? (fcDoneCount/fcOrigTotal)*100 : 0;
+  document.getElementById('fc-prog-fill').style.width = pct + '%';
+  document.getElementById('fc-count').textContent = fcDoneCount + '/' + fcOrigTotal;
+}
+
+// 收起对照表、还原卡片区。新一轮开始时必须调 —— 否则上一轮停在对照表那屏时
+// （用户看到一半退出去重开），新一轮若走了「跳过对照表」的分支，那块面板会
+// 一直盖在屏幕上，还显示着上一轮的内容。
+function hideFamilyIntro(){
+  const fam = document.getElementById('fc-family');
+  if(fam) fam.style.display = 'none';
+  const area = document.getElementById('fc-area');
+  if(area) area.style.display = '';
+}
+
+function showFamilyIntro(grp){
+  _fcSyncProgress();
+  document.getElementById('fcf-root').textContent = grp.root || '';
+  const list = document.getElementById('fcf-list');
+  list.textContent = '';
+  (grp.words || []).forEach(w => {
+    const row = document.createElement('div');
+    row.className = 'fcf-row';
+    row.appendChild(_fcfSplitEl(w.w, grp.root));
+    const mean = document.createElement('div');
+    mean.className = 'fcf-mean';
+    mean.textContent = w.cn || '';
+    row.appendChild(mean);
+    list.appendChild(row);
+  });
+  document.getElementById('fc-area').style.display = 'none';
+  document.getElementById('fc-family').style.display = 'flex';
+}
+
+// 对照表里的单词拆解展示：这里不是 #fc-word，可以插分隔符（· 号），
+// 让 provincial 显示成 pro·vinc·ial 这种一眼看出词根边界的形式。
+// 切分失败（音变词）就整词显示，不高亮。
+function _fcfSplitEl(word, root){
+  const el = document.createElement('div');
+  el.className = 'fcf-word';
+  const sp = root ? splitRoot(word, root) : null;
+  if(!sp){ el.textContent = word; return el; }
+  if(sp.pre) el.appendChild(document.createTextNode(sp.pre + '·'));
+  const stem = document.createElement('span');
+  stem.className = 'fcf-stem';
+  stem.textContent = sp.stem;
+  el.appendChild(stem);
+  if(sp.post) el.appendChild(document.createTextNode('·' + sp.post));
+  return el;
+}
+
 async function showFcCard(instant){
   clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
   if(fcIdx >= fcDeck.length){ showFcResult(); return; }
   const v = fcDeck[fcIdx];
+
+  // 新组开始 + 组里有新词：先看一遍全组对照（成组呈现对比，而不是孤立的一张卡），
+  // 暂停发卡，等用户点「开始测试」后再继续。全是复习词的组没有「首次见面」这回事，
+  // 直接跳过对照表，把组号记下就往下走。
+  if(v._grp !== undefined && v._grp !== _fcLastGroup){
+    if(v._sibs && v._sibs.some(s => !vpProgress[s.w])){
+      _fcPendingGroup = v._grp;
+      showFamilyIntro({ root: v.root, words: v._sibs });
+      return;
+    }
+    _fcLastGroup = v._grp;
+  }
+
   fcFlipped = false;
 
   const card    = document.getElementById('fc-card');
@@ -298,10 +377,39 @@ async function showFcCard(instant){
 
   // Fill front
   // 拆成音节 span，供播放时逐音节点亮；不插任何分隔字符，
-  // 保证 textContent 仍等于原单词（有 4 处代码拿它当"还是同一张卡吗"的判据）
-  _fcRenderWord(document.getElementById('fc-word'), v.word);
+  // 保证 textContent 仍等于原单词（有 4 处代码拿它当"还是同一张卡吗"的判据）。
+  // 带 root 时额外算出词根区间，_fcRenderWord 只给对应字符 span 追加 class，
+  // 同样不碰 textContent。
+  const _sp = v.root ? splitRoot(v.word, v.root) : null;
+  _fcRenderWord(document.getElementById('fc-word'), v.word, _sp ? {at:_sp.at, len:_sp.len} : null);
   document.getElementById('fc-ph-front').textContent = v.ph || '';
   document.getElementById('fc-badge-row').innerHTML  = '';
+
+  // 同族对照条：整组顺序词书才有 _sibs，其余词书（cet4/cet6/ogden/用户导入/生词本）没有
+  const sibsEl = document.getElementById('fc-sibs');
+  if(sibsEl){
+    if(v._sibs && v._sibs.length){
+      sibsEl.textContent = '';
+      sibsEl.style.display = '';
+      let onChip = null;
+      v._sibs.forEach(s => {
+        const chip = document.createElement('span');
+        chip.className = 'chip' + (s.w === v.word ? ' on' : '');
+        chip.textContent = s.w;
+        if(s.w === v.word) onChip = chip;
+        sibsEl.appendChild(chip);
+      });
+      // 对照条是横向滚动的，一组 6 个词远超一屏宽。不主动滚的话，
+      // 背到第 4 个词开始当前项就整个跑到视野外了（实测 chip 在 425~522、可视区只到 349），
+      // 「随时看得见自己在这一族的哪个位置」这个设计意图就没了。
+      if(onChip){
+        sibsEl.scrollLeft = Math.max(0,
+          onChip.offsetLeft - (sibsEl.clientWidth - onChip.offsetWidth) / 2);
+      }
+    } else {
+      sibsEl.style.display = 'none';
+    }
+  }
 
   // 词根族信息：只有带 root 的词书（按词根编排的教材）才显示
   const rootTxt = v.root
@@ -329,9 +437,7 @@ async function showFcCard(instant){
   document.getElementById('fc-sent').textContent     = v.sent ? v.sent.trim().slice(0,150) : '';
 
   // Progress
-  const pct = fcOrigTotal ? (fcDoneCount/fcOrigTotal)*100 : 0;
-  document.getElementById('fc-prog-fill').style.width = pct+'%';
-  document.getElementById('fc-count').textContent = fcDoneCount+'/'+fcOrigTotal;
+  _fcSyncProgress();
 
   // 卡组堆叠：按剩余张数切换虚影数量，数量要诚实
   const _left = Math.max(0, fcDeck.length - fcIdx - 1);
@@ -445,18 +551,24 @@ function fireFcPlay(word, data){
 }
 
 // ── 正面单词的音节切分渲染 ──
-function _fcRenderWord(el, word){
+// range 形如 {at, len}：落在 [at, at+len) 的字符 span 额外加 class fcw-root，
+// 用于高亮词根本体。只追加 class，绝不插分隔字符 —— textContent 必须严格等于
+// 原单词（有 4 处代码拿它当"还是同一张卡吗"的判据，见下方注释）。
+function _fcRenderWord(el, word, range){
   if(!el) return;
   el.textContent = '';
   // 按字符切，不按音节切：一是 Hypher 给的是「断行点」不是语音音节，很多词（ephemeral、
   // labyrinth、quixotic）根本切不开，整词一次性亮起等于没效果；二是为了不破坏
   // textContent（有 4 处拿它当"还是同一张卡吗"的判据）我们不能插分隔符，
   // 用户本来就看不见音节边界，逐字符反而让每个词都能平滑扫过。
+  let i = 0;
   for(const ch of word){
     const s = document.createElement('span');
     s.className = 'fcw-syl';
+    if(range && i >= range.at && i < range.at + range.len) s.className += ' fcw-root';
     s.textContent = ch;
     el.appendChild(s);
+    i++;
   }
 }
 
@@ -761,6 +873,10 @@ function closeFcAll(){
   document.getElementById('flashcard').style.display = 'none';
   document.getElementById('fc-result').classList.remove('open');
   document.getElementById('fc-result').style.display = 'none';
+  // 万一是在对照表面板停留时退出：收掉面板、还原卡片区，别让内联 display 残留到下一轮
+  document.getElementById('fc-family').style.display = 'none';
+  document.getElementById('fc-area').style.display = '';
+  _fcPendingGroup = null;
   // 词库练习、以及从背单词页进来的「我的生词」，退出后都回背单词页
   if(fcMode === 'deck' || fcOrigin === 'panel') openVocabPanel();
 }
@@ -940,6 +1056,13 @@ document.querySelectorAll('#voc-size-row .vp-nb').forEach(btn=>{
   if(match) match.classList.add('on');
 })();
 document.getElementById('fc-exit').addEventListener('click', closeFcAll);
+// 组前对照表看完了：收面板、还原卡片区、把「上一组」记为当前组，再正常发卡
+document.getElementById('fcf-go')?.addEventListener('click', ()=>{
+  hideFamilyIntro();
+  _fcLastGroup = _fcPendingGroup;
+  _fcPendingGroup = null;
+  showFcCard(true);
+});
 document.getElementById('fc-undo').addEventListener('click', undoFcRating);
 document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
 document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
@@ -1051,6 +1174,51 @@ function updateStreakUI(){
   }
 }
 
+// ── 词根切分：把单词拆成 {前缀, 词根本体, 后缀}，供高亮 + 对照表使用 ──
+// 词根链形如 "-vinc- = -vict-"、"-cap(t)-"、"-doc-，-doct-"：多个变体用 = ， , 三种
+// 分隔符隔开，每段两侧的 "-" 是占位符不是内容；带括号的变体（如 -cap(t)-）实际对应
+// 两种真实拼写，要展开成 capt（连括号内容一起留下）和 cap（连括号一起整段删掉）。
+// 变体解析结果按词根链字符串缓存，7424 词的大词书里同一条词根链会被几十个词复用。
+const _ROOT_VARIANTS_CACHE = new Map();
+function _rootVariants(chain){
+  if(_ROOT_VARIANTS_CACHE.has(chain)) return _ROOT_VARIANTS_CACHE.get(chain);
+  const segs = String(chain).split(/[=，,]/);
+  const set = new Set();
+  for(let seg of segs){
+    seg = seg.trim().replace(/^-+/, '').replace(/-+$/, '');
+    if(!seg) continue;
+    if(seg.includes('(')){
+      const noParen  = seg.replace(/[()]/g, '');          // -cap(t)- → capt
+      const noBrace  = seg.replace(/\([^)]*\)/g, '');      // -cap(t)- → cap
+      [noParen, noBrace].forEach(v => { if(/^[a-zA-Z]+$/.test(v)) set.add(v); });
+    } else if(/^[a-zA-Z]+$/.test(seg)){
+      set.add(seg);
+    }
+  }
+  // 长的变体先试：-fac(t)- 展开出 fact/fac，"factory" 必须先撞上 fact 而不是半途的 fac
+  const arr = [...set].sort((a, b) => b.length - a.length);
+  _ROOT_VARIANTS_CACHE.set(chain, arr);
+  return arr;
+}
+// 实测覆盖率 94.4%：剩下 5.6% 是真实的语音流变（voyage/convey 源自 -vi-/-via-，
+// 但经古法语已经变成 voy- 这个和词根完全不像的拼写），splitRoot 对这些返回 null、
+// 不高亮是正确行为，不是需要修的 bug。
+function splitRoot(word, rootChain){
+  if(!word || !rootChain) return null;
+  const variants = _rootVariants(rootChain);
+  if(!variants.length) return null;
+  const lower = word.toLowerCase();
+  for(const v of variants){
+    const i = lower.indexOf(v);
+    if(i !== -1){
+      // 用原始大小写切片（Victorian 的 V 不能因为匹配用了小写变体就丢掉）
+      return { pre: word.slice(0, i), stem: word.slice(i, i + v.length),
+                post: word.slice(i + v.length), at: i, len: v.length };
+    }
+  }
+  return null;
+}
+
 // ── 仓库内置的大词表：运行时 fetch，不走 <script src> ──
 // 纯 JSON 数组当脚本求值后不留全局变量，只能 fetch。
 // 也不放进 sw.js 的 SHELL：近 1MB 预缓存会拖慢所有访客首屏，
@@ -1093,6 +1261,72 @@ function getDeckWordList(deck){
     return REMOTE_DECK_CACHE[deck] || [];
   if(deck.startsWith('user:')) return USER_DECK_CACHE[deck.slice(5)] || [];
   return [];
+}
+
+// ── 词根族分组：{root, words:[...]}[]，按词书缓存 ──
+// 顺序扫词表，每满 6 个词或遇到 root 变化就断组（组内绝不跨词根），
+// 保留词表原始顺序（不打乱、不重排）。
+const _FAMILY_GROUPS = {};
+function familyGroups(deck){
+  if(_FAMILY_GROUPS[deck]) return _FAMILY_GROUPS[deck];
+  const list = getDeckWordList(deck);
+  // 词表是 fetch 来的，首次调用时可能还没载入完（list.length === 0）——
+  // 这时候绝不能把空分组写进缓存，否则词表载入完成后也永远拿不到正确结果
+  // （rootIndexFor 那边踩过同一个坑，见上面的注释）
+  if(!list.length) return [];
+  const groups = [];
+  let cur = null;
+  for(const w of list){
+    if(!cur || w.root !== cur.root || cur.words.length >= 6){
+      cur = { root: w.root, words: [] };
+      groups.push(cur);
+    }
+    cur.words.push(w);
+  }
+  return (_FAMILY_GROUPS[deck] = groups);
+}
+
+// word → 所在的分组对象。内部用 Map 索引（词书 7424 词，线性扫太浪费），
+// 索引本身也按词书缓存，首次调用触发一次 familyGroups + 建索引，此后 O(1)。
+const _GROUP_INDEX = {};
+function groupOfWord(deck, word){
+  let idx = _GROUP_INDEX[deck];
+  if(!idx){
+    const groups = familyGroups(deck);
+    if(!groups.length) return null;   // 词表未载入，不缓存空索引，理由同上
+    idx = new Map();
+    groups.forEach(g => g.words.forEach(w => idx.set(w.w, g)));
+    _GROUP_INDEX[deck] = idx;
+  }
+  return idx.get(word) || null;
+}
+
+// ── 按词根编排词书的整组组卡：与 orderedSession 的区别是「按组取词」而不是「按词取词」，
+// 保证同一轮里出现的都是完整的词根族，对照表和同族条才有意义。
+// groupCount 由目标词数 n 换算（每组约 6 词）：8→1组，12→2组，18→3组。
+// 挑组规则：按词书原顺序遍历，选出「含有待学词」（无进度记录 = 新词，或已到期）的组，
+// 取前 groupCount 个；牌组只放这些组里「需要测试」的词（新词 + 到期词，
+// 已掌握且未到期的词不出测试卡），但每张卡带上本组全部词（_sibs），供对照展示。
+function orderedGroupSession(deck, prog, n, now){
+  const groups = familyGroups(deck);
+  const groupCount = Math.max(1, Math.round(n / 6));   // 8→1, 12→2, 18→3
+  const needsWork = w => { const p = prog[w.w]; return !p || p.nextReview <= now; };
+  const picked = [];
+  for(const g of groups){
+    if(g.words.some(needsWork)){
+      picked.push(g);
+      if(picked.length >= groupCount) break;
+    }
+  }
+  const sibs = picked.map(g => g.words.map(w => ({ w: w.w, cn: w.cn })));
+  const cards = [];
+  picked.forEach((g, gi) => {
+    g.words.forEach(w => {
+      if(!needsWork(w)) return;   // 已掌握且未到期：不出测试卡，但仍留在 _sibs 里对照
+      cards.push({ word: w.w, ph: w.ph, meaning: w.cn, root: w.root, _grp: gi, _sibs: sibs[gi] });
+    });
+  });
+  return cards;
 }
 
 // 词根族内位置索引：word → { pos, size }，按词书缓存。
@@ -1195,17 +1429,23 @@ function startDeckSession(){
   const wordList = getDeckWordList(vpDeck);
   if(!wordList.length){ toast('词库加载失败'); return; }
   const now = Date.now();
-  // 按词根编排的词书顺序取词，其余照常随机
+  // 按词根编排的词书顺序取词，其余照常随机；带 root 字段的顺序词书整组组装
+  // （成组呈现对比 + 组内测试时同族词随时可见），不带 root 的顺序词书退回逐词顺序取
   const ordered = REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
-  let pool;
-  if(ordered){
-    pool = orderedSession(wordList, vpProgress, vpCount, now);
+  const grouped = ordered && wordList.some(w => w.root);
+  if(grouped){
+    fcDeck = orderedGroupSession(vpDeck, vpProgress, vpCount, now);
   }else{
-    const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
-    const newW = wordList.filter(w => !vpProgress[w.w]);
-    pool = buildSession(due, newW, vpCount);
+    let pool;
+    if(ordered){
+      pool = orderedSession(wordList, vpProgress, vpCount, now);
+    }else{
+      const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
+      const newW = wordList.filter(w => !vpProgress[w.w]);
+      pool = buildSession(due, newW, vpCount);
+    }
+    fcDeck = pool.map(w => ({ word:w.w, ph:w.ph, meaning:w.cn, root:w.root }));
   }
-  fcDeck  = pool.map(w => ({ word:w.w, ph:w.ph, meaning:w.cn, root:w.root }));
   fcIdx   = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
@@ -1213,6 +1453,8 @@ function startDeckSession(){
   fcDoneCount = 0;
   fcMode  = 'deck';
   fcHistory = []; updateFcUndoBtn(); // 新一轮开始，上一轮的撤销记录作废
+  _fcLastGroup = null; _fcPendingGroup = null; // 新一轮开始，组对照的「上一组」记忆也要清零
+  hideFamilyIntro();                             // 面板本身也要收回，光清标记不够
 
   if(!fcDeck.length){ toast('今日没有待复习单词，明天再来！'); return; }
 
