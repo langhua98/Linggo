@@ -37,7 +37,7 @@ let fcCounts    = { again:0, hard:0, good:0 };
 let fcTotal     = 0;
 let fcOrigTotal = 0;   // session 开始时原始卡片数（不含 again 重排）
 let fcDoneCount = 0;   // 已完成卡片数（非 again 评分的累计）
-let fcSRS       = {};  // word → { nextReview, interval }
+let fcSRS       = emptyProgress();  // word → { nextReview, interval }（无原型，理由见 emptyProgress）
 let fcMode      = 'book'; // 'book' | 'deck'
 // book 模式是从哪儿进来的，决定退出闪卡后回到哪一屏：
 // 'voc' = 生词本面板（#voc），'panel' = 背单词页（#vocab-panel 的「我的生词」）
@@ -110,7 +110,14 @@ function fmtInterval(ms){
 }
 
 // ── Vocab deck progress
-let vpProgress = {};  // word → { nextReview, correct, wrong }
+// 进度表一律用无原型对象：单词是外部数据（导入的词表里真的有 constructor 这个词），
+// 普通 {} 上 prog['constructor'] 会命中 Object.prototype.constructor 而为真，
+// 那个词就被当成「已学过」——既不算新词，nextReview 又是 undefined 永远不到期，
+// 结果是永远抽不到。toString / valueOf 同理。
+function emptyProgress(){ return Object.create(null); }
+function parseProgress(raw){ return Object.assign(emptyProgress(), JSON.parse(raw || '{}')); }
+
+let vpProgress = emptyProgress();  // word → { nextReview, correct, wrong }
 let vpDeck     = 'cet4';
 let vpCount    = 12;   // 与生词本 fcSize 的默认值保持一致
 
@@ -122,12 +129,13 @@ function loadVpProgress(deck){
     ['cet4','cet6','ogden'].forEach(d => localStorage.removeItem('vp_'+d));
     localStorage.setItem('vpVer', 'fsrs1');
   }
-  try{ vpProgress = JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ vpProgress={}; }
+  try{ vpProgress = parseProgress(localStorage.getItem('vp_'+deck)); }catch(e){ vpProgress = emptyProgress(); }
 }
 function saveVpProgress(deck){
   localStorage.setItem('vp_'+deck, JSON.stringify(vpProgress));
 }
 async function syncVpFromSupabase(deck){
+  if(deck.startsWith('user:')) return;   // 用户自备词书本期只存本地，云端没有对应记录
   if(!currentUser) return;
   try{
     const rows = await SB.selectVocabProgress(currentUser.id, deck);
@@ -141,6 +149,7 @@ async function syncVpFromSupabase(deck){
 }
 let _vpSyncWarnShown = false;
 async function pushVpWord(deck, word){
+  if(deck.startsWith('user:')) return;   // 用户自备词书本期只存本地，云端没有对应记录
   if(!currentUser) return;
   const p = vpProgress[word] || { nextReview: Date.now(), correct: 0, wrong: 0, interval: 0 };
   try{
@@ -152,11 +161,11 @@ async function pushVpWord(deck, word){
 }
 
 function loadSRS(){
-  try{ fcSRS = JSON.parse(localStorage.getItem('fc_srs')||'{}'); }catch(e){ fcSRS={}; }
+  try{ fcSRS = parseProgress(localStorage.getItem('fc_srs')); }catch(e){ fcSRS = emptyProgress(); }
   // 一次性迁移：换算法（旧固定倍数 → FSRS）后老数据没有可比性，直接清空重来，
   // 用 fcSRSVer 标记避免每次加载都重置
   if(localStorage.getItem('fcSRSVer') !== 'fsrs1'){
-    fcSRS = {};
+    fcSRS = emptyProgress();
     localStorage.removeItem('fc_srs');
     localStorage.setItem('fcSRSVer', 'fsrs1');
   }
@@ -1007,16 +1016,29 @@ function getDeckWordList(deck){
   if(deck === 'cet4')  return typeof CET4     !== 'undefined' ? CET4     : [];
   if(deck === 'cet6')  return typeof CET6     !== 'undefined' ? CET6     : [];
   if(deck === 'ogden') return typeof OGDEN850 !== 'undefined' ? OGDEN850 : [];
+  if(deck.startsWith('user:')) return USER_DECK_CACHE[deck.slice(5)] || [];
   return [];
 }
 
 function updateVpStats(){
   const now = Date.now();
-  ['cet4','cet6','ogden'].forEach(deck => {
+  // 用户导入的词书追加在内置三本之后，deck id 形如 'user:<id>'
+  const decks = ['cet4','cet6','ogden'].concat(
+    (typeof userDecks !== 'undefined' ? userDecks : []).map(d => 'user:' + d.id));
+  decks.forEach(deck => {
     const wordList = getDeckWordList(deck);
+    // 用户词书的词表存在 IDB 里，异步载入。还没进缓存时 wordList 是空的，
+    // 这时候不能照常算统计 —— 会把「共 N 词」的占位覆盖成「已掌握 0/0」。
+    // 保留占位，等 preloadUserDecks() 载完会再调一次本函数。
+    if(deck.startsWith('user:') && !wordList.length){
+      const meta = userDecks.find(d => 'user:' + d.id === deck);
+      const el0  = document.getElementById(deck + '-progress');
+      if(el0 && meta) el0.textContent = `共 ${meta.count} 词`;
+      return;
+    }
     const total    = wordList.length;
     const prog = deck === vpDeck ? vpProgress : (() => {
-      try{ return JSON.parse(localStorage.getItem('vp_'+deck)||'{}'); }catch(e){ return {}; }
+      try{ return parseProgress(localStorage.getItem('vp_'+deck)); }catch(e){ return emptyProgress(); }
     })();
     const newCount       = wordList.filter(w => !prog[w.w]).length;
     // 互斥分类：mastered 优先，due/scheduled 只算未掌握词
@@ -1089,7 +1111,12 @@ function startDeckSession(){
   const fc = document.getElementById('flashcard');
   fc.style.display = '';
   fc.classList.add('open');
-  const deckLabel = vpDeck === 'ogden' ? 'Ogden 850' : vpDeck.toUpperCase().replace('CET','CET-');
+  // 用户自备词书显示词书名；内置的才走 CET-4/CET-6 那套大写规则
+  // （否则 user:mswsu9du 会被显示成 "USER:MSWSU9DU"）
+  const deckLabel = vpDeck.startsWith('user:')
+    ? (typeof userDeckName === 'function' ? userDeckName(vpDeck.slice(5)) : '我的词书')
+    : vpDeck === 'ogden' ? 'Ogden 850'
+    : vpDeck.toUpperCase().replace('CET','CET-');
   document.getElementById('fc-title').textContent = `${deckLabel} · ${fcTotal} 词`;
   document.getElementById('fc-res-back').textContent = '返回词库';
   showFcCard(true);
@@ -1100,33 +1127,38 @@ document.getElementById('deck-open-btn').addEventListener('click', openVocabPane
 // 首页「🃏 闪卡背词」卡片也进背单词页
 document.getElementById('feat-flash')?.addEventListener('click', openVocabPanel);
 document.getElementById('vp-close').addEventListener('click', closeVocabPanel);
-document.getElementById('vp-start').addEventListener('click', ()=>{
+document.getElementById('vp-start').addEventListener('click', async ()=>{
   if(vpDeck === 'mine'){
     // 我的生词走生词本闪卡那条路（FSRS + fcSize），不是词库题库
     if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
     document.getElementById('vocab-panel').style.display = 'none';
     openFlashcard('panel');   // 记住是从背单词页进来的，退出时才回得对
   } else {
+    // 用户导入的词书是异步从 IDB 载入的，切换到它未必已进缓存，开始前兜底一次
+    if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
     startDeckSession();
   }
 });
 
-// Deck selector
-document.querySelectorAll('.vp-deck').forEach(el=>{
-  el.addEventListener('click', ()=>{
-    document.querySelectorAll('.vp-deck').forEach(d=>d.classList.remove('on'));
-    el.classList.add('on');
-    vpDeck = el.dataset.deck;
-    if(vpDeck === 'mine'){
-      // 切到「我的生词」：把当前高亮的数量同步进 fcSize（生词本闪卡用的是它，不是 vpCount）。
-      // 切走时不动 fcSize，免得覆盖生词本面板里选好的值。
-      syncMineSize();
-      updateMineRow();
-    } else {
-      loadVpProgress(vpDeck);
-      updateVpStats();
-    }
-  });
+// Deck selector —— 事件委托绑在 .vp-decks 容器上：用户导入的词书行是运行时动态插入的，
+// 加载时逐个 forEach 绑定拿不到这些行，必须走委托
+document.querySelector('.vp-decks')?.addEventListener('click', async e=>{
+  if(e.target.closest('.vp-dk-del')) return;   // 删除按钮不触发选中，交给 userdeck.js 处理
+  const el = e.target.closest('.vp-deck');
+  if(!el || el.classList.contains('vp-deck-soon')) return;
+  document.querySelectorAll('.vp-deck').forEach(d=>d.classList.remove('on'));
+  el.classList.add('on');
+  vpDeck = el.dataset.deck;
+  if(vpDeck === 'mine'){
+    // 切到「我的生词」：把当前高亮的数量同步进 fcSize（生词本闪卡用的是它，不是 vpCount）。
+    // 切走时不动 fcSize，免得覆盖生词本面板里选好的值。
+    syncMineSize();
+    updateMineRow();
+  } else {
+    if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
+    loadVpProgress(vpDeck);
+    updateVpStats();
+  }
 });
 
 // 把 .vp-session-btns 当前高亮的数量写进 fcSize

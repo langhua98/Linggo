@@ -36,6 +36,14 @@ async function idbHas(url){
     req.onerror   = ()=> rej(req.error);
   });
 }
+async function idbDelete(url){
+  const db = await openIDB();
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).delete(url);
+    tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
+  });
+}
 
 // ═══════════════════════════════════════════
 //  BOOK DATA

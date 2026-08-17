@@ -2505,6 +2505,47 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   .vp-dk-check{ transform:scale(.6); transition:opacity .18s, transform .18s cubic-bezier(.34,1.5,.64,1); }
   .vp-deck.on .vp-dk-check{ transform:scale(1); }
 }
+
+/* ── 用户导入词书：删除按钮 ── */
+/* 常态低调（半透明圆点），hover/focus 才提示危险操作，别跟旁边的选中徽章抢注意力 */
+.vp-dk-del{
+  width:24px;height:24px;border-radius:50%;
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--text-3);
+  font-size:15px;line-height:1;
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;cursor:pointer;
+  opacity:.55;
+  transition:opacity .15s,background .15s,color .15s,border-color .15s;
+}
+.vp-dk-del:hover,.vp-dk-del:focus-visible{
+  opacity:1;
+  background:#FEE2E2;color:#DC2626;border-color:#FCA5A5;
+}
+.night .vp-dk-del:hover,.night .vp-dk-del:focus-visible{
+  background:rgba(220,38,38,.22);color:#F87171;border-color:rgba(248,113,113,.4);
+}
+
+/* ── 导入我的词表按钮 ── */
+/* 虚线边框 + 透明底：比实心的 .vp-start-btn 弱一档，一眼看出是"添加"这种次级操作 */
+#vp-import-btn{
+  display:block;
+  margin:0 16px 24px;
+  width:calc(100% - 32px);
+  padding:14px;
+  background:transparent;
+  border:1.5px dashed var(--border);
+  border-radius:var(--r-md);
+  color:var(--text-2);
+  font-size:14px;font-weight:600;
+  cursor:pointer;
+  transition:border-color .15s,color .15s,background .15s;
+}
+#vp-import-btn:hover{
+  border-color:var(--accent);color:var(--accent);
+  background:var(--accent-2);
+}
 .vp-session{
   padding:0 20px 20px;
 }
