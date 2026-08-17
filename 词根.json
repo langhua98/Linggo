@@ -1,0 +1,1102 @@
+[
+ {
+  "no": 1,
+  "root": "-vinc- = -vict-",
+  "mean": "胜，征服",
+  "extend": "战胜/胜利/征服/克服",
+  "src": {
+   "lang": "拉丁语",
+   "word": "vincere",
+   "gloss": "战胜"
+  }
+ },
+ {
+  "no": 2,
+  "root": "-form-",
+  "mean": "形式，格式，形成",
+  "extend": "形式/外形/形状/形成",
+  "src": {
+   "lang": "拉丁语",
+   "word": "formare",
+   "gloss": "形成"
+  }
+ },
+ {
+  "no": 3,
+  "root": "-prehend- = -prehens-",
+  "mean": "抓住",
+  "extend": "抓住/理解/包含",
+  "src": {
+   "lang": "拉丁语",
+   "word": "prehendere",
+   "gloss": "抓住"
+  }
+ },
+ {
+  "no": 4,
+  "root": "-struct-",
+  "mean": "建造",
+  "extend": "建造/构造/计划/组织/安排/基础/结构",
+  "src": {
+   "lang": "拉丁语",
+   "word": "structura",
+   "gloss": "装配"
+  }
+ },
+ {
+  "no": 5,
+  "root": "-od-",
+  "mean": "路",
+  "extend": "道路/方法/周期/条理",
+  "src": {
+   "lang": "希腊语",
+   "word": "hodos",
+   "gloss": "路"
+  }
+ },
+ {
+  "no": 6,
+  "root": "-bar- = -bal- = -ban-",
+  "mean": "长木条，障碍",
+  "extend": "条/杆/棒/酒吧/木条/律师/阻拦/栅栏/栏杆/障碍物",
+  "src": {
+   "lang": "中古拉丁语",
+   "word": "barra",
+   "gloss": "横木"
+  }
+ },
+ {
+  "no": 7,
+  "root": "-vi- = -via-",
+  "mean": "路",
+  "extend": "路/途径",
+  "src": {
+   "lang": "拉丁语",
+   "word": "via",
+   "gloss": "道路"
+  }
+ },
+ {
+  "no": 8,
+  "root": "-script- = -scrib- = -scrip-",
+  "mean": "写，刻写",
+  "extend": "写/刻",
+  "src": {
+   "lang": "拉丁语",
+   "word": "scribere",
+   "gloss": "本意是"
+  }
+ },
+ {
+  "no": 9,
+  "root": "-techn(o)-",
+  "mean": "技术，艺术",
+  "extend": "技术/艺术",
+  "src": {
+   "lang": "拉丁语",
+   "word": "technicus",
+   "gloss": "也来自希腊语"
+  }
+ },
+ {
+  "no": 10,
+  "root": "-press-",
+  "mean": "压，按",
+  "extend": "压/按/印刷/压迫/压制",
+  "src": {
+   "lang": "拉丁语",
+   "word": "pressare",
+   "gloss": "按"
+  }
+ },
+ {
+  "no": 11,
+  "root": "-rect-",
+  "mean": "正，直",
+  "extend": "统治/支配/控制/直的/僵直",
+  "src": {
+   "lang": "拉丁语",
+   "word": "regere",
+   "gloss": "直"
+  }
+ },
+ {
+  "no": 12,
+  "root": "-flu- = -flux-",
+  "mean": "流",
+  "extend": "流出/流利/流畅",
+  "src": {
+   "lang": "拉丁语",
+   "word": "fluere",
+   "gloss": "流动"
+  }
+ },
+ {
+  "no": 13,
+  "root": "-st- = -sist- = -stat- = -stin- = -stem-",
+  "mean": "立，站",
+  "extend": "直立/安置/固定/停止/安放/被放置/立/站立/静止",
+  "src": {
+   "lang": "拉丁语",
+   "word": "sistere",
+   "gloss": "站立"
+  }
+ },
+ {
+  "no": 14,
+  "root": "-sit- = -sid- = -sed- = -sess-",
+  "mean": "坐",
+  "extend": "坐/坐落于/处境",
+  "src": {
+   "lang": "拉丁语",
+   "word": "sidere",
+   "gloss": "词根"
+  }
+ },
+ {
+  "no": 15,
+  "root": "-pear- = -par-",
+  "mean": "生",
+  "extend": "生/生产",
+  "src": {
+   "lang": "拉丁语",
+   "word": "parere",
+   "gloss": "生产"
+  }
+ },
+ {
+  "no": 16,
+  "root": "-mov- = -mob- = -mot-",
+  "mean": "移动",
+  "extend": "动/移动/搬迁/迁移",
+  "src": {
+   "lang": "拉丁语",
+   "word": "mot",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 17,
+  "root": "-cover-",
+  "mean": "覆盖，掩盖",
+  "extend": "遮挡/掩盖/掩盖/完全覆盖",
+  "src": {
+   "lang": "拉丁语",
+   "word": "cooperire",
+   "gloss": "覆盖"
+  }
+ },
+ {
+  "no": 18,
+  "root": "-plic- = -ply- = -pli- = -ple- = -plex- = -plo-",
+  "mean": "= to flod（倍, 重, 折叠）",
+  "extend": "折/倍/对折/编结",
+  "src": {
+   "lang": "拉丁语",
+   "word": "plicare",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 19,
+  "root": "-mus-",
+  "mean": "音乐，娱乐",
+  "extend": "文化/音乐/娱乐/博物",
+  "src": {
+   "lang": "希腊语",
+   "word": "Mousa",
+   "gloss": "缪斯女神"
+  }
+ },
+ {
+  "no": 20,
+  "root": "-erg- = -org- = -urg-",
+  "mean": "做，工作",
+  "extend": "功/作用/使用",
+  "src": {
+   "lang": "希腊语",
+   "word": "ergon",
+   "gloss": "工作"
+  }
+ },
+ {
+  "no": 21,
+  "root": "-lect- = -lig- = -leg- = -legis-",
+  "mean": "采集，读，说，法律",
+  "extend": "收/选择/收集/集合/阅读/读/说/演说/辩论/法律/法制",
+  "src": {
+   "lang": "拉丁语",
+   "word": "legere",
+   "gloss": "选/挑"
+  }
+ },
+ {
+  "no": 22,
+  "root": "-nerv- = -neur-",
+  "mean": "神经",
+  "extend": "神经/勇气/紧张/焦虑",
+  "src": {
+   "lang": "拉丁语",
+   "word": "nervus",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 23,
+  "root": "-path(o)- = -pat(i)- = -pass(i)- = -pathy-",
+  "mean": "感受，受苦",
+  "extend": "感情/感受/受苦的",
+  "src": {
+   "lang": "希腊语",
+   "word": "pathos",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 24,
+  "root": "-strain- = -strict- = -stress- = -string- = -strang-",
+  "mean": "= to draw tight（拉紧）",
+  "extend": "收紧/捆绑/连接",
+  "src": {
+   "lang": "拉丁语",
+   "word": "strain",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 25,
+  "root": "-vac- = -vacu- = -van- = -void- = -vain-",
+  "mean": "空",
+  "extend": "虚/空虚/空的",
+  "src": {
+   "lang": "拉丁语",
+   "word": "vaco",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 26,
+  "root": "-ple(t)- = -plet- = -pli- = -ply- = -plen(i)-",
+  "mean": "= to fill, full 装满（的）",
+  "extend": "全/填满/填充/充满/满的",
+  "src": {
+   "lang": "拉丁语",
+   "word": "plere",
+   "gloss": "填满"
+  }
+ },
+ {
+  "no": 27,
+  "root": "-medi-",
+  "mean": "中间",
+  "extend": "中间/中间的",
+  "src": {
+   "lang": "拉丁语",
+   "word": "medius",
+   "gloss": "中间的"
+  }
+ },
+ {
+  "no": 28,
+  "root": "-preci- = -prais- = -pric- = -priz-",
+  "mean": "价值",
+  "extend": "定价/价格",
+  "src": {
+   "lang": "拉丁语",
+   "word": "pretium",
+   "gloss": "价值"
+  }
+ },
+ {
+  "no": 29,
+  "root": "-miss- = -mit-",
+  "mean": "投，送，发",
+  "extend": "扔出/释放/放出/派送/派遣",
+  "src": {
+   "lang": "拉丁语",
+   "word": "mittere",
+   "gloss": "派/送"
+  }
+ },
+ {
+  "no": 30,
+  "root": "-sci-",
+  "mean": "知",
+  "extend": "晓/知道/了解",
+  "src": {
+   "lang": "拉丁语",
+   "word": "scire",
+   "gloss": "知道"
+  }
+ },
+ {
+  "no": 31,
+  "root": "-liter-",
+  "mean": "文字",
+  "extend": "字母",
+  "src": {
+   "lang": "拉丁语",
+   "word": "littera",
+   "gloss": "文字"
+  }
+ },
+ {
+  "no": 32,
+  "root": "-sum- = -sumpt-",
+  "mean": "最高，总，拿",
+  "extend": "取/花费/总/最高",
+  "src": {
+   "lang": "拉丁语",
+   "word": "summus",
+   "gloss": "最高"
+  }
+ },
+ {
+  "no": 33,
+  "root": "-spect- = -speci- = -spec- = -spic- = -spi- = -spy-",
+  "mean": "to look, to see 看",
+  "extend": "看见/检查",
+  "src": {
+   "lang": "拉丁语",
+   "word": "specere",
+   "gloss": "其最早的来源可追"
+  }
+ },
+ {
+  "no": 34,
+  "root": "-vis- = -vid-",
+  "mean": "看",
+  "extend": "看见/观看/审视",
+  "src": {
+   "lang": "拉丁语",
+   "word": "videre",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 35,
+  "root": "-seri-",
+  "mean": "重要",
+  "extend": "重要/重大",
+  "src": {
+   "lang": "拉丁语",
+   "word": "serius",
+   "gloss": "严肃"
+  }
+ },
+ {
+  "no": 36,
+  "root": "-lat-",
+  "mean": "拿，持，带来，搬运, 担负",
+  "extend": "拿/带/负/带来/搬运/携带/运载/负担/产生",
+  "src": {
+   "lang": "拉丁语",
+   "word": "latus",
+   "gloss": "搬运"
+  }
+ },
+ {
+  "no": 37,
+  "root": "-lax-",
+  "mean": "松弛，放松",
+  "extend": "松弛/放松",
+  "src": {
+   "lang": "拉丁语",
+   "word": "laxus",
+   "gloss": "松的"
+  }
+ },
+ {
+  "no": 38,
+  "root": "-sim- =-sem- = -simil- = -simul- = -sembl-",
+  "mean": "相似",
+  "extend": "相似/一样/类似/一起",
+  "src": {
+   "lang": "拉丁语",
+   "word": "semol",
+   "gloss": "词根"
+  }
+ },
+ {
+  "no": 39,
+  "root": "-discip-",
+  "mean": "法则",
+  "extend": "法则/自律/学习",
+  "src": {
+   "lang": "拉丁语",
+   "word": "disciplina",
+   "gloss": "下达命令"
+  }
+ },
+ {
+  "no": 40,
+  "root": "-helic-",
+  "mean": "旋",
+  "extend": "螺旋/旋转",
+  "src": {
+   "lang": "希腊语",
+   "word": "helix",
+   "gloss": "螺旋形的"
+  }
+ },
+ {
+  "no": 41,
+  "root": "-cept- = -cap- = -capt- = -ceiv-",
+  "mean": "拿, 抓",
+  "extend": "取/拿/抓住/握住/容纳/接收",
+  "src": {
+   "lang": "拉丁语",
+   "word": "capere",
+   "gloss": "可以追溯到原始印"
+  }
+ },
+ {
+  "no": 42,
+  "root": "-sert-",
+  "mean": "放置, 结合",
+  "extend": "连接/放置",
+  "src": {
+   "lang": "拉丁语",
+   "word": "serere",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 43,
+  "root": "-duct- = -duc-",
+  "mean": "引导",
+  "extend": "领导/带来/指引",
+  "src": {
+   "lang": "拉丁语",
+   "word": "ducere",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 44,
+  "root": "-peri- = -pert-",
+  "mean": "试验，尝试",
+  "extend": "尝试/实验",
+  "src": {
+   "lang": "拉丁语",
+   "word": "experiri",
+   "gloss": "尝试"
+  }
+ },
+ {
+  "no": 45,
+  "root": "-scen-",
+  "mean": "设置",
+  "extend": "设定/背景/布局",
+  "src": {
+   "lang": "拉丁语",
+   "word": "scen",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 46,
+  "root": "-journ-",
+  "mean": "一天",
+  "extend": "日/每日/一日/日子",
+  "src": {
+   "lang": "古法语",
+   "word": "jornee",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 47,
+  "root": "-circ- = -cycl-",
+  "mean": "圆",
+  "extend": "环/圈/轮/圆圈/周期",
+  "src": {
+   "lang": "希腊语",
+   "word": "kyklos",
+   "gloss": "圆环"
+  }
+ },
+ {
+  "no": 48,
+  "root": "-part-",
+  "mean": "分，部分",
+  "extend": "部分/分离/分开",
+  "src": {
+   "lang": "拉丁语",
+   "word": "part",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 49,
+  "root": "-ven- = -vent-",
+  "mean": "来",
+  "extend": "走/来到/发生",
+  "src": {
+   "lang": "拉丁语",
+   "word": "venio",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 50,
+  "root": "-haust-",
+  "mean": "抽出",
+  "extend": "抽出/耗尽/抽水/吞咽",
+  "src": {
+   "lang": "拉丁语",
+   "word": "haurire",
+   "gloss": "汲取"
+  }
+ },
+ {
+  "no": 51,
+  "root": "-tra- = -tract- = -treat-",
+  "mean": "拖，拉，拽",
+  "extend": "拖拽/引导/抽/拖/吸引/拖拉/引出",
+  "src": {
+   "lang": "拉丁语",
+   "word": "trahere",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 52,
+  "root": "-loc-",
+  "mean": "地方",
+  "extend": "场所/位置/放置/安放",
+  "src": {
+   "lang": "拉丁语",
+   "word": "locus",
+   "gloss": "地方"
+  }
+ },
+ {
+  "no": 53,
+  "root": "-urb-",
+  "mean": "城市",
+  "extend": "都市",
+  "src": {
+   "lang": "拉丁语",
+   "word": "urbs",
+   "gloss": "城市"
+  }
+ },
+ {
+  "no": 54,
+  "root": "-fortun-",
+  "mean": "财富",
+  "extend": "财富/运气",
+  "src": {
+   "lang": "拉丁语",
+   "word": "fortuna",
+   "gloss": "运气"
+  }
+ },
+ {
+  "no": 55,
+  "root": "-torn- = -tour- = -tourn-",
+  "mean": "转，迂回",
+  "extend": "转动/转变/旅游/环绕/迂回/旋转/回绕",
+  "src": {
+   "lang": "拉丁语",
+   "word": "tornare",
+   "gloss": "词根"
+  }
+ },
+ {
+  "no": 56,
+  "root": "-noc- = -nox(i)- = -nui- = -nec-",
+  "mean": "伤害",
+  "extend": "有害/不幸/悲伤",
+  "src": {
+   "lang": "拉丁语",
+   "word": "nocere",
+   "gloss": "伤害"
+  }
+ },
+ {
+  "no": 57,
+  "root": "-proach- = -proxim-",
+  "mean": "接近",
+  "extend": "靠近/附近/最近的",
+  "src": {
+   "lang": "拉丁语",
+   "word": "proximus",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 58,
+  "root": "-gorg-",
+  "mean": "吞咽",
+  "extend": "吞咽/咀嚼",
+  "src": {
+   "lang": "拉丁语",
+   "word": "gurges",
+   "gloss": "喉咙，漩涡"
+  }
+ },
+ {
+  "no": 59,
+  "root": "-arch- = -archa(e)-",
+  "mean": "统治，起始",
+  "extend": "统治/起始/古代",
+  "src": {
+   "lang": "希腊语",
+   "word": "arkhos",
+   "gloss": "一般构成名词"
+  }
+ },
+ {
+  "no": 60,
+  "root": "-fess-",
+  "mean": "说，宣称",
+  "extend": "说话/说出/承认",
+  "src": {
+   "lang": "拉丁语",
+   "word": "fari",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 61,
+  "root": "-manu- = -man-",
+  "mean": "手",
+  "extend": "手/手工",
+  "src": {
+   "lang": "拉丁语",
+   "word": "manus",
+   "gloss": "手"
+  }
+ },
+ {
+  "no": 62,
+  "root": "-fasc-",
+  "mean": "捆，束",
+  "extend": "捆绑/束缚/困住",
+  "src": {
+   "lang": "拉丁语",
+   "word": "fasces",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 63,
+  "root": "-viv- = -vit- = -veg-",
+  "mean": "活",
+  "extend": "生活/生存/生命",
+  "src": {
+   "lang": "拉丁语",
+   "word": "vivere",
+   "gloss": "过去分词"
+  }
+ },
+ {
+  "no": 64,
+  "root": "-tact- = -tang- = -tag- = -ting- = -tig- = -tast-",
+  "mean": "接触",
+  "extend": "触/触觉",
+  "src": {
+   "lang": "拉丁语",
+   "word": "tangere",
+   "gloss": "的不定式词干"
+  }
+ },
+ {
+  "no": 65,
+  "root": "-liqu-",
+  "mean": "液体",
+  "extend": "液体/流动",
+  "src": {
+   "lang": "拉丁语",
+   "word": "liquidae",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 66,
+  "root": "-pand- = -pans-",
+  "mean": "展开",
+  "extend": "展开/拓展/延展",
+  "src": {
+   "lang": "拉丁语",
+   "word": "pandere",
+   "gloss": "展开"
+  }
+ },
+ {
+  "no": 67,
+  "root": "-mix- = -misc- = -mixt-",
+  "mean": "混杂, 混合",
+  "extend": "杂乱/混合",
+  "src": {
+   "lang": "拉丁语",
+   "word": "miscere",
+   "gloss": "混杂"
+  }
+ },
+ {
+  "no": 68,
+  "root": "-electr-",
+  "mean": "电",
+  "extend": "琥珀/带电/电的/带电的",
+  "src": {
+   "lang": "拉丁语",
+   "word": "electricus",
+   "gloss": "琥珀"
+  }
+ },
+ {
+  "no": 69,
+  "root": "-clud- = -clus- = -clos- = -clois- = -claus- = -clot-",
+  "mean": "关闭",
+  "extend": "紧闭/结束",
+  "src": {
+   "lang": "拉丁语",
+   "word": "claudere",
+   "gloss": "关闭"
+  }
+ },
+ {
+  "no": 70,
+  "root": "-ag- = -act- = -ig-",
+  "mean": "驱使；做",
+  "extend": "干/推动/行动/活动/动作/扮演/表演/演出/仿效/推动/驱使",
+  "src": {
+   "lang": "拉丁语",
+   "word": "agere",
+   "gloss": "的词干部分"
+  }
+ },
+ {
+  "no": 71,
+  "root": "-order- = -ord- = -ordin- = -ordain-",
+  "mean": "命令",
+  "extend": "命令/通常/普通",
+  "src": {
+   "lang": "拉丁语",
+   "word": "ord",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 72,
+  "root": "-solv- = -solu- = -solut-",
+  "mean": "解，松的",
+  "extend": "分解/解开/溶解/松懈/放松/释放/使自由",
+  "src": {
+   "lang": "拉丁语",
+   "word": "solvere",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 73,
+  "root": "-flagr- = -flam-",
+  "mean": "燃烧，火焰",
+  "extend": "燃烧/火焰",
+  "src": {
+   "lang": "拉丁语",
+   "word": "flamma",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 74,
+  "root": "-fac(t)- = -fec(t)- = -fic(t)-",
+  "mean": "做",
+  "extend": "形成/形状/塑造/假装/构造/虚构/成形/做/制作/创造",
+  "src": {
+   "lang": "拉丁语",
+   "word": "facere",
+   "gloss": "做"
+  }
+ },
+ {
+  "no": 75,
+  "root": "-ton- = -tun-",
+  "mean": "声, 音调",
+  "extend": "雷声/声音/升调/震惊",
+  "src": {
+   "lang": "拉丁语",
+   "word": "tonus",
+   "gloss": "声音和希腊语"
+  }
+ },
+ {
+  "no": 76,
+  "root": "-tain- = -ten- = -tin- = -tent-",
+  "mean": "握, 持, 守",
+  "extend": "持有/保持/拿/握/守/控制/掌控/停止/连接/容纳",
+  "src": {
+   "lang": "拉丁语",
+   "word": "tenere",
+   "gloss": "保持"
+  }
+ },
+ {
+  "no": 77,
+  "root": "-capit- = -cap(t)- = -cep(s)- = -chapt- = -cip-",
+  "mean": "头",
+  "extend": "头/头领/首要/领袖/酋长",
+  "src": {
+   "lang": "拉丁语",
+   "word": "caput",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 78,
+  "root": "-ced- = -ceed- = -cess-",
+  "mean": "走",
+  "extend": "去/行走/放弃/前进/让步/继续/进行/屈服/离开",
+  "src": {
+   "lang": "拉丁语",
+   "word": "cedere",
+   "gloss": "走"
+  }
+ },
+ {
+  "no": 79,
+  "root": "-log(ue)- = -loqu- = -locut-",
+  "mean": "言，说",
+  "extend": "言/说/读/讲演/讲话/思想/语言/推理",
+  "src": {
+   "lang": "希腊语",
+   "word": "log",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 80,
+  "root": "-fend- = -fens-",
+  "mean": "打击",
+  "extend": "打击/防御/阻拦",
+  "src": {
+   "lang": "拉丁语",
+   "word": "fendere",
+   "gloss": "打击"
+  }
+ },
+ {
+  "no": 81,
+  "root": "-cre- = -cresc- = -cret-",
+  "mean": "增长，生长，产生",
+  "extend": "制造/增长/创造",
+  "src": {
+   "lang": "拉丁语",
+   "word": "creare",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 82,
+  "root": "-cent-",
+  "mean": "百",
+  "extend": "一百/百分之一",
+  "src": {
+   "lang": "拉丁语",
+   "word": "centum",
+   "gloss": "百"
+  }
+ },
+ {
+  "no": 83,
+  "root": "-sign-",
+  "mean": "设计",
+  "extend": "记号/符号/设计/签字/标记",
+  "src": {
+   "lang": "拉丁语",
+   "word": "signare",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 84,
+  "root": "-doc-，-doct-",
+  "mean": "教",
+  "extend": "教导/教诲/教育/规则",
+  "src": {
+   "lang": "拉丁语",
+   "word": "docere",
+   "gloss": "教"
+  }
+ },
+ {
+  "no": 85,
+  "root": "-milit-",
+  "mean": "=soldier 兵",
+  "extend": "军队、军国、军事",
+  "src": {
+   "lang": "拉丁语",
+   "word": "milit",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 86,
+  "root": "-centr-",
+  "mean": "中心",
+  "extend": "中间/中心/中部",
+  "src": {
+   "lang": "拉丁语",
+   "word": "centrum",
+   "gloss": "中心"
+  }
+ },
+ {
+  "no": 87,
+  "root": "-fin-",
+  "mean": "终结，末尾，界限",
+  "extend": "终/结尾/范围/结束/界限/限制/尽头",
+  "src": {
+   "lang": "拉丁语",
+   "word": "finire",
+   "gloss": "其含义为"
+  }
+ },
+ {
+  "no": 88,
+  "root": "-fan- = -phan-",
+  "mean": "幻影，幻象",
+  "extend": "呈现/出现/空想/幻想",
+  "src": {
+   "lang": "希腊语",
+   "word": "phantazein",
+   "gloss": "意为"
+  }
+ },
+ {
+  "no": 89,
+  "root": "-pend- = -pens- = -pond- = -penc-",
+  "mean": "悬挂，称量，花费",
+  "extend": "衡量/称量/支付/掂量",
+  "src": {
+   "lang": "拉丁语",
+   "word": "pendere",
+   "gloss": "悬挂，称量"
+  }
+ },
+ {
+  "no": 90,
+  "root": "-van- = -advance- = -advant-",
+  "mean": "前，先",
+  "extend": "提前/前进/超前",
+  "src": {
+   "lang": "法语",
+   "word": "avance",
+   "gloss": "以前"
+  }
+ },
+ {
+  "no": 91,
+  "root": "-frequen- = -frequent-",
+  "mean": "反复",
+  "extend": "反复/经常/高频率",
+  "src": {
+   "lang": "拉丁语",
+   "word": "frequens",
+   "gloss": "反复的"
+  }
+ },
+ {
+  "no": 92,
+  "root": "-di-",
+  "mean": "= day 日",
+  "extend": "日子/日记",
+  "src": {
+   "lang": "拉丁语",
+   "word": "dies",
+   "gloss": "日子"
+  }
+ },
+ {
+  "no": 93,
+  "root": "-rar-",
+  "mean": "稀有",
+  "extend": "稀少/罕见",
+  "src": {
+   "lang": "拉丁语",
+   "word": "rarus",
+   "gloss": "稀疏的"
+  }
+ },
+ {
+  "no": 94,
+  "root": "-verb-",
+  "mean": "字，词",
+  "extend": "词语/字",
+  "src": {
+   "lang": "拉丁语",
+   "word": "verbum",
+   "gloss": "词"
+  }
+ },
+ {
+  "no": 95,
+  "root": "-anxi-",
+  "mean": "紧张，不安",
+  "extend": "紧张/焦虑",
+  "src": {
+   "lang": "拉丁语",
+   "word": "anxius",
+   "gloss": "热切期望的"
+  }
+ },
+ {
+  "no": 96,
+  "root": "-jur- = -jud- = -jus-",
+  "mean": "法律",
+  "extend": "发誓/正确",
+  "src": {
+   "lang": "拉丁语",
+   "word": "jus",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 97,
+  "root": "-pun(i)- = -poen- = -pain- = -penal- = -pent-",
+  "mean": "惩罚",
+  "extend": "惩罚/处置/惩罚/打击",
+  "src": {
+   "lang": "拉丁语",
+   "word": "poena",
+   "gloss": ""
+  }
+ },
+ {
+  "no": 98,
+  "root": "-norm-",
+  "mean": "规范，正规，正常",
+  "extend": "标准/规范/正常",
+  "src": {
+   "lang": "拉丁语",
+   "word": "norma",
+   "gloss": "规范"
+  }
+ },
+ {
+  "no": 99,
+  "root": "-pneum(on)-",
+  "mean": "肺",
+  "extend": "肺/呼吸",
+  "src": {
+   "lang": "希腊语",
+   "word": "pneumon",
+   "gloss": "肺"
+  }
+ },
+ {
+  "no": 100,
+  "root": "-rad(io)- = -ray-",
+  "mean": "光线, 辐射",
+  "extend": "辐射/射线",
+  "src": {
+   "lang": "拉丁语",
+   "word": "radius",
+   "gloss": "光线"
+  }
+ }
+]
