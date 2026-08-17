@@ -5,6 +5,7 @@
 // 依赖（index.html 结构先加载）：.vp-decks 容器（cet4/cet6/ogden 静态行之后插入用户词书行）
 // 依赖顺序：本文件须在 ogden850.js 之后、srs.js 之前加载 ——
 //   srs.js 的 getDeckWordList/updateVpStats 需要读本文件暴露的 userDecks / USER_DECK_CACHE / loadUserDeck。
+//   （仓库内置的大词表注册表及其加载函数已整段搬去 srs.js 自己定义、自己消费，本文件不再涉及）
 //
 // 存储分层（设计要点）：
 //   词表正文（可能 7000+ 词、近 1MB JSON）→ IndexedDB，key = 'userdeck:'+id，
@@ -263,35 +264,6 @@ async function preloadUserDecks(){
     try{ await loadUserDeck(d.id); }catch(e){ console.warn('预载词书失败', d.id, e); }
   }
   if(typeof updateVpStats === 'function') updateVpStats();
-}
-
-// ── 仓库内置的大词表：运行时 fetch，不走 <script src> ──
-// 纯 JSON 数组当脚本求值后不留全局变量，只能 fetch。
-// 也不放进 sw.js 的 SHELL：近 1MB 预缓存会拖慢所有访客首屏，
-// 改成首次选中该词书时才拉；sw.js 对同源静态资源是缓存优先，拉过一次之后就走缓存。
-const REMOTE_DECKS = {
-  // ordered：按词根编排的教材，必须顺着背 —— 同族词挨着出现才是这套方法的意义，
-  // 打乱抽取等于把词根记忆法废掉。其余词书（cet4/cet6/ogden/用户导入）仍是随机。
-  song1: { name: '词霸天下38000之一', url: '词霸一.json', count: 7424, ordered: true }
-};
-const REMOTE_DECK_CACHE = {};
-
-async function loadRemoteDeck(id){
-  if(REMOTE_DECK_CACHE[id]) return REMOTE_DECK_CACHE[id];
-  const meta = REMOTE_DECKS[id];
-  if(!meta) return [];
-  try{
-    const res = await fetch(encodeURI(meta.url));
-    if(!res.ok) throw new Error('HTTP ' + res.status);
-    const words = await res.json();
-    if(!Array.isArray(words)) throw new Error('不是数组');
-    REMOTE_DECK_CACHE[id] = words;
-    return words;
-  }catch(e){
-    console.warn('loadRemoteDeck failed:', id, e);
-    if(typeof toast === 'function') toast('词书加载失败，请检查网络');
-    return [];
-  }
 }
 
 loadUserDeckList();

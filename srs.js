@@ -655,8 +655,7 @@ function rateFcCard(rating){
   if(rating === 'again'){
     if(fcDeck.length < fcOrigTotal * 3){
       // 顺序词书用固定偏移，随机偏移会打乱本轮的词根次序
-      const _ordered = fcMode==='deck' && typeof REMOTE_DECKS !== 'undefined'
-                    && REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
+      const _ordered = fcMode==='deck' && REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
       const offset = _ordered ? 3 : 2 + Math.floor(Math.random() * 3);
       const reinsert = Math.min(fcIdx + 1 + offset, fcDeck.length);
       fcDeck.splice(reinsert, 0, {...v});
@@ -1052,11 +1051,45 @@ function updateStreakUI(){
   }
 }
 
+// ── 仓库内置的大词表：运行时 fetch，不走 <script src> ──
+// 纯 JSON 数组当脚本求值后不留全局变量，只能 fetch。
+// 也不放进 sw.js 的 SHELL：近 1MB 预缓存会拖慢所有访客首屏，
+// 改成首次选中该词书时才拉；sw.js 对同源静态资源是缓存优先，拉过一次之后就走缓存。
+//
+// 注册表放在 srs.js（而不是 userdeck.js）是有意的：消费它的 getDeckWordList /
+// updateVpStats / 词书行点击都在本文件。分两个文件放过一次，结果老用户的 SW
+// 缓存里 userdeck.js 是旧的、srs.js 是新的，REMOTE_DECKS 直接 undefined，
+// 词表永远载不进来。定义和消费放同一个文件，就没有这种版本错配的余地。
+const REMOTE_DECKS = {
+  // ordered：按词根编排的教材，必须顺着背 —— 同族词挨着出现才是这套方法的意义，
+  // 打乱抽取等于把词根记忆法废掉。其余词书（cet4/cet6/ogden/用户导入）仍是随机。
+  song1: { name: '词霸天下38000之一', url: '词霸一.json', count: 7424, ordered: true }
+};
+const REMOTE_DECK_CACHE = {};
+
+async function loadRemoteDeck(id){
+  if(REMOTE_DECK_CACHE[id]) return REMOTE_DECK_CACHE[id];
+  const meta = REMOTE_DECKS[id];
+  if(!meta) return [];
+  try{
+    const res = await fetch(encodeURI(meta.url));
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const words = await res.json();
+    if(!Array.isArray(words)) throw new Error('不是数组');
+    REMOTE_DECK_CACHE[id] = words;
+    return words;
+  }catch(e){
+    console.warn('loadRemoteDeck failed:', id, e);
+    if(typeof toast === 'function') toast('词书下载失败，请检查网络后重试');
+    return [];
+  }
+}
+
 function getDeckWordList(deck){
   if(deck === 'cet4')  return typeof CET4     !== 'undefined' ? CET4     : [];
   if(deck === 'cet6')  return typeof CET6     !== 'undefined' ? CET6     : [];
   if(deck === 'ogden') return typeof OGDEN850 !== 'undefined' ? OGDEN850 : [];
-  if(typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[deck])
+  if(REMOTE_DECKS[deck])
     return REMOTE_DECK_CACHE[deck] || [];
   if(deck.startsWith('user:')) return USER_DECK_CACHE[deck.slice(5)] || [];
   return [];
@@ -1098,7 +1131,7 @@ function updateVpStats(){
     if(!wordList.length){
       const known = deck.startsWith('user:')
         ? (userDecks.find(d => 'user:' + d.id === deck) || {}).count
-        : (typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[deck]) ? REMOTE_DECKS[deck].count : null;
+        : REMOTE_DECKS[deck] ? REMOTE_DECKS[deck].count : null;
       if(known != null){
         const el0 = document.getElementById(deck + '-progress');
         if(el0) el0.textContent = `共 ${known} 词`;
@@ -1163,8 +1196,7 @@ function startDeckSession(){
   if(!wordList.length){ toast('词库加载失败'); return; }
   const now = Date.now();
   // 按词根编排的词书顺序取词，其余照常随机
-  const ordered = typeof REMOTE_DECKS !== 'undefined'
-               && REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
+  const ordered = REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
   let pool;
   if(ordered){
     pool = orderedSession(wordList, vpProgress, vpCount, now);
@@ -1192,7 +1224,7 @@ function startDeckSession(){
   // （否则 user:mswsu9du → "USER:MSWSU9DU"、song1 → "SONG1"）
   const deckLabel = vpDeck.startsWith('user:')
     ? (typeof userDeckName === 'function' ? userDeckName(vpDeck.slice(5)) : '我的词书')
-    : (typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[vpDeck]) ? REMOTE_DECKS[vpDeck].name
+    : REMOTE_DECKS[vpDeck] ? REMOTE_DECKS[vpDeck].name
     : vpDeck === 'ogden' ? 'Ogden 850'
     : vpDeck.toUpperCase().replace('CET','CET-');
   document.getElementById('fc-title').textContent = `${deckLabel} · ${fcTotal} 词`;
@@ -1214,7 +1246,7 @@ document.getElementById('vp-start').addEventListener('click', async ()=>{
   } else {
     // 用户导入的词书是异步从 IDB 载入的，切换到它未必已进缓存，开始前兜底一次
     if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
-    else if(typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
+    else if(REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
     startDeckSession();
   }
 });
@@ -1235,7 +1267,7 @@ document.querySelector('.vp-decks')?.addEventListener('click', async e=>{
     updateMineRow();
   } else {
     if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
-    else if(typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
+    else if(REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
     loadVpProgress(vpDeck);
     updateVpStats();
   }

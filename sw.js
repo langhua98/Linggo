@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v199';
+const CACHE = 'linggo-v201';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -37,9 +37,12 @@ const SHELL = [
 ];
 
 // Install: cache app shell
+// cache:'reload' 是必须的 —— SW 里的 fetch/addAll 默认仍然经过浏览器自身的 HTTP 缓存，
+// 而 Pages 给静态文件发 max-age=600。不加这个，install 会把 HTTP 缓存里的旧文件
+// 原样烤进新版本缓存，然后一直留到下次版本号变更为止（线上真出过：新 sw + 旧 srs.js）。
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(SHELL))
+    caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' }))))
   );
   self.skipWaiting();
 });
@@ -56,7 +59,11 @@ self.addEventListener('activate', e => {
 
 // Core code files: always fetch fresh so deploys take effect immediately,
 // fall back to cache only when offline
-const CODE = /\/(index\.html|script\.js|style\.css|sb\.js|srs\.js|userdeck\.js|cet4\.js|cet6\.js|ogden850\.js|ecdict\.js|licon\.js|align-worker\.js)$|\/Linggo\/$/;
+// 代码文件一律网络优先，部署即生效。这里**不要**再退回手工白名单 ——
+// 漏掉一个文件就会出现「这个文件是新的、那个是旧缓存」的版本错配，
+// 曾经因为漏了 userdeck.js 导致老用户词书永远载不出来。
+// 注意 vendor/ 下的第三方库带版本、极少变动，仍走缓存优先，不必每次回源。
+const CODE = /\/Linggo\/(?!vendor\/)[^/]*\.(js|css|html)$|\/Linggo\/$/;
 
 // Fetch: network-first for code, cache-first for static assets
 self.addEventListener('fetch', e => {
@@ -71,9 +78,11 @@ self.addEventListener('fetch', e => {
   if (url.pathname.startsWith('/Linggo/kokoro/')) return;
 
   // Network-first for HTML/JS/CSS — users always get the latest code online
+  // 同样要 cache:'reload'：不加的话这个 fetch 会被浏览器 HTTP 缓存直接应答，
+  // 压根到不了网络，「网络优先」名存实亡，部署后最长 10 分钟都还是旧代码。
   if (CODE.test(url.pathname) || e.request.mode === 'navigate') {
     e.respondWith(
-      fetch(e.request).then(res => {
+      fetch(e.request, { cache: 'reload' }).then(res => {
         if (res.ok) {
           const clone = res.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
