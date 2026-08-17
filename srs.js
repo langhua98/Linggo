@@ -27,6 +27,29 @@ function buildSession(due, newW, n, filler){
   }
   return shuffle(out);   // 最后再打散，免得前半场全是复习卡
 }
+
+// 顺序组卡：按词根编排的词书用这个，严格按词表原顺序取词、原顺序排列，不打乱。
+// 仍沿用 DUE_SHARE 配额（复习不能把名额吃光，否则新词永远推进不下去），
+// 但取的是「顺序靠前的」而不是「随机的」，最后再按原始下标排回去，
+// 保证一轮之内也是顺着背，不会在词表里跳来跳去。
+function orderedSession(wordList, prog, n, now){
+  const due = [], neu = [];
+  wordList.forEach((w, i) => {
+    const p = prog[w.w];
+    if(!p) neu.push([i, w]);
+    else if(p.nextReview <= now) due.push([i, w]);
+  });
+  const byIndex = (a, b) => a[0] - b[0];
+  if(!(n > 0)) return [...due, ...neu].sort(byIndex).map(x => x[1]);
+
+  const dueTaken = Math.min(due.length, Math.max(1, Math.ceil(n * DUE_SHARE)));
+  const out = due.slice(0, dueTaken);
+  for(const src of [neu, due.slice(dueTaken)]){
+    for(const item of src){ if(out.length >= n) break; out.push(item); }
+    if(out.length >= n) break;
+  }
+  return out.sort(byIndex).map(x => x[1]);
+}
 const FC_CACHE = new Map(); // word → { ph, audioSrc, audioEl, pos, enDef }；FIFO 上限 200
 const FC_CACHE_MAX = 200;
 
@@ -617,7 +640,10 @@ function rateFcCard(rating){
   // Again：把卡片重新插入本轮靠后的位置（2~4 张之后）；最多扩充至原始牌组的 3 倍防无限增长
   if(rating === 'again'){
     if(fcDeck.length < fcOrigTotal * 3){
-      const offset = 2 + Math.floor(Math.random() * 3);
+      // 顺序词书用固定偏移，随机偏移会打乱本轮的词根次序
+      const _ordered = fcMode==='deck' && typeof REMOTE_DECKS !== 'undefined'
+                    && REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
+      const offset = _ordered ? 3 : 2 + Math.floor(Math.random() * 3);
       const reinsert = Math.min(fcIdx + 1 + offset, fcDeck.length);
       fcDeck.splice(reinsert, 0, {...v});
     }
@@ -1016,25 +1042,30 @@ function getDeckWordList(deck){
   if(deck === 'cet4')  return typeof CET4     !== 'undefined' ? CET4     : [];
   if(deck === 'cet6')  return typeof CET6     !== 'undefined' ? CET6     : [];
   if(deck === 'ogden') return typeof OGDEN850 !== 'undefined' ? OGDEN850 : [];
+  if(typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[deck])
+    return REMOTE_DECK_CACHE[deck] || [];
   if(deck.startsWith('user:')) return USER_DECK_CACHE[deck.slice(5)] || [];
   return [];
 }
 
 function updateVpStats(){
   const now = Date.now();
-  // 用户导入的词书追加在内置三本之后，deck id 形如 'user:<id>'
-  const decks = ['cet4','cet6','ogden'].concat(
+  // 用户导入的词书追加在内置四本之后，deck id 形如 'user:<id>'
+  const decks = ['cet4','cet6','ogden','song1'].concat(
     (typeof userDecks !== 'undefined' ? userDecks : []).map(d => 'user:' + d.id));
   decks.forEach(deck => {
     const wordList = getDeckWordList(deck);
-    // 用户词书的词表存在 IDB 里，异步载入。还没进缓存时 wordList 是空的，
+    // 词表异步载入（用户词书在 IDB，内置大词表要 fetch）。还没进缓存时 wordList 是空的，
     // 这时候不能照常算统计 —— 会把「共 N 词」的占位覆盖成「已掌握 0/0」。
-    // 保留占位，等 preloadUserDecks() 载完会再调一次本函数。
-    if(deck.startsWith('user:') && !wordList.length){
-      const meta = userDecks.find(d => 'user:' + d.id === deck);
-      const el0  = document.getElementById(deck + '-progress');
-      if(el0 && meta) el0.textContent = `共 ${meta.count} 词`;
-      return;
+    if(!wordList.length){
+      const known = deck.startsWith('user:')
+        ? (userDecks.find(d => 'user:' + d.id === deck) || {}).count
+        : (typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[deck]) ? REMOTE_DECKS[deck].count : null;
+      if(known != null){
+        const el0 = document.getElementById(deck + '-progress');
+        if(el0) el0.textContent = `共 ${known} 词`;
+        return;
+      }
     }
     const total    = wordList.length;
     const prog = deck === vpDeck ? vpProgress : (() => {
@@ -1093,10 +1124,18 @@ function startDeckSession(){
   const wordList = getDeckWordList(vpDeck);
   if(!wordList.length){ toast('词库加载失败'); return; }
   const now = Date.now();
-  const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
-  const newW = wordList.filter(w => !vpProgress[w.w]);
-
-  fcDeck  = buildSession(due, newW, vpCount).map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
+  // 按词根编排的词书顺序取词，其余照常随机
+  const ordered = typeof REMOTE_DECKS !== 'undefined'
+               && REMOTE_DECKS[vpDeck] && REMOTE_DECKS[vpDeck].ordered;
+  let pool;
+  if(ordered){
+    pool = orderedSession(wordList, vpProgress, vpCount, now);
+  }else{
+    const due  = wordList.filter(w => vpProgress[w.w] && vpProgress[w.w].nextReview <= now);
+    const newW = wordList.filter(w => !vpProgress[w.w]);
+    pool = buildSession(due, newW, vpCount);
+  }
+  fcDeck  = pool.map(w => ({ word:w.w, ph:w.ph, meaning:w.cn }));
   fcIdx   = 0; fcFlipped = false;
   fcCounts = {again:0,hard:0,good:0};
   fcTotal     = fcDeck.length;
@@ -1111,10 +1150,11 @@ function startDeckSession(){
   const fc = document.getElementById('flashcard');
   fc.style.display = '';
   fc.classList.add('open');
-  // 用户自备词书显示词书名；内置的才走 CET-4/CET-6 那套大写规则
-  // （否则 user:mswsu9du 会被显示成 "USER:MSWSU9DU"）
+  // 有名字的词书就显示名字，只有 cet4/cet6 才走大写规则
+  // （否则 user:mswsu9du → "USER:MSWSU9DU"、song1 → "SONG1"）
   const deckLabel = vpDeck.startsWith('user:')
     ? (typeof userDeckName === 'function' ? userDeckName(vpDeck.slice(5)) : '我的词书')
+    : (typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[vpDeck]) ? REMOTE_DECKS[vpDeck].name
     : vpDeck === 'ogden' ? 'Ogden 850'
     : vpDeck.toUpperCase().replace('CET','CET-');
   document.getElementById('fc-title').textContent = `${deckLabel} · ${fcTotal} 词`;
@@ -1136,6 +1176,7 @@ document.getElementById('vp-start').addEventListener('click', async ()=>{
   } else {
     // 用户导入的词书是异步从 IDB 载入的，切换到它未必已进缓存，开始前兜底一次
     if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
+    else if(typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
     startDeckSession();
   }
 });
@@ -1156,6 +1197,7 @@ document.querySelector('.vp-decks')?.addEventListener('click', async e=>{
     updateMineRow();
   } else {
     if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
+    else if(typeof REMOTE_DECKS !== 'undefined' && REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
     loadVpProgress(vpDeck);
     updateVpStats();
   }
