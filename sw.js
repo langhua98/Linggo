@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v203';
+const CACHE = 'linggo-v205';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -7,6 +7,7 @@ const SHELL = [
   '/Linggo/script.js',
   '/Linggo/srs.js',
   '/Linggo/userdeck.js',
+  '/Linggo/%E8%AF%8D%E6%A0%B9.json',
   '/Linggo/cet4.js',
   '/Linggo/cet6.js',
   '/Linggo/ogden850.js',

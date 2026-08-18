@@ -2078,6 +2078,105 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   .fq-opts{gap:8px;}
 }
 
+/* ── 闪卡：词根总览卡 + 词族回忆卡 —— 从词根主动召回整个词族，整套设计里唯一
+     训练"看到词根想起一整族词"的环节。与 .fc-area / #fc-family / #fc-quiz 同级、互斥显示。
+     结构：.frc-body（可滚动的内容区）+ .fc-ratings（复用主卡片评分按钮的视觉，贴底固定） ── */
+#fc-rootcard, #fc-recall{
+  flex:1;flex-direction:column;
+  overflow:hidden;
+}
+.frc-body{
+  flex:1;min-height:0;overflow-y:auto;
+  display:flex;flex-direction:column;
+  padding:26px 22px 14px;
+}
+/* 词根链：最长 53 字符（如 -capit- = -cap(t)- = -cep(s)- = -chapt- = -cip-），
+   大字号必须能换行，不能把窄屏撑出横向滚动 */
+.frc-root{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:clamp(20px,6vw,28px);font-weight:700;
+  color:var(--accent);text-align:center;letter-spacing:.01em;
+  line-height:1.35;word-break:break-word;overflow-wrap:break-word;
+  margin:6px 0 18px;flex-shrink:0;
+}
+.frc-prompt{
+  font-family:'Nunito',sans-serif;font-size:15px;color:var(--text-2);
+  text-align:center;line-height:1.6;margin-bottom:24px;flex-shrink:0;
+}
+.frc-reveal-btn{
+  width:100%;padding:15px;border:none;border-radius:var(--r-md);
+  background:var(--accent);color:#fff;
+  font-size:16px;font-weight:700;font-family:'Nunito',sans-serif;
+  cursor:pointer;box-shadow:var(--shadow-md);
+  flex-shrink:0;-webkit-tap-highlight-color:transparent;
+}
+.frc-reveal-btn:active{transform:scale(.98);}
+.frc-answer{
+  display:flex;flex-direction:column;
+  flex:1;min-height:0;
+}
+.frc-mean{
+  font-size:clamp(22px,6vw,30px);font-weight:800;color:var(--text);
+  font-family:'Nunito',sans-serif;text-align:center;line-height:1.3;
+  margin-bottom:6px;flex-shrink:0;
+}
+/* 词族回忆卡正面也用 .frc-mean 展示释义（不必等翻答案），字号收一档避免正面过重 */
+#fc-recall > .frc-body > .frc-mean{
+  font-size:clamp(18px,5vw,22px);font-weight:700;color:var(--text-2);
+  margin-bottom:20px;
+}
+.frc-extend{
+  font-size:14px;color:var(--text-2);font-family:'Nunito',sans-serif;
+  text-align:center;margin-bottom:12px;flex-shrink:0;
+}
+.frc-src{
+  font-size:13px;color:var(--text-3);font-family:'Nunito',sans-serif;
+  text-align:center;margin-bottom:18px;flex-shrink:0;
+}
+.frc-mastery{
+  font-size:15px;font-weight:800;color:var(--accent);
+  font-family:'Nunito',sans-serif;text-align:center;
+  margin-bottom:14px;flex-shrink:0;
+}
+/* 完整词族列表：最大词族 723 词，靠 max-height + overflow-y:auto 独立滚动，
+   绝不会被撑到整卡片、更不会撑爆页面；紧凑网格排布，多列显示提升密度 */
+.frc-list{
+  display:grid;
+  /* 列宽要装得下 penicillin-resistant 这类长词，84px 会把词截成一串省略号。
+     手机上 2 列，读得清比塞得多重要 —— 这块的用途是逐个核对回忆结果。 */
+  grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+  gap:6px 8px;
+  max-height:min(42vh,320px);
+  overflow-y:auto;-webkit-overflow-scrolling:touch;
+  /* align-content 必须显式 start：max-height 让容器有了确定高度，
+     默认的 normal/stretch 会把 181 行压进 320px，每行只剩 10px、
+     13px 的字被整个裁掉，列表看上去就是一堆灰条。 */
+  align-content:start;
+  padding:10px 8px;
+  border:1px solid var(--border);border-radius:var(--r-md);
+  background:var(--surface);
+  flex-shrink:1;
+}
+/* 显式 min-height + flex 居中：这个网格的行高推算不出正确结果（实测行只有 10px，
+   13px 的字被整个裁掉，整列表看上去是一堆灰条）。不依赖行尺寸自己撑高，直接钉死最小高度。 */
+.frl-item{
+  font-family:'Lora',serif;font-size:13px;color:var(--text);
+  /* 用 block + 固定 line-height 撑高，不靠网格行推算（实测行会被压成 10px，
+     13px 的字整个被裁掉，列表看上去是一堆灰条）。
+     必须是 block 不能是 flex —— text-overflow 在 flex 容器上不生效，
+     penicillin-resistant 这类长词就会被硬裁、连省略号都没有。 */
+  display:block;min-height:28px;line-height:18px;
+  padding:5px 6px;border-radius:8px;background:var(--bg);
+  text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.frl-known{color:#059669;font-weight:700;}
+.frl-unknown{color:var(--text-3);}
+.night .frl-known{color:#6EE7B7;}
+@media(max-width:390px){
+  .frc-prompt{font-size:14px;margin-bottom:18px;}
+  .frc-list{grid-template-columns:repeat(auto-fill,minmax(128px,1fr));}
+}
+
 /* ── result screen */
 #fc-result{
   position:fixed;inset:0;z-index:501;

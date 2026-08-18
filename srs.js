@@ -144,6 +144,13 @@ let vpProgress = emptyProgress();  // word → { nextReview, correct, wrong }
 let vpDeck     = 'cet4';
 let vpCount    = 12;   // 与生词本 fcSize 的默认值保持一致
 
+// 词根卡（总览卡 + 回忆卡）的复习记录独立存 vpr_<deck>，不能混进 vp_<deck> ——
+// updateVpStats 是按词表逐词统计的，混进去会污染「新词/待复习/已掌握」计数。
+// cardKey 形如 '1:info' / '1:recall'（前缀是 词根.json 里的 no）
+let rootSRS = emptyProgress();
+function loadRootSRS(deck){ try{ rootSRS = parseProgress(localStorage.getItem('vpr_'+deck)); }catch(e){ rootSRS = emptyProgress(); } }
+function saveRootSRS(deck){ localStorage.setItem('vpr_'+deck, JSON.stringify(rootSRS)); }
+
 function loadVpProgress(deck){
   // 同上：一次性迁移到 FSRS，用 vpVer 标记避免每次加载都重置。
   // 三个词库（cet4/cet6/ogden）共用一个标记，第一次加载任意词库时一并清空全部，
@@ -248,6 +255,8 @@ function openFlashcard(origin){
   _fcLastGroup = null; _fcPendingGroup = null; // 生词本背诵没有 _grp，但清一下防止跨会话残留
   hideFamilyIntro();
   hideQuiz();   // 生词本背诵没有辨析题，但上一轮词库练习若停在辨析题屏，得把它收回去
+  hideRootCard(); hideRecallCard();   // 同理：上一轮若停在词根卡屏，得收回去
+  _fcResetRootCards();                // 新一轮开始，词根卡计数器清零
 
   const fc = document.getElementById('flashcard');
   fc.style.display = '';     // 清除 closeFcAll/showFcResult 遗留的内联 display:none
@@ -372,6 +381,10 @@ async function showFcCard(instant){
   clearTimeout(fcAutoPlayTimer); fcAutoPlayTimer = null;
   if(fcIdx >= fcDeck.length){ showFcResult(); return; }
   const v = fcDeck[fcIdx];
+
+  // 词根卡门控：从词根主动召回整个词族，插在组对照表 / 辨析题之前 —— 一轮最多 2 张，
+  // 门控命中就暂停发卡（fcIdx 不动），评分完 rateRootCard 会自己调 showFcCard 续上。
+  if(_fcMaybeRootCard(v)) return;
 
   // 新组开始 + 组里有新词：先看一遍全组对照（成组呈现对比，而不是孤立的一张卡），
   // 暂停发卡，等用户点「开始测试」后再继续。全是复习词的组没有「首次见面」这回事，
@@ -931,6 +944,7 @@ function closeFcAll(){
   document.getElementById('fc-family').style.display = 'none';
   document.getElementById('fc-area').style.display = '';
   hideQuiz();
+  hideRootCard(); hideRecallCard();
   _fcPendingGroup = null;
   // 词库练习、以及从背单词页进来的「我的生词」，退出后都回背单词页
   if(fcMode === 'deck' || fcOrigin === 'panel') openVocabPanel();
@@ -1115,6 +1129,7 @@ document.getElementById('fc-exit').addEventListener('click', closeFcAll);
 document.getElementById('fcf-go')?.addEventListener('click', ()=>{
   hideFamilyIntro();
   hideQuiz();   // 防御性收尾：理论上对照表和辨析题不会同屏，但退出留残影的坑已经踩过一次了
+  hideRootCard(); hideRecallCard();   // 同上防御性收尾
   _fcLastGroup = _fcPendingGroup;
   _fcPendingGroup = null;
   showFcCard(true);
@@ -1161,6 +1176,29 @@ document.getElementById('fc-undo').addEventListener('click', undoFcRating);
 document.getElementById('fc-again').addEventListener('click', ()=>rateFcCard('again'));
 document.getElementById('fc-hard') .addEventListener('click', ()=>rateFcCard('hard'));
 document.getElementById('fc-good') .addEventListener('click', ()=>rateFcCard('good'));
+
+// 词根总览卡：显示答案 + 三档评分
+document.getElementById('frc-reveal-btn')?.addEventListener('click', ()=>{
+  document.getElementById('frc-answer').style.display = '';
+  document.getElementById('frc-reveal-btn').style.display = 'none';
+  document.getElementById('frc-ratings').classList.add('show');
+  // 答案出来了就收起提问 —— 一边给答案一边还问「这个词根是什么意思」很怪
+  const q = document.querySelector('#fc-rootcard .frc-prompt');
+  if(q) q.style.display = 'none';
+});
+document.getElementById('frc-again')?.addEventListener('click', ()=>rateRootCard('again'));
+document.getElementById('frc-hard') ?.addEventListener('click', ()=>rateRootCard('hard'));
+document.getElementById('frc-good') ?.addEventListener('click', ()=>rateRootCard('good'));
+
+// 词族回忆卡：显示答案 + 三档评分
+document.getElementById('fcc-reveal-btn')?.addEventListener('click', ()=>{
+  document.getElementById('fcc-answer').style.display = '';
+  document.getElementById('fcc-reveal-btn').style.display = 'none';
+  document.getElementById('fcc-ratings').classList.add('show');
+});
+document.getElementById('fcc-again')?.addEventListener('click', ()=>rateRootCard('again'));
+document.getElementById('fcc-hard') ?.addEventListener('click', ()=>rateRootCard('hard'));
+document.getElementById('fcc-good') ?.addEventListener('click', ()=>rateRootCard('good'));
 
 // 参数已去掉：按钮状态改由播放状态订阅统一驱动，正反面两个键一起切，
 // 不再依赖"是哪个键被点的"
@@ -1228,6 +1266,7 @@ document.addEventListener('keydown', e=>{
 // ═══════════════════════════════════════════
 function openVocabPanel(){
   loadVpProgress(vpDeck);
+  loadRootSRS(vpDeck);
   loadSRS();          // 「我的生词」那一行的统计要读最新的 fcSRS
   updateVpStats();
   updateMineRow();
@@ -1325,7 +1364,7 @@ function splitRoot(word, rootChain){
 const REMOTE_DECKS = {
   // ordered：按词根编排的教材，必须顺着背 —— 同族词挨着出现才是这套方法的意义，
   // 打乱抽取等于把词根记忆法废掉。其余词书（cet4/cet6/ogden/用户导入）仍是随机。
-  song1: { name: '词霸天下38000之一', url: '词霸一.json', count: 7424, ordered: true }
+  song1: { name: '词霸天下38000之一', url: '词霸一.json', count: 7424, ordered: true, rootsUrl: '词根.json' }
 };
 const REMOTE_DECK_CACHE = {};
 
@@ -1339,6 +1378,7 @@ async function loadRemoteDeck(id){
     const words = await res.json();
     if(!Array.isArray(words)) throw new Error('不是数组');
     REMOTE_DECK_CACHE[id] = words;
+    await loadRoots(id);   // 词根元数据是可选增强，失败不影响词表本身已经载入成功
     return words;
   }catch(e){
     console.warn('loadRemoteDeck failed:', id, e);
@@ -1346,6 +1386,36 @@ async function loadRemoteDeck(id){
     return [];
   }
 }
+
+// ── 词根元数据（释义/引申/词源事实）。文件缺失或解析失败就退化成没有词根卡，
+// 其余功能完全不受影响 —— 所以这里不 toast、不抛错，并缓存空结果避免反复重试。
+let ROOTS_BY_CHAIN = null;
+// 用词根链的**首个变体**作键，而不是整条链。两份数据对同一个词根收录的变体数量
+// 可能不同（词表写 "-sit- = -sid-"，词根表写 "-sit- = -sid- = -sed- = -sess-"），
+// 拿整条链比对会有 2 个词根静默匹配不上、白白没有词根卡。
+// 首变体在两边都稳定，实测 100 个词根首变体互不重复、两侧 100% 对上。
+function _normChain(s){
+  const first = String(s||'').split(/[=，,]/)[0];
+  return first.replace(/\s+/g,'').replace(/[-]/g,'').replace(/\([^)]*\)/g,'').toLowerCase();
+}
+async function loadRoots(deck){
+  if(ROOTS_BY_CHAIN) return ROOTS_BY_CHAIN;
+  const meta = REMOTE_DECKS[deck];
+  if(!meta || !meta.rootsUrl) return (ROOTS_BY_CHAIN = Object.create(null));
+  try{
+    const res = await fetch(encodeURI(meta.rootsUrl));
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const arr = await res.json();
+    if(!Array.isArray(arr)) throw new Error('不是数组');
+    const map = Object.create(null);
+    arr.forEach(r => { if(r && r.root) map[_normChain(r.root)] = r; });
+    return (ROOTS_BY_CHAIN = map);
+  }catch(e){
+    console.warn('词根元数据未加载（可选）:', e.message);
+    return (ROOTS_BY_CHAIN = Object.create(null));
+  }
+}
+function rootMetaFor(chain){ return (ROOTS_BY_CHAIN || {})[_normChain(chain)] || null; }
 
 function getDeckWordList(deck){
   if(deck === 'cet4')  return typeof CET4     !== 'undefined' ? CET4     : [];
@@ -1447,6 +1517,185 @@ function rootIndexFor(deck){
   return (_ROOT_INDEX[deck] = idx);
 }
 
+// ═══════════════════════════════════════════
+//  词根卡：从词根主动召回整个词族（词根总览卡 + 词族回忆卡）
+// ═══════════════════════════════════════════
+// 词族全部词（不是本组 6 个）：取当前词书里 root 字段（归一化后）等于该词根链的全部词。
+// 按词根链缓存 —— 最大词族 723 词，同一词根在一轮里可能被多次问到（info→recall 连续出）。
+const _FAMILY_WORDS_CACHE = {};
+function _fcFamilyWords(deck, chain){
+  const norm = _normChain(chain);
+  const key = deck + '::' + norm;
+  if(_FAMILY_WORDS_CACHE[key]) return _FAMILY_WORDS_CACHE[key];
+  const list = getDeckWordList(deck).filter(w => w.root && _normChain(w.root) === norm);
+  return (_FAMILY_WORDS_CACHE[key] = list);
+}
+
+// 一轮里：已插入的词根卡数（总览+回忆合计封顶 2）+ 已处理过（不再重复判定）的词根 no 集合。
+// 必须在每轮开始（openFlashcard/startDeckSession）清零，否则会跨轮累积导致新一轮插不进卡。
+let _fcRootCardCount = 0;
+let _fcRootDoneThisRound = null;
+function _fcResetRootCards(){
+  _fcRootCardCount = 0;
+  _fcRootDoneThisRound = new Set();
+}
+_fcResetRootCards();
+
+// 当前正显示的词根卡：meta（词根元数据）+ kind（'info' | 'recall'），供 rateRootCard 使用
+let _fcActiveRootMeta = null;
+let _fcActiveRootKind = null;
+
+function hideRootCard(){
+  const el = document.getElementById('fc-rootcard');
+  if(el) el.style.display = 'none';
+  const area = document.getElementById('fc-area');
+  if(area) area.style.display = '';
+}
+function hideRecallCard(){
+  const el = document.getElementById('fc-recall');
+  if(el) el.style.display = 'none';
+  const area = document.getElementById('fc-area');
+  if(area) area.style.display = '';
+}
+
+// 门控 + 分流：符合条件就插入词根卡（暂停发卡）并返回 true；否则返回 false，照常发卡。
+// 判定顺序（key 前缀用 meta.no）：
+//   rootSRS[no+':info']   不存在          → 词根总览卡
+//   rootSRS[no+':recall'] 不存在或已到期  → 词族回忆卡
+//   否则                                  → 不插，且本轮内记为已处理，避免重复判定
+function _fcMaybeRootCard(v){
+  if(fcMode !== 'deck') return false;
+  if(!REMOTE_DECKS[vpDeck]) return false;
+  if(!v.root) return false;
+  if(_fcRootCardCount >= 2) return false;
+  const meta = rootMetaFor(v.root);
+  if(!meta) return false;
+  if(_fcRootDoneThisRound.has(meta.no)) return false;
+
+  const now = Date.now();
+  if(!rootSRS[meta.no + ':info']){
+    hideFamilyIntro(); hideQuiz();
+    showRootCard(meta);
+    return true;
+  }
+  const recallRec = rootSRS[meta.no + ':recall'];
+  if(!recallRec || recallRec.nextReview <= now){
+    hideFamilyIntro(); hideQuiz();
+    showRecallCard(meta);
+    return true;
+  }
+  _fcRootDoneThisRound.add(meta.no);   // 两张卡都已满足条件、不需要再出，本轮不再重复判定
+  return false;
+}
+
+// ── 词根总览卡：词根链 + 释义/引申/词源 + 完整词族列表 ──
+function showRootCard(meta){
+  _fcSyncProgress();
+  _fcActiveRootMeta = meta;
+  _fcActiveRootKind = 'info';
+
+  document.getElementById('frc-root').textContent = meta.root || '';
+  document.getElementById('frc-mean').textContent = meta.mean || '';
+  document.getElementById('frc-extend').textContent = meta.extend || '';
+  const src = meta.src || {};
+  // gloss 21 条为空：为空时只显示「拉丁语 vincere」，不留破折号尾巴
+  document.getElementById('frc-src').textContent = src.gloss
+    ? `${src.lang} ${src.word} —— ${src.gloss}`
+    : `${src.lang || ''} ${src.word || ''}`.trim();
+
+  const words = _fcFamilyWords(vpDeck, meta.root);
+  const listEl = document.getElementById('frc-list');
+  listEl.textContent = '';
+  words.forEach(w => {
+    const item = document.createElement('div');
+    item.className = 'frl-item';
+    item.textContent = w.w;
+    listEl.appendChild(item);
+  });
+
+  document.getElementById('frc-answer').style.display = 'none';
+  document.getElementById('frc-reveal-btn').style.display = '';
+  document.getElementById('frc-ratings').classList.remove('show');
+  const _q = document.querySelector('#fc-rootcard .frc-prompt');
+  if(_q) _q.style.display = '';   // 换卡时把提问恢复回来
+
+  const rec = rootSRS[meta.no + ':info'];
+  const pv = previewFsrs(rec, Date.now());
+  document.querySelector('#frc-again .fc-rbtn-time').textContent = fmtInterval(pv.again);
+  document.querySelector('#frc-hard .fc-rbtn-time').textContent  = fmtInterval(pv.hard);
+  document.querySelector('#frc-good .fc-rbtn-time').textContent  = fmtInterval(pv.good);
+
+  document.getElementById('fc-area').style.display = 'none';
+  document.getElementById('fc-rootcard').style.display = 'flex';
+}
+
+// ── 词族回忆卡：词根链 + 释义 + 完整词族列表（已掌握 ✓ / 未掌握 ?），主动召回训练 ──
+function showRecallCard(meta){
+  _fcSyncProgress();
+  _fcActiveRootMeta = meta;
+  _fcActiveRootKind = 'recall';
+
+  document.getElementById('fcc-root').textContent = meta.root || '';
+  document.getElementById('fcc-mean').textContent = meta.mean || '';
+
+  const words = _fcFamilyWords(vpDeck, meta.root);
+  // 判据与 updateVpStats 的「已掌握」口径一致：correct >= 3
+  const isKnown = w => (vpProgress[w.w] && vpProgress[w.w].correct || 0) >= 3;
+  const knownN  = words.filter(isKnown).length;
+  document.getElementById('fcc-mastery').textContent = `你已掌握 ${knownN} / ${words.length}`;
+
+  const listEl = document.getElementById('fcc-list');
+  listEl.textContent = '';
+  words.forEach(w => {
+    const known = isKnown(w);
+    const item = document.createElement('div');
+    item.className = 'frl-item' + (known ? ' frl-known' : ' frl-unknown');
+    item.textContent = (known ? '✓ ' : '? ') + w.w;
+    listEl.appendChild(item);
+  });
+
+  document.getElementById('fcc-answer').style.display = 'none';
+  document.getElementById('fcc-reveal-btn').style.display = '';
+  document.getElementById('fcc-ratings').classList.remove('show');
+
+  const rec = rootSRS[meta.no + ':recall'];
+  const pv = previewFsrs(rec, Date.now());
+  document.querySelector('#fcc-again .fc-rbtn-time').textContent = fmtInterval(pv.again);
+  document.querySelector('#fcc-hard .fc-rbtn-time').textContent  = fmtInterval(pv.hard);
+  document.querySelector('#fcc-good .fc-rbtn-time').textContent  = fmtInterval(pv.good);
+
+  document.getElementById('fc-area').style.display = 'none';
+  document.getElementById('fc-recall').style.display = 'flex';
+}
+
+// 词根卡评分：写回 rootSRS（与 rateFcCard 对 vpProgress 的处理同一写法），收面板，继续发卡。
+// 不动 fcIdx —— 当前这张词卡（fcDeck[fcIdx]）还没真正展示过，评分完继续走 showFcCard
+// 会重新判定（可能紧接着出第二张词根卡，或落到正常的组对照/辨析题/闪卡流程）。
+function rateRootCard(rating){
+  const meta = _fcActiveRootMeta, kind = _fcActiveRootKind;
+  if(!meta || !kind) return;
+  const key = meta.no + ':' + kind;
+  const now = Date.now();
+  const prev = rootSRS[key] || { correct:0, wrong:0 };
+  const nx = applyFsrs(rootSRS[key], rating, now);
+  rootSRS[key] = {
+    nextReview: nx.nextReview,
+    interval:   nx.interval,
+    fsrs:       nx.fsrs,
+    correct: prev.correct + (rating !== 'again' ? 1 : 0),
+    wrong:   prev.wrong   + (rating === 'again' ? 1 : 0)
+  };
+  saveRootSRS(vpDeck);
+
+  _fcRootCardCount++;
+  if(kind === 'recall') _fcRootDoneThisRound.add(meta.no);
+
+  if(kind === 'info') hideRootCard(); else hideRecallCard();
+  _fcActiveRootMeta = null; _fcActiveRootKind = null;
+
+  showFcCard(true);
+}
+
 function updateVpStats(){
   const now = Date.now();
   // 用户导入的词书追加在内置四本之后，deck id 形如 'user:<id>'
@@ -1501,6 +1750,7 @@ function updateMineRow(){
       vpDeck = 'cet4';
       document.querySelectorAll('.vp-deck').forEach(d=>d.classList.toggle('on', d.dataset.deck==='cet4'));
       loadVpProgress(vpDeck);
+      loadRootSRS(vpDeck);
       updateVpStats();
     }
     return;
@@ -1550,6 +1800,8 @@ function startDeckSession(){
   _fcLastGroup = null; _fcPendingGroup = null; // 新一轮开始，组对照的「上一组」记忆也要清零
   hideFamilyIntro();                             // 面板本身也要收回，光清标记不够
   hideQuiz();                                    // 同理：上一轮若停在辨析题屏，得收回去
+  hideRootCard(); hideRecallCard();              // 同理：上一轮若停在词根卡屏，得收回去
+  _fcResetRootCards();                           // 新一轮开始，词根卡计数器清零
 
   if(!fcDeck.length){ toast('今日没有待复习单词，明天再来！'); return; }
 
@@ -1606,6 +1858,7 @@ document.querySelector('.vp-decks')?.addEventListener('click', async e=>{
     if(vpDeck.startsWith('user:')) await loadUserDeck(vpDeck.slice(5));
     else if(REMOTE_DECKS[vpDeck]) await loadRemoteDeck(vpDeck);
     loadVpProgress(vpDeck);
+    loadRootSRS(vpDeck);
     updateVpStats();
   }
 });

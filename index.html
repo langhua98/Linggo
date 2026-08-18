@@ -670,6 +670,100 @@
       <button class="fq-next" id="fq-next">继续</button>
     </div>
   </div>
+
+  <!-- 词根总览卡：新遇到一个词根时，先摆出词根本身的释义/引申/词源 + 完整词族列表，
+       训练"看到词根能想起一整族词"——这是整套设计里唯一的主动召回环节。
+       与 .fc-area / #fc-family / #fc-quiz 同级，互斥显示 -->
+  <div id="fc-rootcard" style="display:none">
+    <div class="frc-body">
+      <div class="frc-root" id="frc-root"></div>
+      <div class="frc-prompt">这个词根是什么意思？来源是什么？你能想起哪些词？</div>
+      <button class="frc-reveal-btn" id="frc-reveal-btn">显示答案</button>
+      <div class="frc-answer" id="frc-answer" style="display:none">
+        <div class="frc-mean" id="frc-mean"></div>
+        <div class="frc-extend" id="frc-extend"></div>
+        <div class="frc-src" id="frc-src"></div>
+        <div class="frc-list" id="frc-list"></div>
+      </div>
+    </div>
+    <div class="fc-ratings" id="frc-ratings">
+      <button class="fc-rbtn fc-r-again" id="frc-again">
+        <span class="fc-rbtn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </span>
+        <span class="fc-rbtn-label">不认识</span>
+        <span class="fc-rbtn-time">10分钟</span>
+      </button>
+      <button class="fc-rbtn fc-r-hard" id="frc-hard">
+        <span class="fc-rbtn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+        </span>
+        <span class="fc-rbtn-label">较难</span>
+        <span class="fc-rbtn-time">1天</span>
+      </button>
+      <button class="fc-rbtn fc-r-good" id="frc-good">
+        <span class="fc-rbtn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+            <path d="M20 6 9 17l-5-5"/>
+          </svg>
+        </span>
+        <span class="fc-rbtn-label">认识</span>
+        <span class="fc-rbtn-time">3天</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 词族回忆卡：给出词根，让用户主动召回整个词族有哪些词，再对照打勾/问号揭晓。
+       与上面几块面板同级，互斥显示 -->
+  <div id="fc-recall" style="display:none">
+    <div class="frc-body">
+      <div class="frc-root" id="fcc-root"></div>
+      <div class="frc-mean" id="fcc-mean"></div>
+      <div class="frc-prompt">请尽可能想起这个词根的所有词</div>
+      <button class="frc-reveal-btn" id="fcc-reveal-btn">显示答案</button>
+      <div class="frc-answer" id="fcc-answer" style="display:none">
+        <div class="frc-mastery" id="fcc-mastery"></div>
+        <div class="frc-list" id="fcc-list"></div>
+      </div>
+    </div>
+    <div class="fc-ratings" id="fcc-ratings">
+      <button class="fc-rbtn fc-r-again" id="fcc-again">
+        <span class="fc-rbtn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+        </span>
+        <span class="fc-rbtn-label">不认识</span>
+        <span class="fc-rbtn-time">10分钟</span>
+      </button>
+      <button class="fc-rbtn fc-r-hard" id="fcc-hard">
+        <span class="fc-rbtn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+        </span>
+        <span class="fc-rbtn-label">较难</span>
+        <span class="fc-rbtn-time">1天</span>
+      </button>
+      <button class="fc-rbtn fc-r-good" id="fcc-good">
+        <span class="fc-rbtn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+            <path d="M20 6 9 17l-5-5"/>
+          </svg>
+        </span>
+        <span class="fc-rbtn-label">认识</span>
+        <span class="fc-rbtn-time">3天</span>
+      </button>
+    </div>
+  </div>
 </div>
 
 <!-- FLASHCARD RESULT -->
