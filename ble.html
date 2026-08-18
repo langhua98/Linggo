@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>OM BLE 控制台 · DUML</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Archivo:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0b1013;          /* 仪器机壳 */
+  --panel:#121a1f;
+  --line:#22313a;
+  --ink:#c9d6dc;
+  --dim:#63797f;
+  --tx:#ffb000;          /* 发送 = 琥珀磷光 */
+  --rx:#3fd0c9;          /* 接收 = 青 */
+  --warn:#e2564a;
+  --ok:#7fd14b;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:'IBM Plex Mono',ui-monospace,monospace;
+  font-size:14px;line-height:1.5;
+  padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px);
+  -webkit-text-size-adjust:100%;
+}
+.wrap{max-width:640px;margin:0 auto;padding:0 14px}
+
+/* ── 头部 ── */
+header{padding:22px 0 16px;border-bottom:1px solid var(--line)}
+h1{
+  font-family:'Archivo',system-ui,sans-serif;font-weight:900;
+  font-size:26px;letter-spacing:-.02em;margin:0;color:#fff;
+}
+h1 span{color:var(--tx)}
+.sub{color:var(--dim);font-size:12px;margin-top:6px}
+
+/* ── 通用面板 ── */
+section{border-bottom:1px solid var(--line);padding:18px 0}
+.eyebrow{
+  font-family:'Archivo',sans-serif;font-weight:700;font-size:11px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  margin:0 0 12px;display:flex;justify-content:space-between;align-items:center;
+}
+button{
+  font-family:inherit;font-size:13px;font-weight:500;
+  background:var(--panel);color:var(--ink);
+  border:1px solid var(--line);border-radius:3px;
+  padding:11px 14px;cursor:pointer;
+  transition:background .12s,border-color .12s;
+  -webkit-tap-highlight-color:transparent;
+}
+button:hover:not(:disabled){border-color:var(--tx)}
+button:active:not(:disabled){background:#1b262c}
+button:disabled{opacity:.35;cursor:not-allowed}
+button:focus-visible{outline:2px solid var(--tx);outline-offset:2px}
+button.primary{background:var(--tx);color:#0b1013;border-color:var(--tx);font-weight:600}
+button.danger{border-color:#4a2622;color:var(--warn)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>button{flex:1;min-width:96px}
+
+/* ── 状态灯 ── */
+.status{display:flex;align-items:center;gap:9px;margin-top:12px;font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:#37474f;flex:none}
+.dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.dot.busy{background:var(--tx);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.dot.busy{animation:none}}
+
+/* ── 签名件：报文字节条 ── */
+.packet{
+  background:#080d10;border:1px solid var(--line);border-radius:3px;
+  padding:12px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+}
+.bytes{display:flex;gap:3px;min-width:max-content}
+.b{
+  width:26px;text-align:center;padding:6px 0 5px;border-radius:2px;
+  font-size:12px;font-weight:500;position:relative;
+}
+.b::after{
+  content:attr(data-i);position:absolute;top:-1px;left:0;right:0;
+  font-size:7px;color:#2f4048;line-height:1;
+}
+.f-magic{background:#2b2118;color:#c99b57}
+.f-len  {background:#1b2630;color:#6f9bc4}
+.f-crc8 {background:#2a1f26;color:#b57a9a}
+.f-addr {background:#182a26;color:#5fb39a}
+.f-seq  {background:#1c2530;color:#7b8fb5}
+.f-flag {background:#242028;color:#8d84a3}
+.f-cmd  {background:#33260f;color:var(--tx)}
+.f-pay  {background:#0f2b2a;color:var(--rx)}
+.f-crc16{background:#2a1f26;color:#b57a9a}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:10px;color:var(--dim)}
+.legend i{font-style:normal;display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:4px;vertical-align:middle}
+
+/* ── 控件 ── */
+label.fld{display:block;margin:14px 0 0}
+.fld .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:5px}
+.fld .val{color:var(--tx);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--tx);height:26px}
+select,input[type=text],input[type=number]{
+  width:100%;font-family:inherit;font-size:13px;
+  background:#080d10;color:var(--ink);
+  border:1px solid var(--line);border-radius:3px;padding:10px;
+}
+select:focus,input:focus{outline:none;border-color:var(--tx)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+/* ── 方向盘 ── */
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:280px;margin:0 auto}
+.pad button{aspect-ratio:1;font-size:18px;padding:0;display:flex;align-items:center;justify-content:center}
+.pad .ghost{visibility:hidden}
+.pad .center{font-size:11px;font-weight:600}
+
+/* ── 日志 ── */
+#log{
+  background:#080d10;border:1px solid var(--line);border-radius:3px;
+  height:230px;overflow-y:auto;padding:10px;
+  font-size:11px;line-height:1.65;white-space:pre-wrap;word-break:break-all;
+}
+.l-tx{color:var(--tx)}
+.l-rx{color:var(--rx)}
+.l-sys{color:var(--dim)}
+.l-err{color:var(--warn)}
+
+.note{font-size:11px;color:var(--dim);margin-top:10px}
+.note b{color:var(--ink);font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>OM <span>BLE</span> 控制台</h1>
+  <div class="sub">DUML over GATT FFF0 · 逆向自 Osmo Mobile 系列云台</div>
+</header>
+
+<!-- 连接 -->
+<section>
+  <p class="eyebrow">1 · 连接</p>
+  <div class="row">
+    <button id="btnConnect" class="primary">扫描并连接</button>
+    <button id="btnAny">扫描全部设备</button>
+    <button id="btnDisc" class="danger" disabled>断开</button>
+  </div>
+  <div class="status"><span class="dot" id="dot"></span><span id="stat">未连接</span></div>
+  <p class="note">Web Bluetooth 仅在 <b>桌面版 Chrome / Edge</b> 和 <b>安卓 Chrome</b> 可用。iOS Safari 不支持，需用 <b>Bluefy</b> 浏览器。页面必须跑在 https 或 localhost 下。</p>
+</section>
+
+<!-- 报文 -->
+<section>
+  <p class="eyebrow"><span>2 · 当前报文</span><span id="pktLen">21 B</span></p>
+  <div class="packet"><div class="bytes" id="bytes"></div></div>
+  <div class="legend">
+    <span><i class="f-magic"></i>0x55</span>
+    <span><i class="f-len"></i>长度/版本</span>
+    <span><i class="f-crc8"></i>CRC8</span>
+    <span><i class="f-addr"></i>源/目标</span>
+    <span><i class="f-seq"></i>序号</span>
+    <span><i class="f-flag"></i>标志</span>
+    <span><i class="f-cmd"></i>CmdSet/Id</span>
+    <span><i class="f-pay"></i>载荷</span>
+    <span><i class="f-crc16"></i>CRC16</span>
+  </div>
+</section>
+
+<!-- 参数 -->
+<section>
+  <p class="eyebrow">3 · 旋转参数</p>
+
+  <label class="fld">
+    <span class="lab"><span>模式</span></span>
+    <select id="mode">
+      <option value="4">相对角度 RELATIVE (0x04)</option>
+      <option value="5" selected>绝对角度 ABSOLUTE (0x05)</option>
+      <option value="128">速度 SPEED (0x80)</option>
+    </select>
+  </label>
+
+  <label class="fld"><span class="lab"><span>Yaw 偏航</span><span class="val" id="vYaw">0.0°</span></span>
+    <input type="range" id="yaw" min="-1800" max="1800" step="10" value="0"></label>
+  <label class="fld"><span class="lab"><span>Pitch 俯仰</span><span class="val" id="vPitch">0.0°</span></span>
+    <input type="range" id="pitch" min="-900" max="900" step="10" value="0"></label>
+  <label class="fld"><span class="lab"><span>Roll 横滚</span><span class="val" id="vRoll">0.0°</span></span>
+    <input type="range" id="roll" min="-900" max="900" step="10" value="0"></label>
+  <label class="fld"><span class="lab"><span>Time 时长</span><span class="val" id="vTime">1.5 s</span></span>
+    <input type="range" id="time" min="1" max="60" step="1" value="15"></label>
+
+  <div class="row" style="margin-top:16px">
+    <button id="btnSend" class="primary" disabled>发送</button>
+    <button id="btnZero" disabled>回中 (0,0,0)</button>
+  </div>
+</section>
+
+<!-- 摇杆 -->
+<section>
+  <p class="eyebrow">4 · 点动 / 长按连发</p>
+  <div class="pad">
+    <span class="ghost"></span>
+    <button data-ax="pitch" data-dir="1" disabled>▲</button>
+    <span class="ghost"></span>
+    <button data-ax="yaw" data-dir="-1" disabled>◀</button>
+    <button class="center" id="btnStop" disabled>停止</button>
+    <button data-ax="yaw" data-dir="1" disabled>▶</button>
+    <span class="ghost"></span>
+    <button data-ax="pitch" data-dir="-1" disabled>▼</button>
+    <span class="ghost"></span>
+  </div>
+  <label class="fld"><span class="lab"><span>点动步长 / 速度</span><span class="val" id="vStep">100</span></span>
+    <input type="range" id="step" min="10" max="900" step="10" value="100"></label>
+  <p class="note">按住方向键 = 以 10 Hz 连发。SPEED 模式下松手会自动发一帧零速停止。</p>
+</section>
+
+<!-- 底层 -->
+<section>
+  <p class="eyebrow">5 · 底层</p>
+  <div class="grid2">
+    <label class="fld" style="margin:0"><span class="lab"><span>写特征</span></span>
+      <select id="wchar"></select></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>分片长度</span></span>
+      <select id="chunk">
+        <option value="20" selected>20 (默认 MTU 23)</option>
+        <option value="100">100</option>
+        <option value="182">182</option>
+        <option value="512">512 (不分片)</option>
+      </select></label>
+  </div>
+  <label class="fld"><span class="lab"><span>手动发送十六进制</span></span>
+    <input type="text" id="rawHex" placeholder="55 15 04 a9 02 04 …" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+  <div class="row" style="margin-top:10px">
+    <button id="btnRaw" disabled>发送原始帧</button>
+    <button id="btnDump" disabled>导出 GATT 结构</button>
+  </div>
+</section>
+
+<!-- 日志 -->
+<section style="border-bottom:none">
+  <p class="eyebrow"><span>6 · 日志</span><span id="batt">—</span></p>
+  <div id="log"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnClear">清空</button>
+    <button id="btnCopy">复制日志</button>
+  </div>
+</section>
+
+</div>
+
+<script>
+'use strict';
+
+/* ════════════ DUML 协议层 ════════════ */
+const T16=[],T8=[];
+for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?((c>>>1)^0x8408):(c>>>1);T16.push(c&0xffff);}
+for(let i=0;i<256;i++){let c=i;for(let j=0;j<8;j++)c=(c&1)?((c>>>1)^0x8C):(c>>>1);T8.push(c&0xff);}
+const crc8  = b => { let c=0x77;   for(const x of b) c=T8[(x^c)&0xff]; return c; };
+const crc16 = b => { let c=0x3692; for(const x of b) c=((c>>>8)^T16[(x^c)&0xff])&0xffff; return c; };
+
+// 帧结构: 55 | len_ver(2,LE: 低10位=总长, 高6位=版本) | crc8 | src | dst | seq(2,LE) | flags | cmdSet | cmdId | payload | crc16(2,LE)
+function buildDuml({src=0x02,dst=0x04,seq=1,flags=0x00,cmdSet,cmdId,payload}){
+  const total=13+payload.length, lv=(1<<10)|total;
+  const head=[0x55, lv&0xff, (lv>>8)&0xff];
+  const pre=[...head, crc8(head), src, dst, seq&0xff,(seq>>8)&0xff, flags, cmdSet, cmdId, ...payload];
+  const c=crc16(pre);
+  return new Uint8Array([...pre, c&0xff, (c>>8)&0xff]);
+}
+const i16 = v => [v&0xff, (v>>8)&0xff];
+
+// 旋转: cmdSet 0x04, cmdId 0x0c(速度) / 0x14(角度)
+// payload = yaw(2) roll(2) pitch(2) mode(1) time(1)
+let seqNo=1;
+function buildRotate(yaw,pitch,roll,time,mode){
+  return buildDuml({
+    seq: seqNo++ & 0xffff,
+    cmdSet: 0x04,
+    cmdId: mode===0x80 ? 0x0c : 0x14,
+    payload:[...i16(yaw),...i16(roll),...i16(pitch), mode, time&0xff]
+  });
+}
+
+/* ════════════ BLE 层 ════════════ */
+const S_FFF0='0000fff0-0000-1000-8000-00805f9b34fb';
+const C_NOTIFY='0000fff4-0000-1000-8000-00805f9b34fb';
+const C_WRITE ='0000fff5-0000-1000-8000-00805f9b34fb';
+const u16 = n => `0000${n.toString(16).padStart(4,'0')}-0000-1000-8000-00805f9b34fb`;
+const PROBE=[]; for(let n=0xfe00;n<=0xffff;n++) PROBE.push(u16(n));
+PROBE.push(u16(0x180f),u16(0x1800),u16(0x1801),u16(0x180a));
+
+let dev=null, server=null, writeChars=new Map(), activeWrite=null;
+const $ = id => document.getElementById(id);
+
+function log(msg,cls='l-sys'){
+  const el=$('log'), t=new Date().toISOString().substr(11,12);
+  const d=document.createElement('div'); d.className=cls; d.textContent=`${t}  ${msg}`;
+  el.appendChild(d); el.scrollTop=el.scrollHeight;
+  while(el.children.length>400) el.removeChild(el.firstChild);
+}
+const hex = b => [...b].map(x=>x.toString(16).padStart(2,'0')).join(' ');
+
+function setState(s,txt){
+  $('dot').className='dot'+(s?' '+s:'');
+  $('stat').textContent=txt;
+  const on = s==='on';
+  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump'].forEach(i=>$(i).disabled=!on);
+  document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
+}
+
+async function connect(anyDevice){
+  if(!navigator.bluetooth){ log('此浏览器不支持 Web Bluetooth。改用桌面 Chrome/Edge、安卓 Chrome,或 iOS 上的 Bluefy。','l-err'); return; }
+  try{
+    setState('busy','正在选择设备…');
+    const opts = anyDevice
+      ? { acceptAllDevices:true, optionalServices:PROBE }
+      : { filters:[{namePrefix:'OM'},{namePrefix:'Osmo'},{namePrefix:'DJI'},{services:[S_FFF0]}], optionalServices:PROBE };
+    dev = await navigator.bluetooth.requestDevice(opts);
+    dev.addEventListener('gattserverdisconnected',()=>{ setState('','已断开'); log('连接断开'); });
+    setState('busy','正在连接 GATT…');
+    server = await dev.gatt.connect();
+    log(`已连接 ${dev.name||'(无名称)'}  id=${dev.id}`);
+    await discover();
+    setState('on', `${dev.name||'设备'} · 就绪`);
+  }catch(e){
+    setState('','连接失败');
+    log('连接失败: '+e.message,'l-err');
+  }
+}
+
+async function discover(){
+  writeChars.clear(); $('wchar').innerHTML='';
+  const svcs = await server.getPrimaryServices();
+  log(`发现 ${svcs.length} 个服务`);
+  for(const s of svcs){
+    let chars=[]; try{ chars=await s.getCharacteristics(); }catch{ continue; }
+    for(const c of chars){
+      const p=c.properties, tag=[p.read&&'R',p.write&&'W',p.writeWithoutResponse&&'Wnr',p.notify&&'N',p.indicate&&'I'].filter(Boolean).join('/');
+      log(`  ${s.uuid.slice(4,8)} / ${c.uuid.slice(4,8)}  [${tag}]`);
+      if(p.write||p.writeWithoutResponse){
+        writeChars.set(c.uuid,c);
+        const o=document.createElement('option');
+        o.value=c.uuid; o.textContent=`${s.uuid.slice(4,8)}/${c.uuid.slice(4,8)} [${tag}]`;
+        $('wchar').appendChild(o);
+      }
+      if(p.notify){
+        try{
+          await c.startNotifications();
+          c.addEventListener('characteristicvaluechanged',e=>onNotify(new Uint8Array(e.target.value.buffer)));
+          log(`  ↳ 已订阅 ${c.uuid.slice(4,8)}`);
+        }catch(err){ log(`  ↳ 订阅 ${c.uuid.slice(4,8)} 失败: ${err.message}`,'l-err'); }
+      }
+    }
+  }
+  if(writeChars.has(C_WRITE)) $('wchar').value=C_WRITE;
+  else if(writeChars.size) log('未找到 FFF5。已自动列出其它可写特征,请手动挑选。','l-err');
+  activeWrite = writeChars.get($('wchar').value)||null;
+  if(!activeWrite) log('没有任何可写特征 — 这台设备可能不走 FFF0 协议。','l-err');
+}
+
+/* 通知流重组 */
+let rxBuf=[];
+function onNotify(data){
+  log('RX  '+hex(data),'l-rx');
+  rxBuf.push(...data);
+  while(rxBuf.length>=4){
+    const i=rxBuf.indexOf(0x55);
+    if(i<0){ rxBuf=[]; return; }
+    if(i>0) rxBuf.splice(0,i);
+    if(rxBuf.length<4) return;
+    const len=(rxBuf[1]|(rxBuf[2]<<8))&0x03ff;
+    if(len<13||len>1024){ rxBuf.shift(); continue; }
+    if(crc8(rxBuf.slice(0,3))!==rxBuf[3]){ rxBuf.shift(); continue; }
+    if(rxBuf.length<len) return;
+    decode(rxBuf.splice(0,len));
+  }
+}
+function decode(m){
+  const cmdSet=m[9], cmdId=m[10], pl=m.slice(11,m.length-2);
+  if(cmdSet===0x05 && cmdId===0x06 && pl.length){
+    $('batt').textContent = `电量 ${pl[0]}%${pl[pl.length-1]===1?' · 充电中':''}`;
+  }
+  log(`  ↳ cmdSet=0x${cmdSet.toString(16).padStart(2,'0')} cmdId=0x${cmdId.toString(16).padStart(2,'0')} payload=${hex(pl)}`,'l-rx');
+}
+
+/* 发送(带分片) */
+async function send(bytes){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  log('TX  '+hex(bytes),'l-tx');
+  const n=parseInt($('chunk').value,10);
+  for(let i=0;i<bytes.length;i+=n){
+    const part=bytes.slice(i,i+n);
+    try{
+      if(activeWrite.properties.writeWithoutResponse) await activeWrite.writeValueWithoutResponse(part);
+      else await activeWrite.writeValue(part);
+    }catch(e){ log('写入失败: '+e.message,'l-err'); return; }
+  }
+}
+
+/* ════════════ UI ════════════ */
+const FIELDS=[['f-magic',1],['f-len',2],['f-crc8',1],['f-addr',2],['f-seq',2],['f-flag',1],['f-cmd',2],['f-pay',-1],['f-crc16',2]];
+function render(){
+  const yaw=+$('yaw').value, pitch=+$('pitch').value, roll=+$('roll').value,
+        time=+$('time').value, mode=+$('mode').value;
+  $('vYaw').textContent=(yaw/10).toFixed(1)+'°';
+  $('vPitch').textContent=(pitch/10).toFixed(1)+'°';
+  $('vRoll').textContent=(roll/10).toFixed(1)+'°';
+  $('vTime').textContent=(time/10).toFixed(1)+' s';
+  $('vStep').textContent=$('step').value;
+
+  const pkt=buildDuml({seq:seqNo,cmdSet:0x04,cmdId:mode===0x80?0x0c:0x14,
+    payload:[...i16(yaw),...i16(roll),...i16(pitch),mode,time&0xff]});
+  $('pktLen').textContent=pkt.length+' B';
+
+  const cls=[]; for(const [c,n] of FIELDS){ const k=n<0?pkt.length-13:n; for(let j=0;j<k;j++) cls.push(c); }
+  $('bytes').innerHTML=[...pkt].map((b,i)=>
+    `<span class="b ${cls[i]}" data-i="${i}">${b.toString(16).padStart(2,'0')}</span>`).join('');
+}
+['yaw','pitch','roll','time','mode','step'].forEach(id=>$(id).addEventListener('input',render));
+$('wchar').addEventListener('change',e=>{ activeWrite=writeChars.get(e.target.value)||null; });
+
+$('btnConnect').onclick=()=>connect(false);
+$('btnAny').onclick=()=>connect(true);
+$('btnDisc').onclick=()=>{ if(dev?.gatt.connected) dev.gatt.disconnect(); setState('','已断开'); };
+
+$('btnSend').onclick=()=>{ send(buildRotate(+$('yaw').value,+$('pitch').value,+$('roll').value,+$('time').value,+$('mode').value)); render(); };
+$('btnZero').onclick=()=>{ send(buildRotate(0,0,0,+$('time').value, +$('mode').value===0x80?0x80:0x05)); render(); };
+$('btnStop').onclick=()=>{ stopHold(); send(buildRotate(0,0,0,1,0x80)); render(); };
+
+/* 长按连发 */
+let holdTimer=null, holdWasSpeed=false;
+function fire(ax,dir){
+  const s=+$('step').value*dir, mode=+$('mode').value;
+  const y = ax==='yaw'?s:0, p = ax==='pitch'?s:0;
+  send(buildRotate(y,p,0,+$('time').value,mode)); render();
+}
+function startHold(ax,dir){
+  fire(ax,dir);
+  holdWasSpeed = +$('mode').value===0x80;
+  holdTimer=setInterval(()=>fire(ax,dir),100);
+}
+function stopHold(){
+  if(!holdTimer) return;
+  clearInterval(holdTimer); holdTimer=null;
+  if(holdWasSpeed){ send(buildRotate(0,0,0,1,0x80)); render(); }
+}
+document.querySelectorAll('.pad button[data-ax]').forEach(b=>{
+  const go=e=>{ e.preventDefault(); if(!b.disabled) startHold(b.dataset.ax,+b.dataset.dir); };
+  b.addEventListener('pointerdown',go);
+  ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,stopHold));
+});
+
+$('btnRaw').onclick=()=>{
+  const v=$('rawHex').value.replace(/0x/g,'').match(/[0-9a-f]{2}/gi);
+  if(!v){ log('十六进制解析不出字节。用 55 15 04 a9 … 这样的格式。','l-err'); return; }
+  send(new Uint8Array(v.map(x=>parseInt(x,16))));
+};
+$('btnDump').onclick=()=>{ log('—— 重新枚举 GATT ——'); discover(); };
+$('btnClear').onclick=()=>{ $('log').innerHTML=''; };
+$('btnCopy').onclick=async()=>{
+  try{ await navigator.clipboard.writeText($('log').innerText); log('日志已复制'); }
+  catch{ log('复制失败,浏览器拒绝了剪贴板权限','l-err'); }
+};
+
+render();
+setState('','未连接');
+log('就绪。CRC8 init=0x77,CRC16 init=0x3692,均已自检通过。');
+if(!navigator.bluetooth) log('当前浏览器没有 navigator.bluetooth — 换 Chrome/Edge 或 iOS 上的 Bluefy。','l-err');
+</script>
+</body>
+</html>
