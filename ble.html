@@ -463,9 +463,37 @@ $('btnCopy').onclick=async()=>{
   catch{ log('复制失败,浏览器拒绝了剪贴板权限','l-err'); }
 };
 
+/* ── 开机自检 ──
+   这行原本写死「均已自检通过」，但代码里并没有任何自检。
+   跟硬件通信的工具不该声称验过而其实没验，所以改成真的跑一遍：
+   拿两条已知帧逐字节比对，顺带把 CRC8/CRC16 的初值也一并验掉
+   —— 初值错了，算出来的帧就对不上。
+   用 buildDuml 而不是 buildRotate，避免自检把 seqNo 推掉一格。 */
+function runSelfTest(){
+  const V=[
+    ['CRC8 init=0x77',  crc8([0x55,0x15,0x04])===0xa9, 'crc8(55 15 04) 应为 a9'],
+    ['CRC16 init=0x3692', crc16([0x55,0x15,0x04,0xa9,0x02,0x04,0x01,0x00,0x00,0x04,0x14,
+                                 0x00,0x00,0x00,0x00,0x00,0x00,0x05,0x0f])===0x65ab,
+                          'crc16(回中帧前 19 字节) 应为 0x65ab'],
+    ['整帧 · 回中 ABSOLUTE',
+      hex(buildDuml({seq:1,cmdSet:0x04,cmdId:0x14,payload:[0,0,0,0,0,0,0x05,15]}))
+        ==='55 15 04 a9 02 04 01 00 00 04 14 00 00 00 00 00 00 05 0f ab 65', ''],
+    ['整帧 · yaw -90.0° 补码',
+      hex(buildDuml({seq:1,cmdSet:0x04,cmdId:0x14,payload:[...i16(-900),0,0,0,0,0x05,15]}))
+        ==='55 15 04 a9 02 04 01 00 00 04 14 7c fc 00 00 00 00 05 0f 7b f0', ''],
+  ];
+  const bad=V.filter(v=>!v[1]);
+  if(bad.length===0){
+    log(`就绪。自检通过：${V.length}/${V.length} 项（CRC8 init=0x77、CRC16 init=0x3692、两条已知帧逐字节比对）。`);
+  }else{
+    log(`自检未通过：${bad.length}/${V.length} 项不符 — 协议层有问题,不要往云台发帧。`,'l-err');
+    bad.forEach(v=>log(`  ✗ ${v[0]}${v[2]?'  ('+v[2]+')':''}`,'l-err'));
+  }
+}
+
 render();
 setState('','未连接');
-log('就绪。CRC8 init=0x77,CRC16 init=0x3692,均已自检通过。');
+runSelfTest();
 if(!navigator.bluetooth) log('当前浏览器没有 navigator.bluetooth — 换 Chrome/Edge 或 iOS 上的 Bluefy。','l-err');
 </script>
 </body>
