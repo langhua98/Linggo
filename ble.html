@@ -128,6 +128,12 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 .l-sys{color:var(--dim)}
 .l-err{color:var(--warn)}
 
+/* 手机上让它换行,不要横向滚动 —— 一行放不下时,被截到屏幕外的往往正是
+   那条 ✅(唯一能用的设备),而那是最该看见的一条。 */
+.tried{display:flex;align-items:flex-start;gap:8px;margin-top:10px;font-size:11px;color:var(--dim)}
+.tried #triedList{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;line-height:1.9}
+.tried button{padding:5px 9px;font-size:11px}
+.t-no{color:var(--warn)}.t-yes{color:var(--ok)}.t-maybe{color:var(--tx)}
 .note{font-size:11px;color:var(--dim);margin-top:10px}
 .note b{color:var(--ink);font-weight:500}
 </style>
@@ -149,6 +155,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnDisc" class="danger" disabled>断开</button>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="stat">未连接</span></div>
+  <div class="tried"><span id="triedList">尚未试过任何设备</span><button id="btnForget">清空记录</button></div>
+  <p class="note"><b>扫描并连接</b> 只列出名字含 OM/Osmo/DJI 或广播了 FFF0 的设备。搜不到就用 <b>扫描全部设备</b> 逐个试 —— 很多设备不在广播包里放主服务，只有连上才看得到。iOS 上弹窗里的一长串是系统给的设备编号,不是 MAC。</p>
   <p class="note">Web Bluetooth 仅在 <b>桌面版 Chrome / Edge</b> 和 <b>安卓 Chrome</b> 可用。iOS Safari 不支持，需用 <b>Bluefy</b> 浏览器。页面必须跑在 https 或 localhost 下。</p>
 </section>
 
@@ -293,6 +301,33 @@ PROBE.push(u16(0x180f),u16(0x1800),u16(0x1801),u16(0x180a));
 let dev=null, server=null, writeChars=new Map(), activeWrite=null;
 const $ = id => document.getElementById(id);
 
+/* ── 试过哪些设备 ──
+   iOS 上匿名外设只显示一串系统编号,四个长得一模一样,逐个试的时候根本记不住
+   试过哪个。按 dev.id 记结论(规范保证同一设备 + 同一源下它是稳定的),
+   下次再选中同一台就能立刻说「这台试过了」。存 id 不存名字 —— 难分辨的正是没名字那些。 */
+const TRIED_KEY='om_ble_tried';
+const loadTried = () => { try{ return JSON.parse(localStorage.getItem(TRIED_KEY)||'{}'); }catch{ return {}; } };
+function markTried(id,name,verdict,svcCount){
+  if(!id) return;
+  const t=loadTried();
+  t[id]={name:name||'',verdict,svcCount,at:Date.now()};
+  try{ localStorage.setItem(TRIED_KEY,JSON.stringify(t)); }catch{}
+  renderTried();
+}
+function renderTried(){
+  const t=loadTried(), ids=Object.keys(t);
+  const el=$('triedList'); if(!el) return;
+  if(!ids.length){ el.textContent='尚未试过任何设备'; return; }
+  const MARK={fff0:['✅','t-yes'],writable:['◐','t-maybe'],none:['❌','t-no']};
+  el.innerHTML='<span style="flex:none">已试 '+ids.length+' 台</span>'+ids
+    .sort((a,b)=>{ const R={fff0:0,writable:1,none:2};
+      return (R[t[a].verdict]??9)-(R[t[b].verdict]??9) || t[b].at-t[a].at; })
+    .map(id=>{ const [m,c]=MARK[t[id].verdict]||['?','']; 
+      const label=t[id].name || id.slice(0,8)+'…';
+      return `<span class="${c}">${m} ${label}</span>`; })
+    .join('');
+}
+
 function log(msg,cls='l-sys'){
   const el=$('log'), t=new Date().toISOString().substr(11,12);
   const d=document.createElement('div'); d.className=cls; d.textContent=`${t}  ${msg}`;
@@ -317,6 +352,12 @@ async function connect(anyDevice){
       ? { acceptAllDevices:true, optionalServices:PROBE }
       : { filters:[{namePrefix:'OM'},{namePrefix:'Osmo'},{namePrefix:'DJI'},{services:[S_FFF0]}], optionalServices:PROBE };
     dev = await navigator.bluetooth.requestDevice(opts);
+    // 先把历史结论摆出来,省得又白等一次连接。仍然继续连 —— 固件或模式可能变了。
+    const prev = loadTried()[dev.id];
+    if(prev && prev.verdict==='none')
+      log('这台之前试过：无 FFF0、无可写特征。要是没别的可选,再连一次也行。','l-err');
+    else if(prev && prev.verdict==='fff0')
+      log('这台之前试过：找到过 FFF0。','l-sys');
     dev.addEventListener('gattserverdisconnected',()=>{ setState('','已断开'); log('连接断开'); });
     setState('busy','正在连接 GATT…');
     server = await dev.gatt.connect();
@@ -357,6 +398,12 @@ async function discover(){
   else if(writeChars.size) log('未找到 FFF5。已自动列出其它可写特征,请手动挑选。','l-err');
   activeWrite = writeChars.get($('wchar').value)||null;
   if(!activeWrite) log('没有任何可写特征 — 这台设备可能不走 FFF0 协议。','l-err');
+
+  // 结论要一眼能看见,并记下来 —— 下次选到同一台就不用重新试
+  const verdict = writeChars.has(C_WRITE) ? 'fff0' : (writeChars.size ? 'writable' : 'none');
+  if(verdict==='fff0')      log('✅ 找到 FFF0/FFF5 — 就是这台,可以发帧。');
+  else if(verdict==='none') log('❌ 不是这台 — 无 FFF0、无可写特征。断开后试下一个。','l-err');
+  markTried(dev && dev.id, dev && dev.name, verdict, svcs.length);
 }
 
 /* 通知流重组 */
@@ -458,6 +505,7 @@ $('btnRaw').onclick=()=>{
 };
 $('btnDump').onclick=()=>{ log('—— 重新枚举 GATT ——'); discover(); };
 $('btnClear').onclick=()=>{ $('log').innerHTML=''; };
+$('btnForget').onclick=()=>{ localStorage.removeItem(TRIED_KEY); renderTried(); log('已清空设备记录'); };
 $('btnCopy').onclick=async()=>{
   try{ await navigator.clipboard.writeText($('log').innerText); log('日志已复制'); }
   catch{ log('复制失败,浏览器拒绝了剪贴板权限','l-err'); }
@@ -492,6 +540,7 @@ function runSelfTest(){
 }
 
 render();
+renderTried();
 setState('','未连接');
 runSelfTest();
 if(!navigator.bluetooth) log('当前浏览器没有 navigator.bluetooth — 换 Chrome/Edge 或 iOS 上的 Bluefy。','l-err');
