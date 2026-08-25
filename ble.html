@@ -136,8 +136,22 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 }
 .log-tools label{display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
 .log-tools input[type=checkbox]{width:auto;margin:0}
-#attitude{color:var(--rx);white-space:nowrap}
-#hiddenCount{color:var(--dim);white-space:nowrap}
+.log-tools select{width:auto;padding:4px 7px;font-size:11px}
+
+/* ── 实时状态盘 ── */
+.stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.stat-grid>div{
+  background:#080d10;border:1px solid var(--line);border-radius:3px;
+  padding:9px 11px;min-width:0;
+}
+.stat-grid b{
+  display:block;font-size:15px;font-weight:600;color:var(--rx);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;line-height:1.35;
+}
+.stat-grid span{display:block;font-size:10px;color:var(--dim);margin-top:3px}
+.stat-grid b.mv{color:var(--ok)}
+#folded{font-size:11px;color:var(--dim);margin-top:7px;line-height:1.7;word-break:break-all}
 
 /* 手机上让它换行,不要横向滚动 —— 一行放不下时,被截到屏幕外的往往正是
    那条 ✅(唯一能用的设备),而那是最该看见的一条。 */
@@ -265,17 +279,36 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
 </section>
 
+<!-- 实时状态 -->
+<section>
+  <p class="eyebrow">6 · 实时状态</p>
+  <div class="stat-grid">
+    <div><b id="st-move">—</b><span>动静（由姿态帧实测）</span></div>
+    <div><b id="st-att">—</b><span>姿态 Roll / Pitch / Yaw</span></div>
+    <div><b id="st-batt">—</b><span>电量</span></div>
+    <div><b id="st-up">—</b><span>云台已运行</span></div>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button id="btnSpin" disabled>转动测试（会真的转）</button>
+  </div>
+  <p class="note">转动测试 = 按「点动步长」的速度转 <b>1.5 秒</b>再自动停，
+    然后直接报出 ΔYaw / ΔPitch / ΔRoll。手贴十六进制时转和停常常隔几十毫秒就发出去了，
+    等于自己把自己取消掉，肉眼什么都看不见。</p>
+</section>
+
 <!-- 日志 -->
 <section style="border-bottom:none">
-  <p class="eyebrow" style="flex-wrap:wrap"><span>6 · 日志</span>
+  <p class="eyebrow" style="flex-wrap:wrap"><span>7 · 日志</span>
     <span class="log-tools">
-      <span id="attitude">R —° P —° Y —°</span>
-      <span id="batt">—</span>
-      <label><input type="checkbox" id="hideNoisy" checked>隐藏高频帧</label>
-      <span id="hiddenCount"></span>
+      <select id="logLevel">
+        <option value="quiet" selected>精简 · 只看收发与应答</option>
+        <option value="change">变化 · 加上内容变了的帧</option>
+        <option value="all">全部 · 原始刷屏</option>
+      </select>
     </span>
   </p>
   <div id="log"></div>
+  <div id="folded"></div>
   <div class="row" style="margin-top:10px">
     <button id="btnClear">清空</button>
     <button id="btnCopy">复制日志</button>
@@ -361,8 +394,10 @@ const PROBES = [
    note:'页面「发送」按钮用的就是这条'},
   {seq:0xAB02, name:'速度零速 04/0c', cs:0x04, ci:0x0c, pl:[0,0,0,0,0,0,0x80,1],
    note:'页面「停止」用的'},
-  {seq:0xAB03, name:'04/1c',  cs:0x04, ci:0x1c, pl:[0x47], note:'云台自己在发这条'},
-  {seq:0xAB04, name:'04/38',  cs:0x04, ci:0x38, pl:[0,0,0x64,0x64,0], note:'云台自己在发这条'},
+  // 04/1c 和 04/38 试过了:云台只往外推、从不应答,是单向遥测而非可调用的指令,
+  // 留在表里只会每轮多两条永远的 ❌,把真正的结论淹掉。已删。
+  {seq:0xAB03, name:'相对角度 04/14', cs:0x04, ci:0x14, pl:[0,0,0,0,0,0,0x04,15],
+   note:'同一 cmdId 换 mode=0x04 再问一次'},
   {seq:0xAB05, name:'版本 00/01', cs:0x00, ci:0x01, pl:[], note:'对照组,已知一定会回'},
 ];
 // 诊断进行中是个 Map: seq → {payload, at};非诊断状态下为 null。
@@ -407,7 +442,7 @@ function setState(s,txt){
   $('dot').className='dot'+(s?' '+s:'');
   $('stat').textContent=txt;
   const on = s==='on';
-  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe'].forEach(i=>$(i).disabled=!on);
+  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin'].forEach(i=>$(i).disabled=!on);
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
 }
 
@@ -476,9 +511,80 @@ async function discover(){
 /* 通知流重组
    过滤发生在「帧解析之后」而不是原始通知包上 —— 一个 BLE 通知包可能含多帧、
    也可能只是半帧,只有拆出完整帧、知道 cmdSet/cmdId 之后才知道该不该打印。 */
-let rxBuf=[], hiddenCount=0;
-function updateHiddenCount(){
-  $('hiddenCount').textContent = hiddenCount>0 ? `已隐藏 ${hiddenCount} 帧` : '';
+let rxBuf=[];
+
+/* ── 日志白名单 ──
+   原来是「屏蔽 04/57」这一条黑名单,但刷屏的远不止它:04/6f、04/1c、04/27、
+   04/38、05/06、00/f1、00/00 全是周期推送,加起来几秒就把 TX 和应答冲出 400 行上限。
+   逐个往黑名单里加是补不完的,所以反过来做白名单:默认只留发出去的帧、应答、
+   报错,以及每种周期帧的第一条(让人知道云台在推什么),其余折叠成计数。 */
+const kindKey = (cs,ci) => `${cs.toString(16).padStart(2,'0')}/${ci.toString(16).padStart(2,'0')}`;
+const lastPl = new Map();      // "04/57" → 上一帧载荷十六进制
+const foldCounts = new Map();  // "04/57" → 已折叠多少帧
+let rxTotal = 0, foldDirty = false;
+
+function shouldLog(cs, ci, plHex){
+  const k = kindKey(cs,ci), lv = $('logLevel').value;
+  const prev = lastPl.get(k);
+  lastPl.set(k, plHex);
+  if(lv==='all') return true;
+  if(prev===undefined) return true;          // 每种帧的头一条一定要看见
+  if(lv==='change') return prev!==plHex;     // 只在内容真的变了时才打
+  return false;
+}
+function foldFrame(cs, ci){
+  const k = kindKey(cs,ci);
+  foldCounts.set(k, (foldCounts.get(k)||0)+1);
+  foldDirty = true;
+}
+function renderFolded(){
+  const parts=[...foldCounts.entries()].sort((a,b)=>b[1]-a[1]).map(([k,n])=>`${k}×${n}`);
+  $('folded').textContent = parts.length
+    ? `共收 ${rxTotal} 帧 · 已折叠周期帧 ${parts.join('  ')}`
+    : (rxTotal ? `共收 ${rxTotal} 帧` : '');
+}
+setInterval(()=>{ if(foldDirty){ foldDirty=false; renderFolded(); } }, 700);
+
+/* ── 姿态与动静 ──
+   直接拿四元数算出来的角度判断云台有没有动 —— 比盯日志里那个未经证实的
+   载荷 [44] 标志位靠谱,也比人工翻两帧对比省事。 */
+let lastEuler=null;
+const attHist=[];
+const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
+const fmtDur = ms => { const s=Math.floor(ms/1000);
+  return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
+function pushAtt(e){
+  const now=Date.now();
+  lastEuler=e;
+  attHist.push({t:now, yaw:e.yaw, pitch:e.pitch, roll:e.roll});
+  while(attHist.length && now-attHist[0].t>3000) attHist.shift();
+  let span=0;
+  for(const a of attHist) span=Math.max(span,
+    Math.abs(d180(a.yaw-e.yaw)), Math.abs(d180(a.pitch-e.pitch)), Math.abs(d180(a.roll-e.roll)));
+  const moving = span>0.8;   // 阈值取 0.8°:实测手持静止时抖动在 0.1° 量级
+  const el=$('st-move');
+  el.textContent = moving ? `● 转动中 ${span.toFixed(1)}°` : '○ 静止';
+  el.className = moving ? 'mv' : '';
+}
+
+/* 发完控制帧自动回报「到底动没动」。连发时只有最后一次会报(靠 motionWatch 序号作废前面的),
+   一键诊断和转动测试期间关掉,它们自己有结论。 */
+let motionWatch=0, suppressWatch=false;
+function watchMotion(tag, delay=1600){
+  const a0 = lastEuler && {...lastEuler};
+  const id = ++motionWatch;
+  setTimeout(()=>{
+    if(id!==motionWatch || suppressWatch) return;
+    reportDelta(`⟲ ${tag} 发出 ${(delay/1000).toFixed(1)}s 后`, a0);
+  }, delay);
+}
+function reportDelta(tag, a0){
+  if(!a0 || !lastEuler){ log(`${tag}:没收到姿态帧,判断不了动没动`,'l-sys'); return; }
+  const dy=d180(lastEuler.yaw-a0.yaw), dp=d180(lastEuler.pitch-a0.pitch), dr=d180(lastEuler.roll-a0.roll);
+  const mx=Math.max(Math.abs(dy),Math.abs(dp),Math.abs(dr));
+  const sg=v=>(v>=0?'+':'')+v.toFixed(1)+'°';
+  log(`${tag}  ΔYaw ${sg(dy)}  ΔPitch ${sg(dp)}  ΔRoll ${sg(dr)}  → ${mx>1?'✅ 云台动了':'❌ 纹丝不动'}`,
+      mx>1?'l-ack':'l-err');
 }
 function onNotify(data){
   rxBuf.push(...data);
@@ -499,10 +605,12 @@ function onNotify(data){
     if(rxBuf.length<len) return; // 半帧,等下一个通知包续上
     const frame=rxBuf.splice(0,len);
     const cmdSet=frame[9], cmdId=frame[10];
-    const hide = $('hideNoisy').checked && cmdSet===0x04 && cmdId===0x57;
-    if(hide){ hiddenCount++; updateHiddenCount(); }
-    else log('RX  '+hex(frame),'l-rx');
-    decode(frame, hide);
+    rxTotal++;
+    const plHex = hex(frame.slice(11, frame.length-2));
+    const show = shouldLog(cmdSet, cmdId, plHex);
+    if(show) log('RX  '+hex(frame),'l-rx');
+    else foldFrame(cmdSet, cmdId);
+    decode(frame, !show);
   }
 }
 function decode(m, hide){
@@ -522,13 +630,22 @@ function decode(m, hide){
   }
 
   if(cmdSet===0x05 && cmdId===0x06 && pl.length){
-    $('batt').textContent = `电量 ${pl[0]}%${pl[pl.length-1]===1?' · 充电中':''}`;
+    $('st-batt').textContent = `${pl[0]}%${pl[pl.length-1]===1?' · 充电中':''}`;
   }
 
-  // 姿态帧(约 1Hz,不算高频,不受过滤影响):载荷 [24:40]=四元数,[12:16]=毫秒计时器
+  // 姿态帧:载荷 [24:40]=四元数、[12:16]=毫秒计时器。折叠与否都要解 —— 状态盘靠它。
   if(cmdSet===0x04 && cmdId===0x05 && pl.length>=40){
     const q=decodeQuat(pl), e=quatToEuler(q.w,q.x,q.y,q.z);
-    $('attitude').textContent = `R ${e.roll.toFixed(1)}° P ${e.pitch.toFixed(1)}° Y ${e.yaw.toFixed(1)}°`;
+    $('st-att').textContent = `${e.roll.toFixed(1)} / ${e.pitch.toFixed(1)} / ${e.yaw.toFixed(1)}`;
+    $('st-up').textContent = fmtDur((pl[12]|(pl[13]<<8)|(pl[14]<<16)|(pl[15]<<24))>>>0);
+    pushAtt(e);
+  }
+
+  // 版本应答里出现 ASCII "GB66" 就认定是 OM6。实测这台机器 04/14(绝对/相对角度)
+  // 一个字都不回,只有 04/0c(速度)回 0x00 —— 把用不了的模式直接标灰,免得又白试一轮。
+  if(cmdSet===0x00 && cmdId===0x01 && pl.length>=6 && !om6Locked){
+    const ascii = String.fromCharCode(...pl.slice(0,16).filter(c=>c>=32&&c<127));
+    if(ascii.includes('GB66')) lockSpeedMode();
   }
 
   if(!hide){
@@ -541,6 +658,8 @@ async function send(bytes){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   trackSentSeq(bytes);
   log('TX  '+hex(bytes),'l-tx');
+  if(bytes[0]===0x55 && bytes.length>10 && bytes[9]===0x04 && (bytes[10]===0x0c || bytes[10]===0x14))
+    watchMotion('控制帧 '+kindKey(bytes[9],bytes[10]));
   const n=parseInt($('chunk').value,10);
   for(let i=0;i<bytes.length;i+=n){
     const part=bytes.slice(i,i+n);
@@ -618,9 +737,10 @@ const sleep = ms => new Promise(r=>setTimeout(r,ms));
 async function runProbe(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
 
-  // 诊断要看全部回帧,不能漏任何一条 —— 临时关掉「隐藏高频帧」,结束后恢复原值。
-  const hideWas = $('hideNoisy').checked;
-  $('hideNoisy').checked = false;
+  // 诊断要看全部回帧,不能漏任何一条 —— 临时切到「全部」,结束后恢复原值。
+  const lvWas = $('logLevel').value;
+  $('logLevel').value = 'all';
+  suppressWatch = true;
 
   probeResults = new Map();
   log(`—— 开始诊断,共 ${PROBES.length} 条探针 ——`);
@@ -634,7 +754,8 @@ async function runProbe(){
 
   const results = probeResults;
   probeResults = null;
-  $('hideNoisy').checked = hideWas;
+  $('logLevel').value = lvWas;
+  suppressWatch = false;
 
   log('—— 诊断结果 ——');
   const nameWidth = Math.max(...PROBES.map(p=>p.name.length));
@@ -676,6 +797,36 @@ async function runProbe(){
   log(`  结论: ${verdict}`);
 }
 $('btnProbe').onclick=()=>{ runProbe(); };
+
+let om6Locked=false;
+function lockSpeedMode(){
+  om6Locked=true;
+  const sel=$('mode');
+  for(const o of sel.options) if(o.value!=='128'){ o.disabled=true; o.textContent+=' · 本机无应答'; }
+  sel.value='128'; render();
+  log('版本应答含 "GB66" → 这台是 OM6。它对 04/14(绝对/相对角度)完全无应答,'+
+      '只有 04/0c(速度)会回返回码 0x00,已把模式锁到 SPEED。','l-ack');
+}
+
+/* 转动测试:转足 1.5s 再停,然后报位移。
+   手贴十六进制时「转」和「停」往往隔几十毫秒就都发出去了 —— 云台还没起步就被叫停,
+   ΔYaw 只有零点几度,看上去和「完全不动」一模一样,分不清是不支持还是没给时间。 */
+async function spinTest(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  const spd=+$('step').value||100, dur=1500;
+  suppressWatch=true;
+  log(`—— 转动测试:yaw 速度 ${spd},转 ${(dur/1000).toFixed(1)}s 后自动停,请握住云台 ——`);
+  const a0 = lastEuler && {...lastEuler};
+  await send(buildDuml({seq:0xAC01, flags:0x40, cmdSet:0x04, cmdId:0x0c,
+    payload:[...i16(spd),0,0,0,0,0x80, Math.min(255, Math.round(dur/100))]}));
+  await sleep(dur);
+  await send(buildDuml({seq:0xAC02, flags:0x40, cmdSet:0x04, cmdId:0x0c,
+    payload:[0,0,0,0,0,0,0x80,1]}));
+  await sleep(1400);          // 姿态帧约 1Hz,留够一帧新数据
+  suppressWatch=false;
+  reportDelta('转动测试结果', a0);
+}
+$('btnSpin').onclick=()=>{ $('btnSpin').disabled=true; spinTest().finally(()=>{ $('btnSpin').disabled=false; }); };
 $('btnClear').onclick=()=>{ $('log').innerHTML=''; };
 $('btnForget').onclick=()=>{ localStorage.removeItem(TRIED_KEY); renderTried(); log('已清空设备记录'); };
 $('btnCopy').onclick=async()=>{
