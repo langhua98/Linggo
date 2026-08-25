@@ -246,7 +246,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <label class="fld"><span class="lab"><span>点动步长 / 速度</span><span class="val" id="vStep">100</span></span>
     <input type="range" id="step" min="10" max="900" step="10" value="100"></label>
-  <p class="note">按住方向键 = 以 10 Hz 连发。SPEED 模式下松手会自动发一帧零速停止。</p>
+  <p class="note">按住方向键 = 以 10 Hz 连发。SPEED 模式下松手会自动发一帧零速停止。
+    <span id="spdNote"></span></p>
 </section>
 
 <!-- 底层 -->
@@ -297,7 +298,28 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <b>②单帧</b>发一条速度帧再发停止；
     <b>③连发</b>同一条帧 20Hz 连发（速度指令通常带看门狗，停发即停转）。
     最后拿②③减掉①报净位移 —— 不减底噪的话，恒定漂移会被读成「动了」。
-    全程把云台放稳、手不要动。</p>
+    全程把云台放稳、手不要动。<br>
+    <b>速度标定</b>跑八段（偏航五段 + 俯仰两段 + 对照），约 40 秒，左右交替以免把云台推到行程末端，
+    结束后自动归位。跑完会把实测的速度标度记住，滑块标注和下面的闭环都按它换算。</p>
+
+  <p class="eyebrow" style="margin-top:20px">转到指定角度</p>
+  <div class="grid2">
+    <label class="fld" style="margin:0"><span class="lab"><span>轴</span></span>
+      <select id="gotoAx">
+        <option value="yaw" selected>Yaw 偏航</option>
+        <option value="pitch">Pitch 俯仰</option>
+      </select></label>
+    <label class="fld" style="margin:0">
+      <span class="lab"><span>相对转动</span><span class="val" id="vGoto">+90°</span></span>
+      <input type="range" id="gotoDeg" min="-180" max="180" step="5" value="90"></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnGoto" disabled>执行</button>
+    <button id="btnGotoStop" disabled>中止</button>
+  </div>
+  <p class="note">闭环：持续发速度帧，接近目标自动减速，到位发零速停止。
+    姿态反馈只有约 1 Hz，两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。
+    <span id="gotoStat"></span></p>
 </section>
 
 <!-- 日志 -->
@@ -459,7 +481,9 @@ function setState(s,txt){
   $('dot').className='dot'+(s?' '+s:'');
   $('stat').textContent=txt;
   const on = s==='on';
-  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal'].forEach(i=>$(i).disabled=!on);
+  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal','btnGoto']
+    .forEach(i=>$(i).disabled=!on);
+  $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
 }
 
@@ -471,6 +495,7 @@ async function connect(anyDevice){
       ? { acceptAllDevices:true, optionalServices:PROBE }
       : { filters:[{namePrefix:'OM'},{namePrefix:'Osmo'},{namePrefix:'DJI'},{services:[S_FFF0]}], optionalServices:PROBE };
     dev = await navigator.bluetooth.requestDevice(opts);
+    loadDpu(dev.id);
     // 先把历史结论摆出来,省得又白等一次连接。仍然继续连 —— 固件或模式可能变了。
     const prev = loadTried()[dev.id];
     if(prev && prev.verdict==='none')
@@ -523,10 +548,20 @@ async function discover(){
   if(!activeWrite) log('没有任何可写特征 — 这台设备可能不走 FFF0 协议。','l-err');
 
   // 结论要一眼能看见,并记下来 —— 下次选到同一台就不用重新试
-  const verdict = writeChars.has(C_WRITE) ? 'fff0' : (writeChars.size ? 'writable' : 'none');
+  // 复用上面算好的 fff5,别再 writeChars.has(C_WRITE) —— 短形式 UUID 下那个判定恒为假,
+  // 于是找到了 FFF5 的机器会被记成 writable 甚至 none,设备表里显示「不是这台」。
+  const verdict = fff5 ? 'fff0' : (writeChars.size ? 'writable' : 'none');
   if(verdict==='fff0')      log('✅ 找到 FFF0/FFF5 — 就是这台,可以发帧。');
   else if(verdict==='none') log('❌ 不是这台 — 无 FFF0、无可写特征。断开后试下一个。','l-err');
   markTried(dev && dev.id, dev && dev.name, verdict, svcs.length);
+
+  /* 自动问一次版本。decode() 里认出应答含 "GB66" 就会锁到速度模式 ——
+     不自动发的话,这个识别只有跑「一键诊断」才会触发,而页面默认是绝对角度模式、
+     所有控件发的都是这台机器根本不理的 04/14,等于开箱即哑。 */
+  if(activeWrite){
+    await sleep(200);
+    await send(buildDuml({seq:0xA001, flags:0x40, cmdSet:0x00, cmdId:0x01, payload:[]}));
+  }
 }
 
 /* 通知流重组
@@ -574,11 +609,12 @@ const attHist=[];
 const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
 const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
-let traceBuf=null;
+let traceBuf=null, attSeq=0;
 function pushAtt(e){
+  attSeq++;
   const now=Date.now();
   lastEuler=e;
-  if(traceBuf) traceBuf.push(e.yaw);
+  if(traceBuf) traceBuf.push({yaw:e.yaw, pitch:e.pitch, roll:e.roll});
   attHist.push({t:now, yaw:e.yaw, pitch:e.pitch, roll:e.roll});
   while(attHist.length && now-attHist[0].t>3000) attHist.shift();
   let span=0;
@@ -663,7 +699,8 @@ function decode(m, hide){
   // 姿态帧:载荷 [24:40]=四元数、[12:16]=毫秒计时器。折叠与否都要解 —— 状态盘靠它。
   if(cmdSet===0x04 && cmdId===0x05 && pl.length>=40){
     const q=decodeQuat(pl), e=quatToEuler(q.w,q.x,q.y,q.z);
-    $('st-att').textContent = `${e.roll.toFixed(1)} / ${e.pitch.toFixed(1)} / ${e.yaw.toFixed(1)}`;
+    const r0=v=>(Math.round(v)===0?0:Math.round(v));   // 免得出现 "-0"
+    $('st-att').textContent = `${r0(e.roll)} / ${r0(e.pitch)} / ${r0(e.yaw)}`;
     $('st-up').textContent = fmtDur((pl[12]|(pl[13]<<8)|(pl[14]<<16)|(pl[15]<<24))>>>0);
     pushAtt(e);
   }
@@ -699,14 +736,52 @@ async function send(bytes){
 
 /* ════════════ UI ════════════ */
 const FIELDS=[['f-magic',1],['f-len',2],['f-crc8',1],['f-addr',2],['f-seq',2],['f-flag',1],['f-cmd',2],['f-pay',-1],['f-crc16',2]];
+/* ── 速度标度 ──
+   速度模式下滑块里的数不是角度而是速度值,本机实测约 0.11 °/s 每单位
+   (spd=100 连发量到 10.9°/s)。默认值只是这台 OM6 的经验值,标定跑完就用实测覆盖,
+   并按 dev.id 存起来 —— 换一台设备标度不一定一样,不能串味。 */
+const DPU_KEY='om_ble_dpu', DPU_DEFAULT=0.11;
+let degPerUnit=DPU_DEFAULT, dpuMeasured=false;
+function loadDpu(id){
+  degPerUnit=DPU_DEFAULT; dpuMeasured=false;
+  if(!id) return;
+  try{
+    const v=JSON.parse(localStorage.getItem(DPU_KEY)||'{}')[id];
+    if(v && v>0){ degPerUnit=v; dpuMeasured=true; }
+  }catch{}
+}
+function saveDpu(v){
+  if(!(v>0)) return;
+  degPerUnit=v; dpuMeasured=true;
+  if(!(dev && dev.id)) { render(); return; }
+  try{
+    const all=JSON.parse(localStorage.getItem(DPU_KEY)||'{}');
+    all[dev.id]=v; localStorage.setItem(DPU_KEY,JSON.stringify(all));
+  }catch{}
+  render();
+}
+
 function render(){
   const yaw=+$('yaw').value, pitch=+$('pitch').value, roll=+$('roll').value,
         time=+$('time').value, mode=+$('mode').value;
-  $('vYaw').textContent=(yaw/10).toFixed(1)+'°';
-  $('vPitch').textContent=(pitch/10).toFixed(1)+'°';
-  $('vRoll').textContent=(roll/10).toFixed(1)+'°';
-  $('vTime').textContent=(time/10).toFixed(1)+' s';
-  $('vStep').textContent=$('step').value;
+  // 速度模式下这三个数是速度值不是角度,time 字节在本机实测完全无效 ——
+  // 照原样标成「0.0°」「1.5 s」会让人以为在设角度和时长,一直调不出效果。
+  const speed = mode===0x80;
+  const dps = v => `${v} ≈ ${(Math.abs(v)*degPerUnit).toFixed(1)}°/s`;
+  $('vYaw').textContent   = speed ? dps(yaw)   : (yaw/10).toFixed(1)+'°';
+  $('vPitch').textContent = speed ? dps(pitch) : (pitch/10).toFixed(1)+'°';
+  $('vRoll').textContent  = speed ? dps(roll)  : (roll/10).toFixed(1)+'°';
+  $('vTime').textContent  = speed ? '本机无效' : (time/10).toFixed(1)+' s';
+  $('time').disabled = speed;
+  $('time').closest('.fld').style.opacity = speed ? .45 : '';
+  $('vStep').textContent = speed
+    ? `${$('step').value} ≈ ${(+$('step').value*degPerUnit).toFixed(1)}°/s`
+    : $('step').value;
+  const sn=$('spdNote');
+  if(sn) sn.textContent = speed
+    ? (dpuMeasured ? `速度标度 ${degPerUnit.toFixed(3)}°/s 每单位（本机标定实测）`
+                   : `速度标度 ${degPerUnit.toFixed(3)}°/s 每单位（默认假设值，跑一次「速度标定」即用实测覆盖）`)
+    : '';
 
   const pkt=buildDuml({seq:seqNo,flags:+$('flags').value,cmdSet:0x04,cmdId:mode===0x80?0x0c:0x14,
     payload:[...i16(yaw),...i16(roll),...i16(pitch),mode,time&0xff]});
@@ -842,7 +917,20 @@ function lockSpeedMode(){
    第三段用 20Hz 连发:云台速度指令普遍带看门狗(停发即停转),单帧只会点一下就归零,
    这跟「完全不支持」在位移上长得一模一样,必须分开。 */
 const HOLD=1500, SETTLE=1400;
-async function phase(label, act, win){
+
+/* 撞行程末端的特征:还在持续下发非零速度、应答也照常回 0x00,姿态却不再变化。
+   只对「连发」这种整段都在发速度的场景成立 —— 单帧本来就只动约 0.45s,
+   窗口后半段静止是正常的,拿同一把尺子去量会满屏误报。 */
+function stalledTail(tr, axis){
+  let n=0;
+  for(let i=tr.length-1;i>0;i--){
+    if(Math.abs(d180(tr[i][axis]-tr[i-1][axis]))<0.3) n++; else break;
+  }
+  return n;   // 末尾连续几个采样间隔没动
+}
+
+async function phase(label, act, win, opts){
+  const {axis='yaw', continuous=false} = opts || {};
   const a0 = lastEuler && {...lastEuler};
   traceBuf = [];
   const t0 = Date.now();
@@ -854,9 +942,12 @@ async function phase(label, act, win){
   const a1 = lastEuler && {...lastEuler};
   if(!a0 || !a1){ log(`  ${label}: 整段没收到姿态帧,测不了`,'l-err'); return null; }
   const d = {yaw:d180(a1.yaw-a0.yaw), pitch:d180(a1.pitch-a0.pitch), roll:d180(a1.roll-a0.roll)};
+  // 动过一段然后卡死 = 撞限位;从头到尾没动 = 另一回事(没执行),不在这里报。
+  d.stall = continuous && tr.length>=3 && Math.abs(d[axis])>1 && stalledTail(tr,axis)>=2;
   const sg = v => (v>=0?'+':'')+v.toFixed(1)+'°';
   log(`  ${label}  ΔYaw ${sg(d.yaw)}  ΔPitch ${sg(d.pitch)}  ΔRoll ${sg(d.roll)}` +
-      `   yaw 轨迹 ${tr.length?tr.map(v=>v.toFixed(1)).join(' → '):'(整段 0 帧)'}`);
+      `   ${axis} 轨迹 ${tr.length?tr.map(v=>v[axis].toFixed(1)).join(' → '):'(整段 0 帧)'}` +
+      (d.stall ? '   ⚠ 疑似撞到行程末端' : ''));
   return d;
 }
 async function spinTest(){
@@ -882,7 +973,7 @@ async function spinTest(){
       const t0=Date.now(); let q=0xAD00;
       while(Date.now()-t0 < HOLD){ await F(++q & 0xffff, spin); await sleep(50); }
       await F(0xAC03, stop);
-    });
+    }, undefined, {axis:'yaw', continuous:true});
 
     spinVerdict(A, B, C);
   } finally {
@@ -903,93 +994,237 @@ function spinVerdict(A,B,C){
     log(`  结论: ❌ 两种发法的位移都跟「什么都不发」一样(净位移 ≤${T}°) —— `+
         '云台回了返回码 0x00 却没执行。这不是参数问题,方向要转去找激活/握手指令。','l-err');
 }
-/* 速度标定。
-   实测 spd=100、time=15 的一帧只转出 4.9°(约 3.3°/s),要真正用起来得先搞清三件事:
-   速度值什么单位、time 字段管不管用、要不要连发。
+/* 速度标定 · 八段对照。
+   要一次问清四件事:速度值什么单位、time 字段管不管用、要不要连发、俯仰是不是同一套标度。
 
-   关键:测量窗口里**不能发停止帧**。第一版在每段中途发了停,于是 time=60 那段
-   根本没机会跑满,量出来跟 time=15 一模一样,得出「time 没用」的错误结论。
-   现在各段窗口等长(3.0s)、段内只发不停,量完再发停止清场。 */
+   三个测量陷阱(都是被真机数据打脸后才补上的):
+   1. 测量窗口里不能发停止帧 —— 第一版在段中途发停,每段都被截在窗口长度上,
+      time=29 量出来跟 time=15 一样,得出「time 没用」的错误结论。
+   2. 姿态帧只有约 1Hz,窗口一到就读末值会漏掉最后近 1 秒的运动;所以窗口后再等一段读数尾巴。
+   3. 各段必须左右交替。上一版每段都往同一方向推,实测把 yaw 从 73° 一路推到约 250°,
+      最后一段直接撞上行程末端(轨迹 -110.7 → -110.7 → -110.7),量到的位移反而比低速那段还小。
+      交替之后云台大致原地不动,比较时一律取绝对值。 */
 const CAL_WIN=3000;
 /* 姿态帧只有约 1Hz,窗口一到就读末值的话,最后不到 1 秒的运动还没上报就被截掉了
    —— 实测让「转满 2.9s」只量出「转 1.5s」的 1.4 倍而不是 2 倍,足以把「time 有用」
    误判成「没用」。所以动作窗口结束后再空等一段读数尾巴,保证末值是新的。 */
 const CAL_TAIL=1300;
-const SPD_FRAME=(spd,t)=>[...i16(spd),0,0,0,0,0x80,t];
+const SPD_FRAME=(axis,spd,t)=>{
+  const y = axis==='yaw' ? spd : 0, p = axis==='pitch' ? spd : 0;
+  return [...i16(y), 0,0, ...i16(p), 0x80, t];
+};
 async function calibrate(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
   const STOP=[0,0,0,0,0,0,0x80,1];
   const tw=Math.round(CAL_WIN/100)-1;          // 29 → 若 time 是 0.1s 单位,正好跑满窗口而不外溢
-  const rep=spd=>async()=>{ const t0=Date.now(); let q=0xB100;
-    while(Date.now()-t0<CAL_WIN-200){ await F((++q)&0xffff, SPD_FRAME(spd,15)); await sleep(50); } };
+  const one=(ax,spd,t)=>()=>F(0xB001, SPD_FRAME(ax,spd,t));
+  const REP_MS=CAL_WIN-200;                     // 连发实际持续下发的时长
+  const rep=(ax,spd)=>async()=>{ const t0=Date.now(); let q=0xB100;
+    while(Date.now()-t0<REP_MS){ await F(++q & 0xffff, SPD_FRAME(ax,spd,15)); await sleep(50); } };
+  //          标签                        键   轴        整段连发  动作
   const CASES=[
-    ['对照 · 不发任何指令',       null, async()=>{}],
-    ['单帧 spd=100 time=15',      'a',  ()=>F(0xB001, SPD_FRAME(100,15))],
-    [`单帧 spd=100 time=${tw}`,   'b',  ()=>F(0xB002, SPD_FRAME(100,tw))],
-    ['单帧 spd=300 time=15',      'c',  ()=>F(0xB003, SPD_FRAME(300,15))],
-    ['连发 spd=100 约20Hz',       'd',  rep(100)],
-    ['连发 spd=300 约20Hz',       'e',  rep(300)],
+    ['对照 · 不发任何指令',            null, 'yaw',   false, async()=>{}],
+    ['单帧 yaw +100 time=15',          'a',  'yaw',   false, one('yaw',  100, 15)],
+    [`单帧 yaw −100 time=${tw}`,       'b',  'yaw',   false, one('yaw', -100, tw)],
+    ['单帧 yaw +300 time=15',          'c',  'yaw',   false, one('yaw',  300, 15)],
+    ['连发 yaw −100 约20Hz',           'd',  'yaw',   true,  rep('yaw', -100)],
+    ['连发 yaw +300 约20Hz',           'e',  'yaw',   true,  rep('yaw',  300)],
+    ['单帧 pitch −100 time=15',        'f',  'pitch', false, one('pitch',-100, 15)],
+    ['连发 pitch +100 约20Hz',         'g',  'pitch', true,  rep('pitch', 100)],
   ];
   suppressWatch=true;
+  const home = lastEuler && {...lastEuler};
   try{
     log(`—— 速度标定:${CASES.length} 段 × ${((CAL_WIN+CAL_TAIL)/1000).toFixed(1)}s,约 ${Math.round(CASES.length*(CAL_WIN+CAL_TAIL+700)/1000)} 秒。请把云台放稳,手不要动 ——`);
-    const R={}; let base=0;
-    for(const [label,key,act] of CASES){
-      const d=await phase(label, act, CAL_WIN+CAL_TAIL);
+    const R={}; let base={yaw:0,pitch:0};
+    for(const [label,key,axis,continuous,act] of CASES){
+      const d=await phase(label, act, CAL_WIN+CAL_TAIL, {axis, continuous});
       await F(0xB0ff, STOP);        // 每段量完都归零,免得余速渗进下一段
       await sleep(700);
       if(!d){ log('  标定中断:缺姿态数据,请重测','l-err'); return; }
-      if(key===null) base=d.yaw; else R[key]=d.yaw-base;
+      if(key===null) base={yaw:d.yaw, pitch:d.pitch};
+      else R[key]={v:d[axis]-base[axis], stall:d.stall};
     }
 
+    const V=k=>R[k].v, A=k=>Math.abs(R[k].v);
     const sg = v => (v>=0?'+':'')+v.toFixed(1);
     log('—— 标定结果(每项都已扣掉对照的漂移)——');
-    for(const [n,k] of [['单帧 spd=100 time=15','a'],[`单帧 spd=100 time=${tw}`,'b'],
-                        ['单帧 spd=300 time=15','c'],['连发 spd=100','d'],['连发 spd=300','e']])
-      log(`  ${n}   净 Δyaw ${sg(R[k])}°`);
-    // 只有铺满整个窗口的那两档能换算成速率;time=15 那档只转了半个窗口,拿它折算会腰斩。
-    const rate100 = Math.max(Math.abs(R.b), Math.abs(R.d))/(CAL_WIN/1000);
+    for(const [n,k] of [['单帧 yaw 100 t=15','a'],[`单帧 yaw 100 t=${tw}`,'b'],
+                        ['单帧 yaw 300 t=15','c'],['连发 yaw 100','d'],['连发 yaw 300','e'],
+                        ['单帧 pitch 100','f'],['连发 pitch 100','g']])
+      log(`  ${n}   净位移 ${sg(V(k))}°${R[k].stall?'   ⚠ 该段撞到了行程末端,此值偏小':''}`);
 
     log('—— 结论 ——');
-    const moved = ['a','b','c','d','e'].some(k=>Math.abs(R[k])>3);
-    if(!moved){
+    if(!['a','b','c','d','e','f','g'].some(k=>A(k)>3)){
       log('  所有发法都没超过漂移底噪 —— 这轮云台没执行,先用转动测试确认能不能动。','l-err');
       return;
     }
 
     /* 比较两组位移。不能只算比值 —— 看门狗那种情况下单帧几乎不动(0.x°),
        做分母会炸成天文数字或被「基准太小」挡掉,而那正是最该识别出来的一种。
-       所以先看绝对量:一边过门槛、另一边没过,结论就已经出来了,不需要比值。 */
+       所以先看绝对量:一边过门槛、另一边没过,结论就已经出来了,不需要比值。
+       各段方向交替,所以一律比绝对值。 */
     const TH=3;
     function cmp(x, y){
       const bx=Math.abs(x), by=Math.abs(y);
       if(bx<TH && by<TH) return {v:'none'};                       // 两边都没动
       if(by<1)           return {v:'more'};                       // 分母太小但分子动了 → 就是它起的作用
-      const r=x/y;
+      const r=bx/by;
       return r>1.6 ? {v:'more', r} : {v:'same', r};
     }
     const fold = c => c.r===undefined ? '' : `(${c.r.toFixed(1)} 倍)`;
-    const best = Math.abs(R.b)>Math.abs(R.a) ? R.b : R.a;   // 单帧能达到的最好成绩
+    const best = A('b')>A('a') ? V('b') : V('a');   // 单帧能达到的最好成绩
 
-    const cT=cmp(R.b, R.a);
+    const cT=cmp(V('b'), V('a'));
     log(cT.v==='none' ? '  time 字段: 两种 time 都没动,判不了'
       : cT.v==='more' ? `  time 字段: 有用${fold(cT)}。${tw} 比 15 转得多 → time 就是持续时长(单位约 0.1s),想转久调大它。`
       : `  time 字段: 没用${fold(cT)}。${tw} 和 15 转的一样多 → 它不控制时长,别在这上面调。`);
 
-    const cS=cmp(R.c, R.a);
+    /* 速率换算。直接拿「连发位移 ÷ 窗口」会系统性偏高:停发之后最后一帧的看门狗
+       还让它多转一截。而单帧位移 S 恰好就是「一个看门狗周期转多少」,于是
+           S = R × 看门狗时长      D = R × 连发时长 + S
+       两式相减 R = (D − S) / 连发时长 —— 不需要知道看门狗到底多长。
+       前提是单帧确实被看门狗截断(time 无效);time 有效时 S 不是看门狗周期,
+       这个减法不成立,退回朴素折算。 */
+    const rateOf = (dK,sK,scale) => {
+      const D=A(dK)/scale, S=cT.v==='same' ? A(sK)/scale : 0;
+      return Math.max(0, D-S)/((cT.v==='same' ? REP_MS : CAL_WIN)/1000);
+    };
+    // 撞了限位的段位移偏小,拿它算速率会低估;优先用没撞的那个。
+    const rate100 = !R.d.stall ? rateOf('d','a',1)
+                  : !R.e.stall ? rateOf('e','c',3)
+                  : rateOf('d','a',1);
+    const cS=cmp(V('c'), V('a'));
     log(cS.v==='none' ? '  速度值: 两档都没动,判不了'
-      : cS.v==='more' ? `  速度值: 线性${fold(cS)}。spd=100 实测约 ${rate100.toFixed(1)}°/s,`+
-                        `按比例放大,「点动步长」拉到 900 约 ${(rate100*9).toFixed(0)}°/s。`
+      : cS.v==='more' ? `  速度值: 线性${fold(cS)}。yaw spd=100 实测约 ${rate100.toFixed(1)}°/s,`+
+                        `即 ${(rate100/100).toFixed(3)}°/s 每单位;「点动步长」拉到 900 约 ${(rate100*9).toFixed(0)}°/s。`
       : `  速度值: 不线性${fold(cS)}。300 跟 100 转得一样多 → 已经饱和或被限速,加大数值收益有限。`);
 
-    const cR=cmp(R.d, best);
+    const cR=cmp(V('d'), best);
     log(cR.v==='none' ? '  连发: 单帧和连发都没动,判不了'
       : cR.v==='more' ? `  连发: 必须${fold(cR)}。连发明显比单帧转得多 → 速度指令带看门狗、停发即停转,`+
                         '要连续转就 10~20Hz 持续发(页面方向键正是这么做的)。'
       : `  连发: 不必${fold(cR)}。一帧配上够大的 time 就行。`);
+
+    // 俯仰:只问「动不动、标度一不一样」,不重复问 time / 连发 —— 同一条 04/0c,机制必然相同。
+    const pRate = rateOf('g','f',1);
+    if(A('g')<TH && A('f')<TH)
+      log('  俯仰: 完全没动 —— 可能已经在俯仰行程末端,换个方向再测一次;若仍不动则本机俯仰不受这条指令控制。','l-err');
+    else if(R.g.stall)
+      log(`  俯仰: 动了但中途撞到行程末端(约 ${sg(V('g'))}°) —— 俯仰行程比偏航短得多,属正常。`);
+    else
+      log(`  俯仰: 可用,spd=100 实测约 ${pRate.toFixed(1)}°/s`+
+          (rate100>0 ? `,是偏航的 ${(pRate/rate100).toFixed(2)} 倍${Math.abs(pRate/rate100-1)<0.25?'(同一套标度)':'(标度不同,俯仰要单独换算)'}` : ''));
+
+    if(cS.v==='more' && rate100>0) saveDpu(rate100/100);
+    log(`  已把速度标度记为 ${(degPerUnit).toFixed(3)}°/s 每单位,滑块标注和「转到指定角度」都按它换算。`);
+
+    // 交替方向已经让净位移接近零,再闭环收一次,让云台确实回到起点。
+    if(home) await goHome(home);
   } finally { suppressWatch=false; traceBuf=null; }
 }
+/* ── 闭环「转到指定角度」 ──
+   难点是姿态反馈只有约 1Hz:直接拿 lastEuler 当反馈,两帧之间是瞎的,
+   spd=300 时一秒就冲出去 30°,根本停不准。所以两帧之间做航位推算 ——
+       估计已转角 = 上次实测累计 + Σ(已下发速度 × degPerUnit × dt)
+   每来一帧真实 04/05 就用实测值把累计重置回去,推算误差不累积。
+   标定量出的 degPerUnit 越准这段越准,这正是要把它按设备存起来的原因。
+
+   用「累计转过多少度」而不是「目标绝对角」:后者在 ±180 折返处会把
+   「向右转 200°」解释成「向左转 160°」,方向直接反掉。 */
+const GOTO_HZ=10, GOTO_LEAD=0.8, GOTO_TOL=2,
+      GOTO_MIN_UNITS=40,          // 再低电机可能推不动,宁可留 ±2° 误差也别卡死
+      GOTO_MAX_UNITS=900, GOTO_TIMEOUT=15000;
+let gotoAbort=false, gotoRunning=false;
+
+async function gotoRelative(axis, deltaDeg, quiet){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return null; }
+  if(gotoRunning){ log('上一次转动还没结束','l-err'); return null; }
+  if(!lastEuler){ log('还没收到姿态帧,闭环没有反馈可用','l-err'); return null; }
+  gotoRunning=true; gotoAbort=false;
+  const watchWas=suppressWatch; suppressWatch=true;
+  $('btnGoto').disabled=true; $('btnGotoStop').disabled=false;
+
+  const F=(seq,units)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,
+    payload:SPD_FRAME(axis, units, 15)}));
+  const t0=Date.now();
+  let traveled=0, prev=lastEuler[axis], seenSeq=attSeq;
+  let est=0, units=0, last=Date.now(), q=0xC000;
+  let hits=0, frozen=0, verdict='';
+
+  if(!quiet) log(`—— 转到指定角度:${axis} ${deltaDeg>=0?'+':''}${deltaDeg}° ——`);
+  try{
+    while(true){
+      const now=Date.now(), dt=(now-last)/1000; last=now;
+      est += units*degPerUnit*dt;                 // 两帧之间靠推算
+
+      if(attSeq!==seenSeq){                       // 来了新的实测值,重置推算
+        seenSeq=attSeq;
+        const step=d180(lastEuler[axis]-prev); prev=lastEuler[axis];
+        traveled+=step; est=traveled;
+        const e=deltaDeg-traveled;
+        // 到位判据只认实测值 —— 只信推算的话,标度稍有偏差就会「以为到了」。
+        hits  = Math.abs(e)<GOTO_TOL ? hits+1 : 0;
+        // 还在下发非零速度却连着两帧不动 = 撞限位或被卡住,别耗到超时
+        frozen = (units!==0 && Math.abs(step)<0.3) ? frozen+1 : 0;
+        $('gotoStat').textContent = `　已转 ${traveled.toFixed(1)}° / 目标 ${deltaDeg}°`;
+        if(hits>=2){ verdict='done'; break; }
+        // 「动了一半卡住」和「从头到尾没动」观测上一样,但排查方向完全相反:
+        // 前者是行程末端,后者是云台压根没执行(回 0x00 也可能不执行,本机就出现过)。
+        // 两种都提前退出,不必耗满超时,但结论必须分开。
+        if(frozen>=2){ verdict = Math.abs(traveled)<1 ? 'noexec' : 'stall'; break; }
+      }
+
+      if(gotoAbort){ verdict='abort'; break; }
+      if(now-t0>GOTO_TIMEOUT){ verdict='timeout'; break; }
+
+      const err=deltaDeg-est;
+      if(Math.abs(err)<GOTO_TOL) units=0;         // 死区内不发速度,等实测确认
+      else{
+        const want=Math.round(err/GOTO_LEAD/degPerUnit);   // 比例控制,LEAD 秒内收敛
+        units=Math.sign(want)*Math.min(GOTO_MAX_UNITS, Math.max(GOTO_MIN_UNITS, Math.abs(want)));
+      }
+      await F(++q & 0xffff, units);
+      await sleep(1000/GOTO_HZ);
+    }
+  } finally {
+    try{ await F(0xC0ff, 0); }catch{}            // 任何路径都必须收一帧零速
+    gotoRunning=false; suppressWatch=watchWas;
+    $('btnGoto').disabled=false; $('btnGotoStop').disabled=true;
+  }
+
+  const err=deltaDeg-traveled, secs=((Date.now()-t0)/1000).toFixed(1);
+  const line=`  ${axis} 目标 ${deltaDeg>=0?'+':''}${deltaDeg}°  实到 ${traveled>=0?'+':''}${traveled.toFixed(1)}°  `+
+             `误差 ${err>=0?'+':''}${err.toFixed(1)}°  用时 ${secs}s`;
+  if(!quiet){
+    if(verdict==='done')         log('✅ 到位。'+line,'l-ack');
+    else if(verdict==='stall')   log('⚠ 中止:转到一半就不动了,疑似撞到行程末端或被卡住。'+line,'l-err');
+    else if(verdict==='noexec')  log('⚠ 中止:从头到尾一度没动 —— 云台在回 0x00 却没执行,'+
+                                     '不是参数问题。先跑「转动测试」确认它到底能不能动。'+line,'l-err');
+    else if(verdict==='timeout') log(`⚠ 超时(${GOTO_TIMEOUT/1000}s)未到位。`+line,'l-err');
+    else                         log('已中止。'+line);
+  }
+  return {traveled, err, verdict};
+}
+
+/* 标定收尾:把两轴都收回起点。交替方向已经让净位移很小,这里只补残差。 */
+async function goHome(home){
+  for(const ax of ['yaw','pitch']){
+    if(!lastEuler) return;
+    const back=-d180(lastEuler[ax]-home[ax]);
+    if(Math.abs(back)<3) continue;
+    log(`  归位:${ax} 回转 ${back>=0?'+':''}${back.toFixed(1)}°`);
+    await gotoRelative(ax, +back.toFixed(1), true);
+  }
+}
+
+$('gotoDeg').addEventListener('input',()=>{
+  const v=+$('gotoDeg').value; $('vGoto').textContent=(v>=0?'+':'')+v+'°';
+});
+$('btnGoto').onclick=()=>{ gotoRelative($('gotoAx').value, +$('gotoDeg').value); };
+$('btnGotoStop').onclick=()=>{ gotoAbort=true; };
+
 $('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $('btnCal').disabled=false; }); };
 
 $('btnSpin').onclick=()=>{ $('btnSpin').disabled=true; spinTest().finally(()=>{ $('btnSpin').disabled=false; }); };
