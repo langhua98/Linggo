@@ -291,9 +291,12 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div class="row" style="margin-top:12px">
     <button id="btnSpin" disabled>转动测试（会真的转）</button>
   </div>
-  <p class="note">转动测试 = 按「点动步长」的速度转 <b>1.5 秒</b>再自动停，
-    然后直接报出 ΔYaw / ΔPitch / ΔRoll。手贴十六进制时转和停常常隔几十毫秒就发出去了，
-    等于自己把自己取消掉，肉眼什么都看不见。</p>
+  <p class="note">转动测试跑三段，每段窗口都是 <b>2.9 秒</b>：
+    <b>①空白对照</b>什么都不发，量出云台静止时的漂移底噪；
+    <b>②单帧</b>发一条速度帧再发停止；
+    <b>③连发</b>同一条帧 20Hz 连发（速度指令通常带看门狗，停发即停转）。
+    最后拿②③减掉①报净位移 —— 不减底噪的话，恒定漂移会被读成「动了」。
+    全程把云台放稳、手不要动。</p>
 </section>
 
 <!-- 日志 -->
@@ -371,6 +374,19 @@ const S_FFF0='0000fff0-0000-1000-8000-00805f9b34fb';
 const C_NOTIFY='0000fff4-0000-1000-8000-00805f9b34fb';
 const C_WRITE ='0000fff5-0000-1000-8000-00805f9b34fb';
 const u16 = n => `0000${n.toString(16).padStart(4,'0')}-0000-1000-8000-00805f9b34fb`;
+
+/* 有的浏览器(实测 iOS 上的 Bluefy)把 16 位 UUID 直接返回成短形式 "fff5",
+   而不是规范里的完整 128 位。原来的 uuid.slice(4,8) 拿短形式一切就是空串
+   —— 日志里那几行 "  /   [W/Wnr]" 就是这么来的;更糟的是 writeChars.has(C_WRITE)
+   同样匹配不上,于是把本来就在的 FFF5 报成「未找到」。 */
+const canonUuid = u => {
+  u = String(u).toLowerCase();
+  return /^[0-9a-f]{1,8}$/.test(u) ? u16(parseInt(u,16)) : u;
+};
+const shortUuid = u => {
+  const m = /^0000([0-9a-f]{4})-0000-1000-8000-00805f9b34fb$/.exec(canonUuid(u));
+  return m ? m[1] : String(u).toLowerCase().slice(0,8)+'…';
+};
 const PROBE=[]; for(let n=0xfe00;n<=0xffff;n++) PROBE.push(u16(n));
 PROBE.push(u16(0x180f),u16(0x1800),u16(0x1801),u16(0x180a));
 
@@ -480,23 +496,25 @@ async function discover(){
     let chars=[]; try{ chars=await s.getCharacteristics(); }catch{ continue; }
     for(const c of chars){
       const p=c.properties, tag=[p.read&&'R',p.write&&'W',p.writeWithoutResponse&&'Wnr',p.notify&&'N',p.indicate&&'I'].filter(Boolean).join('/');
-      log(`  ${s.uuid.slice(4,8)} / ${c.uuid.slice(4,8)}  [${tag}]`);
+      log(`  ${shortUuid(s.uuid)} / ${shortUuid(c.uuid)}  [${tag}]`);
       if(p.write||p.writeWithoutResponse){
         writeChars.set(c.uuid,c);
         const o=document.createElement('option');
-        o.value=c.uuid; o.textContent=`${s.uuid.slice(4,8)}/${c.uuid.slice(4,8)} [${tag}]`;
+        o.value=c.uuid; o.textContent=`${shortUuid(s.uuid)}/${shortUuid(c.uuid)} [${tag}]`;
         $('wchar').appendChild(o);
       }
       if(p.notify){
         try{
           await c.startNotifications();
           c.addEventListener('characteristicvaluechanged',e=>onNotify(new Uint8Array(e.target.value.buffer)));
-          log(`  ↳ 已订阅 ${c.uuid.slice(4,8)}`);
-        }catch(err){ log(`  ↳ 订阅 ${c.uuid.slice(4,8)} 失败: ${err.message}`,'l-err'); }
+          log(`  ↳ 已订阅 ${shortUuid(c.uuid)}`);
+        }catch(err){ log(`  ↳ 订阅 ${shortUuid(c.uuid)} 失败: ${err.message}`,'l-err'); }
       }
     }
   }
-  if(writeChars.has(C_WRITE)) $('wchar').value=C_WRITE;
+  let fff5=null;
+  for(const k of writeChars.keys()) if(canonUuid(k)===C_WRITE) fff5=k;
+  if(fff5){ $('wchar').value=fff5; log('已自动选中 FFF5 写特征'); }
   else if(writeChars.size) log('未找到 FFF5。已自动列出其它可写特征,请手动挑选。','l-err');
   activeWrite = writeChars.get($('wchar').value)||null;
   if(!activeWrite) log('没有任何可写特征 — 这台设备可能不走 FFF0 协议。','l-err');
@@ -553,9 +571,11 @@ const attHist=[];
 const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
 const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
+let traceBuf=null;
 function pushAtt(e){
   const now=Date.now();
   lastEuler=e;
+  if(traceBuf) traceBuf.push(e.yaw);
   attHist.push({t:now, yaw:e.yaw, pitch:e.pitch, roll:e.roll});
   while(attHist.length && now-attHist[0].t>3000) attHist.shift();
   let span=0;
@@ -571,6 +591,10 @@ function pushAtt(e){
    一键诊断和转动测试期间关掉,它们自己有结论。 */
 let motionWatch=0, suppressWatch=false;
 function watchMotion(tag, delay=1600){
+  // 必须在**排队时**就判,不能只在触发时判:转动测试里停止帧的定时器
+  // 比 suppressWatch=false 晚 200ms 才到点,于是紧跟着正确结论又打一条
+  // 「纹丝不动」,两条结论自相矛盾。
+  if(suppressWatch) return;
   const a0 = lastEuler && {...lastEuler};
   const id = ++motionWatch;
   setTimeout(()=>{
@@ -808,23 +832,70 @@ function lockSpeedMode(){
       '只有 04/0c(速度)会回返回码 0x00,已把模式锁到 SPEED。','l-ack');
 }
 
-/* 转动测试:转足 1.5s 再停,然后报位移。
-   手贴十六进制时「转」和「停」往往隔几十毫秒就都发出去了 —— 云台还没起步就被叫停,
-   ΔYaw 只有零点几度,看上去和「完全不动」一模一样,分不清是不支持还是没给时间。 */
+/* 转动测试 · 三段对照。
+   上一版只测「发指令的 3 秒里转了多少度」,结果两次都读到 -4.9°/-4.8°、Roll 都是 -1.3°。
+   重复到 0.1° 恰恰说明它不是指令造成的 —— 手抖不会这么准,恒定漂移才会。
+   所以先空跑一段一模一样长的窗口量出底噪,再拿实测减掉它,否则漂移会被当成「动了」。
+   第三段用 20Hz 连发:云台速度指令普遍带看门狗(停发即停转),单帧只会点一下就归零,
+   这跟「完全不支持」在位移上长得一模一样,必须分开。 */
+const HOLD=1500, SETTLE=1400;
+async function phase(label, act){
+  const a0 = lastEuler && {...lastEuler};
+  traceBuf = [];
+  await act();
+  await sleep(SETTLE);
+  const tr = traceBuf; traceBuf = null;
+  const a1 = lastEuler && {...lastEuler};
+  if(!a0 || !a1){ log(`  ${label}: 整段没收到姿态帧,测不了`,'l-err'); return null; }
+  const d = {yaw:d180(a1.yaw-a0.yaw), pitch:d180(a1.pitch-a0.pitch), roll:d180(a1.roll-a0.roll)};
+  const sg = v => (v>=0?'+':'')+v.toFixed(1)+'°';
+  log(`  ${label}  ΔYaw ${sg(d.yaw)}  ΔPitch ${sg(d.pitch)}  ΔRoll ${sg(d.roll)}` +
+      `   yaw 轨迹 ${tr.length?tr.map(v=>v.toFixed(1)).join(' → '):'(整段 0 帧)'}`);
+  return d;
+}
 async function spinTest(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  const spd=+$('step').value||100, dur=1500;
-  suppressWatch=true;
-  log(`—— 转动测试:yaw 速度 ${spd},转 ${(dur/1000).toFixed(1)}s 后自动停,请握住云台 ——`);
-  const a0 = lastEuler && {...lastEuler};
-  await send(buildDuml({seq:0xAC01, flags:0x40, cmdSet:0x04, cmdId:0x0c,
-    payload:[...i16(spd),0,0,0,0,0x80, Math.min(255, Math.round(dur/100))]}));
-  await sleep(dur);
-  await send(buildDuml({seq:0xAC02, flags:0x40, cmdSet:0x04, cmdId:0x0c,
-    payload:[0,0,0,0,0,0,0x80,1]}));
-  await sleep(1400);          // 姿态帧约 1Hz,留够一帧新数据
-  suppressWatch=false;
-  reportDelta('转动测试结果', a0);
+  const spd = +$('step').value || 100;
+  const tb  = Math.min(255, Math.round(HOLD/100));
+  const spin=[...i16(spd),0,0,0,0,0x80,tb], stop=[0,0,0,0,0,0,0x80,1];
+  const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
+  suppressWatch = true;
+  try{
+    log(`—— 转动测试 · 三段对照,速度 ${spd}。全程请把云台放稳,手不要动 ——`);
+
+    log(`[1/3] 空白对照:什么都不发,先量出静止时的漂移底噪`);
+    const A = await phase('对照', () => sleep(HOLD));
+
+    log(`[2/3] 单帧:发一条速度帧(time=${tb}),${(HOLD/1000).toFixed(1)}s 后发停止`);
+    const B = await phase('单帧', async () => {
+      await F(0xAC01, spin); await sleep(HOLD); await F(0xAC02, stop);
+    });
+
+    log(`[3/3] 连发:同一条速度帧约 20Hz 连发 ${(HOLD/1000).toFixed(1)}s`);
+    const C = await phase('连发', async () => {
+      const t0=Date.now(); let q=0xAD00;
+      while(Date.now()-t0 < HOLD){ await F(++q & 0xffff, spin); await sleep(50); }
+      await F(0xAC03, stop);
+    });
+
+    spinVerdict(A, B, C);
+  } finally {
+    suppressWatch = false; traceBuf = null;
+  }
+}
+function spinVerdict(A,B,C){
+  if(!A||!B||!C){ log('  结论: 有阶段缺姿态数据,请重测一次','l-err'); return; }
+  const gB = Math.abs(B.yaw - A.yaw), gC = Math.abs(C.yaw - A.yaw);
+  const T = 3;   // 净位移要超出漂移底噪 3° 才算数
+  log(`  扣掉漂移后的净位移: 单帧 ${gB.toFixed(1)}°   连发 ${gC.toFixed(1)}°   (判定门槛 ${T}°)`);
+  if(gC>T && gC>gB*1.5)
+    log('  结论: ✅ 连发有效、单帧无效 → 速度指令带看门狗,必须持续发。'+
+        '页面的方向键本来就是 10Hz 连发,现在可以直接用了。','l-ack');
+  else if(gB>T || gC>T)
+    log('  结论: ✅ 云台确实动了,速度指令可用。','l-ack');
+  else
+    log(`  结论: ❌ 两种发法的位移都跟「什么都不发」一样(净位移 ≤${T}°) —— `+
+        '云台回了返回码 0x00 却没执行。这不是参数问题,方向要转去找激活/握手指令。','l-err');
 }
 $('btnSpin').onclick=()=>{ $('btnSpin').disabled=true; spinTest().finally(()=>{ $('btnSpin').disabled=false; }); };
 $('btnClear').onclick=()=>{ $('log').innerHTML=''; };
