@@ -290,6 +290,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <div class="row" style="margin-top:12px">
     <button id="btnSpin" disabled>转动测试（会真的转）</button>
+    <button id="btnCal" disabled>速度标定</button>
   </div>
   <p class="note">转动测试跑三段，每段窗口都是 <b>2.9 秒</b>：
     <b>①空白对照</b>什么都不发，量出云台静止时的漂移底噪；
@@ -458,7 +459,7 @@ function setState(s,txt){
   $('dot').className='dot'+(s?' '+s:'');
   $('stat').textContent=txt;
   const on = s==='on';
-  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin'].forEach(i=>$(i).disabled=!on);
+  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal'].forEach(i=>$(i).disabled=!on);
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
 }
 
@@ -484,7 +485,9 @@ async function connect(anyDevice){
     setState('on', `${dev.name||'设备'} · 就绪`);
   }catch(e){
     setState('','连接失败');
-    log('连接失败: '+e.message,'l-err');
+    // 用户取消选择器时抛的不一定是 Error 实例,e.message 会是 undefined,
+    // 日志上就只剩一句「连接失败: undefined」,查不出是取消还是真出错。
+    log('连接失败: '+((e && (e.message || e.name)) || String(e)),'l-err');
   }
 }
 
@@ -839,11 +842,14 @@ function lockSpeedMode(){
    第三段用 20Hz 连发:云台速度指令普遍带看门狗(停发即停转),单帧只会点一下就归零,
    这跟「完全不支持」在位移上长得一模一样,必须分开。 */
 const HOLD=1500, SETTLE=1400;
-async function phase(label, act){
+async function phase(label, act, win){
   const a0 = lastEuler && {...lastEuler};
   traceBuf = [];
+  const t0 = Date.now();
   await act();
-  await sleep(SETTLE);
+  // win 省略时沿用「act 跑完再等 SETTLE」;标定要求各段窗口等长才可比,所以显式给窗口。
+  const rest = win===undefined ? SETTLE : win-(Date.now()-t0);
+  if(rest>0) await sleep(rest);
   const tr = traceBuf; traceBuf = null;
   const a1 = lastEuler && {...lastEuler};
   if(!a0 || !a1){ log(`  ${label}: 整段没收到姿态帧,测不了`,'l-err'); return null; }
@@ -897,6 +903,95 @@ function spinVerdict(A,B,C){
     log(`  结论: ❌ 两种发法的位移都跟「什么都不发」一样(净位移 ≤${T}°) —— `+
         '云台回了返回码 0x00 却没执行。这不是参数问题,方向要转去找激活/握手指令。','l-err');
 }
+/* 速度标定。
+   实测 spd=100、time=15 的一帧只转出 4.9°(约 3.3°/s),要真正用起来得先搞清三件事:
+   速度值什么单位、time 字段管不管用、要不要连发。
+
+   关键:测量窗口里**不能发停止帧**。第一版在每段中途发了停,于是 time=60 那段
+   根本没机会跑满,量出来跟 time=15 一模一样,得出「time 没用」的错误结论。
+   现在各段窗口等长(3.0s)、段内只发不停,量完再发停止清场。 */
+const CAL_WIN=3000;
+/* 姿态帧只有约 1Hz,窗口一到就读末值的话,最后不到 1 秒的运动还没上报就被截掉了
+   —— 实测让「转满 2.9s」只量出「转 1.5s」的 1.4 倍而不是 2 倍,足以把「time 有用」
+   误判成「没用」。所以动作窗口结束后再空等一段读数尾巴,保证末值是新的。 */
+const CAL_TAIL=1300;
+const SPD_FRAME=(spd,t)=>[...i16(spd),0,0,0,0,0x80,t];
+async function calibrate(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
+  const STOP=[0,0,0,0,0,0,0x80,1];
+  const tw=Math.round(CAL_WIN/100)-1;          // 29 → 若 time 是 0.1s 单位,正好跑满窗口而不外溢
+  const rep=spd=>async()=>{ const t0=Date.now(); let q=0xB100;
+    while(Date.now()-t0<CAL_WIN-200){ await F((++q)&0xffff, SPD_FRAME(spd,15)); await sleep(50); } };
+  const CASES=[
+    ['对照 · 不发任何指令',       null, async()=>{}],
+    ['单帧 spd=100 time=15',      'a',  ()=>F(0xB001, SPD_FRAME(100,15))],
+    [`单帧 spd=100 time=${tw}`,   'b',  ()=>F(0xB002, SPD_FRAME(100,tw))],
+    ['单帧 spd=300 time=15',      'c',  ()=>F(0xB003, SPD_FRAME(300,15))],
+    ['连发 spd=100 约20Hz',       'd',  rep(100)],
+    ['连发 spd=300 约20Hz',       'e',  rep(300)],
+  ];
+  suppressWatch=true;
+  try{
+    log(`—— 速度标定:${CASES.length} 段 × ${((CAL_WIN+CAL_TAIL)/1000).toFixed(1)}s,约 ${Math.round(CASES.length*(CAL_WIN+CAL_TAIL+700)/1000)} 秒。请把云台放稳,手不要动 ——`);
+    const R={}; let base=0;
+    for(const [label,key,act] of CASES){
+      const d=await phase(label, act, CAL_WIN+CAL_TAIL);
+      await F(0xB0ff, STOP);        // 每段量完都归零,免得余速渗进下一段
+      await sleep(700);
+      if(!d){ log('  标定中断:缺姿态数据,请重测','l-err'); return; }
+      if(key===null) base=d.yaw; else R[key]=d.yaw-base;
+    }
+
+    const sg = v => (v>=0?'+':'')+v.toFixed(1);
+    log('—— 标定结果(每项都已扣掉对照的漂移)——');
+    for(const [n,k] of [['单帧 spd=100 time=15','a'],[`单帧 spd=100 time=${tw}`,'b'],
+                        ['单帧 spd=300 time=15','c'],['连发 spd=100','d'],['连发 spd=300','e']])
+      log(`  ${n}   净 Δyaw ${sg(R[k])}°`);
+    // 只有铺满整个窗口的那两档能换算成速率;time=15 那档只转了半个窗口,拿它折算会腰斩。
+    const rate100 = Math.max(Math.abs(R.b), Math.abs(R.d))/(CAL_WIN/1000);
+
+    log('—— 结论 ——');
+    const moved = ['a','b','c','d','e'].some(k=>Math.abs(R[k])>3);
+    if(!moved){
+      log('  所有发法都没超过漂移底噪 —— 这轮云台没执行,先用转动测试确认能不能动。','l-err');
+      return;
+    }
+
+    /* 比较两组位移。不能只算比值 —— 看门狗那种情况下单帧几乎不动(0.x°),
+       做分母会炸成天文数字或被「基准太小」挡掉,而那正是最该识别出来的一种。
+       所以先看绝对量:一边过门槛、另一边没过,结论就已经出来了,不需要比值。 */
+    const TH=3;
+    function cmp(x, y){
+      const bx=Math.abs(x), by=Math.abs(y);
+      if(bx<TH && by<TH) return {v:'none'};                       // 两边都没动
+      if(by<1)           return {v:'more'};                       // 分母太小但分子动了 → 就是它起的作用
+      const r=x/y;
+      return r>1.6 ? {v:'more', r} : {v:'same', r};
+    }
+    const fold = c => c.r===undefined ? '' : `(${c.r.toFixed(1)} 倍)`;
+    const best = Math.abs(R.b)>Math.abs(R.a) ? R.b : R.a;   // 单帧能达到的最好成绩
+
+    const cT=cmp(R.b, R.a);
+    log(cT.v==='none' ? '  time 字段: 两种 time 都没动,判不了'
+      : cT.v==='more' ? `  time 字段: 有用${fold(cT)}。${tw} 比 15 转得多 → time 就是持续时长(单位约 0.1s),想转久调大它。`
+      : `  time 字段: 没用${fold(cT)}。${tw} 和 15 转的一样多 → 它不控制时长,别在这上面调。`);
+
+    const cS=cmp(R.c, R.a);
+    log(cS.v==='none' ? '  速度值: 两档都没动,判不了'
+      : cS.v==='more' ? `  速度值: 线性${fold(cS)}。spd=100 实测约 ${rate100.toFixed(1)}°/s,`+
+                        `按比例放大,「点动步长」拉到 900 约 ${(rate100*9).toFixed(0)}°/s。`
+      : `  速度值: 不线性${fold(cS)}。300 跟 100 转得一样多 → 已经饱和或被限速,加大数值收益有限。`);
+
+    const cR=cmp(R.d, best);
+    log(cR.v==='none' ? '  连发: 单帧和连发都没动,判不了'
+      : cR.v==='more' ? `  连发: 必须${fold(cR)}。连发明显比单帧转得多 → 速度指令带看门狗、停发即停转,`+
+                        '要连续转就 10~20Hz 持续发(页面方向键正是这么做的)。'
+      : `  连发: 不必${fold(cR)}。一帧配上够大的 time 就行。`);
+  } finally { suppressWatch=false; traceBuf=null; }
+}
+$('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $('btnCal').disabled=false; }); };
+
 $('btnSpin').onclick=()=>{ $('btnSpin').disabled=true; spinTest().finally(()=>{ $('btnSpin').disabled=false; }); };
 $('btnClear').onclick=()=>{ $('log').innerHTML=''; };
 $('btnForget').onclick=()=>{ localStorage.removeItem(TRIED_KEY); renderTried(); log('已清空设备记录'); };
