@@ -127,6 +127,17 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 .l-rx{color:var(--rx)}
 .l-sys{color:var(--dim)}
 .l-err{color:var(--warn)}
+.l-ack{color:var(--ok);font-weight:700}
+
+/* ── 日志头部工具条 ── */
+.log-tools{
+  display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;
+  font-weight:400;text-transform:none;letter-spacing:0;font-size:11px;
+}
+.log-tools label{display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
+.log-tools input[type=checkbox]{width:auto;margin:0}
+#attitude{color:var(--rx);white-space:nowrap}
+#hiddenCount{color:var(--dim);white-space:nowrap}
 
 /* 手机上让它换行,不要横向滚动 —— 一行放不下时,被截到屏幕外的往往正是
    那条 ✅(唯一能用的设备),而那是最该看见的一条。 */
@@ -238,6 +249,13 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
         <option value="512">512 (不分片)</option>
       </select></label>
   </div>
+  <label class="fld"><span class="lab"><span>Flags 标志字节</span></span>
+    <select id="flags">
+      <option value="0" selected>00 · 不要求应答（默认）</option>
+      <option value="64">40 · 要求应答 ack=2</option>
+      <option value="32">20 · 要求应答 ack=1</option>
+      <option value="128">80 · 标记为应答帧</option>
+    </select></label>
   <label class="fld"><span class="lab"><span>手动发送十六进制</span></span>
     <input type="text" id="rawHex" placeholder="55 15 04 a9 02 04 …" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
   <div class="row" style="margin-top:10px">
@@ -248,7 +266,14 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 <!-- 日志 -->
 <section style="border-bottom:none">
-  <p class="eyebrow"><span>6 · 日志</span><span id="batt">—</span></p>
+  <p class="eyebrow" style="flex-wrap:wrap"><span>6 · 日志</span>
+    <span class="log-tools">
+      <span id="attitude">R —° P —° Y —°</span>
+      <span id="batt">—</span>
+      <label><input type="checkbox" id="hideNoisy" checked>隐藏高频帧</label>
+      <span id="hiddenCount"></span>
+    </span>
+  </p>
   <div id="log"></div>
   <div class="row" style="margin-top:10px">
     <button id="btnClear">清空</button>
@@ -284,10 +309,27 @@ let seqNo=1;
 function buildRotate(yaw,pitch,roll,time,mode){
   return buildDuml({
     seq: seqNo++ & 0xffff,
+    flags: +$('flags').value,
     cmdSet: 0x04,
     cmdId: mode===0x80 ? 0x0c : 0x14,
     payload:[...i16(yaw),...i16(roll),...i16(pitch), mode, time&0xff]
   });
+}
+
+/* 四元数 → 欧拉角(度)。偏移量 [24:40]=四元数(w,x,y,z) float32 LE、[12:16]=毫秒计时器 uint32 LE,
+   均已用真实载荷验证(模长=1.000000、计时器每秒+1000),勿改动。 */
+function decodeQuat(pl){
+  const view=new DataView(new ArrayBuffer(16));
+  for(let i=0;i<16;i++) view.setUint8(i, pl[24+i]);
+  return { w:view.getFloat32(0,true), x:view.getFloat32(4,true), y:view.getFloat32(8,true), z:view.getFloat32(12,true) };
+}
+function quatToEuler(w,x,y,z){
+  const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
+  const roll  = Math.atan2(2*(w*x+y*z), 1-2*(x*x+y*y));
+  const pitch = Math.asin(clamp(2*(w*y-z*x), -1, 1));
+  const yaw   = Math.atan2(2*(w*z+x*y), 1-2*(y*y+z*z));
+  const R=180/Math.PI;
+  return { roll:roll*R, pitch:pitch*R, yaw:yaw*R };
 }
 
 /* ════════════ BLE 层 ════════════ */
@@ -300,6 +342,14 @@ PROBE.push(u16(0x180f),u16(0x1800),u16(0x1801),u16(0x180a));
 
 let dev=null, server=null, writeChars=new Map(), activeWrite=null;
 const $ = id => document.getElementById(id);
+
+/* 最近发出的 seq(最多 8 个),用于在 RX 里识别「这是对我哪一帧的应答」 */
+const recentSeqs=[];
+function trackSentSeq(bytes){
+  if(bytes.length<8 || bytes[0]!==0x55) return;
+  recentSeqs.push(bytes[6] | (bytes[7]<<8));
+  if(recentSeqs.length>8) recentSeqs.shift();
+}
 
 /* ── 试过哪些设备 ──
    iOS 上匿名外设只显示一串系统编号,四个长得一模一样,逐个试的时候根本记不住
@@ -406,34 +456,67 @@ async function discover(){
   markTried(dev && dev.id, dev && dev.name, verdict, svcs.length);
 }
 
-/* 通知流重组 */
-let rxBuf=[];
+/* 通知流重组
+   过滤发生在「帧解析之后」而不是原始通知包上 —— 一个 BLE 通知包可能含多帧、
+   也可能只是半帧,只有拆出完整帧、知道 cmdSet/cmdId 之后才知道该不该打印。 */
+let rxBuf=[], hiddenCount=0;
+function updateHiddenCount(){
+  $('hiddenCount').textContent = hiddenCount>0 ? `已隐藏 ${hiddenCount} 帧` : '';
+}
 function onNotify(data){
-  log('RX  '+hex(data),'l-rx');
   rxBuf.push(...data);
   while(rxBuf.length>=4){
     const i=rxBuf.indexOf(0x55);
-    if(i<0){ rxBuf=[]; return; }
-    if(i>0) rxBuf.splice(0,i);
+    if(i<0){
+      log(`RX 残留 ${rxBuf.length} 字节内无 0x55 起始符,丢弃`,'l-sys');
+      rxBuf=[]; return;
+    }
+    if(i>0){
+      log(`RX 丢弃 ${i} 字节噪声后重新同步到 0x55`,'l-sys');
+      rxBuf.splice(0,i);
+    }
     if(rxBuf.length<4) return;
     const len=(rxBuf[1]|(rxBuf[2]<<8))&0x03ff;
     if(len<13||len>1024){ rxBuf.shift(); continue; }
     if(crc8(rxBuf.slice(0,3))!==rxBuf[3]){ rxBuf.shift(); continue; }
-    if(rxBuf.length<len) return;
-    decode(rxBuf.splice(0,len));
+    if(rxBuf.length<len) return; // 半帧,等下一个通知包续上
+    const frame=rxBuf.splice(0,len);
+    const cmdSet=frame[9], cmdId=frame[10];
+    const hide = $('hideNoisy').checked && cmdSet===0x04 && cmdId===0x57;
+    if(hide){ hiddenCount++; updateHiddenCount(); }
+    else log('RX  '+hex(frame),'l-rx');
+    decode(frame, hide);
   }
 }
-function decode(m){
+function decode(m, hide){
   const cmdSet=m[9], cmdId=m[10], pl=m.slice(11,m.length-2);
+  const seq = m[6] | (m[7]<<8);
+
+  // 应答命中是整个诊断的关键结论,无论该帧是否被「隐藏高频帧」过滤都要打印
+  if(recentSeqs.includes(seq)){
+    log(`★ 这是对你 seq=0x${seq.toString(16).padStart(4,'0')} 那一帧的应答  `+
+        `cmdSet=0x${cmdSet.toString(16).padStart(2,'0')} cmdId=0x${cmdId.toString(16).padStart(2,'0')} payload=${hex(pl)}`,'l-ack');
+  }
+
   if(cmdSet===0x05 && cmdId===0x06 && pl.length){
     $('batt').textContent = `电量 ${pl[0]}%${pl[pl.length-1]===1?' · 充电中':''}`;
   }
-  log(`  ↳ cmdSet=0x${cmdSet.toString(16).padStart(2,'0')} cmdId=0x${cmdId.toString(16).padStart(2,'0')} payload=${hex(pl)}`,'l-rx');
+
+  // 姿态帧(约 1Hz,不算高频,不受过滤影响):载荷 [24:40]=四元数,[12:16]=毫秒计时器
+  if(cmdSet===0x04 && cmdId===0x05 && pl.length>=40){
+    const q=decodeQuat(pl), e=quatToEuler(q.w,q.x,q.y,q.z);
+    $('attitude').textContent = `R ${e.roll.toFixed(1)}° P ${e.pitch.toFixed(1)}° Y ${e.yaw.toFixed(1)}°`;
+  }
+
+  if(!hide){
+    log(`  ↳ cmdSet=0x${cmdSet.toString(16).padStart(2,'0')} cmdId=0x${cmdId.toString(16).padStart(2,'0')} payload=${hex(pl)}`,'l-rx');
+  }
 }
 
 /* 发送(带分片) */
 async function send(bytes){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  trackSentSeq(bytes);
   log('TX  '+hex(bytes),'l-tx');
   const n=parseInt($('chunk').value,10);
   for(let i=0;i<bytes.length;i+=n){
@@ -456,7 +539,7 @@ function render(){
   $('vTime').textContent=(time/10).toFixed(1)+' s';
   $('vStep').textContent=$('step').value;
 
-  const pkt=buildDuml({seq:seqNo,cmdSet:0x04,cmdId:mode===0x80?0x0c:0x14,
+  const pkt=buildDuml({seq:seqNo,flags:+$('flags').value,cmdSet:0x04,cmdId:mode===0x80?0x0c:0x14,
     payload:[...i16(yaw),...i16(roll),...i16(pitch),mode,time&0xff]});
   $('pktLen').textContent=pkt.length+' B';
 
@@ -464,7 +547,7 @@ function render(){
   $('bytes').innerHTML=[...pkt].map((b,i)=>
     `<span class="b ${cls[i]}" data-i="${i}">${b.toString(16).padStart(2,'0')}</span>`).join('');
 }
-['yaw','pitch','roll','time','mode','step'].forEach(id=>$(id).addEventListener('input',render));
+['yaw','pitch','roll','time','mode','step','flags'].forEach(id=>$(id).addEventListener('input',render));
 $('wchar').addEventListener('change',e=>{ activeWrite=writeChars.get(e.target.value)||null; });
 
 $('btnConnect').onclick=()=>connect(false);
