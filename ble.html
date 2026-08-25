@@ -261,6 +261,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div class="row" style="margin-top:10px">
     <button id="btnRaw" disabled>发送原始帧</button>
     <button id="btnDump" disabled>导出 GATT 结构</button>
+    <button id="btnProbe" disabled>一键诊断</button>
   </div>
 </section>
 
@@ -351,6 +352,22 @@ function trackSentSeq(bytes){
   if(recentSeqs.length>8) recentSeqs.shift();
 }
 
+// 一键诊断的探针表。只放安全指令:读类查询,以及零值的控制帧
+// （回中/零速本来就是云台的静止状态,不会让它突然乱转）。
+// 刻意不做 cmdId 盲扫 —— 未知 cmdId 打到真机上可能触发校准、
+// 固件模式之类的破坏性操作,那种事不能拿用户的云台赌。
+const PROBES = [
+  {seq:0xAB01, name:'角度回中 04/14', cs:0x04, ci:0x14, pl:[0,0,0,0,0,0,0x05,15],
+   note:'页面「发送」按钮用的就是这条'},
+  {seq:0xAB02, name:'速度零速 04/0c', cs:0x04, ci:0x0c, pl:[0,0,0,0,0,0,0x80,1],
+   note:'页面「停止」用的'},
+  {seq:0xAB03, name:'04/1c',  cs:0x04, ci:0x1c, pl:[0x47], note:'云台自己在发这条'},
+  {seq:0xAB04, name:'04/38',  cs:0x04, ci:0x38, pl:[0,0,0x64,0x64,0], note:'云台自己在发这条'},
+  {seq:0xAB05, name:'版本 00/01', cs:0x00, ci:0x01, pl:[], note:'对照组,已知一定会回'},
+];
+// 诊断进行中是个 Map: seq → {payload, at};非诊断状态下为 null。
+let probeResults = null;
+
 /* ── 试过哪些设备 ──
    iOS 上匿名外设只显示一串系统编号,四个长得一模一样,逐个试的时候根本记不住
    试过哪个。按 dev.id 记结论(规范保证同一设备 + 同一源下它是稳定的),
@@ -390,7 +407,7 @@ function setState(s,txt){
   $('dot').className='dot'+(s?' '+s:'');
   $('stat').textContent=txt;
   const on = s==='on';
-  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump'].forEach(i=>$(i).disabled=!on);
+  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe'].forEach(i=>$(i).disabled=!on);
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
 }
 
@@ -498,6 +515,12 @@ function decode(m, hide){
         `cmdSet=0x${cmdSet.toString(16).padStart(2,'0')} cmdId=0x${cmdId.toString(16).padStart(2,'0')} payload=${hex(pl)}`,'l-ack');
   }
 
+  // 一键诊断进行中:命中探针 seq 就记下应答。同一 seq 可能回好几条(实测版本
+  // 查询回了 3~4 条),只记第一条 —— 后面结论表只关心「有没有应答、返回码是什么」。
+  if(probeResults && !probeResults.has(seq) && PROBES.some(p=>p.seq===seq)){
+    probeResults.set(seq, {payload:pl, at:Date.now()});
+  }
+
   if(cmdSet===0x05 && cmdId===0x06 && pl.length){
     $('batt').textContent = `电量 ${pl[0]}%${pl[pl.length-1]===1?' · 充电中':''}`;
   }
@@ -587,6 +610,72 @@ $('btnRaw').onclick=()=>{
   send(new Uint8Array(v.map(x=>parseInt(x,16))));
 };
 $('btnDump').onclick=()=>{ log('—— 重新枚举 GATT ——'); discover(); };
+
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+/* 一键诊断:按顺序发一遍 PROBES,收集应答,打印结论表。
+   只用固定 flags=0x40(要求应答)—— 诊断需要确定的条件,不读页面上的 #flags 下拉。 */
+async function runProbe(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+
+  // 诊断要看全部回帧,不能漏任何一条 —— 临时关掉「隐藏高频帧」,结束后恢复原值。
+  const hideWas = $('hideNoisy').checked;
+  $('hideNoisy').checked = false;
+
+  probeResults = new Map();
+  log(`—— 开始诊断,共 ${PROBES.length} 条探针 ——`);
+
+  for(const p of PROBES){
+    const frame = buildDuml({seq:p.seq, flags:0x40, cmdSet:p.cs, cmdId:p.ci, payload:p.pl});
+    await send(frame);
+    await sleep(600); // 给云台回应时间
+  }
+  await sleep(800); // 收尾,等最后一条探针的应答到齐
+
+  const results = probeResults;
+  probeResults = null;
+  $('hideNoisy').checked = hideWas;
+
+  log('—— 诊断结果 ——');
+  const nameWidth = Math.max(...PROBES.map(p=>p.name.length));
+  let controlOk = null;   // 对照组(版本 00/01)是否有应答
+  let anyRotateAck = false, anyRotateNonZero = false;
+  for(const p of PROBES){
+    const r = results.get(p.seq);
+    const padName = p.name + ' '.repeat(Math.max(0, nameWidth - p.name.length));
+    const isControl = p.cs===0x00 && p.ci===0x01;
+    const isRotate = p.cs===0x04 && (p.ci===0x14 || p.ci===0x0c);
+    if(!r){
+      log(`  ❌ ${padName}    无应答`,'l-err');
+      if(isControl) controlOk = false;
+      continue;
+    }
+    if(isControl) controlOk = true;
+    const code = r.payload.length ? r.payload[0] : undefined;
+    const codeStr = code===undefined ? '?' : '0x'+code.toString(16).padStart(2,'0');
+    let plStr = hex(r.payload);
+    const plBytes = plStr.split(' ');
+    if(plBytes.length>16) plStr = plBytes.slice(0,16).join(' ')+' …';
+    log(`  ✅ ${padName}    有应答  返回码=${codeStr}  载荷=${plStr}`,'l-ack');
+    if(isRotate){
+      anyRotateAck = true;
+      if(code!==0) anyRotateNonZero = true;
+    }
+  }
+
+  let verdict;
+  if(controlOk===false){
+    verdict = '对照组无应答 → 链路或写通道有问题,本轮结果不可信,请重测';
+  }else if(!anyRotateAck){
+    verdict = '对照组有应答 → 链路正常; 04/14 与 04/0c 无应答 → 这两个 cmdId 很可能不被本机支持';
+  }else if(anyRotateNonZero){
+    verdict = '旋转指令有应答但返回码非 0 → 云台拒绝了,返回码见上';
+  }else{
+    verdict = '旋转指令有应答且返回码为 0 → 云台接受了指令,不动的原因在别处(模式/锁定)';
+  }
+  log(`  结论: ${verdict}`);
+}
+$('btnProbe').onclick=()=>{ runProbe(); };
 $('btnClear').onclick=()=>{ $('log').innerHTML=''; };
 $('btnForget').onclick=()=>{ localStorage.removeItem(TRIED_KEY); renderTried(); log('已清空设备记录'); };
 $('btnCopy').onclick=async()=>{
