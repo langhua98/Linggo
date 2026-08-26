@@ -198,6 +198,18 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 }
 .pad button.at-limit{ border-color:#5a2b24;background:#2a1512;color:var(--warn) }
 
+/* ── 协议实验室 ── */
+.lab-head{display:flex;justify-content:space-between;font-size:12px;color:var(--ink);
+  padding:8px 10px;background:#080d10;border:1px solid var(--line);border-radius:3px}
+.lab-head span:last-child{color:var(--dim);font-variant-numeric:tabular-nums}
+#lab-map{font-size:11px;line-height:1.6;max-height:240px;overflow:auto}
+.lab-row{padding:4px 0;border-top:1px solid #10181d;display:flex;gap:8px;flex-wrap:wrap}
+.lab-row b{color:var(--tx);font-weight:500;flex:none}
+.lab-row span{color:var(--dim)}
+.lab-ok{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--warn);margin-top:10px}
+.lab-ok input{width:auto}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+
 /* ── 高级折叠区 ── */
 #adv{ border-top:1px solid var(--line);margin-top:4px }
 #adv>summary{
@@ -408,6 +420,44 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnRaw" disabled>发送原始帧</button>
     <button id="btnDump" disabled>导出 GATT 结构</button>
     <button id="btnProbe" disabled>一键诊断</button>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">协议实验室</p>
+  <p class="note" style="margin-top:0">页面目前只解开了协议的一小部分：<code>04/05</code> 的 49 字节里
+    只用了 20 个，<code>04/57</code>、<code>04/6f</code>、<code>04/1c</code>、<code>04/27</code>、
+    <code>04/38</code>、<code>00/f1</code>、<code>00/00</code> 整帧没解过。
+    这里的思路是<b>施加已知激励、看哪些字节跟着变</b>，而不是盯着十六进制猜。</p>
+  <div class="lab-head"><span id="lab-step">空闲</span><span id="lab-eta"></span></div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnRecOn" disabled>开始记录</button>
+    <button id="btnRecOff" disabled>停止记录</button>
+    <button id="btnStim" disabled>引导式激励采集</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnCorr">相关性分析</button>
+    <button id="btnExport">导出记录</button>
+    <button id="btnLabStop" class="danger" disabled>中止</button>
+  </div>
+  <div id="lab-map" style="margin-top:12px">还没有记录。</div>
+
+  <p class="eyebrow" style="margin-top:20px">cmdId 扫描</p>
+  <p class="note" style="margin-top:0"><b>会往云台发未知指令。</b>已按最保守的方式做：
+    只发<b>空载荷读取</b>（把观测到的载荷原样发回去是<b>写</b>，不是读）、跳过已在用的 cmdId、
+    姿态看门狗一动就整体中止。即便如此，未知 cmdId 仍可能落进校准或固件模式，
+    <b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。扫之前把云台放在开阔处、别夹东西。</p>
+  <div class="grid3">
+    <label class="fld" style="margin:0"><span class="lab"><span>cmdSet</span></span>
+      <input type="text" id="scanCs" value="04" autocapitalize="off" spellcheck="false"></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>起 cmdId</span></span>
+      <input type="text" id="scanFrom" value="00" autocapitalize="off" spellcheck="false"></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>止 cmdId</span></span>
+      <input type="text" id="scanTo" value="3f" autocapitalize="off" spellcheck="false"></label>
+  </div>
+  <label class="lab-ok"><input type="checkbox" id="scanOk">我明白风险，继续</label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnScan" disabled>开始扫描</button>
   </div>
 </section>
 
@@ -628,7 +678,10 @@ function setState(s,txt){
   $('stat').textContent=txt;
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
-   'btnGoto','btnCheck','btnLevel','btnHome'].forEach(i=>$(i).disabled=!on);
+   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnScan']
+    .forEach(i=>$(i).disabled=!on);
+  if(!on){ stimAbort=true; recOn=false; }
+  $('btnRecOff').disabled=true;
   if(!on){ stopHold(); clearLimit(); }
   $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
@@ -756,7 +809,7 @@ const attHist=[];
 const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
 const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
-let lastG=null, lastLevel=null;
+let lastG=null, lastLevel=null, lastVersion=null;
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
@@ -842,9 +895,26 @@ function onNotify(data){
     decode(frame, !show);
   }
 }
+/* ── 帧记录器 ──
+   逆向的底座:把每一帧带时间戳存下来,事后拿已知量去对。TX 也记 ——
+   相关性分析需要「当时下发了什么」这条参照序列。
+   环形缓冲,满了丢最旧的,别让长时间记录把内存吃光。 */
+const REC_CAP=20000;
+let recOn=false; const recBuf=[];
+function recPush(e){
+  if(!recOn) return;
+  recBuf.push(e);
+  if(recBuf.length>REC_CAP) recBuf.splice(0, recBuf.length-REC_CAP);
+}
+function recStart(){ recBuf.length=0; recOn=true; bulkBegin(); }
+function recStop(){ recOn=false; bulkEnd(); return recBuf.length; }
+
 function decode(m, hide){
   const cmdSet=m[9], cmdId=m[10], pl=m.slice(11,m.length-2);
   const seq = m[6] | (m[7]<<8);
+  // src 一直没看过:实测 04/57 与 05/06 来自模块 0x27,其余来自 0x04 ——
+  // 是两个模块在说话,之前被当成了一个。
+  recPush({t:Date.now(), dir:'rx', seq, src:m[4], dst:m[5], flags:m[8], cs:cmdSet, ci:cmdId, pl:[...pl]});
 
   // 应答命中是整个诊断的关键结论,无论该帧是否被「隐藏高频帧」过滤都要打印
   if(bulkSend){
@@ -878,9 +948,13 @@ function decode(m, hide){
 
   // 版本应答里出现 ASCII "GB66" 就认定是 OM6。实测这台机器 04/14(绝对/相对角度)
   // 一个字都不回,只有 04/0c(速度)回 0x00 —— 把用不了的模式直接标灰,免得又白试一轮。
-  if(cmdSet===0x00 && cmdId===0x01 && pl.length>=6 && !om6Locked){
-    const ascii = String.fromCharCode(...pl.slice(0,16).filter(c=>c>=32&&c<127));
-    if(ascii.includes('GB66')) lockSpeedMode();
+  if(cmdSet===0x00 && cmdId===0x01 && pl.length>=6){
+    // 之前只挑 ASCII 认了个 GB66,剩下的字节一直没看。整条留下来供实验室分析。
+    lastVersion = {pl:[...pl],
+      ascii: String.fromCharCode(...pl.map(c=>(c>=32&&c<127)?c:46)),
+      words: Array.from({length:Math.floor(pl.length/4)},(_,i)=>
+        (pl[i*4]|(pl[i*4+1]<<8)|(pl[i*4+2]<<16)|(pl[i*4+3]<<24))>>>0)};
+    if(!om6Locked && lastVersion.ascii.includes('GB66')) lockSpeedMode();
   }
 
   if(!hide){
@@ -892,6 +966,9 @@ function decode(m, hide){
 async function send(bytes){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   trackSentSeq(bytes);
+  if(bytes[0]===0x55 && bytes.length>12)
+    recPush({t:Date.now(), dir:'tx', seq:bytes[6]|(bytes[7]<<8), src:bytes[4], dst:bytes[5],
+             flags:bytes[8], cs:bytes[9], ci:bytes[10], pl:[...bytes.slice(11, bytes.length-2)]});
   if(bulkSend){
     bulkStat.sent++;
     if(bytes[0]===0x55 && bytes.length>8) bulkStat.pend.set(bytes[6]|(bytes[7]<<8), Date.now());
@@ -1879,8 +1956,342 @@ async function goHomePose(){
 }
 $('btnHome').onclick =()=>goHomePose();
 
+$('btnRecOn').onclick =()=>{ recStart(); $('lab-step').textContent='记录中…';
+  $('btnRecOn').disabled=true; $('btnRecOff').disabled=false; log('—— 开始记录帧 ——'); };
+$('btnRecOff').onclick=()=>{ const n=recStop(); $('lab-step').textContent='空闲';
+  $('btnRecOn').disabled=false; $('btnRecOff').disabled=true;
+  log(`—— 停止记录:共 ${n} 帧 ——`); renderFieldMap(); };
+$('btnStim').onclick  =()=>stimCapture();
+$('btnCorr').onclick  =()=>runCorrelate();
+$('btnExport').onclick=()=>exportRec();
+$('btnScan').onclick  =()=>cmdScan();
+$('btnLabStop').onclick=()=>{ stimAbort=true; };
+
 $('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
   selfCheck().finally(()=>{ $('btnCheck').disabled=false; }); };
+
+/* ════════════ 协议实验室 ════════════
+   页面只解开了协议的一小部分。04/05 的 49 字节里只用了 20 个,还有 04/57、04/6f、
+   04/1c、04/27、04/38、00/f1、00/00 整帧没解过。逆向这些东西唯一靠谱的办法是
+   「施加已知激励 + 看哪些字节跟着变」,而不是盯着一帧十六进制猜。 */
+
+const recKey = e => `${e.src.toString(16).padStart(2,'0')}:`+
+                    `${e.cs.toString(16).padStart(2,'0')}/${e.ci.toString(16).padStart(2,'0')}`;
+
+/* 字段图谱:按 (src, cmdSet, cmdId) 分组,逐字节统计恒定还是在变。
+   不含任何猜测,先把地基摆出来 —— 哪些字节带信息一眼可见。 */
+function fieldMap(buf){
+  const g=new Map();
+  for(const e of buf){
+    if(e.dir!=='rx') continue;
+    const k=recKey(e);
+    let o=g.get(k);
+    if(!o){ o={key:k, src:e.src, cs:e.cs, ci:e.ci, n:0, lens:new Set(), bytes:[]}; g.set(k,o); }
+    o.n++; o.lens.add(e.pl.length);
+    for(let i=0;i<e.pl.length;i++){
+      let b=o.bytes[i]; if(!b) b=o.bytes[i]={min:255,max:0,changes:0,last:null};
+      const v=e.pl[i];
+      if(v<b.min) b.min=v; if(v>b.max) b.max=v;
+      if(b.last!==null && b.last!==v) b.changes++;
+      b.last=v;
+    }
+  }
+  return [...g.values()].sort((a,b)=>b.n-a.n);
+}
+
+// 变化的字节聚成连续段 —— 一个多字节字段的相邻字节通常一起变
+function varyRuns(entry){
+  const runs=[]; let cur=null;
+  entry.bytes.forEach((b,i)=>{
+    const vary = b && b.changes>0;
+    if(vary){ if(!cur){ cur={a:i,b:i}; runs.push(cur); } else cur.b=i; }
+    else cur=null;
+  });
+  return runs;
+}
+
+/* ── 相关性分析 ──
+   把变化的字节段按 int8/int16/int32/float32(有无符号、小端)各解一遍,
+   跟已知参照序列做皮尔逊相关。
+   只认 |r|>0.9 且样本 ≥20 —— 逆向里最容易犯的错就是把巧合当结论,
+   门槛低了满屏都是「相关」。 */
+const NUM_KINDS=[
+  {n:1, name:'u8',   f:(p,i)=>p[i]},
+  {n:1, name:'i8',   f:(p,i)=>(p[i]<<24)>>24},
+  {n:2, name:'u16',  f:(p,i)=>p[i]|(p[i+1]<<8)},
+  {n:2, name:'i16',  f:(p,i)=>((p[i]|(p[i+1]<<8))<<16)>>16},
+  {n:4, name:'u32',  f:(p,i)=>(p[i]|(p[i+1]<<8)|(p[i+2]<<16)|(p[i+3]<<24))>>>0},
+  {n:4, name:'i32',  f:(p,i)=>(p[i]|(p[i+1]<<8)|(p[i+2]<<16)|(p[i+3]<<24))|0},
+  {n:4, name:'f32',  f:(p,i)=>{ const b=new DataView(new ArrayBuffer(4));
+      for(let k=0;k<4;k++) b.setUint8(k,p[i+k]); return b.getFloat32(0,true); }},
+];
+function pearson(a,b){
+  const n=a.length; if(n<3) return 0;
+  let ma=0,mb=0; for(let i=0;i<n;i++){ ma+=a[i]; mb+=b[i]; } ma/=n; mb/=n;
+  let sab=0,saa=0,sbb=0;
+  for(let i=0;i<n;i++){ const da=a[i]-ma, db=b[i]-mb; sab+=da*db; saa+=da*da; sbb+=db*db; }
+  return (saa<1e-12||sbb<1e-12) ? 0 : sab/Math.sqrt(saa*sbb);
+}
+
+/* 参照序列:每一帧 04/05 解出的姿态与重力,加上「那一刻在下发什么速度」。
+   TX 用最近一条(零阶保持)—— 命令是 20Hz,姿态是 1Hz,总能找到当时生效的那条。 */
+function buildRefs(buf){
+  const refs={yaw:[],pitch:[],roll:[],gx:[],gy:[],gz:[],
+              cyaw:[],cpitch:[],croll:[],moving:[],t:[]};
+  const stamps=[];
+  let cmd={yaw:0,pitch:0,roll:0};
+  let prev=null;
+  for(const e of buf){
+    if(e.dir==='tx'){
+      if(e.cs===0x04 && e.ci===0x0c && e.pl.length>=6)
+        cmd={ yaw:  ((e.pl[0]|(e.pl[1]<<8))<<16)>>16,
+              roll: ((e.pl[2]|(e.pl[3]<<8))<<16)>>16,
+              pitch:((e.pl[4]|(e.pl[5]<<8))<<16)>>16 };
+      continue;
+    }
+    if(e.cs!==0x04 || e.ci!==0x05 || e.pl.length<40) continue;
+    const q=decodeQuat(e.pl), eu=quatToEuler(q.w,q.x,q.y,q.z), g=gravityBody(q);
+    refs.yaw.push(eu.yaw); refs.pitch.push(eu.pitch); refs.roll.push(eu.roll);
+    refs.gx.push(g[0]); refs.gy.push(g[1]); refs.gz.push(g[2]);
+    refs.cyaw.push(cmd.yaw); refs.cpitch.push(cmd.pitch); refs.croll.push(cmd.roll);
+    refs.moving.push(prev ? (Math.abs(d180(eu.yaw-prev.yaw))+Math.abs(d180(eu.pitch-prev.pitch))
+                            +Math.abs(d180(eu.roll-prev.roll)) > 1 ? 1 : 0) : 0);
+    refs.t.push(e.t); stamps.push(e.t);
+    prev=eu;
+  }
+  return {refs, stamps};
+}
+const REF_CN={yaw:'偏航角',pitch:'俯仰角',roll:'横滚角',gx:'重力 gx',gy:'重力 gy',gz:'重力 gz',
+  cyaw:'下发偏航速度',cpitch:'下发俯仰速度',croll:'下发横滚速度',moving:'是否在运动',t:'时间'};
+
+/* 把某一路帧按参照序列的时间戳重采样(取该时刻之前最近的一帧),
+   两条序列对齐了才能算相关。 */
+function sampleAt(entries, stamps){
+  const out=[]; let j=0, cur=null;
+  for(const t of stamps){
+    while(j<entries.length && entries[j].t<=t){ cur=entries[j]; j++; }
+    out.push(cur);
+  }
+  return out;
+}
+
+function correlate(buf, minR=0.9, minN=20){
+  const {refs, stamps} = buildRefs(buf);
+  // 门槛不能放松:每个偏移 × 每种解法 × 每个参照要跑几百次比对,样本一少,
+  // 光靠多重比较就能凑出 |r|>0.9 的巧合。宁可让人多录一会儿。
+  if(stamps.length<minN) return {err:`只有 ${stamps.length} 帧姿态,不足 ${minN} —— `+
+    `姿态只有约 1Hz,先「开始记录」再按住方向键随便转 30 秒以上,再回来分析`};
+  const map=fieldMap(buf), out=[];
+  for(const ent of map){
+    if(ent.cs===0x04 && ent.ci===0x05) { /* 姿态帧本身也要分析:未解的字段正在这里面 */ }
+    const rows=buf.filter(e=>e.dir==='rx' && recKey(e)===ent.key);
+    const al=sampleAt(rows, stamps);
+    for(const run of varyRuns(ent)){
+      for(const k of NUM_KINDS){
+        for(let off=run.a; off+k.n-1<=run.b; off+=k.n){
+          const series=al.map(e=>(e && e.pl.length>=off+k.n) ? k.f(e.pl,off) : null);
+          if(series.some(v=>v===null||!isFinite(v))) continue;
+          let best=null;
+          for(const rk of Object.keys(refs)){
+            const r=pearson(series, refs[rk]);
+            if(!best || Math.abs(r)>Math.abs(best.r)) best={ref:rk, r};
+          }
+          if(best && Math.abs(best.r)>=minR)
+            out.push({key:ent.key, off, kind:k.name, ref:best.ref, r:best.r, n:series.length});
+        }
+      }
+    }
+  }
+  // 同一个偏移可能被多种解法命中,留相关性最强的那个
+  const seen=new Map();
+  for(const o of out.sort((a,b)=>Math.abs(b.r)-Math.abs(a.r))){
+    const kk=o.key+'@'+o.off;
+    if(!seen.has(kk)) seen.set(kk,o);
+  }
+  return {hits:[...seen.values()].sort((a,b)=>a.key.localeCompare(b.key)||a.off-b.off),
+          nAtt:stamps.length};
+}
+
+/* ── 引导式激励采集 ──
+   自检的激励只覆盖「受控运动」,解不开实体按键、也分不出关节角与 IMU 姿态。
+   这里逐步提示你动手,每步录一段窗口,跑完做差分:哪个 (帧, 字节) 只在这一步变了。
+   「用手把整机往左斜、别动镜头」那一步是专门设计的 —— 云台会稳住镜头,
+   所以四元数几乎不变,而关节角必须变。两者就此分开。 */
+const STIM_STEPS=[
+  {ms:3000, name:'静止基线', hint:'把云台放稳，什么都别碰'},
+  {ms:3000, name:'摇杆上下', hint:'来回拨云台上的摇杆（上下方向）'},
+  {ms:3000, name:'摇杆左右', hint:'来回拨摇杆（左右方向）'},
+  {ms:3000, name:'按扭当键', hint:'反复按扭当键 / 模式键'},
+  {ms:3000, name:'扣扳机',   hint:'反复扣住又松开扳机'},
+  {ms:4000, name:'整机倾斜', hint:'用手把整个云台往左倾，别去碰镜头 —— 这步用来分辨关节角'},
+  {ms:3000, name:'收尾静止', hint:'放稳，别碰'},
+];
+let stimAbort=false, labRunning=false;
+async function stimCapture(){
+  if(labRunning){ log('实验室里已经有任务在跑','l-err'); return; }
+  labRunning=true; stimAbort=false; suppressWatch=true;
+  $('btnStim').disabled=true; $('btnLabStop').disabled=false;
+  const marks=[];
+  recStart();
+  try{
+    for(const st of STIM_STEPS){
+      if(stimAbort) break;
+      const a=Date.now();
+      for(let el=0; el<st.ms; el=Date.now()-a){
+        if(stimAbort) break;
+        $('lab-step').textContent=`${st.name} — ${st.hint}`;
+        $('lab-eta').textContent=`${((st.ms-el)/1000).toFixed(1)}s`;
+        await sleep(100);
+      }
+      marks.push({name:st.name, a, b:Date.now()});
+    }
+  } finally {
+    const n=recStop(); suppressWatch=false; labRunning=false;
+    $('btnStim').disabled=false; $('btnLabStop').disabled=true;
+    $('lab-step').textContent=stimAbort?'已中止':'采集完成'; $('lab-eta').textContent='';
+    log(`—— 激励采集${stimAbort?'中止':'完成'}:${n} 帧 ——`);
+    if(marks.length>=2) stimDiff(marks);
+    renderFieldMap();
+  }
+}
+
+/* 差分:某个字节只在某一步变化 = 那一步的动作就是它的成因。
+   要求「其它步都不变」——只要在别处也变过,就说明它是随时间/运动漂的,不是这个动作驱动的。 */
+function stimDiff(marks){
+  const per=marks.map(m=>({m, buf:recBuf.filter(e=>e.dir==='rx'&&e.t>=m.a&&e.t<m.b)}));
+  const maps=per.map(x=>{ const g=new Map(); for(const ent of fieldMap(x.buf)) g.set(ent.key,ent); return g; });
+  const keys=new Set(); maps.forEach(g=>g.forEach((_,k)=>keys.add(k)));
+  const hits=[], thin=[];
+  for(const k of keys){
+    /* 每一步至少要有 2 帧才谈得上「变没变」——只有 1 帧时变化数恒为 0,
+       于是那些其实一直在变的字段(毫秒计时器、噪声)反而显得「只在某一步变」。
+       姿态帧只有约 1Hz,步长短一点就会踩到这个坑。 */
+    const counts=maps.map(g=>{ const e=g.get(k); return e?e.n:0; });
+    if(Math.min(...counts)<2){ thin.push(`${k}（最少的一步只有 ${Math.min(...counts)} 帧）`); continue; }
+    const len=Math.max(...maps.map(g=>g.get(k)?g.get(k).bytes.length:0));
+    for(let i=0;i<len;i++){
+      const changed=maps.map(g=>{ const e=g.get(k); const b=e&&e.bytes[i]; return b?b.changes>0:false; });
+      const which=changed.map((c,j)=>c?j:-1).filter(j=>j>=0);
+      if(which.length===1 && marks[which[0]].name!=='静止基线' && marks[which[0]].name!=='收尾静止')
+        hits.push({key:k, byte:i, step:marks[which[0]].name,
+                   range:maps[which[0]].get(k).bytes[i]});
+    }
+  }
+  log('—— 激励差分:哪个字节只在某一步变了 ——');
+  if(!hits.length) log('  没有字节表现出「只在某一步变」。可能是动作幅度不够，或该状态不走这条链路。');
+  hits.slice(0,40).forEach(h=>log(
+    `  ${h.key} 字节[${h.byte}]  只在「${h.step}」变化  取值 ${h.range.min}~${h.range.max}`,'l-ack'));
+  if(hits.length>40) log(`  （还有 ${hits.length-40} 条，导出记录看全部）`);
+  if(thin.length) log(`  样本太稀、判不了的帧:${thin.join('、')}`);
+}
+
+/* ── cmdId 扫描 ──
+   用户明确授权并承担风险。安全措施是工程的一部分,不是打折:
+   · **空载荷 + flags=0x40** —— DUML 里「读」通常就是空载荷。把观测到的载荷原样发回去是**写**,
+     早先 PROBES 对 04/1c 发 [0x47] 就是这个错,只是运气好没出事。
+   · 跳过已在用的 cmdId,免得扫描顺手把云台转起来
+   · 姿态看门狗:扫描期间不该有任何运动,一动就整体中止
+   · 大号中止按钮,断连也中止 */
+const SCAN_SKIP={0x04:[0x0c,0x14], 0x00:[0x01]};
+const SCAN_KEY='om_ble_scan';
+async function cmdScan(){
+  if(labRunning){ log('实验室里已经有任务在跑','l-err'); return; }
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(!$('scanOk').checked){ log('扫描前请先勾选风险确认。','l-err'); return; }
+  const cs=parseInt($('scanCs').value,16);
+  const from=parseInt($('scanFrom').value,16), to=parseInt($('scanTo').value,16);
+  if(!(from>=0 && to<=0xff && from<=to)){ log('cmdId 范围不对','l-err'); return; }
+  labRunning=true; stimAbort=false; suppressWatch=true;
+  $('btnScan').disabled=true; $('btnLabStop').disabled=false;
+  const a0 = lastEuler && {...lastEuler};
+  const probeSeq=new Map();          // seq → cmdId,认应答只认 seq
+  recStart();
+  let aborted='';
+  try{
+    log(`—— cmdId 扫描:cmdSet=0x${cs.toString(16)},范围 0x${from.toString(16)}~0x${to.toString(16)},`+
+        `空载荷读取。云台不该有任何动作,一动就中止 ——`);
+    let q=0xC800;
+    for(let ci=from; ci<=to; ci++){
+      if(stimAbort){ aborted='手动中止'; break; }
+      if((SCAN_SKIP[cs]||[]).includes(ci)) continue;
+      // 姿态看门狗:我们没发任何运动指令,动了就说明扫到了会动的东西
+      if(a0 && lastEuler){
+        const mv=Math.max(Math.abs(d180(lastEuler.yaw-a0.yaw)),
+                          Math.abs(d180(lastEuler.pitch-a0.pitch)),
+                          Math.abs(d180(lastEuler.roll-a0.roll)));
+        if(mv>5){ aborted=`云台动了 ${mv.toFixed(1)}°,已中止(上一条是 0x${(ci-1).toString(16)})`; break; }
+      }
+      probeSeq.set((++q)&0xffff, ci);
+      $('lab-step').textContent=`扫描 0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}`;
+      $('lab-eta').textContent=`${ci-from+1} / ${to-from+1}`;
+      await send(buildDuml({seq:q&0xffff, flags:0x40, cmdSet:cs, cmdId:ci, payload:[]}));
+      await sleep(200);
+    }
+    await sleep(600);
+  } finally {
+    recStop(); suppressWatch=false; labRunning=false;
+    // 保险零速:万一扫到的某个 cmdId 让云台动了起来。seq 用 0xC9 前缀,
+    // 跟 0xC8 的扫描帧区分开 —— 它不是扫描的一部分。
+    try{ await send(buildDuml({seq:0xC9ff, flags:0x40, cmdSet:0x04, cmdId:0x0c,
+      payload:[0,0,0,0,0,0,0x80,1]})); }catch{}
+    $('btnScan').disabled=false; $('btnLabStop').disabled=true;
+    $('lab-step').textContent=aborted?('已中止:'+aborted):'扫描完成'; $('lab-eta').textContent='';
+  }
+  /* 认应答只认 seq。按 cmdId 匹配是错的:云台一直在主动推 04/05、04/57、04/1c、
+     04/27、04/38,那些 cmdId 会被当成「有应答」——满屏假阳性,整张表就废了。 */
+  const got=new Map();
+  for(const e of recBuf){
+    if(e.dir!=='rx') continue;
+    const ci=probeSeq.get(e.seq);
+    if(ci===undefined || got.has(ci)) continue;
+    got.set(ci, e.pl);
+  }
+  log(`—— 扫描结果:${got.size} 个 cmdId 有应答 ——`+(aborted?`（${aborted}）`:''), got.size?'l-ack':'l-err');
+  [...got.keys()].sort((x,y)=>x-y).forEach(ci=>{
+    const pl=got.get(ci);
+    log(`  0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  `+
+        `返回码=${pl.length?'0x'+pl[0].toString(16).padStart(2,'0'):'?'}  载荷=${hex(pl).slice(0,60)}`,'l-ack');
+  });
+  try{
+    const all=JSON.parse(localStorage.getItem(SCAN_KEY)||'{}');
+    all[(dev&&dev.id)||'?'] = Object.assign(all[(dev&&dev.id)||'?']||{},
+      {['cs'+cs]: [...got.keys()]});
+    localStorage.setItem(SCAN_KEY, JSON.stringify(all));
+  }catch{}
+  renderFieldMap();
+}
+
+// ── 实验室 UI ──
+function renderFieldMap(){
+  const el=$('lab-map'); if(!el) return;
+  const map=fieldMap(recBuf);
+  if(!map.length){ el.textContent='还没有记录。'; return; }
+  el.innerHTML = map.map(e=>{
+    const vary=varyRuns(e).map(r=>r.a===r.b?`[${r.a}]`:`[${r.a}:${r.b+1}]`).join(' ');
+    const konst=e.bytes.map((b,i)=>b&&b.changes===0?i:-1).filter(i=>i>=0);
+    return `<div class="lab-row"><b>${e.key}</b> ×${e.n} 长度 ${[...e.lens].join('/')}` +
+           `<span>变化 ${vary||'（无）'} · 恒定 ${konst.length} 字节</span></div>`;
+  }).join('');
+}
+function runCorrelate(){
+  const r=correlate(recBuf);
+  if(r.err){ log('相关性分析:'+r.err,'l-err'); return; }
+  log(`—— 相关性分析（${r.nAtt} 帧姿态为参照，只报 |r|>0.9）——`);
+  if(!r.hits.length){ log('  没找到达到门槛的对应关系。多跑一次自检或激励采集再试。'); return; }
+  r.hits.forEach(h=>log(
+    `  ${h.key} 偏移[${h.off}] 作 ${h.kind}  ↔  ${REF_CN[h.ref]}   r=${h.r.toFixed(3)}  n=${h.n}`,'l-ack'));
+}
+function dl(name, content, type){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([content],{type}));
+  a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+function exportRec(){
+  const blob=JSON.stringify({dev:(dev&&dev.id)||null, at:Date.now(),
+    version:lastVersion, n:recBuf.length, frames:recBuf});
+  dl('om-ble-rec.json', blob, 'application/json');
+}
 
 /* ── 闭环「转到指定角度」 ──
    难点是姿态反馈只有约 1Hz:直接拿 lastEuler 当反馈,两帧之间是瞎的,
