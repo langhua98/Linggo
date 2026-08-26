@@ -168,6 +168,27 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 .tried #triedList{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;line-height:1.9}
 .tried button{padding:5px 9px;font-size:11px}
 .t-no{color:var(--warn)}.t-yes{color:var(--ok)}.t-maybe{color:var(--tx)}
+/* ── 自检清单 ── */
+#check-panel{
+  margin:0 0 16px;padding:12px;border:1px solid var(--line);border-radius:3px;background:#080d10;
+}
+.chk-head{display:flex;justify-content:space-between;font-size:12px;color:var(--ink);margin-bottom:8px}
+.chk-head span:last-child{color:var(--dim);font-variant-numeric:tabular-nums}
+.chk-bar{height:3px;background:var(--line);border-radius:2px;overflow:hidden}
+.chk-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s linear}
+#chk-rows{margin-top:10px}
+.chk-row{
+  display:flex;gap:9px;align-items:baseline;padding:5px 0;font-size:12px;line-height:1.45;
+  border-top:1px solid #10181d;opacity:.45;transition:opacity .3s;
+}
+#chk-rows .chk-row:first-child{border-top:none}
+.chk-row.done{opacity:1}
+.chk-row .ic{flex:none;width:15px;text-align:center}
+.chk-row .nm{flex:none;width:62px;color:var(--dim)}
+.chk-row .vl{flex:1;min-width:0;color:var(--ink)}
+.chk-row.bad .vl{color:var(--warn)}
+.chk-row.warn .vl{color:var(--tx)}
+
 /* ── 行程末端提示 ── */
 .limit-bar{
   margin-top:10px;padding:9px 12px;border-radius:3px;font-size:12px;line-height:1.5;
@@ -229,7 +250,12 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 <section>
   <p class="eyebrow">3 · 控制</p>
   <div class="row" style="margin-bottom:14px">
-    <button id="btnCheck" class="primary" disabled>一键自检 · 六向</button>
+    <button id="btnCheck" class="primary" disabled>一键自检</button>
+  </div>
+  <div id="check-panel" hidden>
+    <div class="chk-head"><span id="chk-step">准备中…</span><span id="chk-eta"></span></div>
+    <div class="chk-bar"><i id="chk-fill"></i></div>
+    <div id="chk-rows"></div>
   </div>
   <div class="pad">
     <button data-ax="roll" data-dir="-1" disabled title="横滚 逆时针">↺</button>
@@ -461,6 +487,26 @@ PROBE.push(u16(0x180f),u16(0x1800),u16(0x1801),u16(0x180a));
 let dev=null, server=null, writeChars=new Map(), activeWrite=null;
 const $ = id => document.getElementById(id);
 
+/* ── 批量发送静音 ──
+   自动例程会 20Hz 连发十几秒 —— 240 个 TX 帧 + 240 条应答已经超过 log() 的 400 行上限,
+   自检跑完日志里就只剩自检自己的刷屏,之前的记录全被冲掉。所以例程期间不逐帧打日志,
+   只累加统计,末尾打一行汇总。
+   统计另开一张 seq→发出时刻 的表:现成的 recentSeqs 只留 8 条,量不了几百帧的应答率。 */
+let bulkSend=false;
+const bulkStat={sent:0, acked:0, lat:0, pend:new Map()};
+function bulkBegin(){
+  bulkSend=true; bulkStat.sent=0; bulkStat.acked=0; bulkStat.lat=0; bulkStat.pend.clear();
+}
+function bulkPeek(){
+  const {sent,acked,lat}=bulkStat;
+  return {sent, acked, rate: sent?acked/sent:0, ms: acked?lat/acked:0};
+}
+function bulkEnd(){
+  bulkSend=false; bulkStat.pend.clear();
+  const {sent,acked,lat}=bulkStat;
+  return {sent, acked, rate: sent?acked/sent:0, ms: acked?lat/acked:0};
+}
+
 /* 最近发出的 seq(最多 8 个),用于在 RX 里识别「这是对我哪一帧的应答」 */
 const recentSeqs=[];
 function trackSentSeq(bytes){
@@ -655,9 +701,10 @@ const attHist=[];
 const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
 const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
-let traceBuf=null, attSeq=0;
+let traceBuf=null, attSeq=0, attRec=null;
 function pushAtt(e){
   attSeq++;
+  if(attRec) attRec.push({t:Date.now(), yaw:e.yaw, pitch:e.pitch, roll:e.roll});
   const now=Date.now();
   lastEuler=e;
   if(traceBuf) traceBuf.push({yaw:e.yaw, pitch:e.pitch, roll:e.roll});
@@ -727,7 +774,10 @@ function decode(m, hide){
   const seq = m[6] | (m[7]<<8);
 
   // 应答命中是整个诊断的关键结论,无论该帧是否被「隐藏高频帧」过滤都要打印
-  if(recentSeqs.includes(seq)){
+  if(bulkSend){
+    const t0=bulkStat.pend.get(seq);
+    if(t0!==undefined){ bulkStat.pend.delete(seq); bulkStat.acked++; bulkStat.lat+=Date.now()-t0; }
+  }else if(recentSeqs.includes(seq)){
     log(`★ 这是对你 seq=0x${seq.toString(16).padStart(4,'0')} 那一帧的应答  `+
         `cmdSet=0x${cmdSet.toString(16).padStart(2,'0')} cmdId=0x${cmdId.toString(16).padStart(2,'0')} payload=${hex(pl)}`,'l-ack');
   }
@@ -767,9 +817,14 @@ function decode(m, hide){
 async function send(bytes){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   trackSentSeq(bytes);
-  log('TX  '+hex(bytes),'l-tx');
-  if(bytes[0]===0x55 && bytes.length>10 && bytes[9]===0x04 && (bytes[10]===0x0c || bytes[10]===0x14))
-    watchMotion('控制帧 '+kindKey(bytes[9],bytes[10]));
+  if(bulkSend){
+    bulkStat.sent++;
+    if(bytes[0]===0x55 && bytes.length>8) bulkStat.pend.set(bytes[6]|(bytes[7]<<8), Date.now());
+  }else{
+    log('TX  '+hex(bytes),'l-tx');
+    if(bytes[0]===0x55 && bytes.length>10 && bytes[9]===0x04 && (bytes[10]===0x0c || bytes[10]===0x14))
+      watchMotion('控制帧 '+kindKey(bytes[9],bytes[10]));
+  }
   const n=parseInt($('chunk').value,10);
   for(let i=0;i<bytes.length;i+=n){
     const part=bytes.slice(i,i+n);
@@ -1216,69 +1271,237 @@ async function calibrate(){
     if(home) await goHome(home);
   } finally { suppressWatch=false; traceBuf=null; }
 }
-/* ── 一键自检 · 六向 ──
-   一次回答「这台机器到底哪几个轴、哪几个方向能动」。成对扫描、每对方向相反,
-   扫完自然回到原位,不会像早期那版标定那样把云台一路推到行程末端。
-   横滚这一路从来没试过 —— 载荷里有槽位,但很多云台根本不开放横滚控制,
-   所以「没反应」是一个必须能报出来的正常结论,不是故障。 */
-const CHK_DIRS=[
-  ['yaw',   +1, '偏航 ▶'], ['yaw',   -1, '偏航 ◀'],
-  ['pitch', +1, '俯仰 ▲'], ['pitch', -1, '俯仰 ▼'],
-  ['roll',  +1, '横滚 ↻'], ['roll',  -1, '横滚 ↺'],
+/* ── 一键自检 ──
+   旧版是「逐轴串行 + 每段隔离测量」:六个方向,每段 3.0s 下发 + 1.3s 读数尾巴 + 0.7s 静置,
+   30 秒里 12 秒是纯等待,动作一停一顿。停顿只是为了让每段测量互不干扰才存在的 ——
+   改成全程连续下发、姿态帧按时间戳记录、跑完再按命令时间线切分归因,停顿就不需要了。
+
+   路线是一笔画的蝴蝶结(右上 → 左下 → 左上 → 右下),双轴同时动:载荷本来就有三个槽位,
+   姿态又是从四元数分轴解出来的,一帧姿态能同时给出两个轴的位移,逐轴串行白白多花一倍时间。
+   段间做 250ms 交叉淡入,避免 +30 到 −30 的硬反向 —— 这是动作看着连贯而不是抽搐的关键。
+
+   精度上限是姿态帧只有约 1Hz,所以这里只做「可控 / 到末端 / 无响应」的定性判断加粗略速率;
+   精确标度归「高级」里那套八段「速度标定」。 */
+const CHK_DPS=30, CHK_HZ=20, CHK_BLEND=250;
+const CHK_PLAN=[
+  {ms:1200, v:{},                        name:'静止基线', key:'base'},
+  {ms:2500, v:{yaw:+1, pitch:+1},        name:'右上'},
+  {ms:2500, v:{yaw:-1, pitch:-1},        name:'左下'},
+  {ms:2500, v:{yaw:-1, pitch:+1},        name:'左上'},
+  {ms:2500, v:{yaw:+1, pitch:-1},        name:'右下'},
+  {ms:2000, v:{roll:+1},                 name:'横滚 ↻'},
+  {ms:2000, v:{roll:-1},                 name:'横滚 ↺'},
+  {ms:1500, v:{},                        name:'停车验证', key:'stop'},
 ];
+const CHK_TOTAL = CHK_PLAN.reduce((a,p)=>a+p.ms, 0);
+
+// ── 清单面板 ──
+const CHK_ROWS=[['link','链路'],['fb','姿态反馈'],['base','静止基线'],
+                ['yaw','偏航'],['pitch','俯仰'],['roll','横滚'],
+                ['cross','串轴'],['stop','停车']];
+function chkReset(){
+  $('check-panel').hidden=false;
+  $('chk-fill').style.width='0%';
+  $('chk-step').textContent='准备中…';
+  $('chk-eta').textContent='';
+  $('chk-rows').innerHTML=CHK_ROWS.map(([k,n])=>
+    `<div class="chk-row" id="chk-${k}"><span class="ic">⏳</span><span class="nm">${n}</span><span class="vl">—</span></div>`).join('');
+}
+function chkSet(key, icon, text, cls){
+  const el=$('chk-'+key); if(!el) return;
+  el.className='chk-row done'+(cls?' '+cls:'');
+  el.querySelector('.ic').textContent=icon;
+  el.querySelector('.vl').textContent=text;
+}
+
 async function selfCheck(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  const spd=+$('step').value||100;
+  if(!lastEuler){ log('还没收到姿态帧,自检没有反馈可用','l-err'); return; }
+  const units = Math.max(10, Math.min(900, Math.round(CHK_DPS/degPerUnit)));
   const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
-  const STOP=[0,0,0,0,0,0,0x80,1];
-  suppressWatch=true; clearLimit();
-  const home = lastEuler && {...lastEuler};
+
+  suppressWatch=true; clearLimit(); chkReset();
+  const samples=[]; attRec=samples;
+  const cmdLog=[];                 // {t, yaw, pitch, roll} —— 每次下发都记,事后按时间线归因
+  const home={...lastEuler};
+  bulkBegin();
+  const t0=Date.now();
   try{
-    log(`—— 一键自检:六个方向各扫 ${(CAL_WIN/1000).toFixed(1)}s,速度 ${spd}(≈${(spd*degPerUnit).toFixed(1)}°/s),`+
-        `约 ${Math.round(CHK_DIRS.length*(CAL_WIN+CAL_TAIL+700)/1000)} 秒。请把云台放稳,手不要动 ——`);
-    const R={};
-    for(const [ax,dir,label] of CHK_DIRS){
-      const d=await phase(label, async()=>{
-        const t0=Date.now(); let q=0xB200;
-        while(Date.now()-t0<CAL_WIN-200){ await F(++q & 0xffff, SPD_FRAME(ax,spd*dir,15)); await sleep(50); }
-      }, CAL_WIN+CAL_TAIL, {axis:ax, continuous:true});
-      await F(0xB2ff, STOP);
-      await sleep(700);
-      if(!d){ log('  自检中断:缺姿态数据,请重测','l-err'); return; }
-      R[ax+dir] = {v:d[ax], stall:d.stall};
-    }
+    log(`—— 一键自检:连续编排 ${(CHK_TOTAL/1000).toFixed(1)}s,${CHK_DPS}°/s(速度值 ${units})。请把云台放稳,手不要动 ——`);
+    let q=0xB300, seg=0, segT0=t0, prev={yaw:0,pitch:0,roll:0};
+    while(true){
+      const now=Date.now(), el=now-t0;
+      if(el>=CHK_TOTAL) break;
+      // 走到第几段
+      let acc=0, idx=0;
+      for(; idx<CHK_PLAN.length; idx++){ if(el < acc+CHK_PLAN[idx].ms) break; acc+=CHK_PLAN[idx].ms; }
+      if(idx!==seg){
+        prev=CHK_PLAN[seg].v; seg=idx; segT0=t0+acc;
+        $('chk-step').textContent='正在扫 · '+CHK_PLAN[idx].name;
+        // 增量分析:每跨一段就把已经能下结论的行点亮。全程 17 秒,
+        // 要是等到最后一次性刷出来,面板就干坐着,跟没跑一样。
+        chkAnalyse(samples.slice(), cmdLog.slice(), t0, bulkPeek(), units, true);
+      }
+      const cur=CHK_PLAN[idx].v;
+      // 段首 250ms 把上一段的速度矢量线性淡入到本段,避免硬反向
+      const k=Math.min(1,(now-segT0)/CHK_BLEND);
+      const cmd={};
+      for(const ax of ['yaw','pitch','roll'])
+        cmd[ax]=Math.round(units*(((prev[ax]||0)*(1-k))+((cur[ax]||0)*k)));
 
-    const TH=3, rate=v=>Math.abs(v)/(CAL_WIN/1000);
-    const sg=v=>(v>=0?'+':'')+v.toFixed(1);
-    log('—— 自检结果 ——');
-    const verdicts={};
-    for(const [ax,dir,label] of CHK_DIRS){
-      const r=R[ax+dir], other=R[ax+(-dir)];
-      let icon, tail;
-      if(Math.abs(r.v)>TH && !r.stall){ icon='✅'; tail=`${rate(r.v).toFixed(1)}°/s`; verdicts[ax+dir]='ok'; }
-      else if(r.stall){ icon='⛔'; tail='转了一段就到头了'; verdicts[ax+dir]='limit'; }
-      // 自己不动、反向能动 = 这一侧已经顶在末端;两侧都不动才是「这个轴不受控」
-      else if(other && Math.abs(other.v)>TH){ icon='⛔'; tail='已在行程末端'; verdicts[ax+dir]='limit'; }
-      else { icon='❌'; tail='无响应'; verdicts[ax+dir]='none'; }
-      log(`  ${icon} ${label}   ${sg(r.v)}°   ${tail}`, icon==='✅'?'l-ack':(icon==='❌'?'l-err':''));
+      cmdLog.push({t:now, ...cmd});
+      await F(++q & 0xffff, [...i16(cmd.yaw), ...i16(cmd.roll), ...i16(cmd.pitch), 0x80, 15]);
+      $('chk-fill').style.width=(el/CHK_TOTAL*100).toFixed(1)+'%';
+      $('chk-eta').textContent=`${(el/1000).toFixed(1)} / ${(CHK_TOTAL/1000).toFixed(1)}s`;
+      await sleep(1000/CHK_HZ);
     }
+    await F(0xB3ff, [0,0,0,0,0,0,0x80,1]);
+    cmdLog.push({t:Date.now(), yaw:0, pitch:0, roll:0});
+    $('chk-fill').style.width='100%'; $('chk-step').textContent='分析中…';
+    await sleep(1200);                 // 收最后一帧姿态
+  } finally {
+    attRec=null; suppressWatch=false;
+    const link=bulkEnd();
+    const stopOk=chkAnalyse(samples, cmdLog, t0, link, units);
+    $('chk-step').textContent='自检完成';
+    $('chk-eta').textContent='';
+    // 蝴蝶结本身是对称的,净位移应当接近 0;只有撞了末端才留残差。
+    // 但停车都失效的话就别归位了 —— 对一台停不下来的云台做闭环,
+    // 只会三个轴各白等 15 秒超时(实测就是这么卡住的)。
+    if(!stopOk){
+      log('  停车检查未通过,跳过归位 —— 云台停不下来时闭环没有意义。','l-err');
+    }else if(lastEuler){
+      const res=['yaw','pitch','roll'].some(ax=>Math.abs(d180(lastEuler[ax]-home[ax]))>5);
+      if(res){ log('  有残差(说明撞到过末端),归位中…'); await goHome(home); }
+    }
+  }
+}
 
-    const ARROW={}; for(const [ax,dir,label] of CHK_DIRS) ARROW[ax+dir]=label.split(' ')[1];
-    const parts=[];
+/* 事后分析:把 samples(约 1Hz)和 cmdLog(20Hz)对起来。
+   只有两端落在同一段、且该轴命令方向全程一致的采样区间才计入 —— 跨段边界的那一两个
+   区间直接丢掉。1Hz 下数据本来就少,与其按模型比例硬拆,不如少用几个但每个都干净。
+
+   累计按**段**而不是按方向:蝴蝶结里同一个方向会出现两次,其中一次可能是从反向的
+   极限位置往回收。两次混在一起平均,「顶死的那一次」就被另一次稀释掉了 ——
+   实测把俯仰上限卡死,却报出 15°/s「可控」,正是这么来的。 */
+function chkAnalyse(samples, cmdLog, t0, link, units, partial){
+  const secs=(Date.now()-t0)/1000;
+  const hz = samples.length/secs;
+
+  chkSet('link', link.rate>=0.95?'✅':(link.rate>=0.6?'⚠':'❌'),
+    `应答 ${link.acked}/${link.sent}（${(link.rate*100).toFixed(0)}%）· 延迟 ${link.ms.toFixed(0)} ms`,
+    link.rate>=0.95?'':(link.rate>=0.6?'warn':'bad'));
+
+  chkSet('fb', hz>=0.5?'✅':'⚠', `${hz.toFixed(1)} Hz · 共 ${samples.length} 帧`+
+    (hz>=0.5?'':'（帧率偏低，下面的数值只能算粗略）'), hz>=0.5?'':'warn');
+
+  if(samples.length<3){
+    if(partial) return;
+    for(const [k] of CHK_ROWS) if(!['link','fb'].includes(k)) chkSet(k,'❌','姿态帧太少，测不了','bad');
+    log(`  自检中断:整轮只收到 ${samples.length} 帧姿态,测不了。`,'l-err');
+    return false;
+  }
+
+  // 展开成不折返的连续角度,免得 yaw 跨 ±180 时行程算错
+  const U=samples.map(()=>({}));
+  for(const ax of ['yaw','pitch','roll']){
+    U[0][ax]=0;
+    for(let i=1;i<samples.length;i++) U[i][ax]=U[i-1][ax]+d180(samples[i][ax]-samples[i-1][ax]);
+  }
+
+  const cmdAt=t=>{ let c=cmdLog[0]; for(const x of cmdLog){ if(x.t<=t) c=x; else break; } return c; };
+  const segIdx=t=>{ let acc=0;
+    for(let i=0;i<CHK_PLAN.length;i++){ if(t-t0 < acc+CHK_PLAN[i].ms) return i; acc+=CHK_PLAN[i].ms; }
+    return CHK_PLAN.length-1; };
+
+  const SEG=CHK_PLAN.map(()=>({yaw:{t:0,d:0}, pitch:{t:0,d:0}, roll:{t:0,d:0}}));
+  let baseT=0, baseD=0, stopT=0, stopD=0, crossT=0, crossY=0, crossP=0;
+
+  for(let i=1;i<samples.length;i++){
+    const dt=(samples[i].t-samples[i-1].t)/1000;
+    if(dt<=0) continue;
+    const iA=segIdx(samples[i-1].t), iB=segIdx(samples[i].t);
+    if(iA!==iB) continue;                       // 跨段的区间不要
+    const mv=ax=>Math.abs(U[i][ax]-U[i-1][ax]);
+    const key=CHK_PLAN[iA].key;
+    // 位移一律求和再除总时长;早先这里取 max 再除总时长,量纲就不对了,
+    // 停车段真的没停住也会被算成「停稳」。
+    if(key==='base'){ baseT+=dt; baseD+=Math.max(mv('yaw'),mv('pitch'),mv('roll')); continue; }
+    if(key==='stop'){ stopT+=dt; stopD+=Math.max(mv('yaw'),mv('pitch'),mv('roll')); continue; }
+    const c1=cmdAt(samples[i-1].t), c2=cmdAt(samples[i].t-1);
     for(const ax of ['yaw','pitch','roll']){
-      const a=verdicts[ax+1], b=verdicts[ax+(-1)], P=AX_CN[ax];
-      if(a==='none' && b==='none')  parts.push(`${P}不受本指令控制`);
-      else if(a==='ok' && b==='ok') parts.push(`${P}双向可控`);
-      else if(a==='ok' || b==='ok') parts.push(`${P}只能往 ${ARROW[ax+(a==='ok'?1:-1)]} 这侧（另一侧已到末端）`);
-      else                          parts.push(`${P}两侧都已到末端`);
+      const s1=Math.sign(c1[ax]);
+      if(s1===0 || s1!==Math.sign(c2[ax])) continue;
+      SEG[iA][ax].t+=dt;
+      SEG[iA][ax].d+=(U[i][ax]-U[i-1][ax])*s1;   // 归一成「顺着命令方向转了多少」
     }
-    log('  结论: '+parts.join('；')+'。');
-    if(Object.values(verdicts).every(v=>v==='none'))
-      log('  六个方向全无响应 —— 云台在回 0x00 却没执行。先确认模式锁在 SPEED、'+
-          '并跑一次「高级」里的转动测试。','l-err');
+    if(Math.sign(c1.roll)!==0 && c1.yaw===0 && c1.pitch===0){
+      crossT+=dt; crossY+=mv('yaw'); crossP+=mv('pitch');
+    }
+  }
 
-    if(home) await goHome(home);
-  } finally { suppressWatch=false; traceBuf=null; }
+  const drift = baseT>0 ? baseD/baseT : 0;
+  // 增量分析时,还没跑到的段一律留着 ⏳,别把「还没轮到」写成「采样不足」
+  if(baseT>0 || !partial)
+    chkSet('base', drift<1?'✅':'⚠',
+      `漂移 ${drift.toFixed(1)}°/s`+(drift<1?'':'（偏大，下面的判定门槛已按它抬高）'), drift<1?'':'warn');
+  const TH = Math.max(3, drift*3);
+
+  let stopOk=true;
+  if(stopT===0 && partial){ /* 还没跑到停车段 */ }
+  else if(stopT>0){ const r=stopD/stopT; stopOk = r<1;
+    chkSet('stop', stopOk?'✅':'❌',
+      stopOk ? `停发后 ${stopT.toFixed(1)}s 内停稳` : `停发后仍在动（${r.toFixed(1)}°/s）—— 零速帧没生效`,
+      stopOk?'':'bad');
+  } else chkSet('stop','⚠','停车段没采到姿态帧','warn');
+
+  const lines=[]; const dead=[];
+  for(const ax of ['yaw','pitch','roll']){
+    const range={min:Math.min(...U.map(u=>u[ax])), max:Math.max(...U.map(u=>u[ax]))};
+    const side=(sign,label)=>{
+      const bs=CHK_PLAN.map((p,k)=>Math.sign(p.v[ax]||0)===sign?SEG[k][ax]:null)
+                       .filter(b=>b && b.t>0.5);
+      if(!bs.length) return {s:'thin', txt:`${label} 采样不足`};
+      const moved=bs.filter(b=>b.d>TH), t=bs.reduce((a,b)=>a+b.t,0), d=bs.reduce((a,b)=>a+b.d,0);
+      if(moved.length===bs.length) return {s:'ok', txt:`${label} ${(d/t).toFixed(0)}°/s`};
+      // 有的段转得动、有的段一动不动 = 中途顶到了末端,那个「行程」正是这一侧的可达范围
+      if(moved.length) return {s:'end',
+        txt:`${label} 行程约 ${Math.abs(sign>0?range.max:range.min).toFixed(0)}°（到末端）`};
+      return {s:'stuck', txt:`${label} 没动`};
+    };
+    if(partial && !SEG.some(g=>g[ax].t>0)) continue;    // 这个轴还没轮到
+    const A=side(+1, ax==='roll'?'↻':'＋'), B=side(-1, ax==='roll'?'↺':'－');
+    // 自己一动不动、反向却转得动 = 起始位置就顶在这一侧的末端;两侧都不动才是本轴不受控
+    const fix=(x,other)=>x.s!=='stuck' ? x
+      : (other.s==='ok'||other.s==='end') ? {s:'end', txt:x.txt.split(' ')[0]+' 起始位置就在末端'}
+      : {s:'none', txt:x.txt.split(' ')[0]+' 无响应'};
+    const a=fix(A,B), b=fix(B,A);
+    let icon='⛔', cls='warn';
+    if(a.s==='ok' && b.s==='ok'){ icon='✅'; cls=''; }
+    else if(a.s==='none' && b.s==='none'){ icon='❌'; cls='bad'; dead.push(ax); }
+    chkSet(ax, icon, `${a.txt} · ${b.txt}`, cls);
+    lines.push(`  ${icon} ${AX_CN[ax]}   ${a.txt} · ${b.txt}`);
+  }
+
+  if(crossT===0 && partial){ /* 还没跑到横滚段 */ }
+  else if(crossT>0.5){
+    const cy=crossY/crossT, cp=crossP/crossT, mx=Math.max(cy,cp);
+    chkSet('cross', mx<1?'✅':'⚠',
+      mx<1 ? '< 1°/s（横滚不带动其它轴）'
+           : `偏航 ${cy.toFixed(1)}°/s · 俯仰 ${cp.toFixed(1)}°/s —— 存在串轴`, mx<1?'':'warn');
+  } else chkSet('cross','⚠','横滚段采样不足，测不了串轴','warn');
+
+  if(partial) return;
+  log('—— 自检结果 ——');
+  log(`  链路 应答 ${link.acked}/${link.sent}（${(link.rate*100).toFixed(0)}%）· 延迟 ${link.ms.toFixed(0)}ms`+
+      ` · 姿态 ${hz.toFixed(1)}Hz · 漂移 ${drift.toFixed(1)}°/s`);
+  lines.forEach(l=>log(l));
+  if(dead.length===3)
+    log('  三个轴全无响应 —— 云台在回 0x00 却没执行。先确认模式锁在 SPEED,'+
+        '再跑「高级」里的转动测试。','l-err');
+  else if(dead.length)
+    log(`  ${dead.map(a=>AX_CN[a]).join('、')}不受这条指令控制（很多云台不开放横滚控制，属正常）。`);
+  return stopOk;
 }
 $('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
   selfCheck().finally(()=>{ $('btnCheck').disabled=false; }); };
