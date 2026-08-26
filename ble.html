@@ -483,6 +483,26 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <p class="note" style="margin-top:6px">整窗记账是<b>宁可多跳</b>，所以要有退路：清空只删本机记下的
     「上次会动」，不动你在上面手填的那几条。</p>
+
+  <p class="eyebrow" style="margin-top:20px">三条嫌疑指令 · 受控试验</p>
+  <p class="note" style="margin-top:0"><b>这三条会让云台真的动。</b>它们是整个 cmdSet=04 里唯一
+    既应答、又引发过动作的未知指令 —— 上次扫描后出现了约 90° 的翻转，很可能是<b>横竖屏切换</b>
+    或<b>回中例程</b>。一次只试一条，试完看结论再试下一条。
+    未知 cmdId 仍可能落进校准或固件模式，<b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。
+    云台放开阔处、别夹东西。<b>电量低于 30% 不让开跑</b> —— 电机受限会把「这条没反应」
+    变成假结论，比不测更糟。</p>
+  <label class="lab-ok"><input type="checkbox" id="tryOk">我明白风险，继续</label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnTry01" disabled>试 0x01</button>
+    <button id="btnTry07" disabled>试 0x07</button>
+    <button id="btnTry08" disabled>试 0x08</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnTryAgain" disabled>再发一次同一条</button>
+    <button id="btnTryReset">一键复位</button>
+    <button id="btnTryStop" class="danger" disabled>中止</button>
+  </div>
+  <div id="try-rows" style="margin-top:12px"></div>
 </section>
 
 <section>
@@ -702,7 +722,8 @@ function setState(s,txt){
   $('stat').textContent=txt;
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
-   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan']
+   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan',
+   'btnTry01','btnTry07','btnTry08','btnTryAgain']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -2506,6 +2527,155 @@ async function cmdScan(){
   renderFieldMap();
 }
 
+/* ── 三条嫌疑指令 · 受控试验 ──
+   0x01/0x07/0x08 是整个 cmdSet=04 扫描范围里唯一「既应答、又真的让云台动了」的未知指令,
+   但扫描每 200ms 发一条、姿态反馈只有约 1Hz,两帧之间会发出去好几条,分不清那次约 90°
+   翻转是哪一条引发的 —— 所以在这里一条一条单独发、单独看反馈,而不是接着盲扫。 */
+const TRY_KEY='om_ble_try';   // { devId: { '1': {verdict, dyaw, dpitch, droll, axisBefore, axisAfter, at} } }
+let tryRunning=false, tryAbort=false, lastTriedCi=null;
+
+function loadTry(){
+  // 每次都读 localStorage、不缓存到内存变量 —— buildReport 换个会话也要读得出结果。
+  try{ return JSON.parse(localStorage.getItem(TRY_KEY)||'{}')[(dev&&dev.id)||'?'] || {}; }catch{ return {}; }
+}
+function saveTryEntry(ci, entry){
+  try{
+    const all=JSON.parse(localStorage.getItem(TRY_KEY)||'{}');
+    const id=(dev&&dev.id)||'?';
+    all[id]=all[id]||{};
+    all[id][ci]=entry;
+    localStorage.setItem(TRY_KEY, JSON.stringify(all));
+  }catch{}
+}
+
+// 复用 chk-row 那套外观,但这里的行是按 cmdId 动态建的,不是 chkReset() 那种固定表。
+function renderTryRow(ci, icon, text, cls){
+  let row=document.getElementById('try-'+ci);
+  if(!row){
+    row=document.createElement('div');
+    row.id='try-'+ci;
+    row.innerHTML=`<span class="ic"></span><span class="nm">0x${ci.toString(16).padStart(2,'0')}</span><span class="vl"></span>`;
+    $('try-rows').appendChild(row);
+  }
+  row.className='chk-row done'+(cls?' '+cls:'');
+  row.querySelector('.ic').textContent=icon;
+  row.querySelector('.vl').textContent=text;
+}
+const fmtAxis = a => a===null||a===undefined ? '?' : a;
+
+async function tryCmd(ci){
+  // 前置检查都要红字说明、不能静默 return —— 用户点了按钮却什么都没发生,会被误当成「这条没反应」。
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(labRunning || tryRunning){ log('有别的任务在跑（实验室采集/扫描/试验之一),等它结束','l-err'); return; }
+  if(!$('tryOk').checked){ log('试之前请先勾选风险确认。','l-err'); return; }
+  if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果,试了也白试','l-err'); return; }
+  // 电量闸门:电机受限时「这条没反应」既可能是指令真没用,也可能是转不动,
+  // 这两种情况在这里长得一模一样,却会得出完全相反的结论 —— 宁可不测,不可信错。
+  if(lastBatt && lastBatt.pct<30){
+    log(`电量 ${lastBatt.pct}% 低于 30%,电机可能被限功率 —— 这时候「没反应」分不清是指令没用`+
+        `还是转不动,先充电再试。`,'l-err'); return;
+  }
+  if(!lastBatt) log('还没收到电池帧,电量未知 —— 先放行,但结果解读时留个心眼。');
+
+  /* stimAbort 也要清:断连时 setState() 会把它置真,而且再没人置回假。
+     观察窗同时认这两个标志,不清的话「连过一次又重连」之后每一条都会在第一次循环就 break,
+     采不到任何样本 → 三条指令全被判成「无可见效果」。
+     这是这个功能最要命的假结论:它会让我们把唯一的线索当成死路。
+     stimCapture / cmdScan / autoCapture 开头都已经这么做了,这里漏了。 */
+  tryRunning=true; tryAbort=false; stimAbort=false; lastTriedCi=ci;
+  $('btnTryStop').disabled=false;
+  ['btnTry01','btnTry07','btnTry08','btnTryAgain'].forEach(id=>$(id).disabled=true);
+  renderTryRow(ci,'⏳','试验中…','');
+  try{
+    const before={ euler:{...lastEuler}, g: lastG?[...lastG]:null, axis: lastLevel?lastLevel.axis:null };
+    log(`—— 试 0x04/0x${ci.toString(16).padStart(2,'0')}:before 姿态 `+
+        `yaw=${before.euler.yaw.toFixed(1)} pitch=${before.euler.pitch.toFixed(1)} roll=${before.euler.roll.toFixed(1)}`+
+        `,重力主轴 ${fmtAxis(before.axis)} ——`);
+
+    // 就发一帧,不连发 —— 连发是速度类指令的用法,这三条身份未知,连发等于把风险敞口放大好几十倍。
+    await send(buildDuml({seq:0xCA00|ci, flags:0x40, cmdSet:0x04, cmdId:ci, payload:[]}));
+
+    // 6 秒观察窗,每 200ms 采一次样,记住相对 before 的最大偏移、以及末尾 1 秒有没有稳住。
+    const samples=[];
+    let maxDyaw=0, maxDpitch=0, maxDroll=0;
+    const t0=Date.now();
+    while(Date.now()-t0<6000){
+      if(stimAbort || tryAbort) break;
+      await sleep(200);
+      if(!lastEuler) continue;
+      const dy=Math.abs(d180(lastEuler.yaw-before.euler.yaw));
+      const dp=Math.abs(d180(lastEuler.pitch-before.euler.pitch));
+      const dr=Math.abs(d180(lastEuler.roll-before.euler.roll));
+      maxDyaw=Math.max(maxDyaw,dy); maxDpitch=Math.max(maxDpitch,dp); maxDroll=Math.max(maxDroll,dr);
+      samples.push({t:Date.now(), yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll,
+                     axis: lastLevel?lastLevel.axis:null});
+    }
+    if(stimAbort || tryAbort) log('  观察提前中止,只按已采到的样本判定','l-err');
+
+    const after={ euler: lastEuler?{...lastEuler}:before.euler, g: lastG?[...lastG]:before.g,
+                  axis: lastLevel?lastLevel.axis:before.axis };
+    const finalDyaw  = Math.abs(d180(after.euler.yaw  -before.euler.yaw));
+    const finalDpitch= Math.abs(d180(after.euler.pitch-before.euler.pitch));
+    const finalDroll = Math.abs(d180(after.euler.roll -before.euler.roll));
+    const maxAny  = Math.max(maxDyaw,maxDpitch,maxDroll);
+    const finalAny= Math.max(finalDyaw,finalDpitch,finalDroll);
+    // 末尾 1 秒稳没稳:拿最后一个样本当基准,看窗口最后 1000ms 里其余样本跟它差多少。
+    const lastT = samples.length ? samples[samples.length-1].t : t0;
+    const tail = samples.filter(s=>lastT-s.t<=1000);
+    const tailMax = tail.length ? Math.max(...tail.map(s=>Math.max(
+      Math.abs(d180(s.yaw  -after.euler.yaw)),
+      Math.abs(d180(s.pitch-after.euler.pitch)),
+      Math.abs(d180(s.roll -after.euler.roll))))) : 99;
+
+    /* 判定顺序从最强证据开始,重力主轴排第一位、且不能用 ΔRoll 代替它:
+       这台机器的欧拉角 roll 带 90° 安装偏置、还跟 yaw 耦合,ΔRoll≈90° 既可能是真的翻转,
+       也可能只是绕 yaw 转了一圈耦合出来的读数,单看 ΔRoll 会把「转了一圈」误判成「翻转了」。
+       重力矢量落在机体哪根轴上不受这个耦合影响,横竖屏切换才会真的换轴,纯粹转个 90° 不会。 */
+    let icon, cls, verdict;
+    if(before.axis!==null && after.axis!==null && after.axis!==before.axis){
+      verdict=`⇄ 姿态基准变了（横竖屏切换的特征，重力主轴 ${before.axis}→${after.axis}）`;
+      icon='✅'; cls='';
+    }else if(finalDyaw>15 && tailMax<2){
+      verdict=`↺ 回中/复位类（偏航转了 ${sg1(d180(after.euler.yaw-before.euler.yaw))}，基准没变）`;
+      icon='✅'; cls='';
+    }else if(maxAny>5 && finalAny<5){
+      verdict='↩ 动了又回来（抖动/自检类）';
+      icon='⚠'; cls='warn';
+    }else if(maxAny<2){
+      verdict='— 无可见效果（可能是纯读指令）';
+      icon='⚠'; cls='warn';
+    }else{
+      verdict=`? 动了但判不出类别（Δ偏航 ${maxDyaw.toFixed(1)}° 俯仰 ${maxDpitch.toFixed(1)}° 横滚 ${maxDroll.toFixed(1)}°）`;
+      icon='⚠'; cls='warn';
+    }
+
+    const line=`0x04/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  `+
+      `Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° 横滚 ${finalDroll.toFixed(1)}°  `+
+      `重力主轴 ${fmtAxis(before.axis)}→${fmtAxis(after.axis)}`;
+    renderTryRow(ci, icon, `${verdict}　Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° `+
+      `横滚 ${finalDroll.toFixed(1)}°　重力主轴 ${fmtAxis(before.axis)}→${fmtAxis(after.axis)}`, cls);
+    log(line, icon==='✅'?'l-ack':'l-sys');
+
+    saveTryEntry(ci, { verdict, dyaw:finalDyaw, dpitch:finalDpitch, droll:finalDroll,
+                        axisBefore:before.axis, axisAfter:after.axis, at:Date.now() });
+  } finally {
+    tryRunning=false;
+    $('btnTryStop').disabled=true;
+    ['btnTry01','btnTry07','btnTry08','btnTryAgain'].forEach(id=>$(id).disabled=!activeWrite);
+  }
+}
+$('btnTry01').onclick=()=>tryCmd(0x01);
+$('btnTry07').onclick=()=>tryCmd(0x07);
+$('btnTry08').onclick=()=>tryCmd(0x08);
+// 多数 DUML 开关是切换型,同一条再发一次往往就是撤销 —— 不是「再确认一遍」。
+$('btnTryAgain').onclick=()=>{
+  if(lastTriedCi===null){ log('还没试过任何一条,先点上面的按钮试一条。','l-err'); return; }
+  log('再发一次同一条：多数 DUML 开关是切换型，这次很可能是撤销上一次的效果，不是重复确认。');
+  tryCmd(lastTriedCi);
+};
+$('btnTryReset').onclick=()=>goHomePose();
+$('btnTryStop').onclick=()=>{ tryAbort=true; };
+
 // ── 实验室 UI ──
 function logFieldMap(){
   const map=fieldMap(recBuf);
@@ -2602,6 +2772,19 @@ function buildReport(){
     parseSkipList($('scanSkip').value).forEach(ci=>
       skipLines.push(`0x${csNow.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  你在跳过框里指定的`));
     L.push(...(skipLines.length ? skipLines : ['（无）']));
+  }
+
+  L.push('', '===== 三条嫌疑指令的试验结果 =====');
+  {
+    // 从 TRY_KEY 读,不依赖内存里的 lastTriedCi/tryRunning 之类的变量 —— 换个会话也要读得出来。
+    const tried=loadTry();
+    [0x01,0x07,0x08].forEach(ci=>{
+      const tag=`0x04/0x${ci.toString(16).padStart(2,'0')}`;
+      const e=tried[ci];
+      if(!e){ L.push(`${tag}  （还没试过）`); return; }
+      L.push(`${tag}  ${e.verdict}  Δ偏航 ${(+e.dyaw).toFixed(1)}° 俯仰 ${(+e.dpitch).toFixed(1)}° `+
+        `横滚 ${(+e.droll).toFixed(1)}°  重力主轴 ${fmtAxis(e.axisBefore)}→${fmtAxis(e.axisAfter)}`);
+    });
   }
 
   const map=fieldMap(recBuf);
