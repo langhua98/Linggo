@@ -258,9 +258,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnLevel" disabled>一键调平</button>
     <button id="btnHome" disabled>一键复位</button>
   </div>
-  <p class="note" style="margin-top:0"><b>调平</b>只摆平地平线，保留你调好的镜头仰角；
-    <b>复位</b>把两路都归零 —— 手机竖屏、垂直于地面。两个都不动方向（偏航）。
-    需要先跑一次自检来测出槽位映射。<span id="lvlStat"></span></p>
+  <p class="note" style="margin-top:0"><b>调平</b>只摆平地平线，保留你调好的镜头仰角、不动方向。
+    <b>复位</b>回到自检结束时记录的<b>完整位姿</b> —— 水平、仰角、方向都回去，
+    不管现在被转到哪儿。自检收尾会先调平再记录，所以那个位姿就是手机竖屏、垂直于地面。
+    两个都需要先跑一次自检。<span id="lvlStat"></span></p>
   <div id="check-panel" hidden>
     <div class="chk-head"><span id="chk-step">准备中…</span><span id="chk-eta"></span></div>
     <div class="chk-bar"><i id="chk-fill"></i></div>
@@ -641,7 +642,7 @@ async function connect(anyDevice){
       ? { acceptAllDevices:true, optionalServices:PROBE }
       : { filters:[{namePrefix:'OM'},{namePrefix:'Osmo'},{namePrefix:'DJI'},{services:[S_FFF0]}], optionalServices:PROBE };
     dev = await navigator.bluetooth.requestDevice(opts);
-    loadDpu(dev.id); loadMap(dev.id);
+    loadDpu(dev.id); loadMap(dev.id); loadHome(dev.id);
     // 先把历史结论摆出来,省得又白等一次连接。仍然继续连 —— 固件或模式可能变了。
     const prev = loadTried()[dev.id];
     if(prev && prev.verdict==='none')
@@ -1381,23 +1382,52 @@ async function calibrate(){
 
    精度上限是姿态帧只有约 1Hz,所以这里只做「可控 / 到末端 / 无响应」的定性判断加粗略速率;
    精确标度归「高级」里那套八段「速度标定」。 */
-const CHK_DPS=30, CHK_HZ=20, CHK_BLEND=250;
-const CHK_PLAN=[
-  {ms:1200, v:{},                        name:'静止基线', key:'base'},
-  {ms:2500, v:{yaw:+1, pitch:+1},        name:'右上'},
-  {ms:2500, v:{yaw:-1, pitch:-1},        name:'左下'},
-  {ms:2500, v:{yaw:-1, pitch:+1},        name:'左上'},
-  {ms:2500, v:{yaw:+1, pitch:-1},        name:'右下'},
-  {ms:2000, v:{roll:+1},                 name:'横滚 ↻'},
-  {ms:2000, v:{roll:-1},                 name:'横滚 ↺'},
-  {ms:1500, v:{},                        name:'停车验证', key:'stop'},
-];
-const CHK_TOTAL = CHK_PLAN.reduce((a,p)=>a+p.ms, 0);
+const CHK_DPS=60, CHK_HZ=20, CHK_ROLL_DPS=40;
 
-// ── 清单面板 ──
-const CHK_ROWS=[['link','链路'],['fb','姿态反馈'],['base','静止基线'],['level','水平度'],
+/* 编排:速度取正弦、偏航与俯仰相位差 90° —— **位置轨迹就是一个圆**
+   (半径 A/ω,60°/s 配 4s 周期约 38°,即一次 76° 的画圆动作),一个周期净位移为零。
+   这才是一套连贯动作;之前的蝴蝶结本质是「走—折返—走」,再怎么淡入也是折返。
+
+   横滚仍要独立窗口:它既是横滚自己的 ± 测量,也是**串轴**和**槽位映射**的唯一干净来源。
+   横滚行程通常比偏航短得多,速度减半,免得每次都撞得很狠。 */
+const CHK_PLAN=[
+  {ms:1000, name:'静止基线', key:'base', v:()=>({})},
+  {ms:4000, name:'∞ 字 · 偏航×俯仰', key:'circle',
+   /* 一比二的李萨如 = ∞ 字。为什么不是圆:圆是从圆周上的一点出发的,
+      位置range 必然一边 ±R 一边 0..2R —— 实测偏航「＋ ±72°、－ ±1°」,
+      负向根本没走过,那一侧真有限位也发现不了。
+      ∞ 字两轴的位置都是正弦(yaw = R·sin(2πu),pitch = R/2·sin(4πu)),
+      都以起点为中心、两向对称,而且看着比画圆更有名堂。 */
+   v:(u)=>({ yaw:Math.cos(2*Math.PI*u), pitch:Math.cos(4*Math.PI*u) })},
+  {ms:2400, name:'横滚 ↻↺', key:'roll',
+   /* 也用正弦,理由同上:先 + 后 − 回到起点的走法,负向位置从来没走过起点以下,
+      「行程」会读成 0,那一侧真有限位也发现不了。 */
+   v:(u)=>({ roll:(CHK_ROLL_DPS/CHK_DPS)*Math.cos(2*Math.PI*u) })},
+  {ms:1200, name:'停车验证', key:'stop', v:()=>({})},
+];
+const chkTotal = () => CHK_PLAN.reduce((a,p)=>a+p.ms, 0);
+
+// ── 归位点 ──
+// 自检结束时的完整位姿(水平 + 仰角 + 方向)。复位就是回到这儿 —— 「初始位置」
+// 得是个确定的位姿才有意义,所以自检收尾会先调平再记录。
+const HOME_KEY='om_ble_home';
+let homePose=null;
+function loadHome(id){
+  homePose=null;
+  if(!id) return;
+  try{ homePose = JSON.parse(localStorage.getItem(HOME_KEY)||'{}')[id] || null; }catch{}
+}
+function saveHome(h){
+  homePose=h;
+  if(dev && dev.id){
+    try{ const all=JSON.parse(localStorage.getItem(HOME_KEY)||'{}');
+      all[dev.id]=h; localStorage.setItem(HOME_KEY,JSON.stringify(all)); }catch{}
+  }
+}
+
+const CHK_ROWS=[['link','链路'],['fb','姿态反馈'],['body','本体'],['base','静止基线'],['level','水平度'],
                 ['yaw','偏航'],['pitch','俯仰'],['roll','横滚'],
-                ['cross','串轴'],['stop','停车']];
+                ['cross','串轴'],['center','回中'],['stop','停车']];
 function chkReset(){
   $('check-panel').hidden=false;
   $('chk-fill').style.width='0%';
@@ -1417,6 +1447,7 @@ async function selfCheck(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(!lastEuler){ log('还没收到姿态帧,自检没有反馈可用','l-err'); return; }
   const units = Math.max(10, Math.min(900, Math.round(CHK_DPS/degPerUnit)));
+  if(lvlRunning){ log('调平/复位还在跑,等它结束','l-err'); return; }
   const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
 
   suppressWatch=true; clearLimit(); chkReset();
@@ -1426,32 +1457,28 @@ async function selfCheck(){
   bulkBegin();
   const t0=Date.now();
   try{
-    log(`—— 一键自检:连续编排 ${(CHK_TOTAL/1000).toFixed(1)}s,${CHK_DPS}°/s(速度值 ${units})。请把云台放稳,手不要动 ——`);
-    let q=0xB300, seg=0, segT0=t0, prev={yaw:0,pitch:0,roll:0};
+    log(`—— 一键自检:连续编排 ${(chkTotal()/1000).toFixed(1)}s,${CHK_DPS}°/s(速度值 ${units})。请把云台放稳,手不要动 ——`);
+    let q=0xB300, seg=-1, lastAn=0;
     while(true){
       const now=Date.now(), el=now-t0;
-      if(el>=CHK_TOTAL) break;
-      // 走到第几段
+      if(el>=chkTotal()) break;
       let acc=0, idx=0;
-      for(; idx<CHK_PLAN.length; idx++){ if(el < acc+CHK_PLAN[idx].ms) break; acc+=CHK_PLAN[idx].ms; }
-      if(idx!==seg){
-        prev=CHK_PLAN[seg].v; seg=idx; segT0=t0+acc;
-        $('chk-step').textContent='正在扫 · '+CHK_PLAN[idx].name;
-        // 增量分析:每跨一段就把已经能下结论的行点亮。全程 17 秒,
-        // 要是等到最后一次性刷出来,面板就干坐着,跟没跑一样。
+      for(; idx<CHK_PLAN.length-1; idx++){ if(el < acc+CHK_PLAN[idx].ms) break; acc+=CHK_PLAN[idx].ms; }
+      if(idx!==seg){ seg=idx; $('chk-step').textContent='正在扫 · '+CHK_PLAN[idx].name; }
+      /* 增量分析按固定节奏跑,不再只在跨段时跑 —— 编排从八段缩到四段之后,
+         跨段只有四次,前 5 秒一次都轮不到,面板又变回干坐着了。 */
+      if(now-lastAn>1200){
+        lastAn=now;
         chkAnalyse(samples.slice(), cmdLog.slice(), t0, bulkPeek(), units, true);
       }
-      const cur=CHK_PLAN[idx].v;
-      // 段首 250ms 把上一段的速度矢量线性淡入到本段,避免硬反向
-      const k=Math.min(1,(now-segT0)/CHK_BLEND);
-      const cmd={};
-      for(const ax of ['yaw','pitch','roll'])
-        cmd[ax]=Math.round(units*(((prev[ax]||0)*(1-k))+((cur[ax]||0)*k)));
+      // 段内归一化进度 → 命令矢量。正弦是连续的,不需要再做段间淡入。
+      const u=(el-acc)/CHK_PLAN[idx].ms, vv=CHK_PLAN[idx].v(u), cmd={};
+      for(const ax of ['yaw','pitch','roll']) cmd[ax]=Math.round(units*(vv[ax]||0));
 
       cmdLog.push({t:now, ...cmd});
       await F(++q & 0xffff, [...i16(cmd.yaw), ...i16(cmd.roll), ...i16(cmd.pitch), 0x80, 15]);
-      $('chk-fill').style.width=(el/CHK_TOTAL*100).toFixed(1)+'%';
-      $('chk-eta').textContent=`${(el/1000).toFixed(1)} / ${(CHK_TOTAL/1000).toFixed(1)}s`;
+      $('chk-fill').style.width=(el/chkTotal()*100).toFixed(1)+'%';
+      $('chk-eta').textContent=`${(el/1000).toFixed(1)} / ${(chkTotal()/1000).toFixed(1)}s`;
       await sleep(1000/CHK_HZ);
     }
     await F(0xB3ff, [0,0,0,0,0,0,0x80,1]);
@@ -1468,10 +1495,28 @@ async function selfCheck(){
     // 但停车都失效的话就别归位了 —— 对一台停不下来的云台做闭环,
     // 只会三个轴各白等 15 秒超时(实测就是这么卡住的)。
     if(!stopOk){
-      log('  停车检查未通过,跳过归位 —— 云台停不下来时闭环没有意义。','l-err');
-    }else if(lastEuler){
-      const res=['yaw','pitch','roll'].some(ax=>Math.abs(d180(lastEuler[ax]-home[ax]))>5);
-      if(res){ log('  有残差(说明撞到过末端),归位中…'); await goHome(home); }
+      log('  停车检查未通过,跳过收尾 —— 云台停不下来时闭环没有意义。','l-err');
+    }else{
+      // 画圆是对称的,净位移本该接近 0;撞过末端才留残差,先把姿态收回去
+      if(lastEuler){
+        const res=['yaw','pitch','roll'].some(ax=>Math.abs(d180(lastEuler[ax]-home[ax]))>5);
+        if(res){ log('  有残差(说明撞到过末端),先收回起点…'); await goHome(home); }
+      }
+      // 再调平,让归位点是个确定的位姿 —— 「回到检测完成后的初始位置」
+      // 只有在这个位姿本身确定时才有意义。映射没学到就跳过,如实记当前位姿。
+      if(axisMap && lastLevel && lastLevel.tilt>LVL_TOL){
+        $('chk-step').textContent='收尾调平…';
+        await levelUp(true, true);
+      }
+      if(lastLevel && lastEuler){
+        saveHome({rollDev:rollDevOf(lastLevel)||0, pitchDev:pitchDevOf(lastLevel)||0,
+                  yaw:lastEuler.yaw, axis:lastLevel.axis, at:Date.now()});
+        log(`  已记录归位点:倾斜 ${lastLevel.tilt.toFixed(1)}° · 方向 ${lastEuler.yaw.toFixed(1)}°`+
+            (axisMap?'':'（映射未知，未调平，记的是当前位姿）'));
+      }else{
+        log('  没能记录归位点:姿态约定与预期不符。','l-err');
+      }
+      $('chk-step').textContent='自检完成';
     }
   }
 }
@@ -1513,59 +1558,121 @@ function chkAnalyse(samples, cmdLog, t0, link, units, partial){
     for(let i=0;i<CHK_PLAN.length;i++){ if(t-t0 < acc+CHK_PLAN[i].ms) return i; acc+=CHK_PLAN[i].ms; }
     return CHK_PLAN.length-1; };
 
-  const SEG=CHK_PLAN.map(()=>({yaw:{t:0,d:0}, pitch:{t:0,d:0}, roll:{t:0,d:0}}));
+  /* ── 最小二乘拟合 ──
+     旧版只采用「两端落在同一段」的采样区间,跨段的一律丢掉。姿态只有约 1Hz,
+     段一短就几乎每个区间都跨段 —— 所以段被迫拉到 2.5 秒,自检也就快不起来。
+
+     其实不必丢:命令时间线是 20Hz 精确已知的,每个采样区间的位移可以写成
+         Δ = r₊·P + r₋·N        P = ∫(cmd>0) cmd/U dt，N = ∫(cmd<0) cmd/U dt
+     每轴两个未知数、十几个方程,解 2×2 正规方程即可。一个区间都不用丢,段长不再有下限。
+
+     这同时让「到末端」的判定变干净:某一向被堵住 → 该向命令期间没有位移 →
+     拟合出的速率自然趋近 0。不再需要旧版那套「按段比对、防止被反向折返稀释」的绕法。 */
+  const ACC={}; for(const ax of ['yaw','pitch','roll'])
+    ACC[ax]={pp:0, pn:0, nn:0, pd:0, nd:0, tP:0, tN:0, extP:0, extN:0, seq:[]};
   let baseT=0, baseD=0, stopT=0, stopD=0, crossT=0, crossY=0, crossP=0;
 
+  // 把命令在 [a,b] 内按正负分别积分(单位:满速命令·秒)
+  const integ=(ax,a,b)=>{
+    let P=0,N=0;
+    for(let k=0;k<cmdLog.length;k++){
+      const s0=cmdLog[k].t, s1=(k+1<cmdLog.length?cmdLog[k+1].t:b);
+      const lo=Math.max(a,s0), hi=Math.min(b,s1);
+      if(hi<=lo) continue;
+      const v=(cmdLog[k][ax]||0)/units, dt=(hi-lo)/1000;
+      if(v>0) P+=v*dt; else if(v<0) N+=v*dt;
+    }
+    return [P,N];
+  };
+
   for(let i=1;i<samples.length;i++){
-    const dt=(samples[i].t-samples[i-1].t)/1000;
+    const a=samples[i-1].t, b=samples[i].t, dt=(b-a)/1000;
     if(dt<=0) continue;
-    const iA=segIdx(samples[i-1].t), iB=segIdx(samples[i].t);
-    if(iA!==iB) continue;                       // 跨段的区间不要
     const mv=ax=>Math.abs(U[i][ax]-U[i-1][ax]);
-    const key=CHK_PLAN[iA].key;
-    // 位移一律求和再除总时长;早先这里取 max 再除总时长,量纲就不对了,
-    // 停车段真的没停住也会被算成「停稳」。
+    const iA=segIdx(a), key=(iA===segIdx(b)) ? CHK_PLAN[iA].key : null;
+    // 基线段和停车段仍要求整段落在段内 —— 这两项量的是「不该动的时候动没动」,
+    // 掺进相邻的运动段就没意义了。位移求和再除总时长(取 max 会量纲错)。
     if(key==='base'){ baseT+=dt; baseD+=Math.max(mv('yaw'),mv('pitch'),mv('roll')); continue; }
     if(key==='stop'){ stopT+=dt; stopD+=Math.max(mv('yaw'),mv('pitch'),mv('roll')); continue; }
-    const c1=cmdAt(samples[i-1].t), c2=cmdAt(samples[i].t-1);
     for(const ax of ['yaw','pitch','roll']){
-      const s1=Math.sign(c1[ax]);
-      if(s1===0 || s1!==Math.sign(c2[ax])) continue;
-      SEG[iA][ax].t+=dt;
-      SEG[iA][ax].d+=(U[i][ax]-U[i-1][ax])*s1;   // 归一成「顺着命令方向转了多少」
+      const [P,N]=integ(ax,a,b);
+      if(P===0 && N===0) continue;
+      const d=U[i][ax]-U[i-1][ax], A=ACC[ax];
+      A.pp+=P*P; A.pn+=P*N; A.nn+=N*N; A.pd+=P*d; A.nd+=N*d;
+      A.tP+=P; A.tN+=-N;
+      A.extP=Math.max(A.extP, U[i][ax]); A.extN=Math.min(A.extN, U[i][ax]);
+      A.seq.push(P+N);      // 带符号的命令积分,事后用来重建「没有限位时应该走到哪」
     }
+    const c1=cmdAt(a);
     if(Math.sign(c1.roll)!==0 && c1.yaw===0 && c1.pitch===0){
       crossT+=dt; crossY+=mv('yaw'); crossP+=mv('pitch');
     }
   }
 
+  // 解 [pp pn; pn nn][r+;r-] = [pd;nd]。det≈0 = 该轴只被单向命令过,判不了。
+  const FIT={};
+  for(const ax of ['yaw','pitch','roll']){
+    const A=ACC[ax], det=A.pp*A.nn-A.pn*A.pn;
+    // eslint-disable-next-line no-unused-vars
+    FIT[ax] = Math.abs(det)<1e-6 || A.tP<0.3 || A.tN<0.3
+      ? null
+      : { p:(A.pd*A.nn-A.nd*A.pn)/det, n:(A.nd*A.pp-A.pd*A.pn)/det,
+          tP:A.tP, tN:A.tN, extP:A.extP, extN:A.extN };
+    if(!FIT[ax]) continue;
+    /* 重建「没有限位时该走到哪」,再跟实测行程比。
+       直接拿两侧实测行程互比会被稀疏采样坑:1Hz 下每半周期只有一两帧,
+       采到的峰值可能比真峰值低三四成,凭空冒出不对称(实测把姿态周期改成 1.3s
+       就误报了)。而预测轨迹是在**同样的采样时刻**求值的,两边被采样削掉的是同一块,
+       比值才有意义。
+       预测用「健康那一侧」的速率:被限位的一侧,拟合值本身已经被拖低了。 */
+    const F=FIT[ax], rH=Math.max(F.p, F.n);
+    let cum=0, pMax=0, pMin=0;
+    for(const q of A.seq){ cum+=rH*q; pMax=Math.max(pMax,cum); pMin=Math.min(pMin,cum); }
+    F.predP=pMax; F.predN=pMin;
+  }
+
   /* 槽位 → 偏差分量。横滚段是单轴的;俯仰段虽然带偏航,但偏航绕重力轴转、
      不改变机体系重力,所以对 g 的影响同样只来自俯仰。看哪个分量变化更大即可。 */
-  const slotDelta={roll:[0,0,0], pitch:[0,0,0]};
+  /* 槽位映射同样走最小二乘,不能再要求「两端落在同一段」——
+     段一短就几乎每个区间都跨段,映射就学不出来了(实测把段压到 1.2s 后 axisMap 恒为 null)。
+     对每个重力分量 k 回归 Δg[k] = a·Pr + b·Pp,Pr/Pp 是该区间内横滚/俯仰命令的积分。
+     偏航不进模型:它绕重力轴转,本来就不改变机体系重力。 */
+  const M={rr:0, rp:0, pp:0, rd:[0,0,0], pd:[0,0,0]};
   for(let i=1;i<samples.length;i++){
     if(!samples[i].g || !samples[i-1].g) continue;
-    const iA=segIdx(samples[i-1].t); if(iA!==segIdx(samples[i].t)) continue;
-    const v=CHK_PLAN[iA].v, c1=cmdAt(samples[i-1].t);
-    const slot = Math.sign(v.roll||0) ? 'roll' : (Math.sign(v.pitch||0) ? 'pitch' : null);
-    if(!slot) continue;
-    const sgn=Math.sign(c1[slot]); if(!sgn) continue;
-    for(const k of [0,1,2]) slotDelta[slot][k] += (samples[i].g[k]-samples[i-1].g[k])*sgn;
+    const a=samples[i-1].t, b=samples[i].t;
+    const [Pr1,Nr1]=integ('roll',a,b), [Pp1,Np1]=integ('pitch',a,b);
+    const Pr=Pr1+Nr1, Pp=Pp1+Np1;               // 净命令积分(带符号)
+    if(Pr===0 && Pp===0) continue;
+    M.rr+=Pr*Pr; M.rp+=Pr*Pp; M.pp+=Pp*Pp;
+    for(const k of [0,1,2]){ const d=samples[i].g[k]-samples[i-1].g[k];
+      M.rd[k]+=Pr*d; M.pd[k]+=Pp*d; }
+  }
+  const mdet=M.rr*M.pp-M.rp*M.rp;
+  const slotDelta={roll:[0,0,0], pitch:[0,0,0]};
+  if(Math.abs(mdet)>1e-9) for(const k of [0,1,2]){
+    slotDelta.roll[k]  = (M.rd[k]*M.pp - M.pd[k]*M.rp)/mdet;
+    slotDelta.pitch[k] = (M.pd[k]*M.rr - M.rd[k]*M.rp)/mdet;
   }
   const pick=d=>{ const k=[0,1,2].reduce((b,i)=>Math.abs(d[i])>Math.abs(d[b])?i:b,0);
-    return Math.abs(d[k])<0.02 ? null : {comp:k, sign:Math.sign(d[k])}; };
+    return Math.abs(d[k])<0.05 ? null : {comp:k, sign:Math.sign(d[k])}; };
   const mR=pick(slotDelta.roll), mP=pick(slotDelta.pitch);
   if(!partial && mR && mP && mR.comp!==mP.comp){
     saveMap({rollSlot:mR, pitchSlot:mP});
     log(`  槽位映射:roll 槽 → g[${mR.comp}]（地平线），pitch 槽 → g[${mP.comp}]（仰角）`);
   }
 
-  // 水平度:静止段直接读,不受任何标定影响
-  const L0 = samples.find(x=>x.g && segIdx(x.t)===0);
+  /* 水平度:优先取静止段的采样(最干净),但静止段只有 1.0s,姿态又只有约 1Hz,
+     经常一帧都落不进去 —— 那时退回用整轮的第一帧,而不是报「约定不符」,
+     后者说的是完全另一回事(重力不落在任何主轴上),混为一谈会把人带偏。 */
+  const withG = samples.filter(x=>x.g);
+  const L0 = withG.find(x=>segIdx(x.t)===0) || withG[0];
   const lv = L0 ? levelOf(L0.g) : null;
   if(lv) chkSet('level', lv.tilt<1?'✅':(lv.tilt<3?'⚠':'❌'),
     `倾斜 ${lv.tilt.toFixed(1)}°（基准轴 ${'XYZ'[lv.axis]}）`,
     lv.tilt<1?'':(lv.tilt<3?'warn':'bad'));
-  else if(!partial) chkSet('level','⚠','姿态约定与预期不符，测不了水平度','warn');
+  else if(!partial) chkSet('level','⚠',
+    L0 ? '重力不落在任何机体轴附近，姿态约定与预期不符' : '整轮没采到姿态帧','warn');
 
   const drift = baseT>0 ? baseD/baseT : 0;
   // 增量分析时,还没跑到的段一律留着 ⏳,别把「还没轮到」写成「采样不足」
@@ -1584,30 +1691,46 @@ function chkAnalyse(samples, cmdLog, t0, link, units, partial){
 
   const lines=[]; const dead=[];
   for(const ax of ['yaw','pitch','roll']){
-    const range={min:Math.min(...U.map(u=>u[ax])), max:Math.max(...U.map(u=>u[ax]))};
-    const side=(sign,label)=>{
-      const bs=CHK_PLAN.map((p,k)=>Math.sign(p.v[ax]||0)===sign?SEG[k][ax]:null)
-                       .filter(b=>b && b.t>0.5);
-      if(!bs.length) return {s:'thin', txt:`${label} 采样不足`};
-      const moved=bs.filter(b=>b.d>TH), t=bs.reduce((a,b)=>a+b.t,0), d=bs.reduce((a,b)=>a+b.d,0);
-      if(moved.length===bs.length) return {s:'ok', txt:`${label} ${(d/t).toFixed(0)}°/s`};
-      // 有的段转得动、有的段一动不动 = 中途顶到了末端,那个「行程」正是这一侧的可达范围
-      if(moved.length) return {s:'end',
-        txt:`${label} 行程约 ${Math.abs(sign>0?range.max:range.min).toFixed(0)}°（到末端）`};
-      return {s:'stuck', txt:`${label} 没动`};
-    };
-    if(partial && !SEG.some(g=>g[ax].t>0)) continue;    // 这个轴还没轮到
-    const A=side(+1, ax==='roll'?'↻':'＋'), B=side(-1, ax==='roll'?'↺':'－');
-    // 自己一动不动、反向却转得动 = 起始位置就顶在这一侧的末端;两侧都不动才是本轴不受控
-    const fix=(x,other)=>x.s!=='stuck' ? x
-      : (other.s==='ok'||other.s==='end') ? {s:'end', txt:x.txt.split(' ')[0]+' 起始位置就在末端'}
-      : {s:'none', txt:x.txt.split(' ')[0]+' 无响应'};
-    const a=fix(A,B), b=fix(B,A);
+    const F=FIT[ax];
+    if(partial && !F) continue;                       // 这个轴还没轮到
+    if(!F){ chkSet(ax,'⚠','单向数据，判不了','warn');
+      lines.push(`  ⚠ ${AX_CN[ax]}   单向数据，判不了`); continue; }
+    const L = ax==='roll' ? ['↻','↺'] : ['＋','－'];
+    /* 到末端的判据用**行程不对称**,不用速率。
+       被堵住的那一向还会「从反向极限折返回来」,折返段是能动的,所以拟合速率不会掉到 0 ——
+       实测俯仰卡在 +8° 时速率是 50 对 60,比值 0.83,任何速率阈值都抓不住。
+       但编排是对称的,两侧行程本该相等:实测 +8° 对 −19°,比值 0.42,一目了然。 */
+    // 实测行程明显够不到预测行程 = 那一侧顶到了末端
+    const side=(r,other,label,ext,pred)=>
+      r<=TH && other<=TH   ? {s:'none', txt:`${label} 无响应`}
+      : r<=TH              ? {s:'end',  txt:`${label} 行程约 ${Math.abs(ext).toFixed(0)}°（到末端）`}
+      : (Math.abs(pred)>3*TH && Math.abs(ext) < Math.abs(pred)*0.6)
+                           ? {s:'end',  txt:`${label} 行程约 ${Math.abs(ext).toFixed(0)}°（到末端）`}
+      :                      {s:'ok',   txt:`${label} ${r.toFixed(0)}°/s（至少 ±${Math.abs(ext).toFixed(0)}°）`};
+    const a=side(F.p, F.n, L[0], F.extP, F.predP), b=side(F.n, F.p, L[1], F.extN, F.predN);
     let icon='⛔', cls='warn';
     if(a.s==='ok' && b.s==='ok'){ icon='✅'; cls=''; }
     else if(a.s==='none' && b.s==='none'){ icon='❌'; cls='bad'; dead.push(ax); }
     chkSet(ax, icon, `${a.txt} · ${b.txt}`, cls);
     lines.push(`  ${icon} ${AX_CN[ax]}   ${a.txt} · ${b.txt}`);
+  }
+
+  // 回中精度:画圆和横滚都是对称编排,净位移本该接近 0。非零 = 有回差,或者哪一向被堵住了。
+  if(!partial && U.length>1){
+    const last=U[U.length-1];
+    const net=['yaw','pitch','roll'].map(ax=>Math.abs(last[ax]));
+    const mx=Math.max(...net);
+    chkSet('center', mx<8?'✅':'⚠',
+      `净位移 偏航 ${last.yaw.toFixed(0)}° · 俯仰 ${last.pitch.toFixed(0)}° · 横滚 ${last.roll.toFixed(0)}°`+
+      (mx<8?'':'（对称编排本该回到原处，说明有回差或撞过末端）'), mx<8?'':'warn');
+  }
+
+  // 本体:固件标识与电量都已经解出来了,只是一直没进清单。电量低会限制电机输出。
+  if(!partial){
+    const bat=$('st-batt').textContent, fw=om6Locked?'GB66':'未识别';
+    const low=/^\d+/.test(bat) && parseInt(bat,10)<20;
+    chkSet('body', low?'⚠':'✅', `固件 ${fw} · 电量 ${bat||'—'}`+(low?'（电量偏低，可能限制电机输出）':''),
+      low?'warn':'');
   }
 
   if(crossT===0 && partial){ /* 还没跑到横滚段 */ }
@@ -1641,8 +1764,11 @@ function chkAnalyse(samples, cmdLog, t0, link, units, partial){
 const LVL_TOL=1.0, LVL_GAIN=0.7, LVL_BURST=0.45, LVL_TIMEOUT=20000;
 let lvlRunning=false;
 
-async function levelUp(alsoPitch){
-  const what = alsoPitch ? '复位' : '调平';
+/* target 省略时目标是「绝对水平」(两路偏差归零);
+   自检收尾和复位会传归位点进来,目标就是回到那个位姿。 */
+async function levelUp(alsoPitch, quiet, target){
+  const tgt = target || {rollDev:0, pitchDev:0};
+  const what = quiet ? '收尾调平' : (alsoPitch ? '复位' : '调平');
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(lvlRunning){ log('上一次还没结束','l-err'); return; }
   if(!lastLevel){
@@ -1652,7 +1778,7 @@ async function levelUp(alsoPitch){
         '若自检里横滚判为无响应,说明这台云台不开放横滚控制,调平做不了。','l-err'); return; }
 
   const want = alsoPitch ? ['roll','pitch'] : ['roll'];
-  const errOf = k => k==='roll' ? rollDevOf(lastLevel) : pitchDevOf(lastLevel);
+  const errOf = k => (k==='roll' ? rollDevOf(lastLevel) : pitchDevOf(lastLevel)) - (tgt[k+'Dev']||0);
   if(want.every(k=>Math.abs(errOf(k))<=LVL_TOL)){
     log(`${what}:已经是平的（倾斜 ${lastLevel.tilt.toFixed(1)}°），不用动。`,'l-ack'); return; }
 
@@ -1661,12 +1787,12 @@ async function levelUp(alsoPitch){
   $('btnLevel').disabled=true; $('btnHome').disabled=true;
   const t0=Date.now(), yaw0=lastEuler?lastEuler.yaw:null;
   let q=0xB400, seen=attSeq, frozen=0, prevErr=null, verdict='';
-  log(`—— ${what}:地平线 ${sg1(rollDevOf(lastLevel))}`+
-      (alsoPitch?` · 仰角 ${sg1(pitchDevOf(lastLevel))}`:'')+` ——`);
+  if(!quiet) log(`—— ${what}:地平线 ${sg1(errOf('roll'))}`+
+      (alsoPitch?` · 仰角 ${sg1(errOf('pitch'))}`:'')+` ——`);
   try{
     while(true){
       if(Date.now()-t0>LVL_TIMEOUT){ verdict='timeout'; break; }
-      const e={roll:rollDevOf(lastLevel), pitch:pitchDevOf(lastLevel)};
+      const e={roll:errOf('roll'), pitch:errOf('pitch')};
       if(want.every(k=>Math.abs(e[k])<=LVL_TOL)){ verdict='done'; break; }
 
       // 还在发、误差却不再变小 = 顶到行程末端了
@@ -1695,7 +1821,7 @@ async function levelUp(alsoPitch){
     $('lvlStat').textContent='';
   }
   const now=lastLevel;
-  const tail=`地平线 ${sg1(rollDevOf(now))}`+(alsoPitch?` · 仰角 ${sg1(pitchDevOf(now))}`:'')+
+  const tail=`地平线 ${sg1(errOf('roll'))}`+(alsoPitch?` · 仰角 ${sg1(errOf('pitch'))}`:'')+
              `　总倾斜 ${now.tilt.toFixed(1)}°　用时 ${((Date.now()-t0)/1000).toFixed(1)}s`+
              (yaw0!==null && lastEuler ? `　方向变化 ${sg1(d180(lastEuler.yaw-yaw0))}` : '');
   if(verdict==='done')       log(`✅ ${what}完成。`+tail,'l-ack');
@@ -1703,7 +1829,25 @@ async function levelUp(alsoPitch){
   else                       log(`⚠ ${what}超时（${LVL_TIMEOUT/1000}s）未收敛。`+tail,'l-err');
 }
 $('btnLevel').onclick=()=>levelUp(false);
-$('btnHome').onclick =()=>levelUp(true);
+
+/* 复位 = 回到自检结束时记录的**完整位姿**,含方向。
+   偏航从重力里读不出来(偏航正是绕重力轴转的),所以走 lastEuler.yaw + 现成的
+   gotoRelative —— 它的 ±2° 容差对「方向」足够;水平和仰角仍用重力反馈的细闭环。
+   顺序是先转方向再摆平:偏航幅度通常最大,先粗后细。 */
+async function goHomePose(){
+  if(!homePose){
+    log('复位:还没有归位点 —— 先跑一次「一键自检」，它会在结束时记录当前位姿。','l-err'); return; }
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(lvlRunning || gotoRunning){ log('上一次还没结束','l-err'); return; }
+  log(`—— 复位:回到自检结束时的位姿（方向 ${homePose.yaw.toFixed(1)}°）——`);
+  if(lastEuler){
+    const dy=d180(homePose.yaw-lastEuler.yaw);
+    if(Math.abs(dy)>2){ log(`  方向回转 ${sg1(dy)}`); await gotoRelative('yaw', +dy.toFixed(1), true); }
+    else log('  方向已经对了');
+  }
+  await levelUp(true, false, homePose);
+}
+$('btnHome').onclick =()=>goHomePose();
 
 $('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
   selfCheck().finally(()=>{ $('btnCheck').disabled=false; }); };
