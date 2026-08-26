@@ -443,7 +443,11 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnRecOn" disabled>开始记录</button>
     <button id="btnRecOff" disabled>停止记录</button>
     <button id="btnStim" disabled>引导式激励采集</button>
+    <button id="btnAuto" disabled>60 秒自动采集（会真的转）</button>
   </div>
+  <p class="note" style="margin-top:8px">60 秒里用<b>三轴慢速大幅度</b>的连续运动持续驱动，全程记录，跑完自动做相关性分析。
+    三个轴的周期取 11/7/5 秒，两两不可通约，这样才分得清某个字段跟的是哪个轴。
+    会真的转，摆幅偏航约 ±50°，跑之前把云台放在开阔处。</p>
   <div class="row" style="margin-top:8px">
     <button id="btnCorr">相关性分析</button>
     <button id="btnReport">生成报告</button>
@@ -458,8 +462,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="eyebrow" style="margin-top:20px">cmdId 扫描</p>
   <p class="note" style="margin-top:0"><b>会往云台发未知指令。</b>已按最保守的方式做：
     只发<b>空载荷读取</b>（把观测到的载荷原样发回去是<b>写</b>，不是读）、跳过已在用的 cmdId、
-    姿态看门狗一动就整体中止。即便如此，未知 cmdId 仍可能落进校准或固件模式，
-    <b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。扫之前把云台放在开阔处、别夹东西。</p>
+    跳过永久跳过表和下面输入框里指定的 cmdId；姿态看门狗一动就<b>把这两帧姿态之间发过的那几条
+    整窗记下</b>（姿态只有约 1Hz，分辨不到具体是哪一条）、发零速、等停、重取基准后继续往下扫，
+    一轮里动了 3 次才整体停下。即便如此，未知 cmdId 仍可能落进
+    校准或固件模式，<b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。扫之前把云台放在开阔处、别夹东西。</p>
   <div class="grid3">
     <label class="fld" style="margin:0"><span class="lab"><span>cmdSet</span></span>
       <input type="text" id="scanCs" value="04" autocapitalize="off" spellcheck="false"></label>
@@ -468,10 +474,15 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <label class="fld" style="margin:0"><span class="lab"><span>止 cmdId</span></span>
       <input type="text" id="scanTo" value="3f" autocapitalize="off" spellcheck="false"></label>
   </div>
+  <label class="fld" style="margin:8px 0 0"><span class="lab"><span>永久跳过的 cmdId（逗号分隔，十六进制）</span></span>
+    <input type="text" id="scanSkip" value="01,07,08" autocapitalize="off" spellcheck="false"></label>
   <label class="lab-ok"><input type="checkbox" id="scanOk">我明白风险，继续</label>
   <div class="row" style="margin-top:8px">
     <button id="btnScan" disabled>开始扫描</button>
+    <button id="btnClearSkip">清空本机跳过表</button>
   </div>
+  <p class="note" style="margin-top:6px">整窗记账是<b>宁可多跳</b>，所以要有退路：清空只删本机记下的
+    「上次会动」，不动你在上面手填的那几条。</p>
 </section>
 
 <section>
@@ -691,7 +702,7 @@ function setState(s,txt){
   $('stat').textContent=txt;
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
-   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnScan']
+   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -823,6 +834,7 @@ const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
 const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
 let lastG=null, lastLevel=null, lastVersion=null;
+let lastBatt=null, lastBattDiff=undefined;   // lastBattDiff 只用来判断「跟上一帧比变没变」,不是校验结果本身
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
@@ -944,8 +956,32 @@ function decode(m, hide){
     probeResults.set(seq, {payload:pl, at:Date.now()});
   }
 
+  /* 电池:真机四个样本坐实 [0]=电量%、[1:3]=总压 mV(LE u16)、[16:18]/[18:20]=两节电芯 mV,
+     跨两次会话、跨一次充电,电芯和 − 总压恒等于 14~15mV。但 05/06 长度不定 —— 回归测试会喂
+     一条 4 字节的短帧([73,0,0,1]),这时候电压那段读出来的是垃圾,必须长度够、且解出的总压
+     落在 6000~8600mV 这个合理区间,才敢信、才显示电压;不然维持原来「只有百分比」的老格式,
+     一个字都不变。 */
   if(cmdSet===0x05 && cmdId===0x06 && pl.length){
-    $('st-batt').textContent = `${pl[0]}%${pl[pl.length-1]===1?' · 充电中':''}`;
+    const pct=pl[0], charging=pl[pl.length-1]===1;
+    let pack=null, c1=null, c2=null;
+    if(pl.length>=20){
+      const p=pl[1]|(pl[2]<<8);
+      if(p>=6000 && p<=8600){ pack=p; c1=pl[16]|(pl[17]<<8); c2=pl[18]|(pl[19]<<8); }
+    }
+    lastBatt = { pct, charging, pl:[...pl], pack, c1, c2,
+      sum:  (c1!==null && c2!==null) ? c1+c2 : null,
+      diff: (pack!==null && c1!==null && c2!==null) ? (c1+c2-pack) : null };
+    $('st-batt').textContent = pack!==null
+      ? `${pct}% · ${(pack/1000).toFixed(2)}V${charging?' · 充电中':''}`
+      : `${pct}%${charging?' · 充电中':''}`;
+    // 一致性校验:只在数值变化时打一次 —— 这帧约 1Hz 常驻推,每帧都判会刷屏。
+    // 没有电压数据就没法校验,不等于数据不对,不打印任何东西。
+    if(lastBatt.diff!==null && lastBatt.diff!==lastBattDiff){
+      lastBattDiff=lastBatt.diff;
+      if(Math.abs(lastBatt.diff)>100)
+        log(`⚠ 电池:两节电芯之和 ${lastBatt.sum}mV − 总压 ${lastBatt.pack}mV = ${lastBatt.diff}mV,`+
+            `与实测的 14mV 不符,这台机器的字段布局可能不同`,'l-err');
+    }
   }
 
   // 姿态帧:载荷 [24:40]=四元数、[12:16]=毫秒计时器。折叠与否都要解 —— 状态盘靠它。
@@ -966,7 +1002,10 @@ function decode(m, hide){
     lastVersion = {pl:[...pl],
       ascii: String.fromCharCode(...pl.map(c=>(c>=32&&c<127)?c:46)),
       words: Array.from({length:Math.floor(pl.length/4)},(_,i)=>
-        (pl[i*4]|(pl[i*4+1]<<8)|(pl[i*4+2]<<16)|(pl[i*4+3]<<24))>>>0)};
+        (pl[i*4]|(pl[i*4+1]<<8)|(pl[i*4+2]<<16)|(pl[i*4+3]<<24))>>>0),
+      // 实测应答里 [18:22]/[22:26]/[26:30] 三组像版本号,但只有一台设备做不了对照,
+      // 断不了哪组是固件、哪组是硬件 —— 原样留几个候选偏移,报告里列出来供人工判断。
+      cand: [18,22,26].filter(o=>pl.length>=o+4).map(o=>({off:o, bytes:[...pl.slice(o,o+4)]}))};
     if(!om6Locked && lastVersion.ascii.includes('GB66')) lockSpeedMode();
   }
 
@@ -1975,10 +2014,21 @@ $('btnRecOff').onclick=()=>{ const n=recStop(); $('lab-step').textContent='空�
   $('btnRecOn').disabled=false; $('btnRecOff').disabled=true;
   log(`—— 停止记录:共 ${n} 帧 ——`); renderFieldMap(); logFieldMap(); };
 $('btnStim').onclick  =()=>stimCapture();
+$('btnAuto').onclick  =()=>autoCapture();
 $('btnCorr').onclick  =()=>runCorrelate();
 $('btnReport').onclick=()=>makeReport();
 $('btnCopyReport').onclick=()=>copyFrom($('lab-report'),'报告');
 $('btnScan').onclick  =()=>cmdScan();
+/* 窗口归因是宁可多跳,跳错了得能收回来 —— 只清本机记的「上次会动」,
+   手填的那几条是用户的决定,不归这个按钮管。 */
+$('btnClearSkip').onclick=()=>{
+  try{
+    const all=JSON.parse(localStorage.getItem(SKIP_KEY)||'{}');
+    delete all[(dev&&dev.id)||'?'];
+    localStorage.setItem(SKIP_KEY, JSON.stringify(all));
+  }catch{}
+  log('已清空本机的「上次会动」跳过记录（手填的那几条没动）');
+};
 $('btnLabStop').onclick=()=>{ stimAbort=true; };
 
 $('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
@@ -2199,15 +2249,146 @@ function stimDiff(marks){
   if(thin.length) log(`  样本太稀、判不了的帧:${thin.join('、')}`);
 }
 
+/* ── 60 秒自动边转边录 ──
+   04/05 里那三个关节角候选([6:8]/[8:10]/[10:12])解不开,是因为姿态帧只有约 1Hz,
+   而上次记录只开了 2.4 秒 —— 相关性分析只拿到 2 帧。这里要的是慢速、大幅度、
+   三轴互相去相关的 60 秒连续运动。
+   AUTO_MS/AUTO_AX 用 let 而不是 const:冒烟测试要能把时长和周期整体调小跑起来,
+   写死成 const 就没法覆盖了 —— 函数体里必须读这两个变量,不能把数字再写死一遍。
+   三个周期两两不可通约、也都不是 1s 采样周期的整数倍 —— 否则采样锁相,或者三轴分不开。 */
+let AUTO_MS=60000, AUTO_HZ=20;
+let AUTO_AX=[{ax:'yaw', T:11000, amp:0.30},
+             {ax:'pitch', T:7000, amp:0.20},
+             {ax:'roll',  T:5000, amp:0.12}];
+
+async function autoCapture(){
+  if(labRunning){ log('实验室里已经有任务在跑','l-err'); return; }
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(!lastEuler){ log('还没收到姿态帧,自动采集没有反馈可用','l-err'); return; }
+  labRunning=true; stimAbort=false; suppressWatch=true;
+  $('btnAuto').disabled=true; $('btnLabStop').disabled=false;
+  const home={...lastEuler};
+  const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
+  recStart();
+  try{
+    log(`—— 自动采集开始:${(AUTO_MS/1000).toFixed(0)} 秒三轴慢速大幅度连续运动,`+
+        `周期 ${AUTO_AX.map(a=>(a.T/1000)+'s').join('/')}(两两不可通约)——`);
+    const t0=Date.now();
+    let q=0xB400;
+    while(true){
+      const el=Date.now()-t0;
+      if(el>=AUTO_MS || stimAbort) break;
+      // 速度用余弦:位置(余弦的积分)是正弦,围绕起点对称摆动,不会单向漂出去 ——
+      // 用正弦速度的话位置是单边的,偏航能跑出 100°。
+      const cmd={};
+      for(const a of AUTO_AX) cmd[a.ax]=Math.round(a.amp*CHK_UNITS*Math.cos(2*Math.PI*el/a.T));
+      await F((++q)&0xffff, [...i16(cmd.yaw||0), ...i16(cmd.roll||0), ...i16(cmd.pitch||0), 0x80, 15]);
+      $('lab-step').textContent='自动采集…';
+      $('lab-eta').textContent=`${(el/1000).toFixed(1)} / ${(AUTO_MS/1000).toFixed(1)}s`;
+      await sleep(1000/AUTO_HZ);
+    }
+    await F((++q)&0xffff, [0,0,0,0,0,0,0x80,1]);
+    await sleep(1200);            // 收最后一帧姿态
+  } finally {
+    const n=recStop(); suppressWatch=false; labRunning=false;
+    $('btnAuto').disabled=false; $('btnLabStop').disabled=true;
+    $('lab-step').textContent=stimAbort?'已中止':'采集完成'; $('lab-eta').textContent='';
+
+    const attN=recBuf.filter(e=>e.dir==='rx'&&e.cs===4&&e.ci===5).length;
+    log(`—— 自动采集完成:${n} 帧记录、${attN} 帧姿态 ——`);
+    if(attN<30) log('  姿态帧太少,相关性结论不可信 —— 检查连接','l-err');
+
+    /* 三轴去相关自查:要体检的是分析实际吃到的那份序列,不是原始 20Hz 命令 ——
+       buildRefs() 已经把下发速度按姿态帧时间戳重采样成了 refs.cyaw/cpitch/croll,
+       correlate() 用的就是这三条。20Hz 命令去相关不代表按 1Hz 重采样后还去相关,
+       采样锁相恰恰发生在重采样这一步,绕过它检查等于没检。 */
+    const {refs}=buildRefs(recBuf);
+    log('—— 三轴命令去相关自查(|r|<0.5 才算合格)——');
+    if(refs.cyaw.length<20){
+      // 样本太少时 |r| 门槛没有意义 —— 三五个点凑出个 0.9 太容易了。
+      // 不下判定,也不假装合格。
+      log(`  只有 ${refs.cyaw.length} 个采样点,不足 20,本轮不做去相关判定`,'l-err');
+    }else{
+      const pr=[['偏航×俯仰',pearson(refs.cyaw,refs.cpitch)],
+                ['偏航×横滚',pearson(refs.cyaw,refs.croll)],
+                ['俯仰×横滚',pearson(refs.cpitch,refs.croll)]];
+      pr.forEach(([name,r])=>log(`  ${name}  r=${r.toFixed(3)}`));
+      if(pr.some(([,r])=>Math.abs(r)>=0.5))
+        log('  三轴没分开,相关性分析分不清字段跟的是哪个轴','l-err');
+    }
+
+    renderFieldMap();
+    runCorrelate();
+
+    if(lastEuler){
+      log('—— 净位移 ——');
+      let maxDisp=0;
+      for(const ax of ['yaw','pitch','roll']){
+        const d=d180(lastEuler[ax]-home[ax]);
+        log(`  ${ax}  ${d>=0?'+':''}${d.toFixed(1)}°`);
+        maxDisp=Math.max(maxDisp, Math.abs(d));
+      }
+      if(maxDisp>5){ log('  净位移偏大,收回起点…'); await goHome(home); }
+    }
+  }
+}
+
 /* ── cmdId 扫描 ──
    用户明确授权并承担风险。安全措施是工程的一部分,不是打折:
    · **空载荷 + flags=0x40** —— DUML 里「读」通常就是空载荷。把观测到的载荷原样发回去是**写**,
      早先 PROBES 对 04/1c 发 [0x47] 就是这个错,只是运气好没出事。
-   · 跳过已在用的 cmdId,免得扫描顺手把云台转起来
-   · 姿态看门狗:扫描期间不该有任何运动,一动就整体中止
+   · 跳过已在用的 cmdId、永久跳过表里记过的 cmdId、输入框里指定的 cmdId,免得扫描顺手把云台转起来
+   · 姿态看门狗:扫到会动的就记下来、发零速、等停、重取基准,再继续扫下一条 ——
+     真机扫到 0x08 就动了,一动就整体中止的话 0x09~0x3f 全没覆盖,体检不完整比记一条更糟。
+     一轮里连续动了 3 次说明这段范围不适合盲扫,才整体停下。
    · 大号中止按钮,断连也中止 */
 const SCAN_SKIP={0x04:[0x0c,0x14], 0x00:[0x01]};
 const SCAN_KEY='om_ble_scan';
+
+/* 永久跳过表:按设备、按 cmdSet 记「哪个 cmdId 上次让云台动了」,下次扫描自动避开。
+   跟 SCAN_KEY、DPU_KEY 一套做法 —— 按 (dev&&dev.id)||'?' 存取。 */
+const SKIP_KEY='om_ble_skip';   // { devId: { 'cs4': { '8':'mover' } } }
+function loadSkip(cs){
+  try{
+    const all=JSON.parse(localStorage.getItem(SKIP_KEY)||'{}');
+    return (all[(dev&&dev.id)||'?']||{})['cs'+cs] || {};
+  }catch{ return {}; }
+}
+function saveSkipEntry(cs, ci, why){
+  try{
+    const all=JSON.parse(localStorage.getItem(SKIP_KEY)||'{}');
+    const id=(dev&&dev.id)||'?';
+    all[id]=all[id]||{};
+    all[id]['cs'+cs]=all[id]['cs'+cs]||{};
+    all[id]['cs'+cs][ci]=why;
+    localStorage.setItem(SKIP_KEY, JSON.stringify(all));
+  }catch{}
+}
+// 逗号/空格分隔的十六进制列表,忽略空串与 NaN —— 用户手填,容错要宽松
+function parseSkipList(s){
+  return (s||'').split(/[,\s]+/).map(x=>parseInt(x,16)).filter(x=>!isNaN(x));
+}
+
+/* 等云台停稳:连续两帧实测姿态三轴变化都 < 1.5° 才算停,最多等 3000ms。
+   姿态帧约 1Hz,靠 attSeq(每来一帧姿态会变)判断有没有新帧 —— 沿用 holdTick 那套思路。
+   超时就当没停稳,照样继续,调用方自己在日志里说明。 */
+async function waitSettle(){
+  const t0=Date.now();
+  let seen=attSeq, prev=lastEuler?{...lastEuler}:null, stable=0;
+  while(Date.now()-t0<3000){
+    await sleep(100);
+    if(!lastEuler || attSeq===seen) continue;      // 还是上一帧,没有新的实测值
+    seen=attSeq;
+    const cur={...lastEuler};
+    const mv=prev ? Math.max(Math.abs(d180(cur.yaw-prev.yaw)),
+                              Math.abs(d180(cur.pitch-prev.pitch)),
+                              Math.abs(d180(cur.roll-prev.roll))) : 99;
+    prev=cur;
+    if(mv<1.5){ if(++stable>=2) return true; } else stable=0;
+  }
+  return false;
+}
+
 async function cmdScan(){
   if(labRunning){ log('实验室里已经有任务在跑','l-err'); return; }
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
@@ -2217,28 +2398,74 @@ async function cmdScan(){
   if(!(from>=0 && to<=0xff && from<=to)){ log('cmdId 范围不对','l-err'); return; }
   labRunning=true; stimAbort=false; suppressWatch=true;
   $('btnScan').disabled=true; $('btnLabStop').disabled=false;
-  const a0 = lastEuler && {...lastEuler};
   const probeSeq=new Map();          // seq → cmdId,认应答只认 seq
+  const movers=[];                   // 这一轮扫描里引发过动作的「嫌疑窗口」
   recStart();
   let aborted='';
   try{
+    // 三份跳过来源在扫描开始时各自显式打印 —— 静默略过等于把「为什么没测到」藏起来
+    const skipUser=parseSkipList($('scanSkip').value);
+    const skipMoverMap=loadSkip(cs);
+    const skipMover=Object.keys(skipMoverMap).map(x=>parseInt(x,10));
+    const skipInUse=SCAN_SKIP[cs]||[];
+    const fmtList=list=>list.length
+      ? list.slice().sort((x,y)=>x-y).map(x=>'0x'+x.toString(16).padStart(2,'0')).join(' ') : '无';
     log(`—— cmdId 扫描:cmdSet=0x${cs.toString(16)},范围 0x${from.toString(16)}~0x${to.toString(16)},`+
-        `空载荷读取。云台不该有任何动作,一动就中止 ——`);
-    let q=0xC800;
+        `空载荷读取。扫到会动的就记下来、跳过、继续 ——`);
+    log('  已跳过（你指定）: '+fmtList(skipUser));
+    log('  已跳过（上次会动）: '+fmtList(skipMover));
+    log('  已跳过（已在用）: '+fmtList(skipInUse));
+
+    /* 归因只能到「窗口」,到不了「某一条」。姿态约 1Hz,而扫描每 200ms 发一条 ——
+       两帧姿态之间会发出去四五条,分辨率就到此为止了。真机上那次就是这样:
+       检查在 0x09 前报了 5.4°,肇事者其实是 0x07 或 0x08,分不出来。
+       所以这里比的是「相邻两帧姿态之间动了多少」,记的是「这一帧之前那一批 cmdId」。
+       只点名最后一条是错的:真凶留在窗口里没被记,下次扫描照样把它再踩一遍,
+       那这个功能就白做了。宁可多跳几条 —— 所以另配了一个清空跳过表的按钮。 */
+    let q=0xC800, prevAtt=lastEuler?{...lastEuler}:null, seenSeq=attSeq, win=[];
+    const fmtWin=w => w.length===1 ? '0x'+w[0].toString(16).padStart(2,'0')
+      : `0x${w[0].toString(16).padStart(2,'0')}~0x${w[w.length-1].toString(16).padStart(2,'0')} 这 ${w.length} 条`;
     for(let ci=from; ci<=to; ci++){
       if(stimAbort){ aborted='手动中止'; break; }
-      if((SCAN_SKIP[cs]||[]).includes(ci)) continue;
-      // 姿态看门狗:我们没发任何运动指令,动了就说明扫到了会动的东西
-      if(a0 && lastEuler){
-        const mv=Math.max(Math.abs(d180(lastEuler.yaw-a0.yaw)),
-                          Math.abs(d180(lastEuler.pitch-a0.pitch)),
-                          Math.abs(d180(lastEuler.roll-a0.roll)));
-        if(mv>5){ aborted=`云台动了 ${mv.toFixed(1)}°,已中止(上一条是 0x${(ci-1).toString(16)})`; break; }
+
+      /* 看门狗排在跳过判断之前 —— 跳过谁跟有没有动是两件事,
+         被跳掉的那一轮不该顺手把姿态检查也跳掉。 */
+      if(lastEuler && attSeq!==seenSeq){
+        seenSeq=attSeq;
+        const cur={...lastEuler};
+        const mv=prevAtt ? Math.max(Math.abs(d180(cur.yaw-prevAtt.yaw)),
+                                    Math.abs(d180(cur.pitch-prevAtt.pitch)),
+                                    Math.abs(d180(cur.roll-prevAtt.roll))) : 0;
+        if(mv>5 && win.length){
+          movers.push({win:[...win], deg:mv});
+          win.forEach(x=>saveSkipEntry(cs, x, 'mover'));
+          log(`  ⚠ 云台动了 ${mv.toFixed(1)}° —— 肇事者在 ${fmtWin(win)} 里面（姿态只有约 1Hz，`+
+              `两帧之间发了 ${win.length} 条，分辨不到具体是哪一条，整窗一起记进跳过表）`,'l-err');
+          try{ await send(buildDuml({seq:(0xC900|(movers.length&0xff))&0xffff, flags:0x40,
+            cmdSet:0x04, cmdId:0x0c, payload:[0,0,0,0,0,0,0x80,1]})); }catch{}
+          const settled=await waitSettle();
+          if(!settled) log('  等停超时(3s 内姿态未必已经稳定),仍继续扫描','l-err');
+          // 等停期间又来了好几帧,基准和窗口都要跟着推到「现在」,
+          // 否则刚才那段运动会被下一轮再算一次,一次动作报成两次。
+          seenSeq=attSeq; prevAtt=lastEuler?{...lastEuler}:null; win=[];
+          if(movers.length>=3){
+            aborted='一轮里有 3 次动作,这段范围不适合盲扫,已停下';
+            break;
+          }
+        }else{
+          prevAtt=cur; win=[];
+        }
       }
+
+      if(skipUser.includes(ci)) continue;
+      if(skipMover.includes(ci)) continue;
+      if(skipInUse.includes(ci)) continue;
+
       probeSeq.set((++q)&0xffff, ci);
       $('lab-step').textContent=`扫描 0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}`;
       $('lab-eta').textContent=`${ci-from+1} / ${to-from+1}`;
       await send(buildDuml({seq:q&0xffff, flags:0x40, cmdSet:cs, cmdId:ci, payload:[]}));
+      win.push(ci);
       await sleep(200);
     }
     await sleep(600);
@@ -2266,6 +2493,10 @@ async function cmdScan(){
     log(`  0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  `+
         `返回码=${pl.length?'0x'+pl[0].toString(16).padStart(2,'0'):'?'}  载荷=${hex(pl).slice(0,60)}`,'l-ack');
   });
+  // 会动的窗口单独汇总一遍 —— 已经整窗记入永久跳过表,下次扫描会自动避开
+  movers.forEach(m=>log(
+    `  ⚠ 0x${m.win[0].toString(16).padStart(2,'0')}~0x${m.win[m.win.length-1].toString(16).padStart(2,'0')} `+
+    `里有一条会让云台动（位移 ${m.deg.toFixed(1)}°），这 ${m.win.length} 条已整窗记入永久跳过表`,'l-err'));
   try{
     const all=JSON.parse(localStorage.getItem(SCAN_KEY)||'{}');
     all[(dev&&dev.id)||'?'] = Object.assign(all[(dev&&dev.id)||'?']||{},
@@ -2335,9 +2566,43 @@ function buildReport(){
     L.push(`版本应答 hex   ${hex(lastVersion.pl)}`);
     L.push(`版本应答 ascii ${lastVersion.ascii}`);
     L.push(`版本应答 u32   ${lastVersion.words.join(' ')}`);
+    if(lastVersion.cand && lastVersion.cand.length){
+      lastVersion.cand.forEach((c,i)=>{
+        const u32=(c.bytes[0]|(c.bytes[1]<<8)|(c.bytes[2]<<16)|(c.bytes[3]<<24))>>>0;
+        L.push(`${i===0?'版本候选  ':'          '}[${c.off}:${c.off+4}] ${hex(c.bytes)}  `+
+          `u32=0x${u32.toString(16).padStart(8,'0')}  点分=${c.bytes.join('.')}  倒读=${[...c.bytes].reverse().join('.')}`);
+      });
+      L.push('          （疑似版本号，未定哪组是固件、哪组是硬件 —— 只有一台设备，没法对照）');
+    }
   } else L.push('版本应答 （还没查过，跑一次一键诊断或重连即可）');
   try{ const sc=JSON.parse(localStorage.getItem(SCAN_KEY)||'{}')[(dev&&dev.id)||'?'];
     if(sc) L.push(`扫描过   ${JSON.stringify(sc)}`); }catch{}
+
+  L.push('', '===== 电池 =====');
+  if(!lastBatt) L.push('（还没收到 05/06）');
+  else if(lastBatt.pack===null) L.push(`（这条 05/06 只有 ${lastBatt.pl.length} 字节，没有电压字段）`);
+  else{
+    const ok=Math.abs(lastBatt.diff)<=100;
+    L.push(`电量 ${lastBatt.pct}%  总压 ${lastBatt.pack}mV  电芯 ${lastBatt.c1} / ${lastBatt.c2}mV  `+
+      `和−总压 ${lastBatt.diff}mV  ${ok?'✅ 与实测一致':'⚠ 与实测的 14mV 不符'}`);
+  }
+
+  L.push('', '===== 已知会动的 cmdId（永久跳过表）=====');
+  {
+    const skipLines=[];
+    try{
+      const devSkip=JSON.parse(localStorage.getItem(SKIP_KEY)||'{}')[(dev&&dev.id)||'?']||{};
+      for(const csKey of Object.keys(devSkip)){
+        const csNum=parseInt(csKey.slice(2),10);
+        for(const ciKey of Object.keys(devSkip[csKey]))
+          skipLines.push(`0x${csNum.toString(16).padStart(2,'0')}/0x${(+ciKey).toString(16).padStart(2,'0')}  上次扫描时让云台动了`);
+      }
+    }catch{}
+    const csNow=parseInt($('scanCs').value,16);
+    parseSkipList($('scanSkip').value).forEach(ci=>
+      skipLines.push(`0x${csNow.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  你在跳过框里指定的`));
+    L.push(...(skipLines.length ? skipLines : ['（无）']));
+  }
 
   const map=fieldMap(recBuf);
   L.push('', `===== 字段图谱（共 ${recBuf.length} 帧记录）=====`);
