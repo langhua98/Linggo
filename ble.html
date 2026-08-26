@@ -28,6 +28,15 @@ body{
   font-size:14px;line-height:1.5;
   padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px);
   -webkit-text-size-adjust:100%;
+  /* 长按方向键在 iOS(Bluefy 是 WKWebView)上会弹出系统的选择/拷贝气泡,
+     而方向键的正常用法就是长按。pointerdown 里的 preventDefault 挡不住它 ——
+     callout 不走那条路径,只有 -webkit-touch-callout 关得掉。 */
+  -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
+}
+button,.pad,.stat-grid,input[type=range]{ touch-action:manipulation }
+/* 日志要能手动选中复制,单独开回来 */
+#log,input[type=text]{
+  -webkit-touch-callout:default; -webkit-user-select:text; user-select:text;
 }
 .wrap{max-width:640px;margin:0 auto;padding:0 14px}
 
@@ -159,6 +168,25 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 .tried #triedList{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;line-height:1.9}
 .tried button{padding:5px 9px;font-size:11px}
 .t-no{color:var(--warn)}.t-yes{color:var(--ok)}.t-maybe{color:var(--tx)}
+/* ── 行程末端提示 ── */
+.limit-bar{
+  margin-top:10px;padding:9px 12px;border-radius:3px;font-size:12px;line-height:1.5;
+  background:#2a1512;border:1px solid #5a2b24;color:var(--warn);
+}
+.pad button.at-limit{ border-color:#5a2b24;background:#2a1512;color:var(--warn) }
+
+/* ── 高级折叠区 ── */
+#adv{ border-top:1px solid var(--line);margin-top:4px }
+#adv>summary{
+  list-style:none;cursor:pointer;padding:16px 0;font-size:12px;letter-spacing:.08em;
+  color:var(--dim);display:flex;align-items:center;gap:8px;
+}
+#adv>summary::-webkit-details-marker{ display:none }
+#adv>summary::before{ content:'▸';font-size:11px;transition:transform .15s }
+#adv[open]>summary::before{ transform:rotate(90deg) }
+#adv>summary:hover{ color:var(--ink) }
+#adv>section:first-of-type{ border-top:1px solid var(--line) }
+
 .note{font-size:11px;color:var(--dim);margin-top:10px}
 .note b{color:var(--ink);font-weight:500}
 </style>
@@ -181,13 +209,90 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="stat">未连接</span></div>
   <div class="tried"><span id="triedList">尚未试过任何设备</span><button id="btnForget">清空记录</button></div>
-  <p class="note"><b>扫描并连接</b> 只列出名字含 OM/Osmo/DJI 或广播了 FFF0 的设备。搜不到就用 <b>扫描全部设备</b> 逐个试 —— 很多设备不在广播包里放主服务，只有连上才看得到。iOS 上弹窗里的一长串是系统给的设备编号,不是 MAC。</p>
-  <p class="note">Web Bluetooth 仅在 <b>桌面版 Chrome / Edge</b> 和 <b>安卓 Chrome</b> 可用。iOS Safari 不支持，需用 <b>Bluefy</b> 浏览器。页面必须跑在 https 或 localhost 下。</p>
+  <p class="note">搜不到就用「扫描全部设备」逐个试。iOS 需用 <b>Bluefy</b> 浏览器，
+    桌面用 Chrome / Edge，页面须跑在 https 下。详情见页尾「高级 / 协议」。</p>
 </section>
 
+<!-- 状态 -->
+<section>
+  <p class="eyebrow">2 · 状态</p>
+  <div class="stat-grid">
+    <div><b id="st-move">—</b><span>动静（由姿态帧实测）</span></div>
+    <div><b id="st-att">—</b><span>姿态 Roll / Pitch / Yaw</span></div>
+    <div><b id="st-batt">—</b><span>电量</span></div>
+    <div><b id="st-up">—</b><span>云台已运行</span></div>
+  </div>
+  <div id="st-limit" class="limit-bar" hidden></div>
+</section>
+
+<!-- 控制 -->
+<section>
+  <p class="eyebrow">3 · 控制</p>
+  <div class="row" style="margin-bottom:14px">
+    <button id="btnCheck" class="primary" disabled>一键自检 · 六向</button>
+  </div>
+  <div class="pad">
+    <button data-ax="roll" data-dir="-1" disabled title="横滚 逆时针">↺</button>
+    <button data-ax="pitch" data-dir="1" disabled>▲</button>
+    <button data-ax="roll" data-dir="1" disabled title="横滚 顺时针">↻</button>
+    <button data-ax="yaw" data-dir="-1" disabled>◀</button>
+    <button class="center" id="btnStop" disabled>停止</button>
+    <button data-ax="yaw" data-dir="1" disabled>▶</button>
+    <span class="ghost"></span>
+    <button data-ax="pitch" data-dir="-1" disabled>▼</button>
+    <span class="ghost"></span>
+  </div>
+  <label class="fld"><span class="lab"><span>速度</span><span class="val" id="vStep">100</span></span>
+    <input type="range" id="step" min="10" max="900" step="10" value="100"></label>
+  <p class="note">按住方向键 = 10 Hz 连发（速度指令带看门狗，停发即停转），松手自动发零速。
+    顶到行程末端会自动停发并提示。<span id="spdNote"></span></p>
+
+  <p class="eyebrow" style="margin-top:22px">转到指定角度</p>
+  <div class="grid2">
+    <label class="fld" style="margin:0"><span class="lab"><span>轴</span></span>
+      <select id="gotoAx">
+        <option value="yaw" selected>Yaw 偏航</option>
+        <option value="pitch">Pitch 俯仰</option>
+        <option value="roll">Roll 横滚</option>
+      </select></label>
+    <label class="fld" style="margin:0">
+      <span class="lab"><span>相对转动</span><span class="val" id="vGoto">+90°</span></span>
+      <input type="range" id="gotoDeg" min="-180" max="180" step="5" value="90"></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnGoto" disabled>执行</button>
+    <button id="btnGotoStop" disabled>中止</button>
+  </div>
+  <p class="note">闭环：持续发速度帧，接近目标自动减速，到位发零速。姿态反馈只有约 1 Hz，
+    两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。<span id="gotoStat"></span></p>
+</section>
+
+<!-- 日志 -->
+<section style="border-bottom:none">
+  <p class="eyebrow" style="flex-wrap:wrap"><span>4 · 日志</span>
+    <span class="log-tools">
+      <select id="logLevel">
+        <option value="quiet" selected>精简 · 只看收发与应答</option>
+        <option value="change">变化 · 加上内容变了的帧</option>
+        <option value="all">全部 · 原始刷屏</option>
+      </select>
+    </span>
+  </p>
+  <div id="log"></div>
+  <div id="folded"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnClear">清空</button>
+    <button id="btnCopy">复制日志</button>
+  </div>
+</section>
+
+
+<!-- 高级 -->
+<details id="adv">
+  <summary>高级 / 协议</summary>
 <!-- 报文 -->
 <section>
-  <p class="eyebrow"><span>2 · 当前报文</span><span id="pktLen">21 B</span></p>
+  <p class="eyebrow"><span>当前报文</span><span id="pktLen">21 B</span></p>
   <div class="packet"><div class="bytes" id="bytes"></div></div>
   <div class="legend">
     <span><i class="f-magic"></i>0x55</span>
@@ -204,7 +309,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 <!-- 参数 -->
 <section>
-  <p class="eyebrow">3 · 旋转参数</p>
+  <p class="eyebrow">旋转参数（原始帧）</p>
 
   <label class="fld">
     <span class="lab"><span>模式</span></span>
@@ -230,29 +335,9 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
 </section>
 
-<!-- 摇杆 -->
-<section>
-  <p class="eyebrow">4 · 点动 / 长按连发</p>
-  <div class="pad">
-    <span class="ghost"></span>
-    <button data-ax="pitch" data-dir="1" disabled>▲</button>
-    <span class="ghost"></span>
-    <button data-ax="yaw" data-dir="-1" disabled>◀</button>
-    <button class="center" id="btnStop" disabled>停止</button>
-    <button data-ax="yaw" data-dir="1" disabled>▶</button>
-    <span class="ghost"></span>
-    <button data-ax="pitch" data-dir="-1" disabled>▼</button>
-    <span class="ghost"></span>
-  </div>
-  <label class="fld"><span class="lab"><span>点动步长 / 速度</span><span class="val" id="vStep">100</span></span>
-    <input type="range" id="step" min="10" max="900" step="10" value="100"></label>
-  <p class="note">按住方向键 = 以 10 Hz 连发。SPEED 模式下松手会自动发一帧零速停止。
-    <span id="spdNote"></span></p>
-</section>
-
 <!-- 底层 -->
 <section>
-  <p class="eyebrow">5 · 底层</p>
+  <p class="eyebrow">底层</p>
   <div class="grid2">
     <label class="fld" style="margin:0"><span class="lab"><span>写特征</span></span>
       <select id="wchar"></select></label>
@@ -280,15 +365,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
 </section>
 
-<!-- 实时状态 -->
 <section>
-  <p class="eyebrow">6 · 实时状态</p>
-  <div class="stat-grid">
-    <div><b id="st-move">—</b><span>动静（由姿态帧实测）</span></div>
-    <div><b id="st-att">—</b><span>姿态 Roll / Pitch / Yaw</span></div>
-    <div><b id="st-batt">—</b><span>电量</span></div>
-    <div><b id="st-up">—</b><span>云台已运行</span></div>
-  </div>
+  <p class="eyebrow">诊断工具</p>
   <div class="row" style="margin-top:12px">
     <button id="btnSpin" disabled>转动测试（会真的转）</button>
     <button id="btnCal" disabled>速度标定</button>
@@ -301,46 +379,13 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     全程把云台放稳、手不要动。<br>
     <b>速度标定</b>跑八段（偏航五段 + 俯仰两段 + 对照），约 40 秒，左右交替以免把云台推到行程末端，
     结束后自动归位。跑完会把实测的速度标度记住，滑块标注和下面的闭环都按它换算。</p>
-
-  <p class="eyebrow" style="margin-top:20px">转到指定角度</p>
-  <div class="grid2">
-    <label class="fld" style="margin:0"><span class="lab"><span>轴</span></span>
-      <select id="gotoAx">
-        <option value="yaw" selected>Yaw 偏航</option>
-        <option value="pitch">Pitch 俯仰</option>
-      </select></label>
-    <label class="fld" style="margin:0">
-      <span class="lab"><span>相对转动</span><span class="val" id="vGoto">+90°</span></span>
-      <input type="range" id="gotoDeg" min="-180" max="180" step="5" value="90"></label>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <button id="btnGoto" disabled>执行</button>
-    <button id="btnGotoStop" disabled>中止</button>
-  </div>
-  <p class="note">闭环：持续发速度帧，接近目标自动减速，到位发零速停止。
-    姿态反馈只有约 1 Hz，两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。
-    <span id="gotoStat"></span></p>
 </section>
-
-<!-- 日志 -->
 <section style="border-bottom:none">
-  <p class="eyebrow" style="flex-wrap:wrap"><span>7 · 日志</span>
-    <span class="log-tools">
-      <select id="logLevel">
-        <option value="quiet" selected>精简 · 只看收发与应答</option>
-        <option value="change">变化 · 加上内容变了的帧</option>
-        <option value="all">全部 · 原始刷屏</option>
-      </select>
-    </span>
-  </p>
-  <div id="log"></div>
-  <div id="folded"></div>
-  <div class="row" style="margin-top:10px">
-    <button id="btnClear">清空</button>
-    <button id="btnCopy">复制日志</button>
-  </div>
+  <p class="eyebrow">连接说明</p>
+  <p class="note"><b>扫描并连接</b> 只列出名字含 OM/Osmo/DJI 或广播了 FFF0 的设备。搜不到就用 <b>扫描全部设备</b> 逐个试 —— 很多设备不在广播包里放主服务，只有连上才看得到。iOS 上弹窗里的一长串是系统给的设备编号,不是 MAC。</p>
+  <p class="note">Web Bluetooth 仅在 <b>桌面版 Chrome / Edge</b> 和 <b>安卓 Chrome</b> 可用。iOS Safari 不支持，需用 <b>Bluefy</b> 浏览器。页面必须跑在 https 或 localhost 下。</p>
 </section>
-
+</details>
 </div>
 
 <script>
@@ -481,8 +526,9 @@ function setState(s,txt){
   $('dot').className='dot'+(s?' '+s:'');
   $('stat').textContent=txt;
   const on = s==='on';
-  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal','btnGoto']
-    .forEach(i=>$(i).disabled=!on);
+  ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
+   'btnGoto','btnCheck'].forEach(i=>$(i).disabled=!on);
+  if(!on){ stopHold(); clearLimit(); }
   $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
 }
@@ -806,15 +852,57 @@ $('btnStop').onclick=()=>{ stopHold(); send(buildRotate(0,0,0,1,0x80)); render()
 let holdTimer=null, holdWasSpeed=false;
 function fire(ax,dir){
   const s=+$('step').value*dir, mode=+$('mode').value;
-  const y = ax==='yaw'?s:0, p = ax==='pitch'?s:0;
-  send(buildRotate(y,p,0,+$('time').value,mode)); render();
+  send(buildRotate(ax==='yaw'?s:0, ax==='pitch'?s:0, ax==='roll'?s:0,
+                   +$('time').value, mode));
+  render();
 }
+
+/* ── 顶到行程末端 ──
+   判据跟闭环里那套一样:还在下发非零速度、应答也照回 0x00,但连着两帧实测姿态不动。
+   姿态只有约 1Hz,所以要按满 1.5s(至少两帧)才允许判定 —— 起步慢的话早判会误报。
+   撞上就停发:继续 10Hz 刷帧既没用,又会把日志和电量白白耗掉。 */
+const AX_CN={yaw:'偏航', pitch:'俯仰', roll:'横滚'};
+let limitHit=null, holdMon=null;
+function showLimit(ax,dir){
+  limitHit={ax,dir};
+  const el=$('st-limit');
+  el.textContent=`⛔ ${AX_CN[ax]}已到行程末端 —— 继续按同方向没有意义，按反方向解除。`;
+  el.hidden=false;
+  const b=document.querySelector(`.pad button[data-ax="${ax}"][data-dir="${dir}"]`);
+  if(b) b.classList.add('at-limit');
+  try{ navigator.vibrate && navigator.vibrate(60); }catch{}
+  log(`⛔ ${AX_CN[ax]}顶到行程末端,已停止连发。`,'l-err');
+}
+function clearLimit(){
+  if(!limitHit) return;
+  limitHit=null;
+  $('st-limit').hidden=true;
+  document.querySelectorAll('.pad button.at-limit').forEach(b=>b.classList.remove('at-limit'));
+}
+function holdTick(){
+  if(!holdMon || !lastEuler) return;
+  const m=holdMon;
+  if(m.seq===attSeq) return;                       // 还是上一帧,没有新的实测值
+  m.seq=attSeq;
+  const step=d180(lastEuler[m.ax]-m.prev); m.prev=lastEuler[m.ax];
+  if(Math.abs(step)>=0.3){ m.frozen=0; clearLimit(); return; }
+  if(Date.now()-m.t0 < 1500) return;                // 给它起步的时间
+  if(++m.frozen>=2){ const {ax,dir}=m; stopHold(); showLimit(ax,dir); }
+}
+
 function startHold(ax,dir){
+  if(limitHit && limitHit.ax===ax && limitHit.dir===dir){
+    log(`${AX_CN[ax]}这个方向已经到头了,先按反方向。`,'l-err');
+    return;                                         // 顶着死点接着刷帧毫无意义
+  }
+  clearLimit();
+  holdMon={ax, dir, t0:Date.now(), seq:attSeq, prev:lastEuler?lastEuler[ax]:0, frozen:0};
   fire(ax,dir);
   holdWasSpeed = +$('mode').value===0x80;
-  holdTimer=setInterval(()=>fire(ax,dir),100);
+  holdTimer=setInterval(()=>{ fire(ax,dir); holdTick(); },100);
 }
 function stopHold(){
+  holdMon=null;
   if(!holdTimer) return;
   clearInterval(holdTimer); holdTimer=null;
   if(holdWasSpeed){ send(buildRotate(0,0,0,1,0x80)); render(); }
@@ -824,6 +912,8 @@ document.querySelectorAll('.pad button[data-ax]').forEach(b=>{
   b.addEventListener('pointerdown',go);
   ['pointerup','pointerleave','pointercancel'].forEach(ev=>b.addEventListener(ev,stopHold));
 });
+// 桌面右键 / 部分 WebView 的长按菜单,CSS 之外再挡一道
+document.querySelector('.pad').addEventListener('contextmenu',e=>e.preventDefault());
 
 $('btnRaw').onclick=()=>{
   const v=$('rawHex').value.replace(/0x/g,'').match(/[0-9a-f]{2}/gi);
@@ -1009,10 +1099,12 @@ const CAL_WIN=3000;
    —— 实测让「转满 2.9s」只量出「转 1.5s」的 1.4 倍而不是 2 倍,足以把「time 有用」
    误判成「没用」。所以动作窗口结束后再空等一段读数尾巴,保证末值是新的。 */
 const CAL_TAIL=1300;
-const SPD_FRAME=(axis,spd,t)=>{
-  const y = axis==='yaw' ? spd : 0, p = axis==='pitch' ? spd : 0;
-  return [...i16(y), 0,0, ...i16(p), 0x80, t];
-};
+// 载荷顺序是 yaw / roll / pitch —— roll 在中间那组,别按屏幕上「上下左右横滚」的顺序摆。
+const SPD_FRAME=(axis,spd,t)=>[
+  ...i16(axis==='yaw'  ? spd : 0),
+  ...i16(axis==='roll' ? spd : 0),
+  ...i16(axis==='pitch'? spd : 0),
+  0x80, t];
 async function calibrate(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
@@ -1124,6 +1216,73 @@ async function calibrate(){
     if(home) await goHome(home);
   } finally { suppressWatch=false; traceBuf=null; }
 }
+/* ── 一键自检 · 六向 ──
+   一次回答「这台机器到底哪几个轴、哪几个方向能动」。成对扫描、每对方向相反,
+   扫完自然回到原位,不会像早期那版标定那样把云台一路推到行程末端。
+   横滚这一路从来没试过 —— 载荷里有槽位,但很多云台根本不开放横滚控制,
+   所以「没反应」是一个必须能报出来的正常结论,不是故障。 */
+const CHK_DIRS=[
+  ['yaw',   +1, '偏航 ▶'], ['yaw',   -1, '偏航 ◀'],
+  ['pitch', +1, '俯仰 ▲'], ['pitch', -1, '俯仰 ▼'],
+  ['roll',  +1, '横滚 ↻'], ['roll',  -1, '横滚 ↺'],
+];
+async function selfCheck(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  const spd=+$('step').value||100;
+  const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
+  const STOP=[0,0,0,0,0,0,0x80,1];
+  suppressWatch=true; clearLimit();
+  const home = lastEuler && {...lastEuler};
+  try{
+    log(`—— 一键自检:六个方向各扫 ${(CAL_WIN/1000).toFixed(1)}s,速度 ${spd}(≈${(spd*degPerUnit).toFixed(1)}°/s),`+
+        `约 ${Math.round(CHK_DIRS.length*(CAL_WIN+CAL_TAIL+700)/1000)} 秒。请把云台放稳,手不要动 ——`);
+    const R={};
+    for(const [ax,dir,label] of CHK_DIRS){
+      const d=await phase(label, async()=>{
+        const t0=Date.now(); let q=0xB200;
+        while(Date.now()-t0<CAL_WIN-200){ await F(++q & 0xffff, SPD_FRAME(ax,spd*dir,15)); await sleep(50); }
+      }, CAL_WIN+CAL_TAIL, {axis:ax, continuous:true});
+      await F(0xB2ff, STOP);
+      await sleep(700);
+      if(!d){ log('  自检中断:缺姿态数据,请重测','l-err'); return; }
+      R[ax+dir] = {v:d[ax], stall:d.stall};
+    }
+
+    const TH=3, rate=v=>Math.abs(v)/(CAL_WIN/1000);
+    const sg=v=>(v>=0?'+':'')+v.toFixed(1);
+    log('—— 自检结果 ——');
+    const verdicts={};
+    for(const [ax,dir,label] of CHK_DIRS){
+      const r=R[ax+dir], other=R[ax+(-dir)];
+      let icon, tail;
+      if(Math.abs(r.v)>TH && !r.stall){ icon='✅'; tail=`${rate(r.v).toFixed(1)}°/s`; verdicts[ax+dir]='ok'; }
+      else if(r.stall){ icon='⛔'; tail='转了一段就到头了'; verdicts[ax+dir]='limit'; }
+      // 自己不动、反向能动 = 这一侧已经顶在末端;两侧都不动才是「这个轴不受控」
+      else if(other && Math.abs(other.v)>TH){ icon='⛔'; tail='已在行程末端'; verdicts[ax+dir]='limit'; }
+      else { icon='❌'; tail='无响应'; verdicts[ax+dir]='none'; }
+      log(`  ${icon} ${label}   ${sg(r.v)}°   ${tail}`, icon==='✅'?'l-ack':(icon==='❌'?'l-err':''));
+    }
+
+    const ARROW={}; for(const [ax,dir,label] of CHK_DIRS) ARROW[ax+dir]=label.split(' ')[1];
+    const parts=[];
+    for(const ax of ['yaw','pitch','roll']){
+      const a=verdicts[ax+1], b=verdicts[ax+(-1)], P=AX_CN[ax];
+      if(a==='none' && b==='none')  parts.push(`${P}不受本指令控制`);
+      else if(a==='ok' && b==='ok') parts.push(`${P}双向可控`);
+      else if(a==='ok' || b==='ok') parts.push(`${P}只能往 ${ARROW[ax+(a==='ok'?1:-1)]} 这侧（另一侧已到末端）`);
+      else                          parts.push(`${P}两侧都已到末端`);
+    }
+    log('  结论: '+parts.join('；')+'。');
+    if(Object.values(verdicts).every(v=>v==='none'))
+      log('  六个方向全无响应 —— 云台在回 0x00 却没执行。先确认模式锁在 SPEED、'+
+          '并跑一次「高级」里的转动测试。','l-err');
+
+    if(home) await goHome(home);
+  } finally { suppressWatch=false; traceBuf=null; }
+}
+$('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
+  selfCheck().finally(()=>{ $('btnCheck').disabled=false; }); };
+
 /* ── 闭环「转到指定角度」 ──
    难点是姿态反馈只有约 1Hz:直接拿 lastEuler 当反馈,两帧之间是瞎的,
    spd=300 时一秒就冲出去 30°,根本停不准。所以两帧之间做航位推算 ——
@@ -1210,7 +1369,7 @@ async function gotoRelative(axis, deltaDeg, quiet){
 
 /* 标定收尾:把两轴都收回起点。交替方向已经让净位移很小,这里只补残差。 */
 async function goHome(home){
-  for(const ax of ['yaw','pitch']){
+  for(const ax of ['yaw','pitch','roll']){
     if(!lastEuler) return;
     const back=-d180(lastEuler[ax]-home[ax]);
     if(Math.abs(back)<3) continue;
@@ -1256,9 +1415,9 @@ function runSelfTest(){
   ];
   const bad=V.filter(v=>!v[1]);
   if(bad.length===0){
-    log(`就绪。自检通过：${V.length}/${V.length} 项（CRC8 init=0x77、CRC16 init=0x3692、两条已知帧逐字节比对）。`);
+    log(`就绪。协议自检通过：${V.length}/${V.length} 项（CRC8 init=0x77、CRC16 init=0x3692、两条已知帧逐字节比对）。`);
   }else{
-    log(`自检未通过：${bad.length}/${V.length} 项不符 — 协议层有问题,不要往云台发帧。`,'l-err');
+    log(`协议自检未通过：${bad.length}/${V.length} 项不符 — 协议层有问题,不要往云台发帧。`,'l-err');
     bad.forEach(v=>log(`  ✗ ${v[0]}${v[2]?'  ('+v[2]+')':''}`,'l-err'));
   }
 }
