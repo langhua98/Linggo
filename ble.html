@@ -278,8 +278,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button data-ax="pitch" data-dir="-1" disabled>▼</button>
     <span class="ghost"></span>
   </div>
-  <label class="fld"><span class="lab"><span>速度</span><span class="val" id="vStep">100</span></span>
-    <input type="range" id="step" min="10" max="900" step="10" value="100"></label>
+  <label class="fld"><span class="lab"><span>速度</span><span class="val" id="vStep">400</span></span>
+    <input type="range" id="step" min="10" max="900" step="10" value="400"></label>
   <p class="note">按住方向键 = 10 Hz 连发（速度指令带看门狗，停发即停转），松手自动发零速。
     顶到行程末端会自动停发并提示。<span id="spdNote"></span></p>
 
@@ -1382,7 +1382,21 @@ async function calibrate(){
 
    精度上限是姿态帧只有约 1Hz,所以这里只做「可控 / 到末端 / 无响应」的定性判断加粗略速率;
    精确标度归「高级」里那套八段「速度标定」。 */
-const CHK_DPS=60, CHK_HZ=20, CHK_ROLL_DPS=40;
+/* 转速。按目标 °/s 反算命令值(units = CHK_DPS/degPerUnit)有个毛病:
+   没标定过的设备用的是默认标度 0.11,反算出来可能远低于真实满量程 ——
+   实测就是 60/0.11 = 545,而上限是 900,只跑了六成。所以直接按满量程的比例下发。
+
+   削顶:纯正弦的平均 |v| 只有峰值的 2/π = 0.637,大部分时间并不在全速上,
+   看着就慢(这是上一轮为了动作连贯换成正弦时引入的)。把正弦放大 k 倍再限幅到 ±1,
+   反向处仍然连续,平均值升到 0.837。变号时刻跟正弦完全相同,所以半周期不变、
+   拟合的条件数不受影响 —— 而且每个半周期里满幅的时间更长,P 与 N 在单个采样区间里更可分,
+   条件数反而更好。
+
+   各轴增益是为了摆幅:幅度 = 0.209 × 峰值 × 周期。三轴都跑满的话俯仰会到 ±41°,
+   基本每次都扫到限位。偏航跑满 —— 它行程最大也最显眼。 */
+const CHK_UNITS=900, CHK_HZ=20, CHK_CLIP=2.0;
+const CHK_GAIN={yaw:1.0, pitch:0.6, roll:0.35};
+const chkClip = v => Math.max(-1, Math.min(1, CHK_CLIP*v));
 
 /* 编排:速度取正弦、偏航与俯仰相位差 90° —— **位置轨迹就是一个圆**
    (半径 A/ω,60°/s 配 4s 周期约 38°,即一次 76° 的画圆动作),一个周期净位移为零。
@@ -1392,17 +1406,24 @@ const CHK_DPS=60, CHK_HZ=20, CHK_ROLL_DPS=40;
    横滚行程通常比偏航短得多,速度减半,免得每次都撞得很狠。 */
 const CHK_PLAN=[
   {ms:1000, name:'静止基线', key:'base', v:()=>({})},
-  {ms:4000, name:'∞ 字 · 偏航×俯仰', key:'circle',
+  /* 4400 而不是 4000:俯仰是二倍频,4000 时它的周期正好 2.0s,对 1Hz 采样恰是每周期两点、
+     而且每个周期都锁在同一对相位上 —— 实测俯仰在 +8° 限位处停留过(假云台记到 8.00),
+     采样却每次都落在 +2.7 和 −33,行程被读成 2.7°。周期与采样周期成整数比就会这样。
+     4.4s(俯仰 2.2s)与 1s 不可通约,相位逐周期漂移,几个周期下来就能扫到峰值附近。 */
+  {ms:4400, name:'∞ 字 · 偏航×俯仰', key:'circle',
    /* 一比二的李萨如 = ∞ 字。为什么不是圆:圆是从圆周上的一点出发的,
       位置range 必然一边 ±R 一边 0..2R —— 实测偏航「＋ ±72°、－ ±1°」,
       负向根本没走过,那一侧真有限位也发现不了。
       ∞ 字两轴的位置都是正弦(yaw = R·sin(2πu),pitch = R/2·sin(4πu)),
       都以起点为中心、两向对称,而且看着比画圆更有名堂。 */
-   v:(u)=>({ yaw:Math.cos(2*Math.PI*u), pitch:Math.cos(4*Math.PI*u) })},
-  {ms:2400, name:'横滚 ↻↺', key:'roll',
+   v:(u)=>({ yaw:  CHK_GAIN.yaw   * chkClip(Math.cos(2*Math.PI*u)),
+             pitch:CHK_GAIN.pitch * chkClip(Math.cos(4*Math.PI*u)) })},
+  /* 3400 而不是 2400:2.4s 的周期对 1Hz 采样只有 2.4 点/周期,拟合系统性偏高
+     (实测 112 对真值 99)。3.4s 给到 3.4 点/周期,且与 1s 不可通约。 */
+  {ms:3400, name:'横滚 ↻↺', key:'roll',
    /* 也用正弦,理由同上:先 + 后 − 回到起点的走法,负向位置从来没走过起点以下,
       「行程」会读成 0,那一侧真有限位也发现不了。 */
-   v:(u)=>({ roll:(CHK_ROLL_DPS/CHK_DPS)*Math.cos(2*Math.PI*u) })},
+   v:(u)=>({ roll: CHK_GAIN.roll * chkClip(Math.cos(2*Math.PI*u)) })},
   {ms:1200, name:'停车验证', key:'stop', v:()=>({})},
 ];
 const chkTotal = () => CHK_PLAN.reduce((a,p)=>a+p.ms, 0);
@@ -1446,18 +1467,25 @@ function chkSet(key, icon, text, cls){
 async function selfCheck(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(!lastEuler){ log('还没收到姿态帧,自检没有反馈可用','l-err'); return; }
-  const units = Math.max(10, Math.min(900, Math.round(CHK_DPS/degPerUnit)));
+  const units = CHK_UNITS;
   if(lvlRunning){ log('调平/复位还在跑,等它结束','l-err'); return; }
   const F=(seq,pl)=>send(buildDuml({seq,flags:0x40,cmdSet:0x04,cmdId:0x0c,payload:pl}));
 
   suppressWatch=true; clearLimit(); chkReset();
-  const samples=[]; attRec=samples;
-  const cmdLog=[];                 // {t, yaw, pitch, roll} —— 每次下发都记,事后按时间线归因
   const home={...lastEuler};
   bulkBegin();
   const t0=Date.now();
+  /* 先把「开跑前的那一帧姿态」塞进序列。行程是相对 samples[0] 算的,
+     而姿态只有 1Hz —— 第一帧最晚可能在开跑 1 秒后才到,那时云台已经转出去一截了,
+     行程就少算这一截(实测俯仰限位 8° 被报成 3°)。这一帧是真实测量值,
+     只是时间戳补到 t0;它落在静止基线段里,除了漂移不参与任何计算。 */
+  const samples=[{t:t0, yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll, g:lastG}];
+  attRec=samples;
+  const cmdLog=[];                 // {t, yaw, pitch, roll} —— 每次下发都记,事后按时间线归因
   try{
-    log(`—— 一键自检:连续编排 ${(chkTotal()/1000).toFixed(1)}s,${CHK_DPS}°/s(速度值 ${units})。请把云台放稳,手不要动 ——`);
+    log(`—— 一键自检:连续编排 ${(chkTotal()/1000).toFixed(1)}s,满量程速度值 ${units}`+
+        `(按${dpuMeasured?'实测':'默认'}标度约 ${(units*degPerUnit).toFixed(0)}°/s 峰值`+
+        `${dpuMeasured?'':',仅估计,以下面三轴的实测速率为准'})。请把云台放稳,手不要动 ——`);
     let q=0xB300, seg=-1, lastAn=0;
     while(true){
       const now=Date.now(), el=now-t0;
@@ -1803,7 +1831,9 @@ async function levelUp(alsoPitch, quiet, target){
 
       const u=k=>{ if(!want.includes(k) || Math.abs(e[k])<=LVL_TOL) return 0;
         const n=Math.round(Math.abs(e[k])*LVL_GAIN/LVL_BURST/degPerUnit);
-        return -Math.sign(e[k])*Math.max(10, Math.min(400, n)); };
+        // 上限 600 让大角度纠正的粗调快起来;下限 10(≈1.1°/s、单次点动约 0.5°)不能动,
+        // 那是 ±1° 容差的物理基础。
+        return -Math.sign(e[k])*Math.max(10, Math.min(600, n)); };
       const ur=u('roll'), up=u('pitch');
       $('lvlStat').textContent=`　地平线 ${sg1(e.roll)}`+(alsoPitch?` · 仰角 ${sg1(e.pitch)}`:'');
       await send(buildDuml({seq:(++q)&0xffff, flags:0x40, cmdSet:0x04, cmdId:0x0c,
