@@ -28,15 +28,24 @@ body{
   font-size:14px;line-height:1.5;
   padding:env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + 24px);
   -webkit-text-size-adjust:100%;
-  /* 长按方向键在 iOS(Bluefy 是 WKWebView)上会弹出系统的选择/拷贝气泡,
-     而方向键的正常用法就是长按。pointerdown 里的 preventDefault 挡不住它 ——
-     callout 不走那条路径,只有 -webkit-touch-callout 关得掉。 */
+}
+/* 长按方向键在 iOS(Bluefy 是 WKWebView)上会弹出系统的选择/拷贝气泡,
+   而方向键的正常用法就是长按。pointerdown 里的 preventDefault 挡不住它 ——
+   callout 不走那条路径,只有 -webkit-touch-callout 关得掉。
+   **只管真会被长按的元素**:早先图省事加在 body 上,结果字段图谱、自检清单、
+   状态格全都选不中了 —— 用户想把扫描记录复制出来时才发现整页都选不了。 */
+button,.pad,#adv>summary{
   -webkit-touch-callout:none; -webkit-user-select:none; user-select:none;
 }
 button,.pad,.stat-grid,input[type=range]{ touch-action:manipulation }
-/* 日志要能手动选中复制,单独开回来 */
-#log,input[type=text]{
+/* 输出区显式声明可选中,不靠继承 —— 断言才有意义 */
+#log,#lab-map,#chk-rows,#lab-report,input[type=text]{
   -webkit-touch-callout:default; -webkit-user-select:text; user-select:text;
+}
+#lab-report{
+  width:100%;box-sizing:border-box;margin-top:10px;min-height:150px;resize:vertical;
+  background:#080d10;border:1px solid var(--line);border-radius:3px;color:var(--ink);
+  font-family:inherit;font-size:11px;line-height:1.5;padding:9px;
 }
 .wrap{max-width:640px;margin:0 auto;padding:0 14px}
 
@@ -437,10 +446,14 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <div class="row" style="margin-top:8px">
     <button id="btnCorr">相关性分析</button>
-    <button id="btnExport">导出记录</button>
+    <button id="btnReport">生成报告</button>
     <button id="btnLabStop" class="danger" disabled>中止</button>
   </div>
   <div id="lab-map" style="margin-top:12px">还没有记录。</div>
+  <textarea id="lab-report" readonly placeholder="点「生成报告」把图谱、样本帧、扫描结果、相关性结论汇总到这里。长按可全选拷贝。"></textarea>
+  <div class="row" style="margin-top:8px">
+    <button id="btnCopyReport">复制报告</button>
+  </div>
 
   <p class="eyebrow" style="margin-top:20px">cmdId 扫描</p>
   <p class="note" style="margin-top:0"><b>会往云台发未知指令。</b>已按最保守的方式做：
@@ -1960,10 +1973,11 @@ $('btnRecOn').onclick =()=>{ recStart(); $('lab-step').textContent='记录中…
   $('btnRecOn').disabled=true; $('btnRecOff').disabled=false; log('—— 开始记录帧 ——'); };
 $('btnRecOff').onclick=()=>{ const n=recStop(); $('lab-step').textContent='空闲';
   $('btnRecOn').disabled=false; $('btnRecOff').disabled=true;
-  log(`—— 停止记录:共 ${n} 帧 ——`); renderFieldMap(); };
+  log(`—— 停止记录:共 ${n} 帧 ——`); renderFieldMap(); logFieldMap(); };
 $('btnStim').onclick  =()=>stimCapture();
 $('btnCorr').onclick  =()=>runCorrelate();
-$('btnExport').onclick=()=>exportRec();
+$('btnReport').onclick=()=>makeReport();
+$('btnCopyReport').onclick=()=>copyFrom($('lab-report'),'报告');
 $('btnScan').onclick  =()=>cmdScan();
 $('btnLabStop').onclick=()=>{ stimAbort=true; };
 
@@ -2262,6 +2276,15 @@ async function cmdScan(){
 }
 
 // ── 实验室 UI ──
+function logFieldMap(){
+  const map=fieldMap(recBuf);
+  if(!map.length) return;
+  log('—— 字段图谱 ——');
+  for(const e of map){
+    const vary=varyRuns(e).map(r=>r.a===r.b?`[${r.a}]`:`[${r.a}:${r.b+1}]`).join(' ')||'（无）';
+    log(`  ${e.key}  ×${e.n}  长度 ${[...e.lens].join('/')}  变化 ${vary}`);
+  }
+}
 function renderFieldMap(){
   const el=$('lab-map'); if(!el) return;
   const map=fieldMap(recBuf);
@@ -2281,16 +2304,92 @@ function runCorrelate(){
   r.hits.forEach(h=>log(
     `  ${h.key} 偏移[${h.off}] 作 ${h.kind}  ↔  ${REF_CN[h.ref]}   r=${h.r.toFixed(3)}  n=${h.n}`,'l-ack'));
 }
-function dl(name, content, type){
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([content],{type}));
-  a.download=name; a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+/* ── 可复制的报告 ──
+   blob 下载在 Bluefy 上点了没反应(实测),所以可全选的 textarea 是**主路径**不是兜底。
+   全量帧记录有几万条、上百万字符,粘不过来,所以报告只给摘要 + 每种帧的样本。 */
+const REP_HEAD=3, REP_EXTREME=3;   // 每种帧:前 3 条 + 变化最大的 3 条
+
+// 「变化最大」= 与该种帧首条相比不同的字节数最多。只取前几条的话
+// 全是同一个静止状态,拿到手也挖不出东西;极值那几条才有信息量。
+function pickSamples(rows){
+  if(rows.length<=REP_HEAD+REP_EXTREME) return rows.map((e,i)=>({e,i}));
+  const base=rows[0].pl;
+  const scored=rows.map((e,i)=>({e, i,
+    d: e.pl.reduce((a,v,k)=>a+((base[k]===undefined||base[k]!==v)?1:0), 0)}));
+  const head=scored.slice(0,REP_HEAD);
+  const ext=scored.slice(REP_HEAD).sort((a,b)=>b.d-a.d).slice(0,REP_EXTREME)
+                  .sort((a,b)=>a.i-b.i);
+  return [...head, ...ext];
 }
-function exportRec(){
-  const blob=JSON.stringify({dev:(dev&&dev.id)||null, at:Date.now(),
-    version:lastVersion, n:recBuf.length, frames:recBuf});
-  dl('om-ble-rec.json', blob, 'application/json');
+
+function buildReport(){
+  const L=[], t0=recBuf.length?recBuf[0].t:Date.now();
+  const ts=e=>((e.t-t0)/1000).toFixed(2).padStart(8);
+  L.push('===== OM BLE 协议报告 =====');
+  L.push(`时间     ${new Date().toISOString()}`);
+  L.push(`设备     ${(dev&&dev.id)||'-'}  ${(dev&&dev.name)||''}`);
+  L.push(`速度标度 ${degPerUnit.toFixed(4)} °/s 每单位（${dpuMeasured?'实测':'默认值'}）`);
+  L.push(`槽位映射 ${axisMap?JSON.stringify(axisMap):'未标定'}`);
+  L.push(`归位点   ${homePose?JSON.stringify(homePose):'未记录'}`);
+  if(lastVersion){
+    L.push(`版本应答 hex   ${hex(lastVersion.pl)}`);
+    L.push(`版本应答 ascii ${lastVersion.ascii}`);
+    L.push(`版本应答 u32   ${lastVersion.words.join(' ')}`);
+  } else L.push('版本应答 （还没查过，跑一次一键诊断或重连即可）');
+  try{ const sc=JSON.parse(localStorage.getItem(SCAN_KEY)||'{}')[(dev&&dev.id)||'?'];
+    if(sc) L.push(`扫描过   ${JSON.stringify(sc)}`); }catch{}
+
+  const map=fieldMap(recBuf);
+  L.push('', `===== 字段图谱（共 ${recBuf.length} 帧记录）=====`);
+  if(!map.length) L.push('（没有记录。先点「开始记录」，或跑一次自检/激励采集/扫描。）');
+  for(const e of map){
+    const vary=varyRuns(e).map(r=>r.a===r.b?`[${r.a}]`:`[${r.a}:${r.b+1}]`).join(' ')||'（无）';
+    L.push(`${e.key}  ×${e.n}  长度 ${[...e.lens].join('/')}  变化 ${vary}`);
+    const konst=e.bytes.map((b,i)=>(b&&b.changes===0)?`${i}=${b.min.toString(16).padStart(2,'0')}`:null)
+                       .filter(Boolean);
+    if(konst.length) L.push(`    恒定 ${konst.join(' ')}`);
+  }
+
+  L.push('', '===== 样本帧（每种前 3 条 + 变化最大的 3 条）=====');
+  for(const e of map){
+    const rows=recBuf.filter(x=>x.dir==='rx' && recKey(x)===e.key);
+    L.push(`-- ${e.key} --`);
+    for(const {e:r} of pickSamples(rows))
+      L.push(`${ts(r)}s  flags=${r.flags.toString(16).padStart(2,'0')}  ${hex(r.pl)}`);
+  }
+
+  L.push('', '===== 相关性 =====');
+  const co=correlate(recBuf);
+  if(co.err) L.push(co.err);
+  else if(!co.hits.length) L.push(`（${co.nAtt} 帧姿态为参照，没有达到 |r|>0.9 的对应关系）`);
+  else co.hits.forEach(h=>L.push(
+    `${h.key} 偏移[${h.off}] 作 ${h.kind}  ↔  ${REF_CN[h.ref]}   r=${h.r.toFixed(3)}  n=${h.n}`));
+
+  L.push('', '===== 日志尾部 =====');
+  const lines=$('log').innerText.split('\n');
+  L.push(...lines.slice(-80));
+  return L.join('\n');
+}
+function makeReport(){
+  const txt=buildReport();
+  $('lab-report').value=txt;
+  log(`—— 报告已生成:${txt.length} 字符、${txt.split('\n').length} 行。长按文本框可全选拷贝。——`);
+}
+
+/* 剪贴板可能不存在、也可能被拒(Bluefy 上就拒过)。无论成败都把内容选中,
+   失败时至少还能长按选区手动拷贝 —— 早先「复制日志」失败了只报错,没有后路。 */
+async function copyFrom(el, what){
+  try{
+    if(!navigator.clipboard) throw new Error('no clipboard');
+    await navigator.clipboard.writeText(el.value!==undefined ? el.value : el.innerText);
+    log(`${what}已复制`);
+    if(el.select) el.select();
+    return;
+  }catch{}
+  if(el.select){ el.focus(); el.select(); }
+  else{ const r=document.createRange(); r.selectNodeContents(el);
+        const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); }
+  log(`剪贴板不可用，${what}已全选 —— 长按选区→拷贝。`,'l-err');
 }
 
 /* ── 闭环「转到指定角度」 ──
@@ -2399,10 +2498,7 @@ $('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $
 $('btnSpin').onclick=()=>{ $('btnSpin').disabled=true; spinTest().finally(()=>{ $('btnSpin').disabled=false; }); };
 $('btnClear').onclick=()=>{ $('log').innerHTML=''; };
 $('btnForget').onclick=()=>{ localStorage.removeItem(TRIED_KEY); renderTried(); log('已清空设备记录'); };
-$('btnCopy').onclick=async()=>{
-  try{ await navigator.clipboard.writeText($('log').innerText); log('日志已复制'); }
-  catch{ log('复制失败,浏览器拒绝了剪贴板权限','l-err'); }
-};
+$('btnCopy').onclick=()=>copyFrom($('log'),'日志');
 
 /* ── 开机自检 ──
    这行原本写死「均已自检通过」，但代码里并没有任何自检。
