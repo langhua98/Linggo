@@ -160,6 +160,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 }
 .stat-grid span{display:block;font-size:10px;color:var(--dim);margin-top:3px}
 .stat-grid b.mv{color:var(--ok)}
+.stat-grid b.ok{color:var(--ok)}
+.stat-grid b.bad{color:var(--warn)}
 #folded{font-size:11px;color:var(--dim);margin-top:7px;line-height:1.7;word-break:break-all}
 
 /* 手机上让它换行,不要横向滚动 —— 一行放不下时,被截到屏幕外的往往正是
@@ -239,7 +241,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="eyebrow">2 · 状态</p>
   <div class="stat-grid">
     <div><b id="st-move">—</b><span>动静（由姿态帧实测）</span></div>
-    <div><b id="st-att">—</b><span>姿态 Roll / Pitch / Yaw</span></div>
+    <div><b id="st-att">—</b><span id="st-att-sub">倾斜（对地）</span></div>
     <div><b id="st-batt">—</b><span>电量</span></div>
     <div><b id="st-up">—</b><span>云台已运行</span></div>
   </div>
@@ -249,9 +251,16 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 <!-- 控制 -->
 <section>
   <p class="eyebrow">3 · 控制</p>
-  <div class="row" style="margin-bottom:14px">
+  <div class="row" style="margin-bottom:10px">
     <button id="btnCheck" class="primary" disabled>一键自检</button>
   </div>
+  <div class="row" style="margin-bottom:14px">
+    <button id="btnLevel" disabled>一键调平</button>
+    <button id="btnHome" disabled>一键复位</button>
+  </div>
+  <p class="note" style="margin-top:0"><b>调平</b>只摆平地平线，保留你调好的镜头仰角；
+    <b>复位</b>把两路都归零 —— 手机竖屏、垂直于地面。两个都不动方向（偏航）。
+    需要先跑一次自检来测出槽位映射。<span id="lvlStat"></span></p>
   <div id="check-panel" hidden>
     <div class="chk-head"><span id="chk-step">准备中…</span><span id="chk-eta"></span></div>
     <div class="chk-bar"><i id="chk-fill"></i></div>
@@ -316,6 +325,16 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 <!-- 高级 -->
 <details id="adv">
   <summary>高级 / 协议</summary>
+
+<section>
+  <p class="eyebrow">原始姿态</p>
+  <div class="stat-grid">
+    <div><b id="st-euler">—</b><span>欧拉角 Roll / Pitch / Yaw</span></div>
+    <div><b id="st-grav">—</b><span>机体系重力 x / y / z</span></div>
+  </div>
+  <p class="note">这台云台以「+Y 朝下」为水平，所以静止时 Roll ≈ −89 是<b>安装偏置</b>不是倾斜。
+    主面板显示的倾斜角取自重力矢量与基准轴的夹角，不受这个偏置影响。</p>
+</section>
 <!-- 报文 -->
 <section>
   <p class="eyebrow"><span>当前报文</span><span id="pktLen">21 B</span></p>
@@ -454,6 +473,41 @@ function decodeQuat(pl){
   for(let i=0;i<16;i++) view.setUint8(i, pl[24+i]);
   return { w:view.getFloat32(0,true), x:view.getFloat32(4,true), y:view.getFloat32(8,true), z:view.getFloat32(12,true) };
 }
+/* ── 水平度 ──
+   四元数本来就是以重力为参考的,把世界系的「下」转回机体系,就得到机体系里的重力方向。
+   拿真机那帧算出来是 (-0.0249, 0.9995, -0.0177) —— 几乎正好落在 +Y 轴上,偏离仅 1.7°。
+   所以状态栏一直显示的那个 Roll ≈ -89 根本不是倾斜,是机体系差 90° 的安装偏置:
+   这台云台以「+Y 朝下」为水平。真实倾斜是重力与该轴的夹角,不需要任何基准标定。
+
+   基准轴自动检测而不是写死 +Y —— 换成横屏挂载重力会落到别的轴上,写死就错了;
+   三个分量都不占优时说明这套假设不成立,如实报测不了,别算出一个假数糊弄人。
+
+   另外两个分量取 asin 就是两路偏差,实测正交可加:
+     横滚偏 5° → gz = -0.0872(-5.00°),gx 不变
+     俯仰偏 6° → gx = +0.1045(+6.00°),gz 不变 */
+function gravityBody(q){
+  const {w,x,y,z}=q;
+  // 旋转矩阵的转置乘世界系「下」。世界系的下是 +Z 还是 -Z 只影响符号、不影响倾斜量。
+  const R=[[1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y)],
+           [2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x)],
+           [2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)]];
+  const v=[0,0,-1];
+  return [0,1,2].map(i=>R[0][i]*v[0]+R[1][i]*v[1]+R[2][i]*v[2]);
+}
+const DEG=180/Math.PI, asinDeg=v=>Math.asin(Math.max(-1,Math.min(1,v)))*DEG;
+function levelOf(g){
+  const ax=[0,1,2].reduce((b,i)=>Math.abs(g[i])>Math.abs(g[b])?i:b,0);
+  // 主轴不占优 = 云台被摆成了完全不同的姿态,或者姿态约定跟预期不符
+  if(Math.abs(g[ax])<0.8) return null;
+  const rest=[0,1,2].filter(i=>i!==ax);
+  return {
+    axis: ax, sign: Math.sign(g[ax]),
+    tilt: Math.acos(Math.min(1,Math.abs(g[ax])))*DEG,
+    dev: { [rest[0]]: asinDeg(g[rest[0]]), [rest[1]]: asinDeg(g[rest[1]]) },
+    g,
+  };
+}
+
 function quatToEuler(w,x,y,z){
   const clamp=(v,lo,hi)=>Math.min(hi,Math.max(lo,v));
   const roll  = Math.atan2(2*(w*x+y*z), 1-2*(x*x+y*y));
@@ -573,7 +627,7 @@ function setState(s,txt){
   $('stat').textContent=txt;
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
-   'btnGoto','btnCheck'].forEach(i=>$(i).disabled=!on);
+   'btnGoto','btnCheck','btnLevel','btnHome'].forEach(i=>$(i).disabled=!on);
   if(!on){ stopHold(); clearLimit(); }
   $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
@@ -587,7 +641,7 @@ async function connect(anyDevice){
       ? { acceptAllDevices:true, optionalServices:PROBE }
       : { filters:[{namePrefix:'OM'},{namePrefix:'Osmo'},{namePrefix:'DJI'},{services:[S_FFF0]}], optionalServices:PROBE };
     dev = await navigator.bluetooth.requestDevice(opts);
-    loadDpu(dev.id);
+    loadDpu(dev.id); loadMap(dev.id);
     // 先把历史结论摆出来,省得又白等一次连接。仍然继续连 —— 固件或模式可能变了。
     const prev = loadTried()[dev.id];
     if(prev && prev.verdict==='none')
@@ -701,10 +755,28 @@ const attHist=[];
 const d180 = v => { while(v>180)v-=360; while(v<-180)v+=360; return v; };
 const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
+let lastG=null, lastLevel=null;
+/* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
+   但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
+function renderLevel(){
+  const el=$('st-att'), sub=$('st-att-sub');
+  if(!lastLevel){ el.textContent='—'; el.className='';
+    if(sub) sub.textContent='姿态约定与预期不符，测不了'; return; }
+  const {tilt}=lastLevel;
+  el.textContent = tilt.toFixed(1)+'°';
+  el.className = tilt<1 ? 'ok' : (tilt<3 ? '' : 'bad');
+  const ge=$('st-grav');
+  if(ge && lastG) ge.textContent = lastG.map(v=>v.toFixed(3)).join(' / ');
+  if(sub) sub.textContent = axisMap
+    ? `地平线 ${sg1(rollDevOf(lastLevel))} · 仰角 ${sg1(pitchDevOf(lastLevel))}`
+    : '倾斜（跑一次自检即可分出地平线／仰角）';
+}
+const sg1=v=>(v>=0?'+':'')+v.toFixed(1)+'°';
+
 let traceBuf=null, attSeq=0, attRec=null;
 function pushAtt(e){
   attSeq++;
-  if(attRec) attRec.push({t:Date.now(), yaw:e.yaw, pitch:e.pitch, roll:e.roll});
+  if(attRec) attRec.push({t:Date.now(), yaw:e.yaw, pitch:e.pitch, roll:e.roll, g:lastG});
   const now=Date.now();
   lastEuler=e;
   if(traceBuf) traceBuf.push({yaw:e.yaw, pitch:e.pitch, roll:e.roll});
@@ -796,7 +868,9 @@ function decode(m, hide){
   if(cmdSet===0x04 && cmdId===0x05 && pl.length>=40){
     const q=decodeQuat(pl), e=quatToEuler(q.w,q.x,q.y,q.z);
     const r0=v=>(Math.round(v)===0?0:Math.round(v));   // 免得出现 "-0"
-    $('st-att').textContent = `${r0(e.roll)} / ${r0(e.pitch)} / ${r0(e.yaw)}`;
+    lastG = gravityBody(q); lastLevel = levelOf(lastG);
+    renderLevel();
+    $('st-euler').textContent = `${r0(e.roll)} / ${r0(e.pitch)} / ${r0(e.yaw)}`;
     $('st-up').textContent = fmtDur((pl[12]|(pl[13]<<8)|(pl[14]<<16)|(pl[15]<<24))>>>0);
     pushAtt(e);
   }
@@ -841,6 +915,31 @@ const FIELDS=[['f-magic',1],['f-len',2],['f-crc8',1],['f-addr',2],['f-seq',2],['
    速度模式下滑块里的数不是角度而是速度值,本机实测约 0.11 °/s 每单位
    (spd=100 连发量到 10.9°/s)。默认值只是这台 OM6 的经验值,标定跑完就用实测覆盖,
    并按 dev.id 存起来 —— 换一台设备标度不一定一样,不能串味。 */
+/* ── 槽位 → 哪一路偏差 ──
+   载荷是 [yaw, roll, pitch, mode, time],但真机上 roll 槽位驱动的到底是不是横滚电机、
+   它改变的是 gx 还是 gz,一直没验过(偏航验过很多轮,俯仰和横滚只在假云台上跑过)。
+   调平/复位不能建在假设上,所以让自检把它测出来:横滚段本来就是单轴的;
+   俯仰段虽然带偏航,但**偏航是绕重力轴转的,不改变机体系重力**,同样干净。
+   { rollSlot:{comp, sign}, pitchSlot:{comp, sign} } —— comp 是 g 的分量下标。 */
+const MAP_KEY='om_ble_axmap';
+let axisMap=null;
+function loadMap(id){
+  axisMap=null;
+  if(!id) return;
+  try{ axisMap = JSON.parse(localStorage.getItem(MAP_KEY)||'{}')[id] || null; }catch{}
+}
+function saveMap(m){
+  axisMap=m;
+  if(dev && dev.id){
+    try{ const all=JSON.parse(localStorage.getItem(MAP_KEY)||'{}');
+      all[dev.id]=m; localStorage.setItem(MAP_KEY,JSON.stringify(all)); }catch{}
+  }
+  renderLevel();
+}
+// 「地平线歪多少」和「仰角偏多少」—— 没学过映射时返回 null,不瞎猜
+const rollDevOf  = L => (axisMap && L) ? L.dev[axisMap.rollSlot.comp]  * axisMap.rollSlot.sign  : null;
+const pitchDevOf = L => (axisMap && L) ? L.dev[axisMap.pitchSlot.comp] * axisMap.pitchSlot.sign : null;
+
 const DPU_KEY='om_ble_dpu', DPU_DEFAULT=0.11;
 let degPerUnit=DPU_DEFAULT, dpuMeasured=false;
 function loadDpu(id){
@@ -1296,7 +1395,7 @@ const CHK_PLAN=[
 const CHK_TOTAL = CHK_PLAN.reduce((a,p)=>a+p.ms, 0);
 
 // ── 清单面板 ──
-const CHK_ROWS=[['link','链路'],['fb','姿态反馈'],['base','静止基线'],
+const CHK_ROWS=[['link','链路'],['fb','姿态反馈'],['base','静止基线'],['level','水平度'],
                 ['yaw','偏航'],['pitch','俯仰'],['roll','横滚'],
                 ['cross','串轴'],['stop','停车']];
 function chkReset(){
@@ -1440,6 +1539,34 @@ function chkAnalyse(samples, cmdLog, t0, link, units, partial){
     }
   }
 
+  /* 槽位 → 偏差分量。横滚段是单轴的;俯仰段虽然带偏航,但偏航绕重力轴转、
+     不改变机体系重力,所以对 g 的影响同样只来自俯仰。看哪个分量变化更大即可。 */
+  const slotDelta={roll:[0,0,0], pitch:[0,0,0]};
+  for(let i=1;i<samples.length;i++){
+    if(!samples[i].g || !samples[i-1].g) continue;
+    const iA=segIdx(samples[i-1].t); if(iA!==segIdx(samples[i].t)) continue;
+    const v=CHK_PLAN[iA].v, c1=cmdAt(samples[i-1].t);
+    const slot = Math.sign(v.roll||0) ? 'roll' : (Math.sign(v.pitch||0) ? 'pitch' : null);
+    if(!slot) continue;
+    const sgn=Math.sign(c1[slot]); if(!sgn) continue;
+    for(const k of [0,1,2]) slotDelta[slot][k] += (samples[i].g[k]-samples[i-1].g[k])*sgn;
+  }
+  const pick=d=>{ const k=[0,1,2].reduce((b,i)=>Math.abs(d[i])>Math.abs(d[b])?i:b,0);
+    return Math.abs(d[k])<0.02 ? null : {comp:k, sign:Math.sign(d[k])}; };
+  const mR=pick(slotDelta.roll), mP=pick(slotDelta.pitch);
+  if(!partial && mR && mP && mR.comp!==mP.comp){
+    saveMap({rollSlot:mR, pitchSlot:mP});
+    log(`  槽位映射:roll 槽 → g[${mR.comp}]（地平线），pitch 槽 → g[${mP.comp}]（仰角）`);
+  }
+
+  // 水平度:静止段直接读,不受任何标定影响
+  const L0 = samples.find(x=>x.g && segIdx(x.t)===0);
+  const lv = L0 ? levelOf(L0.g) : null;
+  if(lv) chkSet('level', lv.tilt<1?'✅':(lv.tilt<3?'⚠':'❌'),
+    `倾斜 ${lv.tilt.toFixed(1)}°（基准轴 ${'XYZ'[lv.axis]}）`,
+    lv.tilt<1?'':(lv.tilt<3?'warn':'bad'));
+  else if(!partial) chkSet('level','⚠','姿态约定与预期不符，测不了水平度','warn');
+
   const drift = baseT>0 ? baseD/baseT : 0;
   // 增量分析时,还没跑到的段一律留着 ⏳,别把「还没轮到」写成「采样不足」
   if(baseT>0 || !partial)
@@ -1503,6 +1630,81 @@ function chkAnalyse(samples, cmdLog, t0, link, units, partial){
     log(`  ${dead.map(a=>AX_CN[a]).join('、')}不受这条指令控制（很多云台不开放横滚控制，属正常）。`);
   return stopOk;
 }
+/* ── 调平 / 复位 ──
+   反馈用重力矢量而不是 lastEuler:后者带着 90° 的安装偏置,而且 gotoRelative 的
+   容差是 ±2°,对「摆平地平线」来说太粗 —— 2° 的歪是肉眼看得出来的。
+
+   一次只发一帧、等一帧新姿态再决定下一步:速度指令的看门狗约 0.45s,
+   一帧就是一次约 0.45s 的点动,按误差反算速度让它大致走完这段误差(留 0.7 的增益免得过冲)。
+   最低速 10 单位 ≈ 1.1°/s,单次最小步进约 0.5° —— 这是这套指令的物理下限,
+   所以容差定在 ±1°,再小就只能靠云台自己的稳定环了。 */
+const LVL_TOL=1.0, LVL_GAIN=0.7, LVL_BURST=0.45, LVL_TIMEOUT=20000;
+let lvlRunning=false;
+
+async function levelUp(alsoPitch){
+  const what = alsoPitch ? '复位' : '调平';
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(lvlRunning){ log('上一次还没结束','l-err'); return; }
+  if(!lastLevel){
+    log(`${what}:重力没有落在任何一个机体轴附近,姿态约定与预期不符,测不了水平度。`,'l-err'); return; }
+  if(!axisMap){
+    log(`${what}:还没测出槽位映射 —— 先跑一次「一键自检」。`+
+        '若自检里横滚判为无响应,说明这台云台不开放横滚控制,调平做不了。','l-err'); return; }
+
+  const want = alsoPitch ? ['roll','pitch'] : ['roll'];
+  const errOf = k => k==='roll' ? rollDevOf(lastLevel) : pitchDevOf(lastLevel);
+  if(want.every(k=>Math.abs(errOf(k))<=LVL_TOL)){
+    log(`${what}:已经是平的（倾斜 ${lastLevel.tilt.toFixed(1)}°），不用动。`,'l-ack'); return; }
+
+  lvlRunning=true;
+  const watchWas=suppressWatch; suppressWatch=true;
+  $('btnLevel').disabled=true; $('btnHome').disabled=true;
+  const t0=Date.now(), yaw0=lastEuler?lastEuler.yaw:null;
+  let q=0xB400, seen=attSeq, frozen=0, prevErr=null, verdict='';
+  log(`—— ${what}:地平线 ${sg1(rollDevOf(lastLevel))}`+
+      (alsoPitch?` · 仰角 ${sg1(pitchDevOf(lastLevel))}`:'')+` ——`);
+  try{
+    while(true){
+      if(Date.now()-t0>LVL_TIMEOUT){ verdict='timeout'; break; }
+      const e={roll:rollDevOf(lastLevel), pitch:pitchDevOf(lastLevel)};
+      if(want.every(k=>Math.abs(e[k])<=LVL_TOL)){ verdict='done'; break; }
+
+      // 还在发、误差却不再变小 = 顶到行程末端了
+      const mag=Math.max(...want.map(k=>Math.abs(e[k])));
+      if(prevErr!==null && Math.abs(prevErr-mag)<0.15){ if(++frozen>=3){ verdict='stall'; break; } }
+      else frozen=0;
+      prevErr=mag;
+
+      const u=k=>{ if(!want.includes(k) || Math.abs(e[k])<=LVL_TOL) return 0;
+        const n=Math.round(Math.abs(e[k])*LVL_GAIN/LVL_BURST/degPerUnit);
+        return -Math.sign(e[k])*Math.max(10, Math.min(400, n)); };
+      const ur=u('roll'), up=u('pitch');
+      $('lvlStat').textContent=`　地平线 ${sg1(e.roll)}`+(alsoPitch?` · 仰角 ${sg1(e.pitch)}`:'');
+      await send(buildDuml({seq:(++q)&0xffff, flags:0x40, cmdSet:0x04, cmdId:0x0c,
+        payload:[0,0, ...i16(ur), ...i16(up), 0x80, 15]}));
+
+      seen=attSeq;                                   // 等一帧新的实测姿态再决定下一步
+      const wait=Date.now();
+      while(attSeq===seen && Date.now()-wait<2500) await sleep(60);
+    }
+  } finally {
+    try{ await send(buildDuml({seq:0xB4ff, flags:0x40, cmdSet:0x04, cmdId:0x0c,
+      payload:[0,0,0,0,0,0,0x80,1]})); }catch{}
+    lvlRunning=false; suppressWatch=watchWas;
+    $('btnLevel').disabled=false; $('btnHome').disabled=false;
+    $('lvlStat').textContent='';
+  }
+  const now=lastLevel;
+  const tail=`地平线 ${sg1(rollDevOf(now))}`+(alsoPitch?` · 仰角 ${sg1(pitchDevOf(now))}`:'')+
+             `　总倾斜 ${now.tilt.toFixed(1)}°　用时 ${((Date.now()-t0)/1000).toFixed(1)}s`+
+             (yaw0!==null && lastEuler ? `　方向变化 ${sg1(d180(lastEuler.yaw-yaw0))}` : '');
+  if(verdict==='done')       log(`✅ ${what}完成。`+tail,'l-ack');
+  else if(verdict==='stall') log(`⚠ ${what}中止:还在发指令但误差不再变小,顶到行程末端了。`+tail,'l-err');
+  else                       log(`⚠ ${what}超时（${LVL_TIMEOUT/1000}s）未收敛。`+tail,'l-err');
+}
+$('btnLevel').onclick=()=>levelUp(false);
+$('btnHome').onclick =()=>levelUp(true);
+
 $('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
   selfCheck().finally(()=>{ $('btnCheck').disabled=false; }); };
 
