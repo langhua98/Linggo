@@ -748,6 +748,10 @@ function setState(s,txt){
   $('dot').className='dot'+(s?' '+s:'');
   $('stat').textContent=txt;
   const on = s==='on';
+  /* 断开时 activeWrite 并不会被清掉,所以「有没有可写特征」不能当作「连着没有」。
+     refreshRiskBtns 早先就是拿 activeWrite 判的,结果断开后它把 setState 刚置灰的
+     几个按钮又点亮了。连接状态只有 setState 知道,记在这儿供它取用。 */
+  linkOn = on;
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan',
    'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow']
@@ -759,6 +763,7 @@ function setState(s,txt){
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
   // btnStandby 不跟着 on 一刀切:没锁定过就该一直是灰的,单独交给 refreshStandbyBtn 判。
   refreshStandbyBtn();
+  refreshRiskBtns();
 }
 
 async function connect(anyDevice){
@@ -1026,6 +1031,8 @@ function pushAtt(e){
 /* 发完控制帧自动回报「到底动没动」。连发时只有最后一次会报(靠 motionWatch 序号作废前面的),
    一键诊断和转动测试期间关掉,它们自己有结论。 */
 let motionWatch=0, suppressWatch=false;
+// 连没连着只有 setState 知道 —— activeWrite 断开后不会被清,拿它当连接状态会判错
+let linkOn=false;
 function watchMotion(tag, delay=1600){
   // 必须在**排队时**就判,不能只在触发时判:转动测试里停止帧的定时器
   // 比 suppressWatch=false 晚 200ms 才到点,于是紧跟着正确结论又打一条
@@ -1194,7 +1201,14 @@ async function send(bytes){
     if(bytes[0]===0x55 && bytes.length>8) bulkStat.pend.set(bytes[6]|(bytes[7]<<8), Date.now());
   }else{
     log('TX  '+hex(bytes),'l-tx');
-    if(bytes[0]===0x55 && bytes.length>10 && bytes[9]===0x04 && (bytes[10]===0x0c || bytes[10]===0x14))
+    /* 零速帧本来就不该让云台动,拿它去问「动没动」,答案必然是「纹丝不动」——
+       那不是结论,是我们自己问错了问题。扫描收尾、停止按钮、各种保险都会发零速帧,
+       结果每次扫描完都甩出一条红色 ❌,看着像控制坏了。只对真正带速度的帧发问。
+       04/14 不豁免:它是角度指令,全零意味着「转到 0,0,0」,那是会动的。 */
+    const isStop = bytes[9]===0x04 && bytes[10]===0x0c && bytes.length>17 &&
+      !(bytes[11]|bytes[12]|bytes[13]|bytes[14]|bytes[15]|bytes[16]);
+    if(bytes[0]===0x55 && bytes.length>10 && bytes[9]===0x04 &&
+       (bytes[10]===0x0c || bytes[10]===0x14) && !isStop)
       watchMotion('控制帧 '+kindKey(bytes[9],bytes[10]));
   }
   const n=parseInt($('chunk').value,10);
@@ -2733,6 +2747,15 @@ async function cmdScan(){
   silencers.forEach(s=>log(
     `  ⚠ 0x${s.win[0].toString(16).padStart(2,'0')}~0x${s.win[s.win.length-1].toString(16).padStart(2,'0')} `+
     `里有一条让遥测停了（待机/休眠候选），这 ${s.win.length} 条已整窗记入永久跳过表`,'l-err'));
+  /* 一次动作、一次静默都没有 —— 这是个干净的阴性结论,不是「没测到」。
+     那就该当场说清下一段往哪找,否则人只会对着同一段范围反复扫(真机上就连扫了三遍)。
+     下一段往哪找是**推断**,得标出来:电池状态走的是 05/06,所以电源相关的多半在 cmdSet 0x05;
+     通用组 0x00 其次(版本查询 00/01 就在那儿)。 */
+  if(!movers.length && !silencers.length && !aborted)
+    log(`  这一段没有会动的、也没有让遥测停的 —— cmdSet 0x${cs.toString(16)} 的 `+
+        `0x${from.toString(16)}~0x${to.toString(16)} 可以排除了。接着找待机指令的话:`+
+        `电池状态走的是 05/06,所以 cmdSet 0x05 最像;通用组 0x00 其次。`+
+        `（这是按已见到的分组推断,不是定论）`);
   try{
     const all=JSON.parse(localStorage.getItem(SCAN_KEY)||'{}');
     all[(dev&&dev.id)||'?'] = Object.assign(all[(dev&&dev.id)||'?']||{},
@@ -3019,8 +3042,23 @@ async function tryCmd(ci, opts={}){
     // 全部试完以后由 narrowStandby() 自己收尾开关。
     if(!opts.fromNarrow) restoreIds.push('btnNarrow');
     restoreIds.forEach(id=>$(id).disabled=!activeWrite);
+    refreshRiskBtns(opts.fromNarrow);
   }
 }
+
+/* 风险确认框没勾时,那几个按钮直接置灰。原来是点了才在日志里回一句「请先勾选」——
+   日志在页面很下面,真机上用户连点了十三次都没看见,只觉得按钮坏了。
+   拒绝的理由要长在按钮旁边,不是藏在日志里。 */
+function refreshRiskBtns(keepNarrowOff){
+  if(tryRunning || labRunning) return;      // 有任务在跑时别抢着开关按钮
+  const ok=$('tryOk') && $('tryOk').checked;
+  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnTryCi','btnNarrow'].forEach(id=>{
+    if(!$(id)) return;
+    if(id==='btnNarrow' && keepNarrowOff) return;
+    $(id).disabled = !linkOn || !activeWrite || !ok;
+  });
+}
+$('tryOk').addEventListener('change', ()=>refreshRiskBtns());
 $('btnTry01').onclick=()=>tryCmd(0x01);
 $('btnTry07').onclick=()=>tryCmd(0x07);
 $('btnTry08').onclick=()=>tryCmd(0x08);
