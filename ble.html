@@ -857,7 +857,8 @@ async function discover(){
    还广不广播。这里不猜、不发任何未知 cmdId —— 全靠已验证的东西:重连 +
    discover()（它本来就会重新订阅通知并自动发一帧 00/01 查版本,是全项目最安全的只读帧）。
    顺带把「睡着时到底广播不广播」这件事记下来,因为它决定了「休眠」按钮该不该存在。 */
-const WAKE_KEY='om_ble_wake';   // { devId: { verdict:'unreachable'|'link-only'|'awake', att:N, at:ts } }
+// reconnected 记的是「这次到底有没有真的重连过」——本来就连着的那种成功说明不了任何事
+const WAKE_KEY='om_ble_wake';   // { devId: { verdict, att:N, reconnected:bool, at:ts } }
 function loadWake(){
   try{ return JSON.parse(localStorage.getItem(WAKE_KEY)||'{}')[(dev&&dev.id)||'?'] || null; }catch{ return null; }
 }
@@ -896,8 +897,12 @@ async function wakeUp(){
       }
     }
 
+    /* 「本来就连着」和「从睡着里重连上来」得分清楚:前者根本没考验过「睡着时够不够得着」,
+       把它也记成 awake,报告里就会显示「睡着时仍在广播」——那是个我们从没验证过的结论。
+       结论要带上它自己的成色。 */
+    let reconnected=false;
     if(dev.gatt.connected){
-      log('本来就连着,先看它醒没醒');
+      log('本来就连着,先看它醒没醒 —— 注意:这一次没有考验「睡着时能不能被叫醒」');
     }else{
       // 睡着的设备可能既不连上也不报错地一直挂着,不加超时会卡死在这一步。
       const DELAYS=[1000,2000,4000];
@@ -910,7 +915,7 @@ async function wakeUp(){
             new Promise((_,rej)=>setTimeout(()=>rej(new Error('12s 超时')),12000))
           ]);
           await discover();
-          connected=true;
+          connected=true; reconnected=true;
           break;
         }catch(e){
           log(`第 ${i+1} 次重连失败: ${(e&&(e.message||e.name))||String(e)}`,'l-err');
@@ -921,7 +926,7 @@ async function wakeUp(){
         setState('','连不上');
         log('❌ 连不上 —— 它睡着时不广播。浏览器只能当中心设备、不能广播,物理上够不着它,只能走过去按电源键或展开云台。这是硬限制,不是功能没做。','l-err');
         log('既然叫不醒,「休眠」按钮就是单程票 —— 先别做。','l-err');
-        saveWake({verdict:'unreachable', att:0, at:Date.now()});
+        saveWake({verdict:'unreachable', att:0, reconnected:false, at:Date.now()});
         return;
       }
     }
@@ -934,11 +939,13 @@ async function wakeUp(){
 
     if(gained>0){
       log(`✅ 醒了（连上后收到 ${gained} 帧姿态）`,'l-ack');
-      saveWake({verdict:'awake', att:gained, at:Date.now()});
+      saveWake({verdict:'awake', att:gained, reconnected, at:Date.now()});
+      if(!reconnected) log('  （本来就连着,所以这次证明不了「睡着也叫得醒」—— '+
+        '要验那个,得先让它真睡过去,再点唤醒）');
       setState('on', `${dev.name||'设备'} · 就绪`);
     }else{
       log('⚠ 链路醒了,机器没醒（GATT 连上了,但 8 秒没有姿态帧）。它可能还在浅睡,再点一次或动一下云台试试。','l-err');
-      saveWake({verdict:'link-only', att:0, at:Date.now()});
+      saveWake({verdict:'link-only', att:0, reconnected, at:Date.now()});
     }
   }catch(e){
     log('唤醒过程出错: '+((e&&(e.message||e.name))||String(e)),'l-err');
@@ -2623,6 +2630,15 @@ async function cmdScan(){
     /* 先武装,再检测:扫描正式开始前先观察 2 秒,数基线速率。没有基线,「安静」什么都
        说不明——假云台常年被测试关掉推送,真机也有本来就不怎么主动推的型号,不武装的话
        满屏都是假阳性,这条护栏比检测本身还重要。 */
+    /* 开扫之前先等云台真的停稳。一键探测的顺序是「自检 → 收尾调平 → 立刻开扫」,
+       真机上调平结束到开扫只隔了 12 毫秒 —— 云台还在稳,而动作看门狗一上来就拿相邻两帧
+       姿态相减,残余运动超过 5° 就会被记成「这条指令让云台动了」,窗口正好落在扫描最开头
+       那几条上,然后被永久跳过。冤枉一条指令比漏掉一条更糟:它会被从此排除在搜索之外,
+       而我们再也不会回去看它一眼。 */
+    if(lastEuler && !(await waitSettle()))
+      log('  开扫前云台没能在 3 秒内稳住,开头几条的「会动」判定可能不准 —— '+
+          '真被标了就用「清空本机跳过表」撤掉再扫一次','l-err');
+
     const armN0=rxPushN;
     await sleep(2000);
     const armDelta=rxPushN-armN0;
@@ -2630,6 +2646,10 @@ async function cmdScan(){
     if(!silenceArmed) log(`  这台机器本来就不怎么主动推送（2 秒 ${armDelta} 帧），静默检测不武装 —— `+
       `没有基线的话「安静」什么都说明不了`,'l-err');
     else log(`  静默检测已武装（2 秒基线 ${armDelta} 帧，约 ${(armDelta/2).toFixed(1)}Hz）`,'l-ack');
+
+    // 基准要在「等停 + 武装」都过完之后重取:上面那两步加起来好几秒,
+    // 拿开跑前那一帧当基准的话,第一次比对跨的是整段等待,等于把等待期间的运动算到第一条头上。
+    prevAtt = lastEuler?{...lastEuler}:null; seenSeq = attSeq;
 
     for(let ci=from; ci<=to; ci++){
       if(stimAbort){ aborted='手动中止'; break; }
@@ -3354,7 +3374,11 @@ function buildReport(){
     const w=loadWake();
     if(!w) L.push('上次唤醒：（还没试过）');
     else{
-      const WHY={ awake:'（睡着时仍在广播 —— 浏览器够得着它）',
+      /* awake 分两种成色:真重连过才谈得上「睡着时够得着」;本来就连着的那种,
+         什么都没证明,不能拿它去支撑一个我们从没验证过的结论。 */
+      const WHY={ awake: w.reconnected
+          ? '（真的重连上来了 —— 睡着时仍在广播，浏览器够得着它）'
+          : '（⚠ 当时本来就连着，没有考验过「睡着时能不能被叫醒」，这条不算数）',
         'link-only':'（链路够得着,但那一戳没把机器叫醒）',
         unreachable:'（睡着时不广播 —— 浏览器物理上够不着,唤醒这条路不存在）' };
       const VERDICT_TXT={ awake:`✅ 醒了（连上后 ${w.att} 帧姿态）`,
