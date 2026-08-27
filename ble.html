@@ -502,6 +502,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnTryReset">一键复位</button>
     <button id="btnTryStop" class="danger" disabled>中止</button>
   </div>
+  <p class="note" style="margin-top:8px">0x01、0x07 已在真机上各试两次，只回返回码 0、没有可见效果。</p>
   <div id="try-rows" style="margin-top:12px"></div>
 </section>
 
@@ -511,6 +512,12 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnSpin" disabled>转动测试（会真的转）</button>
     <button id="btnCal" disabled>速度标定</button>
   </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnMotorCheck" disabled>电机自检例程（会转遍各轴）</button>
+  </div>
+  <p class="note"><b>这是云台自己的例程（0x08），不是上面那个「一键自检」</b> —— 上面那个只测量、
+    不驱动电机例程。点下去云台会转遍各轴、几十秒后自己回位。
+    <b>我们分不清它到底是自检还是校准，别频繁点。</b></p>
   <p class="note">转动测试跑三段，每段窗口都是 <b>2.9 秒</b>：
     <b>①空白对照</b>什么都不发，量出云台静止时的漂移底噪；
     <b>②单帧</b>发一条速度帧再发停止；
@@ -723,7 +730,7 @@ function setState(s,txt){
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan',
-   'btnTry01','btnTry07','btnTry08','btnTryAgain']
+   'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -856,6 +863,9 @@ const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
 let lastG=null, lastLevel=null, lastVersion=null;
 let lastBatt=null, lastBattDiff=undefined;   // lastBattDiff 只用来判断「跟上一帧比变没变」,不是校验结果本身
+// 04/30 只在电机自检例程期间见过,含义没确认过 —— 只记「收到了什么」,不编它的意思。
+// seq30 靠每来一帧就加一,给 tryCmd 的采样循环当「有没有新帧」的看门狗用,沿用 attSeq 的思路。
+let last30=null, seq30=0;
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
@@ -980,16 +990,24 @@ function decode(m, hide){
   /* 电池:真机四个样本坐实 [0]=电量%、[1:3]=总压 mV(LE u16)、[16:18]/[18:20]=两节电芯 mV,
      跨两次会话、跨一次充电,电芯和 − 总压恒等于 14~15mV。但 05/06 长度不定 —— 回归测试会喂
      一条 4 字节的短帧([73,0,0,1]),这时候电压那段读出来的是垃圾,必须长度够、且解出的总压
-     落在 6000~8600mV 这个合理区间,才敢信、才显示电压;不然维持原来「只有百分比」的老格式,
-     一个字都不变。 */
+     落在 6000~9000mV 这个合理区间,才敢信、才显示电压;不然维持原来「只有百分比」的老格式,
+     一个字都不变。上限原来卡在 8600,但高压电芯满电 4.35V/节、两节 8.7V,真机满电实测过
+     8702mV(两节各 4357mV,和−总压 12mV,规律照旧成立)——8600 是拍脑袋定的,一充满就被
+     卡掉,改成 9000 留出余量。why 记下没显示电压时的真实原因('short'=帧不够长没有电压
+     字段、'range'=总压解出来了但不在合理区间),不能让一个原因去顶另一个原因的锅 ——
+     之前不分青红皂白都归成「没有电压字段」,这次就把长度够、只是总压超区间的情况
+     错报成了「只有 N 字节没有电压字段」。 */
   if(cmdSet===0x05 && cmdId===0x06 && pl.length){
     const pct=pl[0], charging=pl[pl.length-1]===1;
-    let pack=null, c1=null, c2=null;
-    if(pl.length>=20){
-      const p=pl[1]|(pl[2]<<8);
-      if(p>=6000 && p<=8600){ pack=p; c1=pl[16]|(pl[17]<<8); c2=pl[18]|(pl[19]<<8); }
+    let pack=null, c1=null, c2=null, why=null, packRaw=null;
+    if(pl.length<20){
+      why='short';
+    }else{
+      packRaw=pl[1]|(pl[2]<<8);
+      if(packRaw>=6000 && packRaw<=9000){ pack=packRaw; c1=pl[16]|(pl[17]<<8); c2=pl[18]|(pl[19]<<8); }
+      else why='range';
     }
-    lastBatt = { pct, charging, pl:[...pl], pack, c1, c2,
+    lastBatt = { pct, charging, pl:[...pl], pack, packRaw, c1, c2, why,
       sum:  (c1!==null && c2!==null) ? c1+c2 : null,
       diff: (pack!==null && c1!==null && c2!==null) ? (c1+c2-pack) : null };
     $('st-batt').textContent = pack!==null
@@ -1004,6 +1022,9 @@ function decode(m, hide){
             `与实测的 14mV 不符,这台机器的字段布局可能不同`,'l-err');
     }
   }
+
+  // 0x08 例程期间会推送 04/30,含义未确认 —— 只记下来,tryCmd 的轨迹日志里如实带一行「收到了」。
+  if(cmdSet===0x04 && cmdId===0x30){ last30=[...pl]; seq30++; }
 
   // 姿态帧:载荷 [24:40]=四元数、[12:16]=毫秒计时器。折叠与否都要解 —— 状态盘靠它。
   if(cmdSet===0x04 && cmdId===0x05 && pl.length>=40){
@@ -2531,8 +2552,16 @@ async function cmdScan(){
    0x01/0x07/0x08 是整个 cmdSet=04 扫描范围里唯一「既应答、又真的让云台动了」的未知指令,
    但扫描每 200ms 发一条、姿态反馈只有约 1Hz,两帧之间会发出去好几条,分不清那次约 90°
    翻转是哪一条引发的 —— 所以在这里一条一条单独发、单独看反馈,而不是接着盲扫。 */
-const TRY_KEY='om_ble_try';   // { devId: { '1': {verdict, dyaw, dpitch, droll, axisBefore, axisAfter, at} } }
+const TRY_KEY='om_ble_try';   // { devId: { '1': {verdict, dyaw, dpitch, droll, axisBefore, axisAfter, at, elapsed} } }
 let tryRunning=false, tryAbort=false, lastTriedCi=null;
+// 例程本身要跑几十秒(0x08 实测十几到几十秒不等),上限只是为了不卡死,不是判据本身 ——
+// 判据是「静止」,等到了就提前退出,等不到才会撞上这个上限。
+const TRY_MAX_MS=40000;
+/* 「停下来了」不等于「切换是持久的」。真机上 0x08 停在 90° 横滚上好几十秒,
+   我们看一眼就宣布「横竖屏切换」,而 45 秒后它自己回了原位 —— 推翻那个结论的,
+   正是「它后来自己回来了」这件事。所以基准看起来变了以后还要再盯一段:
+   回位了就是例程,盯满了才敢叫持久切换。用 let 是为了测试能把它调小跑。 */
+let TRY_CONFIRM_MS=45000;
 
 function loadTry(){
   // 每次都读 localStorage、不缓存到内存变量 —— buildReport 换个会话也要读得出结果。
@@ -2563,11 +2592,13 @@ function renderTryRow(ci, icon, text, cls){
 }
 const fmtAxis = a => a===null||a===undefined ? '?' : a;
 
-async function tryCmd(ci){
+async function tryCmd(ci, opts={}){
   // 前置检查都要红字说明、不能静默 return —— 用户点了按钮却什么都没发生,会被误当成「这条没反应」。
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(labRunning || tryRunning){ log('有别的任务在跑（实验室采集/扫描/试验之一),等它结束','l-err'); return; }
-  if(!$('tryOk').checked){ log('试之前请先勾选风险确认。','l-err'); return; }
+  // 电机自检例程按钮豁免这个确认框:0x08 已经试过、后果已知,风险确认框拦的是「未知指令」,
+  // 这条已经不是未知的了,再拦没有意义。三个「试 0xXX」按钮照旧要勾。
+  if(!opts.skipRiskGate && !$('tryOk').checked){ log('试之前请先勾选风险确认。','l-err'); return; }
   if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果,试了也白试','l-err'); return; }
   // 电量闸门:电机受限时「这条没反应」既可能是指令真没用,也可能是转不动,
   // 这两种情况在这里长得一模一样,却会得出完全相反的结论 —— 宁可不测,不可信错。
@@ -2584,7 +2615,7 @@ async function tryCmd(ci){
      stimCapture / cmdScan / autoCapture 开头都已经这么做了,这里漏了。 */
   tryRunning=true; tryAbort=false; stimAbort=false; lastTriedCi=ci;
   $('btnTryStop').disabled=false;
-  ['btnTry01','btnTry07','btnTry08','btnTryAgain'].forEach(id=>$(id).disabled=true);
+  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck'].forEach(id=>$(id).disabled=true);
   renderTryRow(ci,'⏳','试验中…','');
   try{
     const before={ euler:{...lastEuler}, g: lastG?[...lastG]:null, axis: lastLevel?lastLevel.axis:null };
@@ -2595,22 +2626,99 @@ async function tryCmd(ci){
     // 就发一帧,不连发 —— 连发是速度类指令的用法,这三条身份未知,连发等于把风险敞口放大好几十倍。
     await send(buildDuml({seq:0xCA00|ci, flags:0x40, cmdSet:0x04, cmdId:ci, payload:[]}));
 
-    // 6 秒观察窗,每 200ms 采一次样,记住相对 before 的最大偏移、以及末尾 1 秒有没有稳住。
+    /* 观察窗改成「等它停下来」而不是固定 6 秒:0x08 是一段例程(转遍各轴再自己回位),
+       固定窗口只看窗口结束那一眼,例程还没跑完时正好停在某个中间姿态上,瞬态扫掠就被
+       读成了持久切换——这次真机上就是这么错的。改成边采边等,等到「静止」才收尾;
+       等不到就撞 TRY_MAX_MS 上限,上限只是为了不卡死,不是判据本身。
+       不能直接调 waitSettle() ——它只管等、不采样,这里既要等又要采,只能沿用它的判据自己写。 */
     const samples=[];
-    let maxDyaw=0, maxDpitch=0, maxDroll=0;
+    let maxDyaw=0, maxDpitch=0, maxDroll=0, settled=false, lastSec=0, prevAxis=before.axis;
+    let seen30=seq30;
     const t0=Date.now();
-    while(Date.now()-t0<6000){
+    while(Date.now()-t0<TRY_MAX_MS){
       if(stimAbort || tryAbort) break;
       await sleep(200);
       if(!lastEuler) continue;
+      const now=Date.now();
       const dy=Math.abs(d180(lastEuler.yaw-before.euler.yaw));
       const dp=Math.abs(d180(lastEuler.pitch-before.euler.pitch));
       const dr=Math.abs(d180(lastEuler.roll-before.euler.roll));
       maxDyaw=Math.max(maxDyaw,dy); maxDpitch=Math.max(maxDpitch,dp); maxDroll=Math.max(maxDroll,dr);
-      samples.push({t:Date.now(), yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll,
-                     axis: lastLevel?lastLevel.axis:null});
+      const axisNow=lastLevel?lastLevel.axis:null;
+      samples.push({t:now, yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll, axis:axisNow});
+
+      // 例程期间会推 04/30,含义没确认过——如实带一行「收到了」,对不上就只写这些,不编它的意思。
+      if(seq30!==seen30){ seen30=seq30; log(`  收到 04/30 = ${hex(last30)}（例程状态推送，含义未确认）`); }
+
+      /* 主轴一变就立刻记一行,不等整秒:回位那一刻往往正好触发退出,
+         等下一个整秒就永远等不到了,而「什么时候回的位」恰恰是最关键的一条证据。 */
+      if(axisNow!==prevAxis){
+        log(`  t=${((now-t0)/1000).toFixed(1)}s  重力主轴 ${fmtAxis(prevAxis)}→${fmtAxis(axisNow)}`);
+        prevAxis=axisNow;
+      }
+      // 轨迹摘要,每满 1 秒打一行:光给一个末态结论正是这次误判能发生的原因——
+      // 「转出去又回来」必须在日志里看得见,不能只留窗口终点那一眼。
+      const sec=Math.floor((now-t0)/1000);
+      if(sec>lastSec){
+        lastSec=sec;
+        log(`  t=${sec}s  重力主轴 ${fmtAxis(axisNow)}  偏移 偏航 ${dy.toFixed(1)}° 俯仰 ${dp.toFixed(1)}° 横滚 ${dr.toFixed(1)}°`);
+      }
+
+      // 静止判据:最近连续 3000ms 内,三轴相对该窗口起点的变化都 < 1.5°。
+      // 窗口跨度不足 2800ms 时数据不够、宁可继续等,不提前误判静止。
+      const win=samples.filter(s=>now-s.t<=3000);
+      if(win.length>=2 && now-win[0].t>=2800){
+        const ref=win[0];
+        const stable=win.every(s=>Math.max(
+          Math.abs(d180(s.yaw  -ref.yaw)),
+          Math.abs(d180(s.pitch-ref.pitch)),
+          Math.abs(d180(s.roll -ref.roll)))<1.5);
+        if(stable){ settled=true; break; }
+      }
     }
+    const observeMs=Date.now()-t0;
+    const timedOut = !settled && !(stimAbort||tryAbort) && observeMs>=TRY_MAX_MS;
     if(stimAbort || tryAbort) log('  观察提前中止,只按已采到的样本判定','l-err');
+    else if(timedOut) log(`  观察到 ${(TRY_MAX_MS/1000).toFixed(0)}s 上限仍未静止,结论按此刻的状态给,可能还没跑完`,'l-err');
+
+    /* 确认窗口:静止下来时基准若跟开跑前不同,先别下结论 —— 例程完全可能只是
+       停在中途的某个姿态上歇着(真机上 0x08 就停在 90° 横滚上,几十秒后才自己回位)。
+       再盯一段:回位了就是例程;盯满了还没回,才按持久切换算,而且要在结论里
+       写明「盯了多久」,好让人知道这个结论的有效期。 */
+    let returned=false, confirmMs=0;
+    const axisSettled = lastLevel?lastLevel.axis:null;
+    if(!(stimAbort||tryAbort) && before.axis!==null && axisSettled!==null && axisSettled!==before.axis){
+      log(`  基准看起来从 ${fmtAxis(before.axis)} 变成了 ${fmtAxis(axisSettled)} —— `+
+          `再盯 ${(TRY_CONFIRM_MS/1000).toFixed(0)}s 看它会不会自己回位`);
+      const c0=Date.now();
+      while(Date.now()-c0<TRY_CONFIRM_MS){
+        if(stimAbort || tryAbort) break;
+        await sleep(200);
+        if(!lastEuler) continue;
+        const now=Date.now();
+        const dy=Math.abs(d180(lastEuler.yaw-before.euler.yaw));
+        const dp=Math.abs(d180(lastEuler.pitch-before.euler.pitch));
+        const dr=Math.abs(d180(lastEuler.roll-before.euler.roll));
+        maxDyaw=Math.max(maxDyaw,dy); maxDpitch=Math.max(maxDpitch,dp); maxDroll=Math.max(maxDroll,dr);
+        const axisNow=lastLevel?lastLevel.axis:null;
+        samples.push({t:now, yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll, axis:axisNow});
+        if(seq30!==seen30){ seen30=seq30; log(`  收到 04/30 = ${hex(last30)}（例程状态推送，含义未确认）`); }
+        if(axisNow!==prevAxis){
+          log(`  t=${((now-t0)/1000).toFixed(1)}s  重力主轴 ${fmtAxis(prevAxis)}→${fmtAxis(axisNow)}`);
+          prevAxis=axisNow;
+        }
+        const sec=Math.floor((now-t0)/1000);
+        if(sec>lastSec){
+          lastSec=sec;
+          log(`  t=${sec}s  重力主轴 ${fmtAxis(axisNow)}  偏移 偏航 ${dy.toFixed(1)}° 俯仰 ${dp.toFixed(1)}° 横滚 ${dr.toFixed(1)}°`);
+        }
+        if(axisNow===before.axis){ returned=true; break; }
+      }
+      confirmMs=Date.now()-c0;
+      log(returned ? `  ${(confirmMs/1000).toFixed(1)}s 后自己回位了 —— 是例程,不是持久切换`
+                   : `  盯满 ${(confirmMs/1000).toFixed(0)}s 没回位,按持久切换算`);
+    }
+    const elapsed=Date.now()-t0;
 
     const after={ euler: lastEuler?{...lastEuler}:before.euler, g: lastG?[...lastG]:before.g,
                   axis: lastLevel?lastLevel.axis:before.axis };
@@ -2627,13 +2735,28 @@ async function tryCmd(ci){
       Math.abs(d180(s.pitch-after.euler.pitch)),
       Math.abs(d180(s.roll -after.euler.roll))))) : 99;
 
-    /* 判定顺序从最强证据开始,重力主轴排第一位、且不能用 ΔRoll 代替它:
-       这台机器的欧拉角 roll 带 90° 安装偏置、还跟 yaw 耦合,ΔRoll≈90° 既可能是真的翻转,
-       也可能只是绕 yaw 转了一圈耦合出来的读数,单看 ΔRoll 会把「转了一圈」误判成「翻转了」。
-       重力矢量落在机体哪根轴上不受这个耦合影响,横竖屏切换才会真的换轴,纯粹转个 90° 不会。 */
+    /* 判定顺序从最强证据开始。「例程」必须排在「基准持久改变」前面——
+       例程会转遍各轴、最后回到原位,但半路上重力主轴会短暂偏离 before,
+       如果先判「持久改变」,例程跑到一半主轴恰好换了档就会被当成横竖屏切换那类持久切换,
+       这次真机上 0x08 就是这么错判的:观察窗固定 6 秒,只看第 6 秒那一眼,例程那时还没
+       跑完,正好停在 90° 横滚上,瞬态扫掠被读成了持久切换。例程的前提是「回到原位」,
+       没等它停就谈不上回没回,所以 timedOut 时不允许判成「例程」。
+       重力主轴仍然排在其余判据前面、且不能用 ΔRoll 代替它:这台机器的欧拉角 roll 带 90°
+       安装偏置、还跟 yaw 耦合,ΔRoll≈90° 既可能是真的翻转,也可能只是绕 yaw 转了一圈耦合出来
+       的读数,单看 ΔRoll 会把「转了一圈」误判成「翻转了」。重力矢量落在机体哪根轴上不受这个
+       耦合影响,横竖屏切换才会真的换轴,纯粹转个 90° 不会。 */
     let icon, cls, verdict;
-    if(before.axis!==null && after.axis!==null && after.axis!==before.axis){
-      verdict=`⇄ 姿态基准变了（横竖屏切换的特征，重力主轴 ${before.axis}→${after.axis}）`;
+    if(!timedOut && (returned || (maxAny>30 && after.axis!==null && after.axis===before.axis && finalAny<10))){
+      verdict=returned
+        ? `⟳ 例程（基准变了又自己回位，${(confirmMs/1000).toFixed(1)}s 后回来，像自检/校准）`
+        : '⟳ 例程（扫过各轴又回到原位，像自检/校准）';
+      icon='✅'; cls='';
+    }else if(before.axis!==null && after.axis!==null && after.axis!==before.axis){
+      // 结论要带上「盯了多久」——它更晚才回位的话这条就是错的,有效期得写在脸上,
+      // 不能像上次那样把一个只观察了 6 秒的判断说成定论。
+      verdict=`⇄ 姿态基准变了（重力主轴 ${before.axis}→${after.axis}，`+
+        (confirmMs ? `盯满 ${(confirmMs/1000).toFixed(0)}s 未回位；更晚才回位的话这条结论会是错的）`
+                   : `未做回位确认）`);
       icon='✅'; cls='';
     }else if(finalDyaw>15 && tailMax<2){
       verdict=`↺ 回中/复位类（偏航转了 ${sg1(d180(after.euler.yaw-before.euler.yaw))}，基准没变）`;
@@ -2650,23 +2773,27 @@ async function tryCmd(ci){
     }
 
     const line=`0x04/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  `+
-      `Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° 横滚 ${finalDroll.toFixed(1)}°  `+
+      `用时 ${(elapsed/1000).toFixed(1)}s  过程最大 偏航 ${maxDyaw.toFixed(1)}° 俯仰 ${maxDpitch.toFixed(1)}° 横滚 ${maxDroll.toFixed(1)}°  `+
+      `末态 Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° 横滚 ${finalDroll.toFixed(1)}°  `+
       `重力主轴 ${fmtAxis(before.axis)}→${fmtAxis(after.axis)}`;
-    renderTryRow(ci, icon, `${verdict}　Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° `+
+    renderTryRow(ci, icon, `${verdict}　用时 ${(elapsed/1000).toFixed(1)}s　末态 Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° `+
       `横滚 ${finalDroll.toFixed(1)}°　重力主轴 ${fmtAxis(before.axis)}→${fmtAxis(after.axis)}`, cls);
     log(line, icon==='✅'?'l-ack':'l-sys');
 
     saveTryEntry(ci, { verdict, dyaw:finalDyaw, dpitch:finalDpitch, droll:finalDroll,
-                        axisBefore:before.axis, axisAfter:after.axis, at:Date.now() });
+                        axisBefore:before.axis, axisAfter:after.axis, at:Date.now(), elapsed });
   } finally {
     tryRunning=false;
     $('btnTryStop').disabled=true;
-    ['btnTry01','btnTry07','btnTry08','btnTryAgain'].forEach(id=>$(id).disabled=!activeWrite);
+    ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck'].forEach(id=>$(id).disabled=!activeWrite);
   }
 }
 $('btnTry01').onclick=()=>tryCmd(0x01);
 $('btnTry07').onclick=()=>tryCmd(0x07);
 $('btnTry08').onclick=()=>tryCmd(0x08);
+// 复用试验流程的观察窗/轨迹/结论/安全闸门,唯独跳过 #tryOk 风险确认框——
+// 这条(0x08)已经试过、后果已知,确认框拦的是未知指令,再拦没有意义。
+$('btnMotorCheck').onclick=()=>tryCmd(0x08, {skipRiskGate:true});
 // 多数 DUML 开关是切换型,同一条再发一次往往就是撤销 —— 不是「再确认一遍」。
 $('btnTryAgain').onclick=()=>{
   if(lastTriedCi===null){ log('还没试过任何一条,先点上面的按钮试一条。','l-err'); return; }
@@ -2750,7 +2877,13 @@ function buildReport(){
 
   L.push('', '===== 电池 =====');
   if(!lastBatt) L.push('（还没收到 05/06）');
-  else if(lastBatt.pack===null) L.push(`（这条 05/06 只有 ${lastBatt.pl.length} 字节，没有电压字段）`);
+  else if(lastBatt.pack===null){
+    // why 分别写真实原因,不能再让一个原因去顶另一个原因的锅
+    // ——上次就是长度没问题(足够 20 字节)却被报成了「长度不够」。
+    L.push(lastBatt.why==='range'
+      ? `（总压读出来是 ${lastBatt.packRaw}mV，不在 6000~9000 的合理区间，不采信）`
+      : `（这条 05/06 只有 ${lastBatt.pl.length} 字节，没有电压字段）`);
+  }
   else{
     const ok=Math.abs(lastBatt.diff)<=100;
     L.push(`电量 ${lastBatt.pct}%  总压 ${lastBatt.pack}mV  电芯 ${lastBatt.c1} / ${lastBatt.c2}mV  `+
@@ -2782,8 +2915,10 @@ function buildReport(){
       const tag=`0x04/0x${ci.toString(16).padStart(2,'0')}`;
       const e=tried[ci];
       if(!e){ L.push(`${tag}  （还没试过）`); return; }
+      // elapsed 是后补的字段,老记录可能没有,不能因为缺一个字段就整行不显示。
+      const elapsedTxt = e.elapsed!=null ? `  用时 ${(e.elapsed/1000).toFixed(1)}s` : '';
       L.push(`${tag}  ${e.verdict}  Δ偏航 ${(+e.dyaw).toFixed(1)}° 俯仰 ${(+e.dpitch).toFixed(1)}° `+
-        `横滚 ${(+e.droll).toFixed(1)}°  重力主轴 ${fmtAxis(e.axisBefore)}→${fmtAxis(e.axisAfter)}`);
+        `横滚 ${(+e.droll).toFixed(1)}°  重力主轴 ${fmtAxis(e.axisBefore)}→${fmtAxis(e.axisAfter)}${elapsedTxt}`);
     });
   }
 
