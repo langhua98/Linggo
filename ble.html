@@ -2546,7 +2546,9 @@ const SCAN_SKIP={0x04:[0x0c,0x14], 0x00:[0x01]};
 const SCAN_KEY='om_ble_scan';
 
 /* 永久跳过表:按设备、按 cmdSet 记「哪个 cmdId 上次让云台动了」,下次扫描自动避开。
-   跟 SCAN_KEY、DPU_KEY 一套做法 —— 按 (dev&&dev.id)||'?' 存取。 */
+   跟 SCAN_KEY、DPU_KEY 一套做法 —— 按 (dev&&dev.id)||'?' 存取。
+   why 有三种:'mover'(旧逻辑下记的、还没重测过)、'mover-confirmed'(重测确认过确实会动,
+   以后不再重测)、'silencer'(遥测停了,待机/休眠候选)。 */
 const SKIP_KEY='om_ble_skip';   // { devId: { 'cs4': { '8':'mover' } } }
 function loadSkip(cs){
   try{
@@ -2561,6 +2563,16 @@ function saveSkipEntry(cs, ci, why){
     all[id]=all[id]||{};
     all[id]['cs'+cs]=all[id]['cs'+cs]||{};
     all[id]['cs'+cs][ci]=why;
+    localStorage.setItem(SKIP_KEY, JSON.stringify(all));
+  }catch{}
+}
+/* 冤案要能撤销:重测发现「上次多半是自检残余运动被冤枉了」以后,光在日志里说一句没用,
+   不把这条从跳过表里真正删掉,它下次还是会被自动跳过、永远没有机会再测一次。 */
+function removeSkipEntry(cs, ci){
+  try{
+    const all=JSON.parse(localStorage.getItem(SKIP_KEY)||'{}');
+    const id=(dev&&dev.id)||'?';
+    if(all[id] && all[id]['cs'+cs]) delete all[id]['cs'+cs][ci];
     localStorage.setItem(SKIP_KEY, JSON.stringify(all));
   }catch{}
 }
@@ -2797,7 +2809,9 @@ async function cmdScan(){
    0x01/0x07/0x08 是整个 cmdSet=04 扫描范围里唯一「既应答、又真的让云台动了」的未知指令,
    但扫描每 200ms 发一条、姿态反馈只有约 1Hz,两帧之间会发出去好几条,分不清那次约 90°
    翻转是哪一条引发的 —— 所以在这里一条一条单独发、单独看反馈,而不是接着盲扫。 */
-const TRY_KEY='om_ble_try';   // { devId: { '1': {verdict, dyaw, dpitch, droll, axisBefore, axisAfter, at, elapsed} } }
+// key 带 cmdSet 前缀('cs'+cs+'/'+ci)——不同 cmdSet 底下可能有相同的 cmdId(比如 cs04 和
+// cs05 都有 0x12),只按 ci 存会把两条毫不相干的试验结论串在一起,存进去了却读错。
+const TRY_KEY='om_ble_try';   // { devId: { 'cs4/1': {verdict, dyaw, dpitch, droll, axisBefore, axisAfter, at, elapsed} } }
 let tryRunning=false, tryAbort=false, lastTriedCi=null;
 // 例程本身要跑几十秒(0x08 实测十几到几十秒不等),上限只是为了不卡死,不是判据本身 ——
 // 判据是「静止」,等到了就提前退出,等不到才会撞上这个上限。
@@ -2812,12 +2826,15 @@ function loadTry(){
   // 每次都读 localStorage、不缓存到内存变量 —— buildReport 换个会话也要读得出结果。
   try{ return JSON.parse(localStorage.getItem(TRY_KEY)||'{}')[(dev&&dev.id)||'?'] || {}; }catch{ return {}; }
 }
-function saveTryEntry(ci, entry){
+function saveTryEntry(cs, ci, entry){
   try{
     const all=JSON.parse(localStorage.getItem(TRY_KEY)||'{}');
     const id=(dev&&dev.id)||'?';
     all[id]=all[id]||{};
-    all[id][ci]=entry;
+    // key 必须带上 cmdSet:不同 cmdSet 底下可能有相同的 cmdId(比如 cs04 和 cs05 都有 0x12),
+    // 只按 ci 存会把两条毫不相干的试验结论串在一起。旧记录(纯 ci 做 key)读不到就当没试过,
+    // 不必迁移、也不报错——本来就是要被这次重测覆盖掉的对象。
+    all[id]['cs'+cs+'/'+ci]=entry;
     localStorage.setItem(TRY_KEY, JSON.stringify(all));
   }catch{}
 }
@@ -2853,6 +2870,10 @@ async function tryCmd(ci, opts={}){
   }
   if(!lastBatt) log('还没收到电池帧,电量未知 —— 先放行,但结果解读时留个心眼。');
 
+  // opts.cs 不传就是 0x04,维持原有三条嫌疑指令(0x01/0x07/0x08)的调用行为不变——
+  // 重测其它 cmdSet(比如 cs05)的候选靠它区分,发错 cmdSet 测的就是另一条指令,结论全错。
+  const cs = opts.cs!==undefined ? opts.cs : 0x04;
+
   /* stimAbort 也要清:断连时 setState() 会把它置真,而且再没人置回假。
      观察窗同时认这两个标志,不清的话「连过一次又重连」之后每一条都会在第一次循环就 break,
      采不到任何样本 → 三条指令全被判成「无可见效果」。
@@ -2866,12 +2887,12 @@ async function tryCmd(ci, opts={}){
   renderTryRow(ci,'⏳','试验中…','');
   try{
     const before={ euler:{...lastEuler}, g: lastG?[...lastG]:null, axis: lastLevel?lastLevel.axis:null };
-    log(`—— 试 0x04/0x${ci.toString(16).padStart(2,'0')}:before 姿态 `+
+    log(`—— 试 0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}:before 姿态 `+
         `yaw=${before.euler.yaw.toFixed(1)} pitch=${before.euler.pitch.toFixed(1)} roll=${before.euler.roll.toFixed(1)}`+
         `,重力主轴 ${fmtAxis(before.axis)} ——`);
 
     // 就发一帧,不连发 —— 连发是速度类指令的用法,这三条身份未知,连发等于把风险敞口放大好几十倍。
-    await send(buildDuml({seq:0xCA00|ci, flags:0x40, cmdSet:0x04, cmdId:ci, payload:[]}));
+    await send(buildDuml({seq:0xCA00|ci, flags:0x40, cmdSet:cs, cmdId:ci, payload:[]}));
 
     /* 观察窗改成「等它停下来」而不是固定 6 秒:0x08 是一段例程(转遍各轴再自己回位),
        固定窗口只看窗口结束那一眼,例程还没跑完时正好停在某个中间姿态上,瞬态扫掠就被
@@ -2955,9 +2976,9 @@ async function tryCmd(ci, opts={}){
         icon='⚠'; cls='warn';
       }
       const elapsed=Date.now()-t0;
-      log(`0x04/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  用时 ${(elapsed/1000).toFixed(1)}s`, icon==='✅'?'l-ack':'l-sys');
+      log(`0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  用时 ${(elapsed/1000).toFixed(1)}s`, icon==='✅'?'l-ack':'l-sys');
       renderTryRow(ci, icon, verdict, cls);
-      saveTryEntry(ci, { verdict, silence:true, woke, at:Date.now(), elapsed });
+      saveTryEntry(cs, ci, { verdict, silence:true, woke, at:Date.now(), elapsed });
       return;
     }
 
@@ -3052,7 +3073,7 @@ async function tryCmd(ci, opts={}){
       icon='⚠'; cls='warn';
     }
 
-    const line=`0x04/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  `+
+    const line=`0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  `+
       `用时 ${(elapsed/1000).toFixed(1)}s  过程最大 偏航 ${maxDyaw.toFixed(1)}° 俯仰 ${maxDpitch.toFixed(1)}° 横滚 ${maxDroll.toFixed(1)}°  `+
       `末态 Δ偏航 ${finalDyaw.toFixed(1)}° 俯仰 ${finalDpitch.toFixed(1)}° 横滚 ${finalDroll.toFixed(1)}°  `+
       `重力主轴 ${fmtAxis(before.axis)}→${fmtAxis(after.axis)}`;
@@ -3060,7 +3081,7 @@ async function tryCmd(ci, opts={}){
       `横滚 ${finalDroll.toFixed(1)}°　重力主轴 ${fmtAxis(before.axis)}→${fmtAxis(after.axis)}`, cls);
     log(line, icon==='✅'?'l-ack':'l-sys');
 
-    saveTryEntry(ci, { verdict, dyaw:finalDyaw, dpitch:finalDpitch, droll:finalDroll,
+    saveTryEntry(cs, ci, { verdict, dyaw:finalDyaw, dpitch:finalDpitch, droll:finalDroll,
                         axisBefore:before.axis, axisAfter:after.axis, at:Date.now(), elapsed });
   } finally {
     tryRunning=false;
@@ -3159,10 +3180,14 @@ async function narrowStandby(opts={}){
       $('lab-step').textContent=`逐条锁定… 0x${ci.toString(16).padStart(2,'0')}（第 ${i+1}/${candidates.length} 条）`;
       // 风险确认要一路传下去:一键探测已经在 #probeOk 确认过,tryCmd 再拿 #tryOk 拦一次,
       // 候选就会一条也试不成,而日志里只留下一串「请先勾选风险确认」。
-      await tryCmd(ci, {fromNarrow:true, skipRiskGate:opts.skipRiskGate});
+      // cs 要一路传下去:不传就是 tryCmd 默认的 0x04,候选若来自 cs05/cs00 就会发错 cmdSet,
+      // 测的是另一条指令,结论全错。
+      await tryCmd(ci, {fromNarrow:true, skipRiskGate:opts.skipRiskGate, cs});
       // 从 TRY_KEY 读刚存的结论,不用 tryCmd 的返回值——tryCmd 本来就不 return 结论,
       // 落盘到 localStorage 才是它对外唯一的输出口(buildReport 也是这么读的)。
-      const entry=loadTry()[ci];
+      // key 带上 cmdSet,跟 saveTryEntry 存的格式一致——只按 ci 读会读到别的 cmdSet 下同号
+      // cmdId 的旧结论,或者压根读不到刚存的那条,安静地什么都不显示。
+      const entry=loadTry()['cs'+cs+'/'+ci];
       if(entry && entry.silence===true && entry.woke===true){ hit=ci; break; }
       if(entry && entry.silence===true && entry.woke===false){
         // 遥测停了却叫不醒:继续试下一条只是对着一台可能已经关掉的机器空发,必须当场停下。
@@ -3330,10 +3355,13 @@ function buildReport(){
       for(const csKey of Object.keys(devSkip)){
         const csNum=parseInt(csKey.slice(2),10);
         for(const ciKey of Object.keys(devSkip[csKey])){
-          // why 就是存进去的原因本身('mover'/'silencer'),两类不能混在一起说——
-          // silencer 是这个功能要找的线索,不是要顺手清掉的垃圾,得让人一眼看出跟 mover 不是一回事。
+          // why 就是存进去的原因本身('mover'/'mover-confirmed'/'silencer'),三类不能混在一起说——
+          // mover 是旧逻辑下记的、还没重测过的嫌疑;mover-confirmed 是重测确认过确实会动的,
+          // 不该被读成跟未验证的 mover 一样;silencer 是这个功能要找的线索,不是要顺手清掉的垃圾。
           const why=devSkip[csKey][ciKey];
-          const reason = why==='silencer' ? '让遥测停了（待机/休眠候选）' : '会让云台动（上次扫描时）';
+          const reason = why==='silencer' ? '让遥测停了（待机/休眠候选）'
+                       : why==='mover-confirmed' ? '会让云台动（已复测确认）'
+                       : '会让云台动（待复测）';
           skipLines.push(`0x${csNum.toString(16).padStart(2,'0')}/0x${(+ciKey).toString(16).padStart(2,'0')}  ${reason}`);
         }
       }
@@ -3355,7 +3383,9 @@ function buildReport(){
     const tried=loadTry();
     [0x01,0x07,0x08].forEach(ci=>{
       const tag=`0x04/0x${ci.toString(16).padStart(2,'0')}`;
-      const e=tried[ci];
+      // key 要带上 cmdSet(这三条固定是 cs04),跟 saveTryEntry 存的格式一致——
+      // 旧格式(纯 ci 做 key)的记录读不到就当没试过,不必迁移、也不必报错。
+      const e=tried['cs'+0x04+'/'+ci];
       if(!e){ L.push(`${tag}  （还没试过）`); return; }
       // elapsed 是后补的字段,老记录可能没有,不能因为缺一个字段就整行不显示。
       const elapsedTxt = e.elapsed!=null ? `  用时 ${(e.elapsed/1000).toFixed(1)}s` : '';
@@ -3458,16 +3488,74 @@ async function probeAll(){
   try{
     steps: {
       // 1. 查版本:00/01 是已验证过的只读帧。
-      $('probe-step').textContent='查版本…'; $('probe-eta').textContent='1/5';
+      $('probe-step').textContent='查版本…'; $('probe-eta').textContent='1/6';
       await send(buildDuml({seq:0xD001, flags:0x40, cmdSet:0x00, cmdId:0x01, payload:[]}));
       if(probeAbort){ aborted='手动中止'; break steps; }
 
       // 2. 一键自检:顺带量出速度标度、记下归位点,后面的复位/调平都靠它。
-      $('probe-step').textContent='一键自检…'; $('probe-eta').textContent='2/5';
+      $('probe-step').textContent='一键自检…'; $('probe-eta').textContent='2/6';
       await selfCheck();
       if(probeAbort){ aborted='手动中止'; break steps; }
 
-      /* 3. 依次扫三段,每段都把扫描框设好再复用现成的 cmdScan()——窗口归因、静默检测、
+      /* 3. 重测被标记过的 mover:等停已经修好了,但旧记录不会自己消失——
+         那 13 条 mover 是在「自检 → 收尾调平 → 立刻开扫」只隔 12 毫秒的旧逻辑下记的,
+         残余运动被冤枉成「这条指令让云台动了」,从此永久跳过、再也没被真正测过。
+         插在扫描之前:等停刚生效、姿态最干净的时候正好拿来重测,不然又是「等下次扫描时
+         再顺手记一遍」,而每次都从「自检 → 立刻扫描」进来,残余运动的条件从没变过。
+         候选跨所有 cmdSet(不只是接下来要扫的三段)——旧记录可能是更早手动扫描留下的,
+         cmdSet 不一定落在这三段里。 */
+      {
+        const devSkip=(()=>{ try{ return JSON.parse(localStorage.getItem(SKIP_KEY)||'{}')[(dev&&dev.id)||'?']||{}; }
+                             catch{ return {}; } })();
+        const userSkipMover=parseSkipList($('scanSkip').value);
+        const moverCands=[];
+        for(const csKey of Object.keys(devSkip)){
+          const csNum=parseInt(csKey.slice(2),10);
+          for(const ciKey of Object.keys(devSkip[csKey])){
+            // mover-confirmed 已经复测过一次,silencer 是另一类线索——都不重测,
+            // 不然每次一键探测都要把同一批确实会动的指令再发一遍,既慢又白让云台动。
+            if(devSkip[csKey][ciKey]!=='mover') continue;
+            const ciNum=parseInt(ciKey,10);
+            if(userSkipMover.includes(ciNum)) continue;   // 用户点名不碰的,重测也不碰
+            moverCands.push({cs:csNum, ci:ciNum});
+          }
+        }
+        if(moverCands.length){
+          log(`—— 一键探测:重测 ${moverCands.length} 条被标记过的「会动」指令`+
+              `(等停已修好,旧记录多半是自检残余运动的冤案)——`);
+          for(let i=0;i<moverCands.length;i++){
+            if(probeAbort){ aborted='手动中止'; break steps; }
+            const {cs:mcs, ci:mci}=moverCands[i];
+            const tag=`0x${mcs.toString(16).padStart(2,'0')}/0x${mci.toString(16).padStart(2,'0')}`;
+            $('probe-step').textContent=`重测 ${tag}…(第 ${i+1}/${moverCands.length} 条)`;
+            $('probe-eta').textContent='3/6';
+            await tryCmd(mci, {skipRiskGate:true, cs:mcs});
+            if(probeAbort){ aborted='手动中止'; break steps; }
+            const entry=loadTry()['cs'+mcs+'/'+mci];
+            if(entry && entry.silence===true){
+              // 遥测停了——不是「会动」,是待机候选,这正是这个功能最想找到的那类线索。
+              saveSkipEntry(mcs, mci, 'silencer');
+              log(`${tag} 重测发现它让遥测停了 —— 这是待机候选,不是「会动」`,'l-ack');
+            }else if(entry && /无可见效果/.test(entry.verdict||'')){
+              /* 撤销跳过,让它回到「未跳过」状态,以后扫描/试验都能重新碰到它。
+                 但话不能说满:「这一次没复现」跟「上次是冤枉的」不是一回事 ——
+                 姿态只有约 1Hz,一个来回不到一秒的抖动完全可能整段落在两帧之间,
+                 一次都看不见。所以这里只陈述观察到的事实,把两种可能都摆出来,
+                 剩下的交给下一轮扫描去碰。 */
+              removeSkipEntry(mcs, mci);
+              log(`${tag} 重测这一次没复现 —— 可能上次是自检残余运动被冤枉了,`+
+                  `也可能它的动作短到在 1Hz 的姿态帧之间藏过去了。已撤销跳过,让后面的扫描重新碰它。`);
+            }else{
+              // 真的动了/例程/判不出,都算「确实会动」——记成 mover-confirmed,以后不再重测。
+              saveSkipEntry(mcs, mci, 'mover-confirmed');
+              log(`${tag} 重测确实会动,保留跳过(以后不再重测)`);
+            }
+          }
+        }
+        // 没有候选就跳过这一步,不打扰——不是每次一键探测都欠着这笔账。
+      }
+
+      /* 4. 依次扫三段,每段都把扫描框设好再复用现成的 cmdScan()——窗口归因、静默检测、
          叫醒、一轮 3 次就停的闸门都在它里面,抄一份必然走样。
          cmdSet 04 的 0x00~0x3f 写死跳过:真机上扫了三遍,14 条有应答、零动作、零静默,
          是个干净的阴性结论,再扫只是重复劳动,不是漏了。 */
@@ -3477,7 +3565,7 @@ async function probeAll(){
         if(probeAbort){ aborted='手动中止'; break steps; }
         const seg=segs[i];
         $('probe-step').textContent=`扫描 cmdSet 0x${seg.cs}…`;
-        $('probe-eta').textContent=`3/5 · 第 ${i+1}/${segs.length} 段`;
+        $('probe-eta').textContent=`4/6 · 第 ${i+1}/${segs.length} 段`;
         $('scanCs').value=seg.cs; $('scanFrom').value=seg.from; $('scanTo').value=seg.to;
         $('scanOk').checked=true;
         await cmdScan();
@@ -3487,7 +3575,7 @@ async function probeAll(){
         await sleep(800);
       }
 
-      /* 4. 扫描过程里只要冒出过静默线索,就顺手逐条锁定待机指令——不用用户再手动点一次。
+      /* 5. 扫描过程里只要冒出过静默线索,就顺手逐条锁定待机指令——不用用户再手动点一次。
          线索可能出在任意一段里,所以要按「哪一段有 silencer」逐个去锁,
          不能只锁一次、更不能让 narrowStandby 自己去读 $('scanCs')
          —— 那个框这会儿停在最后扫的那一段上,跟线索在哪儿没有关系。
@@ -3497,14 +3585,14 @@ async function probeAll(){
         const segCs=parseInt(seg.cs,16);
         if(!Object.values(loadSkip(segCs)).includes('silencer')) continue;
         $('probe-step').textContent=`逐条锁定待机指令（cmdSet 0x${seg.cs}）…`;
-        $('probe-eta').textContent='4/5';
+        $('probe-eta').textContent='5/6';
         await narrowStandby({cs:segCs, skipRiskGate:true});
         if(probeAbort){ aborted='手动中止'; break steps; }
         if(loadStandby()) break;      // 锁到了就收手,别再翻别的段
       }
 
-      // 5. 生成报告并自动复制——copyFrom 现成的:复制成功就说已复制,被拒就全选并提示长按拷贝。
-      $('probe-step').textContent='生成报告…'; $('probe-eta').textContent='5/5';
+      // 6. 生成报告并自动复制——copyFrom 现成的:复制成功就说已复制,被拒就全选并提示长按拷贝。
+      $('probe-step').textContent='生成报告…'; $('probe-eta').textContent='6/6';
       makeReport();
       await copyFrom($('lab-report'),'报告');
     }
