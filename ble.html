@@ -512,6 +512,12 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div class="row" style="margin-top:8px">
     <button id="btnTryCi" disabled>试这一条</button>
   </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnNarrow" disabled>逐条锁定待机指令</button>
+  </div>
+  <p class="note">扫描只能标出一个<b>嫌疑窗口</b>（姿态约 1Hz、扫描 200ms 一条，分辨率就到这儿）。
+    这个按钮把窗口里的每条挨个单独试一遍，直到锁定具体是哪一条 —— 不用你去记是哪几条。
+    <b>一旦某条试出「遥测停了、而且 00/01 叫得醒」，就是它</b>，会立刻停下并记住。</p>
   <div id="try-rows" style="margin-top:12px"></div>
 </section>
 
@@ -524,6 +530,11 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div class="row" style="margin-top:8px">
     <button id="btnMotorCheck" disabled>电机自检例程（会转遍各轴）</button>
   </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnStandby" disabled>待机（未锁定）</button>
+  </div>
+  <p class="note">让云台待机、链路不断，要用时点「唤醒」叫回来。
+    <b>这条指令是逐条锁定出来的，不是猜的</b> —— 没锁定过就是灰的。</p>
   <p class="note"><b>这是云台自己的例程（0x08），不是上面那个「一键自检」</b> —— 上面那个只测量、
     不驱动电机例程。点下去云台会转遍各轴、几十秒后自己回位。
     <b>我们分不清它到底是自检还是校准，别频繁点。</b></p>
@@ -739,13 +750,15 @@ function setState(s,txt){
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan',
-   'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi']
+   'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
   if(!on){ stopHold(); clearLimit(); }
   $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
   document.querySelectorAll('.pad button[data-ax]').forEach(b=>b.disabled=!on);
+  // btnStandby 不跟着 on 一刀切:没锁定过就该一直是灰的,单独交给 refreshStandbyBtn 判。
+  refreshStandbyBtn();
 }
 
 async function connect(anyDevice){
@@ -2185,7 +2198,9 @@ $('btnClearSkip').onclick=()=>{
   }catch{}
   log('已清空本机的「上次会动」跳过记录（手填的那几条没动）');
 };
-$('btnLabStop').onclick=()=>{ stimAbort=true; };
+// tryAbort 一并置真:btnLabStop 在「逐条锁定」跑起来时也要能整个叫停(沿用 tryAbort),
+// 空放着不影响别处——没有 try/narrow 在跑时,这个标志压根没人读。
+$('btnLabStop').onclick=()=>{ stimAbort=true; tryAbort=true; };
 
 $('btnCheck').onclick=()=>{ $('btnCheck').disabled=true;
   selfCheck().finally(()=>{ $('btnCheck').disabled=false; }); };
@@ -2794,7 +2809,9 @@ async function tryCmd(ci, opts={}){
      stimCapture / cmdScan / autoCapture 开头都已经这么做了,这里漏了。 */
   tryRunning=true; tryAbort=false; stimAbort=false; lastTriedCi=ci;
   $('btnTryStop').disabled=false;
-  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi'].forEach(id=>$(id).disabled=true);
+  // btnNarrow 跟着一起禁:它是逐条锁定的入口,过程当中(不管是自己点的哪一条还是被 narrowStandby
+  // 代发的)都不该再让人点第二次。要不要恢复看 opts.fromNarrow,在下面 finally 里判。
+  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow'].forEach(id=>$(id).disabled=true);
   renderTryRow(ci,'⏳','试验中…','');
   try{
     const before={ euler:{...lastEuler}, g: lastG?[...lastG]:null, axis: lastLevel?lastLevel.axis:null };
@@ -2997,7 +3014,11 @@ async function tryCmd(ci, opts={}){
   } finally {
     tryRunning=false;
     $('btnTryStop').disabled=true;
-    ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi'].forEach(id=>$(id).disabled=!activeWrite);
+    const restoreIds=['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi'];
+    // fromNarrow 时不恢复 btnNarrow——逐条锁定还没走完,提前解禁会让用户在过程半截又点一次;
+    // 全部试完以后由 narrowStandby() 自己收尾开关。
+    if(!opts.fromNarrow) restoreIds.push('btnNarrow');
+    restoreIds.forEach(id=>$(id).disabled=!activeWrite);
   }
 }
 $('btnTry01').onclick=()=>tryCmd(0x01);
@@ -3021,6 +3042,117 @@ $('btnTryAgain').onclick=()=>{
 };
 $('btnTryReset').onclick=()=>goHomePose();
 $('btnTryStop').onclick=()=>{ tryAbort=true; };
+
+/* ── 逐条锁定待机指令 ──
+   扫描只能标出「嫌疑窗口」(姿态约 1Hz、扫描 200ms 一条,分辨率就到窗口为止)。
+   窗口里具体是哪一条,以前要用户自己在「试指定 cmdId」里一条条敲十六进制去试——
+   那是工具该干的活。候选只取扫描已经标出来的 silencer 记录,不猜、不写死任何 cmdId,
+   直接复用 tryCmd() 现成的静默判据 + 自动叫醒,这里只管排候选、挨个发、读结论。 */
+async function narrowStandby(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(labRunning || tryRunning){ log('有别的任务在跑（实验室采集/扫描/试验之一）,等它结束','l-err'); return; }
+  // 逐条发的仍然是未知 cmdId,风险跟单条试一样,不能因为是自动排出来的候选就少这道闸门。
+  if(!$('tryOk').checked){ log('逐条锁定前请先勾选风险确认。','l-err'); return; }
+
+  const cs=parseInt($('scanCs').value,16);
+  const userSkip=parseSkipList($('scanSkip').value);
+  const skipMap=loadSkip(cs);
+  // why==='silencer' 才是候选——'mover' 是另一类线索(会让云台动),这里不关心。
+  const candidates=Object.keys(skipMap)
+    .filter(k=>skipMap[k]==='silencer')
+    .map(k=>parseInt(k,10))
+    .filter(ci=>!userSkip.includes(ci))
+    .sort((a,b)=>a-b);
+  if(!candidates.length){
+    log('还没扫出嫌疑窗口，先跑一次 cmdId 扫描。','l-err');
+    return;
+  }
+
+  $('btnNarrow').disabled=true;
+  $('btnLabStop').disabled=false;   // 借这个大号中止按钮一起用,跟 btnTryStop 都能叫停整个过程
+  tryAbort=false;
+  try{
+    let hit=null;
+    log(`—— 逐条锁定待机指令:候选 ${candidates.length} 条 ——`);
+    for(let i=0;i<candidates.length;i++){
+      if(tryAbort) break;
+      const ci=candidates[i];
+      $('lab-step').textContent=`逐条锁定… 0x${ci.toString(16).padStart(2,'0')}（第 ${i+1}/${candidates.length} 条）`;
+      await tryCmd(ci, {fromNarrow:true});
+      // 从 TRY_KEY 读刚存的结论,不用 tryCmd 的返回值——tryCmd 本来就不 return 结论,
+      // 落盘到 localStorage 才是它对外唯一的输出口(buildReport 也是这么读的)。
+      const entry=loadTry()[ci];
+      if(entry && entry.silence===true && entry.woke===true){ hit=ci; break; }
+      if(entry && entry.silence===true && entry.woke===false){
+        // 遥测停了却叫不醒:继续试下一条只是对着一台可能已经关掉的机器空发,必须当场停下。
+        log('这条遥测停了，但 00/01 叫不醒 —— 机器可能已经关机，请按电源键开机再继续。','l-err');
+        break;
+      }
+    }
+    if(hit!==null){
+      log(`✅ 待机指令锁定：0x04/0x${hit.toString(16).padStart(2,'0')}（遥测停了，00/01 叫得醒）`,'l-ack');
+      saveStandby(hit);
+      refreshStandbyBtn();
+    }else if(tryAbort){
+      log('逐条锁定已中止。','l-err');
+    }else{
+      log('这一窗里没有一条能单独复现「遥测停」—— 可能是当时几条叠加的结果，或者那次是偶发。可以重扫一次再试。','l-err');
+    }
+  } finally {
+    $('lab-step').textContent='空闲'; $('lab-eta').textContent='';
+    $('btnLabStop').disabled=true;
+    $('btnNarrow').disabled=!activeWrite;
+  }
+}
+$('btnNarrow').onclick=()=>narrowStandby();
+
+/* ── 把锁定结果变成按钮 ──
+   写法照 SKIP_KEY 那套按 dev.id 存取,但不跟 TRY_KEY 混在一起——
+   TRY_KEY 存的是每条指令各自的试验结论,这里存的是「哪条是待机指令」这一个结论。 */
+const STANDBY_KEY='om_ble_standby';   // { devId: {ci, at} }
+function loadStandby(){
+  try{
+    const all=JSON.parse(localStorage.getItem(STANDBY_KEY)||'{}');
+    return all[(dev&&dev.id)||'?'] || null;
+  }catch{ return null; }
+}
+function saveStandby(ci){
+  try{
+    const all=JSON.parse(localStorage.getItem(STANDBY_KEY)||'{}');
+    all[(dev&&dev.id)||'?'] = { ci, at: Date.now() };
+    localStorage.setItem(STANDBY_KEY, JSON.stringify(all));
+  }catch{}
+}
+function refreshStandbyBtn(){
+  const btn=$('btnStandby');
+  if(!btn) return;
+  const s=loadStandby();
+  if(s){
+    btn.textContent=`待机（0x${s.ci.toString(16).padStart(2,'0')}）`;
+    btn.disabled=!activeWrite;
+  }else{
+    btn.textContent='待机（未锁定）';
+    btn.disabled=true;
+  }
+}
+$('btnStandby').onclick=async ()=>{
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(labRunning || tryRunning){ log('有别的任务在跑,等它结束','l-err'); return; }
+  const s=loadStandby();
+  if(!s){ log('还没锁定待机指令，先点「逐条锁定待机指令」。','l-err'); return; }
+  log(`—— 待机:发 0x04/0x${s.ci.toString(16).padStart(2,'0')} ——`);
+  try{ await send(buildDuml({seq:0xCC00|s.ci, flags:0x40, cmdSet:0x04, cmdId:s.ci, payload:[]})); }
+  catch(e){ log('发送失败: '+((e&&(e.message||e.name))||String(e)),'l-err'); return; }
+  // 只要这一条二分结论,不重复整套 tryCmd 的位移/例程判定——那些字段回答的是另一个问题。
+  const t0=Date.now();
+  let stopped=false;
+  while(Date.now()-t0<6000){
+    await sleep(200);
+    if(rxPushT && Date.now()-rxPushT>=SILENCE_MS){ stopped=true; break; }
+  }
+  if(stopped) log('✅ 已待机。要用时点「唤醒」。','l-ack');
+  else log('⚠ 发过去了，但遥测没停 —— 它可能没进待机。','l-err');
+};
 
 // ── 实验室 UI ──
 function logFieldMap(){
@@ -3129,6 +3261,11 @@ function buildReport(){
     parseSkipList($('scanSkip').value).forEach(ci=>
       skipLines.push(`0x${csNow.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}  你在跳过框里指定的`));
     L.push(...(skipLines.length ? skipLines : ['（无）']));
+  }
+  {
+    // 只在锁定过才写这一行——没锁定就没有这行,不写「未锁定」占位,报告本来就该只记有的东西。
+    const sb=loadStandby();
+    if(sb) L.push(`待机指令   0x04/0x${sb.ci.toString(16).padStart(2,'0')}（逐条锁定，遥测停且 00/01 叫得醒）`);
   }
 
   L.push('', '===== 三条嫌疑指令的试验结果 =====');
