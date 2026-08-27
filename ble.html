@@ -507,6 +507,11 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnTryStop" class="danger" disabled>中止</button>
   </div>
   <p class="note" style="margin-top:8px">0x01、0x07 已在真机上各试两次，只回返回码 0、没有可见效果。</p>
+  <label class="fld" style="margin:8px 0 0"><span class="lab"><span>试指定 cmdId（十六进制）</span></span>
+    <input type="text" id="tryCi" value="" placeholder="例如 0a" autocapitalize="off" spellcheck="false"></label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnTryCi" disabled>试这一条</button>
+  </div>
   <div id="try-rows" style="margin-top:12px"></div>
 </section>
 
@@ -734,7 +739,7 @@ function setState(s,txt){
   const on = s==='on';
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan',
-   'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck']
+   'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -963,6 +968,10 @@ const fmtDur = ms => { const s=Math.floor(ms/1000);
   return `${Math.floor(s/3600)}:${String(Math.floor(s/60)%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`; };
 let lastG=null, lastLevel=null, lastVersion=null;
 let lastBatt=null, lastBattDiff=undefined;   // lastBattDiff 只用来判断「跟上一帧比变没变」,不是校验结果本身
+// 最近一帧主动推送的时间戳与计数——待机指令不会让云台动,只会让这串推送断掉,
+// 姿态看门狗看不见这种指令,得单独有一只眼睛盯「推送还在不在」。
+let rxPushT=0, rxPushN=0;
+const SILENCE_MS=3000;   // 判定「遥测静默」的门槛,cmdScan 的武装期基线、tryCmd 的观察循环共用
 // 04/30 只在电机自检例程期间见过,含义没确认过 —— 只记「收到了什么」,不编它的意思。
 // seq30 靠每来一帧就加一,给 tryCmd 的采样循环当「有没有新帧」的看门狗用,沿用 attSeq 的思路。
 let last30=null, seq30=0;
@@ -1071,6 +1080,10 @@ function decode(m, hide){
   // src 一直没看过:实测 04/57 与 05/06 来自模块 0x27,其余来自 0x04 ——
   // 是两个模块在说话,之前被当成了一个。
   recPush({t:Date.now(), dir:'rx', seq, src:m[4], dst:m[5], flags:m[8], cs:cmdSet, ci:cmdId, pl:[...pl]});
+
+  // 主动推送与应答要分开数:应答是我们自己问出来的,拿它判「机器还活着」等于自问自答。
+  // flags 的最高位是「这是应答」,真机抓包里推送帧一律 0x00/0x20/0x40,应答一律 0x80。
+  if((m[8]&0x80)===0){ rxPushT=Date.now(); rxPushN++; }
 
   // 应答命中是整个诊断的关键结论,无论该帧是否被「隐藏高频帧」过滤都要打印
   if(bulkSend){
@@ -2543,6 +2556,7 @@ async function cmdScan(){
   $('btnScan').disabled=true; $('btnLabStop').disabled=false;
   const probeSeq=new Map();          // seq → cmdId,认应答只认 seq
   const movers=[];                   // 这一轮扫描里引发过动作的「嫌疑窗口」
+  const silencers=[];                // 这一轮扫描里让遥测断过的「嫌疑窗口」——待机/休眠候选,跟 movers 分开记
   recStart();
   let aborted='';
   try{
@@ -2568,6 +2582,18 @@ async function cmdScan(){
     let q=0xC800, prevAtt=lastEuler?{...lastEuler}:null, seenSeq=attSeq, win=[];
     const fmtWin=w => w.length===1 ? '0x'+w[0].toString(16).padStart(2,'0')
       : `0x${w[0].toString(16).padStart(2,'0')}~0x${w[w.length-1].toString(16).padStart(2,'0')} 这 ${w.length} 条`;
+
+    /* 先武装,再检测:扫描正式开始前先观察 2 秒,数基线速率。没有基线,「安静」什么都
+       说不明——假云台常年被测试关掉推送,真机也有本来就不怎么主动推的型号,不武装的话
+       满屏都是假阳性,这条护栏比检测本身还重要。 */
+    const armN0=rxPushN;
+    await sleep(2000);
+    const armDelta=rxPushN-armN0;
+    const silenceArmed = armDelta>=3;
+    if(!silenceArmed) log(`  这台机器本来就不怎么主动推送（2 秒 ${armDelta} 帧），静默检测不武装 —— `+
+      `没有基线的话「安静」什么都说明不了`,'l-err');
+    else log(`  静默检测已武装（2 秒基线 ${armDelta} 帧，约 ${(armDelta/2).toFixed(1)}Hz）`,'l-ack');
+
     for(let ci=from; ci<=to; ci++){
       if(stimAbort){ aborted='手动中止'; break; }
 
@@ -2591,12 +2617,40 @@ async function cmdScan(){
           // 等停期间又来了好几帧,基准和窗口都要跟着推到「现在」,
           // 否则刚才那段运动会被下一轮再算一次,一次动作报成两次。
           seenSeq=attSeq; prevAtt=lastEuler?{...lastEuler}:null; win=[];
-          if(movers.length>=3){
-            aborted='一轮里有 3 次动作,这段范围不适合盲扫,已停下';
+          // 跟静默看门狗共用同一个计数器 —— 一段范围里到处是待机/关机指令,跟到处会动一样不宜盲扫下去。
+          if(movers.length+silencers.length>=3){
+            aborted='一轮里有 3 次动作/静默,这段范围不适合盲扫,已停下';
             break;
           }
         }else{
           prevAtt=cur; win=[];
+        }
+      }
+
+      /* 静默看门狗跟姿态看门狗并列,同样排在跳过判断之前——待机指令不会让云台动,
+         只会让这串主动推送断掉,只盯姿态那一只眼睛看不见它,它就能从眼皮底下溜过去。 */
+      if(silenceArmed && Date.now()-rxPushT>SILENCE_MS && win.length){
+        const silentFor=Date.now()-rxPushT;
+        silencers.push({win:[...win]});
+        win.forEach(x=>saveSkipEntry(cs, x, 'silencer'));
+        log(`  ⚠ 遥测静默 ${(silentFor/1000).toFixed(1)}s —— 肇事者在 ${fmtWin(win)} 里面。这是待机/休眠指令的特征`,'l-err');
+        // 叫醒只用已验证的只读帧,不为此发明或猜测任何 cmdId —— 00/01 是版本查询,早就验证过会回。
+        try{ await send(buildDuml({seq:(0xCB00|(silencers.length&0xff))&0xffff, flags:0x40,
+          cmdSet:0x00, cmdId:0x01, payload:[]})); }catch{}
+        const w0=Date.now();
+        while(Date.now()-w0<6000 && rxPushT<w0) await sleep(200);
+        if(rxPushT>=w0){
+          log(`  ${((Date.now()-w0)/1000).toFixed(1)}s 后遥测回来了 —— 这一窗里很可能有「待机」指令,而且 00/01 能把它叫醒`,'l-ack');
+          // 重取基准:rxPushT 已经因为刚才等到的新推送更新过了,继续往下扫。
+          seenSeq=attSeq; prevAtt=lastEuler?{...lastEuler}:null; win=[];
+          if(movers.length+silencers.length>=3){
+            aborted='一轮里有 3 次动作/静默,这段范围不适合盲扫,已停下';
+            break;
+          }
+        }else{
+          // 机器可能已经关机——浏览器连着的只是链路,推不动电源,这话不能说软了。
+          aborted='遥测没再回来,可能已经关机 —— 请按电源键开机,再重连';
+          break;
         }
       }
 
@@ -2612,6 +2666,26 @@ async function cmdScan(){
       await sleep(200);
     }
     await sleep(600);
+
+    /* 收尾再查一次静默。循环里的看门狗要攒够 SILENCE_MS 才认,所以待机指令要是落在
+       最后几条上,循环就已经跑完了 —— 它会安安静静地溜掉,而这恰恰是我们最想抓的东西。
+       这里补一次:还没静默就多等一会儿凑够门槛,别让「刚好扫到末尾」变成漏检。 */
+    if(silenceArmed && !aborted && win.length && rxPushT){
+      while(Date.now()-rxPushT<SILENCE_MS && Date.now()-rxPushT>200) await sleep(200);
+      if(Date.now()-rxPushT>=SILENCE_MS){
+        silencers.push({win:[...win]});
+        win.forEach(x=>saveSkipEntry(cs, x, 'silencer'));
+        log(`  ⚠ 扫完时遥测已静默 ${((Date.now()-rxPushT)/1000).toFixed(1)}s —— 肇事者在 ${fmtWin(win)} 里面。`+
+            `这是待机/休眠指令的特征`,'l-err');
+        try{ await send(buildDuml({seq:0xCBff, flags:0x40, cmdSet:0x00, cmdId:0x01, payload:[]})); }catch{}
+        const w0=Date.now();
+        while(Date.now()-w0<6000 && rxPushT<w0) await sleep(200);
+        log(rxPushT>=w0
+          ? `  ${((Date.now()-w0)/1000).toFixed(1)}s 后遥测回来了 —— 这一窗里很可能有「待机」指令,而且 00/01 能把它叫醒`
+          : '  遥测没再回来,可能已经关机 —— 请按电源键开机,再重连',
+          rxPushT>=w0?'l-ack':'l-err');
+      }
+    }
   } finally {
     recStop(); suppressWatch=false; labRunning=false;
     // 保险零速:万一扫到的某个 cmdId 让云台动了起来。seq 用 0xC9 前缀,
@@ -2640,6 +2714,10 @@ async function cmdScan(){
   movers.forEach(m=>log(
     `  ⚠ 0x${m.win[0].toString(16).padStart(2,'0')}~0x${m.win[m.win.length-1].toString(16).padStart(2,'0')} `+
     `里有一条会让云台动（位移 ${m.deg.toFixed(1)}°），这 ${m.win.length} 条已整窗记入永久跳过表`,'l-err'));
+  // 静默窗口单独汇总——它们是「待机指令在哪」这个功能要找的线索,不是要顺手清掉的垃圾。
+  silencers.forEach(s=>log(
+    `  ⚠ 0x${s.win[0].toString(16).padStart(2,'0')}~0x${s.win[s.win.length-1].toString(16).padStart(2,'0')} `+
+    `里有一条让遥测停了（待机/休眠候选），这 ${s.win.length} 条已整窗记入永久跳过表`,'l-err'));
   try{
     const all=JSON.parse(localStorage.getItem(SCAN_KEY)||'{}');
     all[(dev&&dev.id)||'?'] = Object.assign(all[(dev&&dev.id)||'?']||{},
@@ -2716,7 +2794,7 @@ async function tryCmd(ci, opts={}){
      stimCapture / cmdScan / autoCapture 开头都已经这么做了,这里漏了。 */
   tryRunning=true; tryAbort=false; stimAbort=false; lastTriedCi=ci;
   $('btnTryStop').disabled=false;
-  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck'].forEach(id=>$(id).disabled=true);
+  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi'].forEach(id=>$(id).disabled=true);
   renderTryRow(ci,'⏳','试验中…','');
   try{
     const before={ euler:{...lastEuler}, g: lastG?[...lastG]:null, axis: lastLevel?lastLevel.axis:null };
@@ -2735,10 +2813,14 @@ async function tryCmd(ci, opts={}){
     const samples=[];
     let maxDyaw=0, maxDpitch=0, maxDroll=0, settled=false, lastSec=0, prevAxis=before.axis;
     let seen30=seq30;
+    let silenceStopMs=null;   // 非 null 就说明观察期间遥测断过——这一档判据排在所有位移判据之前
     const t0=Date.now();
     while(Date.now()-t0<TRY_MAX_MS){
       if(stimAbort || tryAbort) break;
       await sleep(200);
+      // 遥测静默排在这里检测:机器都不推帧了,姿态还没变不代表没反应,可能是它睡过去了。
+      // rxPushT 为 0 说明这台机器压根没主动推过遥测帧,没有基线,「安静」判不出东西,不误报。
+      if(rxPushT && Date.now()-rxPushT>SILENCE_MS){ silenceStopMs=Date.now()-rxPushT; break; }
       if(!lastEuler) continue;
       const now=Date.now();
       const dy=Math.abs(d180(lastEuler.yaw-before.euler.yaw));
@@ -2765,10 +2847,14 @@ async function tryCmd(ci, opts={}){
         log(`  t=${sec}s  重力主轴 ${fmtAxis(axisNow)}  偏移 偏航 ${dy.toFixed(1)}° 俯仰 ${dp.toFixed(1)}° 横滚 ${dr.toFixed(1)}°`);
       }
 
-      // 静止判据:最近连续 3000ms 内,三轴相对该窗口起点的变化都 < 1.5°。
-      // 窗口跨度不足 2800ms 时数据不够、宁可继续等,不提前误判静止。
+      /* 遥测断了就不许判「静止」——samples 里那串「没变化」是同一帧姿态被反复抄了十几遍,
+         不是云台真的停了。没有数据不等于测到了「不动」,那是把缺席当成了证据。
+         这条不加的话,待机指令永远判不出来:它恰好同时造成「不动」和「不推」,
+         而静止判据(3s)和静默判据(3s)门槛一样,静止总是先命中,静默那一档等于死代码。
+         rxPushT 为 0 是另一回事 —— 这台机器压根没推过,没有基线,照老规矩走。 */
+      const telemetryFresh = !rxPushT || (now-rxPushT<1500);
       const win=samples.filter(s=>now-s.t<=3000);
-      if(win.length>=2 && now-win[0].t>=2800){
+      if(telemetryFresh && win.length>=2 && now-win[0].t>=2800){
         const ref=win[0];
         const stable=win.every(s=>Math.max(
           Math.abs(d180(s.yaw  -ref.yaw)),
@@ -2781,6 +2867,31 @@ async function tryCmd(ci, opts={}){
     const timedOut = !settled && !(stimAbort||tryAbort) && observeMs>=TRY_MAX_MS;
     if(stimAbort || tryAbort) log('  观察提前中止,只按已采到的样本判定','l-err');
     else if(timedOut) log(`  观察到 ${(TRY_MAX_MS/1000).toFixed(0)}s 上限仍未静止,结论按此刻的状态给,可能还没跑完`,'l-err');
+
+    /* 静默这一档排在所有位移判据之前——机器都不推遥测了,再谈转没转已经没有意义。
+       「能待机但叫不醒」和「能待机也能叫醒」对这个功能是天壤之别,不能留给用户自己去猜,
+       当场用已验证的 00/01 只读帧试一次,分清楚再存结论。 */
+    if(silenceStopMs!==null){
+      const w0=Date.now();
+      try{ await send(buildDuml({seq:0xCB00|ci, flags:0x40, cmdSet:0x00, cmdId:0x01, payload:[]})); }catch{}
+      while(Date.now()-w0<6000 && rxPushT<w0) await sleep(200);
+      const woke=rxPushT>=w0;
+      let verdict=`💤 遥测停了（待机/休眠特征）—— 停了 ${(silenceStopMs/1000).toFixed(1)}s`;
+      let icon, cls;
+      if(woke){
+        verdict+=`，00/01 叫醒成功（用时 ${((Date.now()-w0)/1000).toFixed(1)}s）`;
+        icon='✅'; cls='';
+      }else{
+        // 机器可能已经关机——浏览器够不着电源键,这话不能说软了。
+        verdict+='，00/01 叫不醒 —— 可能是关机不是待机，请按电源键';
+        icon='⚠'; cls='warn';
+      }
+      const elapsed=Date.now()-t0;
+      log(`0x04/0x${ci.toString(16).padStart(2,'0')}  ${verdict}  用时 ${(elapsed/1000).toFixed(1)}s`, icon==='✅'?'l-ack':'l-sys');
+      renderTryRow(ci, icon, verdict, cls);
+      saveTryEntry(ci, { verdict, silence:true, woke, at:Date.now(), elapsed });
+      return;
+    }
 
     /* 确认窗口:静止下来时基准若跟开跑前不同,先别下结论 —— 例程完全可能只是
        停在中途的某个姿态上歇着(真机上 0x08 就停在 90° 横滚上,几十秒后才自己回位)。
@@ -2886,7 +2997,7 @@ async function tryCmd(ci, opts={}){
   } finally {
     tryRunning=false;
     $('btnTryStop').disabled=true;
-    ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck'].forEach(id=>$(id).disabled=!activeWrite);
+    ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi'].forEach(id=>$(id).disabled=!activeWrite);
   }
 }
 $('btnTry01').onclick=()=>tryCmd(0x01);
@@ -2895,6 +3006,13 @@ $('btnTry08').onclick=()=>tryCmd(0x08);
 // 复用试验流程的观察窗/轨迹/结论/安全闸门,唯独跳过 #tryOk 风险确认框——
 // 这条(0x08)已经试过、后果已知,确认框拦的是未知指令,再拦没有意义。
 $('btnMotorCheck').onclick=()=>tryCmd(0x08, {skipRiskGate:true});
+// 扫描标出候选窗口以后要能逐条落实——跟 0x01/0x07/0x08 一样是未知 cmdId,风险确认框照样要勾,
+// 不因为是用户自己填的号就少一道闸门。
+$('btnTryCi').onclick=()=>{
+  const ci=parseInt($('tryCi').value,16);
+  if(isNaN(ci) || ci<0 || ci>0xff){ log('cmdId 不对,填 0~ff 之间的十六进制','l-err'); return; }
+  tryCmd(ci);
+};
 // 多数 DUML 开关是切换型,同一条再发一次往往就是撤销 —— 不是「再确认一遍」。
 $('btnTryAgain').onclick=()=>{
   if(lastTriedCi===null){ log('还没试过任何一条,先点上面的按钮试一条。','l-err'); return; }
@@ -2991,15 +3109,20 @@ function buildReport(){
       `和−总压 ${lastBatt.diff}mV  ${ok?'✅ 与实测一致':'⚠ 与实测的 14mV 不符'}`);
   }
 
-  L.push('', '===== 已知会动的 cmdId（永久跳过表）=====');
+  L.push('', '===== 扫描标记过的 cmdId =====');
   {
     const skipLines=[];
     try{
       const devSkip=JSON.parse(localStorage.getItem(SKIP_KEY)||'{}')[(dev&&dev.id)||'?']||{};
       for(const csKey of Object.keys(devSkip)){
         const csNum=parseInt(csKey.slice(2),10);
-        for(const ciKey of Object.keys(devSkip[csKey]))
-          skipLines.push(`0x${csNum.toString(16).padStart(2,'0')}/0x${(+ciKey).toString(16).padStart(2,'0')}  上次扫描时让云台动了`);
+        for(const ciKey of Object.keys(devSkip[csKey])){
+          // why 就是存进去的原因本身('mover'/'silencer'),两类不能混在一起说——
+          // silencer 是这个功能要找的线索,不是要顺手清掉的垃圾,得让人一眼看出跟 mover 不是一回事。
+          const why=devSkip[csKey][ciKey];
+          const reason = why==='silencer' ? '让遥测停了（待机/休眠候选）' : '会让云台动（上次扫描时）';
+          skipLines.push(`0x${csNum.toString(16).padStart(2,'0')}/0x${(+ciKey).toString(16).padStart(2,'0')}  ${reason}`);
+        }
       }
     }catch{}
     const csNow=parseInt($('scanCs').value,16);
@@ -3018,8 +3141,12 @@ function buildReport(){
       if(!e){ L.push(`${tag}  （还没试过）`); return; }
       // elapsed 是后补的字段,老记录可能没有,不能因为缺一个字段就整行不显示。
       const elapsedTxt = e.elapsed!=null ? `  用时 ${(e.elapsed/1000).toFixed(1)}s` : '';
-      L.push(`${tag}  ${e.verdict}  Δ偏航 ${(+e.dyaw).toFixed(1)}° 俯仰 ${(+e.dpitch).toFixed(1)}° `+
-        `横滚 ${(+e.droll).toFixed(1)}°  重力主轴 ${fmtAxis(e.axisBefore)}→${fmtAxis(e.axisAfter)}${elapsedTxt}`);
+      // 静默判据命中时不记位移/主轴(那次观察在位移判据之前就退出了),不能拿 undefined 硬凑数字,
+      // 否则这行会印出一串 NaN —— 那种残缺不是「不知道」,是这条本来就没有的数据。
+      L.push(e.silence
+        ? `${tag}  ${e.verdict}${elapsedTxt}`
+        : `${tag}  ${e.verdict}  Δ偏航 ${(+e.dyaw).toFixed(1)}° 俯仰 ${(+e.dpitch).toFixed(1)}° `+
+          `横滚 ${(+e.droll).toFixed(1)}°  重力主轴 ${fmtAxis(e.axisBefore)}→${fmtAxis(e.axisAfter)}${elapsedTxt}`);
     });
   }
 
