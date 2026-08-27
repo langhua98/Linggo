@@ -250,11 +250,15 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnConnect" class="primary">扫描并连接</button>
     <button id="btnAny">扫描全部设备</button>
     <button id="btnDisc" class="danger" disabled>断开</button>
+    <button id="btnWake">唤醒（重连并叫醒）</button>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="stat">未连接</span></div>
   <div class="tried"><span id="triedList">尚未试过任何设备</span><button id="btnForget">清空记录</button></div>
   <p class="note">搜不到就用「扫描全部设备」逐个试。iOS 需用 <b>Bluefy</b> 浏览器，
     桌面用 Chrome / Edge，页面须跑在 https 下。详情见页尾「高级 / 协议」。</p>
+  <p class="note"><b>云台闲置一段时间会自己睡过去</b>，届时网页这边就成了死的。这个按钮会重新连上
+    并发一帧只读的查版本帧去戳它。<b>但浏览器只能当中心设备、不能广播</b> —— 所以它睡着时
+    如果连广播都停了，浏览器就物理上够不着它，只能走过去按电源键。点一下就知道是哪种。</p>
 </section>
 
 <!-- 状态 -->
@@ -816,6 +820,102 @@ async function discover(){
   }
 }
 
+/* ── 唤醒(重连并叫醒)──
+   Web Bluetooth 只能当中心设备,浏览器没有广播能力,叫不叫得醒完全取决于云台睡着时
+   还广不广播。这里不猜、不发任何未知 cmdId —— 全靠已验证的东西:重连 +
+   discover()（它本来就会重新订阅通知并自动发一帧 00/01 查版本,是全项目最安全的只读帧）。
+   顺带把「睡着时到底广播不广播」这件事记下来,因为它决定了「休眠」按钮该不该存在。 */
+const WAKE_KEY='om_ble_wake';   // { devId: { verdict:'unreachable'|'link-only'|'awake', att:N, at:ts } }
+function loadWake(){
+  try{ return JSON.parse(localStorage.getItem(WAKE_KEY)||'{}')[(dev&&dev.id)||'?'] || null; }catch{ return null; }
+}
+function saveWake(entry){
+  try{
+    const all=JSON.parse(localStorage.getItem(WAKE_KEY)||'{}');
+    all[(dev&&dev.id)||'?']=entry;
+    localStorage.setItem(WAKE_KEY, JSON.stringify(all));
+  }catch{}
+}
+let wakeRunning=false;
+async function wakeUp(){
+  if(wakeRunning){ log('唤醒还在跑,别重复点。','l-err'); return; }
+  wakeRunning=true;
+  const btn=$('btnWake'); if(btn) btn.disabled=true;
+  try{
+    // 页面刷新后 dev 就没了 —— getDevices() 是 Chrome 的扩展 API,能找回「浏览器曾经配对过」的设备对象,
+    // 但连接状态仍要重新 connect() 才知道。别的浏览器可能没有这个方法。
+    if(!dev){
+      /* 可选链只护住了 getDevices,没护住 navigator.bluetooth 本身 —— 而这个按钮恰恰是给
+         「还没连上」的场景用的,在不支持 Web Bluetooth 的浏览器上点它,原来会抛一句
+         「Cannot read properties of undefined」,把「你这浏览器不支持」说成了内部错误。
+         getDevices() 本身也可能因权限被拒,一并接住:找不回设备跟报错要给同一句可操作的提示。 */
+      const bt = navigator.bluetooth;
+      if(!bt){
+        log('此浏览器不支持 Web Bluetooth,叫不醒也连不上。改用桌面 Chrome/Edge、安卓 Chrome,或 iOS 上的 Bluefy。','l-err');
+        return;
+      }
+      let list=[];
+      try{ list = bt.getDevices ? (await bt.getDevices()) || [] : []; }
+      catch(e){ log('取历史设备失败: '+((e&&(e.message||e.name))||String(e)),'l-err'); }
+      if(list.length) dev = list[0];
+      else{
+        log('先用「扫描并连接」连一次,浏览器才记得住这台设备 —— 刷新页面后 dev 会丢,这不是 bug。','l-err');
+        return;
+      }
+    }
+
+    if(dev.gatt.connected){
+      log('本来就连着,先看它醒没醒');
+    }else{
+      // 睡着的设备可能既不连上也不报错地一直挂着,不加超时会卡死在这一步。
+      const DELAYS=[1000,2000,4000];
+      let connected=false;
+      for(let i=0;i<DELAYS.length;i++){
+        setState('busy', `正在唤醒…第 ${i+1} 次`);
+        try{
+          server = await Promise.race([
+            dev.gatt.connect(),
+            new Promise((_,rej)=>setTimeout(()=>rej(new Error('12s 超时')),12000))
+          ]);
+          await discover();
+          connected=true;
+          break;
+        }catch(e){
+          log(`第 ${i+1} 次重连失败: ${(e&&(e.message||e.name))||String(e)}`,'l-err');
+          if(i<DELAYS.length-1) await sleep(DELAYS[i]);
+        }
+      }
+      if(!connected){
+        setState('','连不上');
+        log('❌ 连不上 —— 它睡着时不广播。浏览器只能当中心设备、不能广播,物理上够不着它,只能走过去按电源键或展开云台。这是硬限制,不是功能没做。','l-err');
+        log('既然叫不醒,「休眠」按钮就是单程票 —— 先别做。','l-err');
+        saveWake({verdict:'unreachable', att:0, at:Date.now()});
+        return;
+      }
+    }
+
+    // 戳完之后盯 8 秒:姿态帧约 1Hz,8 秒足够分辨「有」和「没有」。
+    setState('busy','正在看它醒没醒…');
+    const seenAt=attSeq, deadline=Date.now()+8000;
+    while(Date.now()<deadline) await sleep(200);
+    const gained=attSeq-seenAt;
+
+    if(gained>0){
+      log(`✅ 醒了（连上后收到 ${gained} 帧姿态）`,'l-ack');
+      saveWake({verdict:'awake', att:gained, at:Date.now()});
+      setState('on', `${dev.name||'设备'} · 就绪`);
+    }else{
+      log('⚠ 链路醒了,机器没醒（GATT 连上了,但 8 秒没有姿态帧）。它可能还在浅睡,再点一次或动一下云台试试。','l-err');
+      saveWake({verdict:'link-only', att:0, at:Date.now()});
+    }
+  }catch(e){
+    log('唤醒过程出错: '+((e&&(e.message||e.name))||String(e)),'l-err');
+  }finally{
+    wakeRunning=false;
+    if(btn) btn.disabled=false;
+  }
+}
+
 /* 通知流重组
    过滤发生在「帧解析之后」而不是原始通知包上 —— 一个 BLE 通知包可能含多帧、
    也可能只是半帧,只有拆出完整帧、知道 cmdSet/cmdId 之后才知道该不该打印。 */
@@ -1169,6 +1269,7 @@ $('wchar').addEventListener('change',e=>{ activeWrite=writeChars.get(e.target.va
 $('btnConnect').onclick=()=>connect(false);
 $('btnAny').onclick=()=>connect(true);
 $('btnDisc').onclick=()=>{ if(dev?.gatt.connected) dev.gatt.disconnect(); setState('','已断开'); };
+$('btnWake').onclick=()=>wakeUp();
 
 $('btnSend').onclick=()=>{ send(buildRotate(+$('yaw').value,+$('pitch').value,+$('roll').value,+$('time').value,+$('mode').value)); render(); };
 $('btnZero').onclick=()=>{ send(buildRotate(0,0,0,+$('time').value, +$('mode').value===0x80?0x80:0x05)); render(); };
@@ -2920,6 +3021,22 @@ function buildReport(){
       L.push(`${tag}  ${e.verdict}  Δ偏航 ${(+e.dyaw).toFixed(1)}° 俯仰 ${(+e.dpitch).toFixed(1)}° `+
         `横滚 ${(+e.droll).toFixed(1)}°  重力主轴 ${fmtAxis(e.axisBefore)}→${fmtAxis(e.axisAfter)}${elapsedTxt}`);
     });
+  }
+
+  L.push('', '===== 休眠 / 唤醒 =====');
+  {
+    // 跟 loadTry 一样从 localStorage 读,不依赖内存变量 —— 换个会话也要读得出来。
+    const w=loadWake();
+    if(!w) L.push('上次唤醒：（还没试过）');
+    else{
+      const WHY={ awake:'（睡着时仍在广播 —— 浏览器够得着它）',
+        'link-only':'（链路够得着,但那一戳没把机器叫醒）',
+        unreachable:'（睡着时不广播 —— 浏览器物理上够不着,唤醒这条路不存在）' };
+      const VERDICT_TXT={ awake:`✅ 醒了（连上后 ${w.att} 帧姿态）`,
+        'link-only':'⚠ 链路醒了,机器没醒', unreachable:'❌ 连不上' };
+      L.push(`上次唤醒：${VERDICT_TXT[w.verdict]||w.verdict}        ${new Date(w.at).toISOString()}`);
+      L.push(WHY[w.verdict]||'');
+    }
   }
 
   const map=fieldMap(recBuf);
