@@ -328,6 +328,27 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。<span id="gotoStat"></span></p>
 </section>
 
+<!-- 一键探测 -->
+<section>
+  <p class="eyebrow">5 · 一键探测</p>
+  <p class="note">跑一遍完整体检，把结果整理成可复制的报告：
+    查版本 → 一键自检 → 扫 cmdSet <b>05</b>、<b>00</b>、<b>04 的 0x40~0x7f</b>
+    → 扫出「待机」线索就逐条锁定 → 生成报告并自动复制。约两三分钟，全程有进度。<br>
+    <b>会往云台发未知指令</b>（只发空载荷读取、自动跳过已知会动的那几条）。
+    最坏情况可能需要用 Mimo 恢复出厂设置。云台放开阔处、别夹东西。<br>
+    <b>cmdSet 04 的 0x00~0x3f 不再扫</b> —— 已经扫过三遍，一次动作、一次静默都没有，排除了。</p>
+  <label class="lab-ok"><input type="checkbox" id="probeOk">我明白风险，继续</label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnProbeAll" class="primary" disabled>一键探测并生成报告</button>
+    <button id="btnProbeStop" class="danger" disabled>中止</button>
+  </div>
+  <div class="lab-head"><span id="probe-step">空闲</span><span id="probe-eta"></span></div>
+  <textarea id="lab-report" readonly placeholder="点「一键探测并生成报告」把版本、自检、扫描、待机锁定结果汇总到这里，跑完自动复制。长按可全选拷贝。"></textarea>
+  <div class="row" style="margin-top:8px">
+    <button id="btnCopyReport">复制报告</button>
+  </div>
+</section>
+
 <!-- 日志 -->
 <section style="border-bottom:none">
   <p class="eyebrow" style="flex-wrap:wrap"><span>4 · 日志</span>
@@ -446,22 +467,15 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div class="row" style="margin-top:10px">
     <button id="btnRecOn" disabled>开始记录</button>
     <button id="btnRecOff" disabled>停止记录</button>
-    <button id="btnStim" disabled>引导式激励采集</button>
     <button id="btnAuto" disabled>60 秒自动采集（会真的转）</button>
   </div>
   <p class="note" style="margin-top:8px">60 秒里用<b>三轴慢速大幅度</b>的连续运动持续驱动，全程记录，跑完自动做相关性分析。
     三个轴的周期取 11/7/5 秒，两两不可通约，这样才分得清某个字段跟的是哪个轴。
     会真的转，摆幅偏航约 ±50°，跑之前把云台放在开阔处。</p>
   <div class="row" style="margin-top:8px">
-    <button id="btnCorr">相关性分析</button>
-    <button id="btnReport">生成报告</button>
     <button id="btnLabStop" class="danger" disabled>中止</button>
   </div>
   <div id="lab-map" style="margin-top:12px">还没有记录。</div>
-  <textarea id="lab-report" readonly placeholder="点「生成报告」把图谱、样本帧、扫描结果、相关性结论汇总到这里。长按可全选拷贝。"></textarea>
-  <div class="row" style="margin-top:8px">
-    <button id="btnCopyReport">复制报告</button>
-  </div>
 
   <p class="eyebrow" style="margin-top:20px">cmdId 扫描</p>
   <p class="note" style="margin-top:0"><b>会往云台发未知指令。</b>已按最保守的方式做：
@@ -488,25 +502,19 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="note" style="margin-top:6px">整窗记账是<b>宁可多跳</b>，所以要有退路：清空只删本机记下的
     「上次会动」，不动你在上面手填的那几条。</p>
 
-  <p class="eyebrow" style="margin-top:20px">三条嫌疑指令 · 受控试验</p>
-  <p class="note" style="margin-top:0"><b>这三条会让云台真的动。</b>它们是整个 cmdSet=04 里唯一
-    既应答、又引发过动作的未知指令 —— 上次扫描后出现了约 90° 的翻转，很可能是<b>横竖屏切换</b>
-    或<b>回中例程</b>。一次只试一条，试完看结论再试下一条。
+  <p class="eyebrow" style="margin-top:20px">单条 cmdId 试验</p>
+  <p class="note" style="margin-top:0"><b>会让云台真的动。</b>用下面「试指定 cmdId」框逐条发单帧
+    未知指令、看有没有反应。<code>0x01</code>、<code>0x07</code> 已在真机上各试两次，只回返回码 0、
+    没有可见效果，结论已定，不再放按钮；<code>0x08</code> 是电机自检例程，在下面「诊断工具」里单独放。
     未知 cmdId 仍可能落进校准或固件模式，<b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。
     云台放开阔处、别夹东西。<b>电量低于 30% 不让开跑</b> —— 电机受限会把「这条没反应」
     变成假结论，比不测更糟。</p>
   <label class="lab-ok"><input type="checkbox" id="tryOk">我明白风险，继续</label>
   <div class="row" style="margin-top:8px">
-    <button id="btnTry01" disabled>试 0x01</button>
-    <button id="btnTry07" disabled>试 0x07</button>
-    <button id="btnTry08" disabled>试 0x08</button>
-  </div>
-  <div class="row" style="margin-top:8px">
     <button id="btnTryAgain" disabled>再发一次同一条</button>
     <button id="btnTryReset">一键复位</button>
     <button id="btnTryStop" class="danger" disabled>中止</button>
   </div>
-  <p class="note" style="margin-top:8px">0x01、0x07 已在真机上各试两次，只回返回码 0、没有可见效果。</p>
   <label class="fld" style="margin:8px 0 0"><span class="lab"><span>试指定 cmdId（十六进制）</span></span>
     <input type="text" id="tryCi" value="" placeholder="例如 0a" autocapitalize="off" spellcheck="false"></label>
   <div class="row" style="margin-top:8px">
@@ -753,8 +761,8 @@ function setState(s,txt){
      几个按钮又点亮了。连接状态只有 setState 知道,记在这儿供它取用。 */
   linkOn = on;
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
-   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnStim','btnAuto','btnScan',
-   'btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow']
+   'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnAuto','btnScan','btnProbeAll',
+   'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -764,6 +772,7 @@ function setState(s,txt){
   // btnStandby 不跟着 on 一刀切:没锁定过就该一直是灰的,单独交给 refreshStandbyBtn 判。
   refreshStandbyBtn();
   refreshRiskBtns();
+  refreshProbeBtn();
 }
 
 async function connect(anyDevice){
@@ -2196,10 +2205,7 @@ $('btnRecOn').onclick =()=>{ recStart(); $('lab-step').textContent='记录中…
 $('btnRecOff').onclick=()=>{ const n=recStop(); $('lab-step').textContent='空闲';
   $('btnRecOn').disabled=false; $('btnRecOff').disabled=true;
   log(`—— 停止记录:共 ${n} 帧 ——`); renderFieldMap(); logFieldMap(); };
-$('btnStim').onclick  =()=>stimCapture();
 $('btnAuto').onclick  =()=>autoCapture();
-$('btnCorr').onclick  =()=>runCorrelate();
-$('btnReport').onclick=()=>makeReport();
 $('btnCopyReport').onclick=()=>copyFrom($('lab-report'),'报告');
 $('btnScan').onclick  =()=>cmdScan();
 /* 窗口归因是宁可多跳,跳错了得能收回来 —— 只清本机记的「上次会动」,
@@ -2379,7 +2385,9 @@ let stimAbort=false, labRunning=false;
 async function stimCapture(){
   if(labRunning){ log('实验室里已经有任务在跑','l-err'); return; }
   labRunning=true; stimAbort=false; suppressWatch=true;
-  $('btnStim').disabled=true; $('btnLabStop').disabled=false;
+  // 引导式激励采集的按钮已删(只服务于已叫停的协议考古),函数本身按规格保留、暂无调用方——
+  // 这里不再摸一个不存在的按钮,免得将来重新接上时留一个空引用。
+  $('btnLabStop').disabled=false;
   const marks=[];
   recStart();
   try{
@@ -2396,7 +2404,7 @@ async function stimCapture(){
     }
   } finally {
     const n=recStop(); suppressWatch=false; labRunning=false;
-    $('btnStim').disabled=false; $('btnLabStop').disabled=true;
+    $('btnLabStop').disabled=true;
     $('lab-step').textContent=stimAbort?'已中止':'采集完成'; $('lab-eta').textContent='';
     log(`—— 激励采集${stimAbort?'中止':'完成'}:${n} 帧 ——`);
     if(marks.length>=2) stimDiff(marks);
@@ -2834,7 +2842,7 @@ async function tryCmd(ci, opts={}){
   $('btnTryStop').disabled=false;
   // btnNarrow 跟着一起禁:它是逐条锁定的入口,过程当中(不管是自己点的哪一条还是被 narrowStandby
   // 代发的)都不该再让人点第二次。要不要恢复看 opts.fromNarrow,在下面 finally 里判。
-  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow'].forEach(id=>$(id).disabled=true);
+  ['btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow'].forEach(id=>$(id).disabled=true);
   renderTryRow(ci,'⏳','试验中…','');
   try{
     const before={ euler:{...lastEuler}, g: lastG?[...lastG]:null, axis: lastLevel?lastLevel.axis:null };
@@ -3037,7 +3045,7 @@ async function tryCmd(ci, opts={}){
   } finally {
     tryRunning=false;
     $('btnTryStop').disabled=true;
-    const restoreIds=['btnTry01','btnTry07','btnTry08','btnTryAgain','btnMotorCheck','btnTryCi'];
+    const restoreIds=['btnTryAgain','btnMotorCheck','btnTryCi'];
     // fromNarrow 时不恢复 btnNarrow——逐条锁定还没走完,提前解禁会让用户在过程半截又点一次;
     // 全部试完以后由 narrowStandby() 自己收尾开关。
     if(!opts.fromNarrow) restoreIds.push('btnNarrow');
@@ -3052,16 +3060,23 @@ async function tryCmd(ci, opts={}){
 function refreshRiskBtns(keepNarrowOff){
   if(tryRunning || labRunning) return;      // 有任务在跑时别抢着开关按钮
   const ok=$('tryOk') && $('tryOk').checked;
-  ['btnTry01','btnTry07','btnTry08','btnTryAgain','btnTryCi','btnNarrow'].forEach(id=>{
+  ['btnTryAgain','btnTryCi','btnNarrow'].forEach(id=>{
     if(!$(id)) return;
     if(id==='btnNarrow' && keepNarrowOff) return;
     $(id).disabled = !linkOn || !activeWrite || !ok;
   });
 }
 $('tryOk').addEventListener('change', ()=>refreshRiskBtns());
-$('btnTry01').onclick=()=>tryCmd(0x01);
-$('btnTry07').onclick=()=>tryCmd(0x07);
-$('btnTry08').onclick=()=>tryCmd(0x08);
+
+/* 跟 refreshRiskBtns 一个模式:没勾风险确认框就置灰,理由要长在按钮旁边,不是藏在日志里。 */
+function refreshProbeBtn(){
+  if(probeRunning) return;      // 有任务在跑时别抢着开关按钮
+  const btn=$('btnProbeAll');
+  if(!btn) return;
+  btn.disabled = !linkOn || !activeWrite || !$('probeOk').checked;
+}
+$('probeOk').addEventListener('change', ()=>refreshProbeBtn());
+
 // 复用试验流程的观察窗/轨迹/结论/安全闸门,唯独跳过 #tryOk 风险确认框——
 // 这条(0x08)已经试过、后果已知,确认框拦的是未知指令,再拦没有意义。
 $('btnMotorCheck').onclick=()=>tryCmd(0x08, {skipRiskGate:true});
@@ -3086,13 +3101,19 @@ $('btnTryStop').onclick=()=>{ tryAbort=true; };
    窗口里具体是哪一条,以前要用户自己在「试指定 cmdId」里一条条敲十六进制去试——
    那是工具该干的活。候选只取扫描已经标出来的 silencer 记录,不猜、不写死任何 cmdId,
    直接复用 tryCmd() 现成的静默判据 + 自动叫醒,这里只管排候选、挨个发、读结论。 */
-async function narrowStandby(){
+async function narrowStandby(opts={}){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(labRunning || tryRunning){ log('有别的任务在跑（实验室采集/扫描/试验之一）,等它结束','l-err'); return; }
-  // 逐条发的仍然是未知 cmdId,风险跟单条试一样,不能因为是自动排出来的候选就少这道闸门。
-  if(!$('tryOk').checked){ log('逐条锁定前请先勾选风险确认。','l-err'); return; }
+  /* 逐条发的仍然是未知 cmdId,风险跟单条试一样,不能因为是自动排出来的候选就少这道闸门。
+     但一键探测有它自己的风险框(#probeOk),已经确认过一次了 —— 再拿 #tryOk 拦一道,
+     整条链就会在最后一步戛然而止:跑满两分钟,只换来一句「请先勾选风险确认」。 */
+  if(!opts.skipRiskGate && !$('tryOk').checked){
+    log('逐条锁定前请先勾选风险确认。','l-err'); return; }
 
-  const cs=parseInt($('scanCs').value,16);
+  /* 候选在哪个 cmdSet 里,得由调用方说了算。原来只读 $('scanCs') —— 一键探测扫完
+     三段之后那个框停在最后一段(04)上,而线索是在 05 或 00 里找到的,于是去 04 里翻,
+     翻了个空。「上一次扫的是谁」跟「线索在谁那儿」是两件事。 */
+  const cs = (opts.cs!==undefined) ? opts.cs : parseInt($('scanCs').value,16);
   const userSkip=parseSkipList($('scanSkip').value);
   const skipMap=loadSkip(cs);
   // why==='silencer' 才是候选——'mover' 是另一类线索(会让云台动),这里不关心。
@@ -3116,7 +3137,9 @@ async function narrowStandby(){
       if(tryAbort) break;
       const ci=candidates[i];
       $('lab-step').textContent=`逐条锁定… 0x${ci.toString(16).padStart(2,'0')}（第 ${i+1}/${candidates.length} 条）`;
-      await tryCmd(ci, {fromNarrow:true});
+      // 风险确认要一路传下去:一键探测已经在 #probeOk 确认过,tryCmd 再拿 #tryOk 拦一次,
+      // 候选就会一条也试不成,而日志里只留下一串「请先勾选风险确认」。
+      await tryCmd(ci, {fromNarrow:true, skipRiskGate:opts.skipRiskGate});
       // 从 TRY_KEY 读刚存的结论,不用 tryCmd 的返回值——tryCmd 本来就不 return 结论,
       // 落盘到 localStorage 才是它对外唯一的输出口(buildReport 也是这么读的)。
       const entry=loadTry()[ci];
@@ -3393,6 +3416,90 @@ async function copyFrom(el, what){
         const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); }
   log(`剪贴板不可用，${what}已全选 —— 长按选区→拷贝。`,'l-err');
 }
+
+/* ── 一键探测 ──
+   四个区块里散着的探测功能揉成一个按钮:查版本 → 一键自检 → 扫三段 cmdSet → 扫出「待机」
+   线索就顺手逐条锁定 → 生成报告并自动复制。每一步都复用现成的函数、不重抄一份——
+   cmdScan() 里的窗口归因、静默检测、叫醒、一轮 3 次就停的闸门,重写一份必然走样。 */
+let probeAbort=false, probeRunning=false;
+async function probeAll(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(labRunning || tryRunning || probeRunning){
+    log('有别的任务在跑（实验室采集/扫描/试验/探测之一），等它结束','l-err'); return; }
+  if(!$('probeOk').checked){ log('一键探测前请先勾选风险确认。','l-err'); return; }
+
+  probeRunning=true; probeAbort=false; tryAbort=false; stimAbort=false;
+  $('btnProbeAll').disabled=true; $('btnProbeStop').disabled=false;
+  let aborted='';
+  try{
+    steps: {
+      // 1. 查版本:00/01 是已验证过的只读帧。
+      $('probe-step').textContent='查版本…'; $('probe-eta').textContent='1/5';
+      await send(buildDuml({seq:0xD001, flags:0x40, cmdSet:0x00, cmdId:0x01, payload:[]}));
+      if(probeAbort){ aborted='手动中止'; break steps; }
+
+      // 2. 一键自检:顺带量出速度标度、记下归位点,后面的复位/调平都靠它。
+      $('probe-step').textContent='一键自检…'; $('probe-eta').textContent='2/5';
+      await selfCheck();
+      if(probeAbort){ aborted='手动中止'; break steps; }
+
+      /* 3. 依次扫三段,每段都把扫描框设好再复用现成的 cmdScan()——窗口归因、静默检测、
+         叫醒、一轮 3 次就停的闸门都在它里面,抄一份必然走样。
+         cmdSet 04 的 0x00~0x3f 写死跳过:真机上扫了三遍,14 条有应答、零动作、零静默,
+         是个干净的阴性结论,再扫只是重复劳动,不是漏了。 */
+      const segs=[{cs:'05',from:'00',to:'3f'},{cs:'00',from:'00',to:'3f'},{cs:'04',from:'40',to:'7f'}];
+      log('—— 一键探测:cmdSet 04 的 0x00~0x3f 已扫过三遍（零动作、零静默），这次跳过，只扫 05、00、04 的 0x40~0x7f ——');
+      for(let i=0;i<segs.length;i++){
+        if(probeAbort){ aborted='手动中止'; break steps; }
+        const seg=segs[i];
+        $('probe-step').textContent=`扫描 cmdSet 0x${seg.cs}…`;
+        $('probe-eta').textContent=`3/5 · 第 ${i+1}/${segs.length} 段`;
+        $('scanCs').value=seg.cs; $('scanFrom').value=seg.from; $('scanTo').value=seg.to;
+        $('scanOk').checked=true;
+        await cmdScan();
+        // 云台被扫关机时 cmdScan() 会自己中止、在日志里提示按电源键,并把 stimAbort 置真——
+        // 跟用户主动点「中止」共用同一个标志,这里不区分谁按的,反正都不该接着扫下一段。
+        if(stimAbort){ aborted=probeAbort?'手动中止':'这一段没扫完(云台可能已关机),已停下,不再扫下一段'; break steps; }
+        await sleep(800);
+      }
+
+      /* 4. 扫描过程里只要冒出过静默线索,就顺手逐条锁定待机指令——不用用户再手动点一次。
+         线索可能出在任意一段里,所以要按「哪一段有 silencer」逐个去锁,
+         不能只锁一次、更不能让 narrowStandby 自己去读 $('scanCs')
+         —— 那个框这会儿停在最后扫的那一段上,跟线索在哪儿没有关系。
+         风险已经在 #probeOk 确认过了,一路传 skipRiskGate 下去,否则整条链会卡在最后一步。 */
+      for(const seg of segs){
+        if(probeAbort){ aborted='手动中止'; break steps; }
+        const segCs=parseInt(seg.cs,16);
+        if(!Object.values(loadSkip(segCs)).includes('silencer')) continue;
+        $('probe-step').textContent=`逐条锁定待机指令（cmdSet 0x${seg.cs}）…`;
+        $('probe-eta').textContent='4/5';
+        await narrowStandby({cs:segCs, skipRiskGate:true});
+        if(probeAbort){ aborted='手动中止'; break steps; }
+        if(loadStandby()) break;      // 锁到了就收手,别再翻别的段
+      }
+
+      // 5. 生成报告并自动复制——copyFrom 现成的:复制成功就说已复制,被拒就全选并提示长按拷贝。
+      $('probe-step').textContent='生成报告…'; $('probe-eta').textContent='5/5';
+      makeReport();
+      await copyFrom($('lab-report'),'报告');
+    }
+  }catch(e){
+    aborted = aborted || ((e && (e.message || e.name)) || String(e));
+    log('一键探测出错: '+aborted,'l-err');
+  } finally {
+    probeRunning=false;
+    $('btnProbeStop').disabled=true;
+    $('probe-step').textContent = aborted ? ('已中止：'+aborted) : '探测完成，报告已就绪';
+    $('probe-eta').textContent='';
+    refreshProbeBtn();
+  }
+}
+$('btnProbeAll').onclick=()=>probeAll();
+// probeAbort 是这个功能自己的中止旗标,负责步骤之间的收尾判断;stimAbort/tryAbort 一并置真,
+// 好让正在跑的 cmdScan()/narrowStandby() 当场收手——它们认的就是这两个标志,不认 probeAbort。
+// 一键自检本身没有中止开关,点了「中止」也只能等它跑完当前这一步再收尾。
+$('btnProbeStop').onclick=()=>{ probeAbort=true; stimAbort=true; tryAbort=true; };
 
 /* ── 闭环「转到指定角度」 ──
    难点是姿态反馈只有约 1Hz:直接拿 lastEuler 当反馈,两帧之间是瞎的,
