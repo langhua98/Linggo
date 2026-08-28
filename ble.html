@@ -269,8 +269,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <div><b id="st-att">—</b><span id="st-att-sub">倾斜（对地）</span></div>
     <div><b id="st-batt">—</b><span>电量</span></div>
     <div><b id="st-up">—</b><span>云台已运行</span></div>
+    <div><b id="st-mode0405">—</b><span>模式（04/05，dissector 命名，仅展示）</span></div>
   </div>
   <div id="st-limit" class="limit-bar" hidden></div>
+  <p class="note" style="margin-top:8px">云台状态位（04/27）：<b id="st-flags">—</b></p>
 </section>
 
 <!-- 控制 -->
@@ -490,8 +492,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 <section>
   <p class="eyebrow">协议实验室</p>
   <p class="note" style="margin-top:0">页面目前只解开了协议的一小部分：<code>04/05</code> 的 49 字节里
-    只用了 20 个，<code>04/57</code>、<code>04/6f</code>、<code>04/1c</code>、<code>04/27</code>、
-    <code>04/38</code>、<code>00/f1</code>、<code>00/00</code> 整帧没解过。
+    只用了 30 个（新增按 dissector 解出的 pitch/roll/yaw/mode 等字段，仅展示、不参与姿态解算），
+    <code>04/27</code> 按 dissector 的位定义解出了前 5 字节（见「2 · 状态」的云台状态位），其余仍未解；
+    <code>04/57</code>、<code>04/6f</code>、<code>04/1c</code>、<code>04/38</code>、
+    <code>00/f1</code>、<code>00/00</code> 整帧没解过。
     这里的思路是<b>施加已知激励、看哪些字节跟着变</b>，而不是盯着十六进制猜。</p>
   <div class="lab-head"><span id="lab-step">空闲</span><span id="lab-eta"></span></div>
   <div class="row" style="margin-top:10px">
@@ -538,7 +542,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="eyebrow" style="margin-top:20px">单条 cmdId 试验</p>
   <p class="note" style="margin-top:0"><b>会让云台真的动。</b>用下面「试指定 cmdId」框逐条发单帧
     未知指令、看有没有反应。<code>0x01</code>、<code>0x07</code> 已在真机上各试两次，只回返回码 0、
-    没有可见效果，结论已定，不再放按钮；<code>0x08</code> 是电机自检例程，在下面「诊断工具」里单独放。
+    没有可见效果，结论已定，不再放按钮；<code>0x08</code> 是关节粗校准（dissector：Gimbal Calibration），在下面「诊断工具」里单独放。
     未知 cmdId 仍可能落进校准或固件模式，<b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。
     云台放开阔处、别夹东西。<b>电量低于 30% 不让开跑</b> —— 电机受限会把「这条没反应」
     变成假结论，比不测更糟。</p>
@@ -569,16 +573,15 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnCal" disabled>速度标定</button>
   </div>
   <div class="row" style="margin-top:8px">
-    <button id="btnMotorCheck" disabled>电机自检例程（会转遍各轴）</button>
+    <button id="btnMotorCheck" disabled>关节粗校准（04/08，会转遍各轴）</button>
   </div>
   <div class="row" style="margin-top:8px">
     <button id="btnStandby" disabled>待机（未锁定）</button>
   </div>
   <p class="note">让云台待机、链路不断，要用时点「唤醒」叫回来。
     <b>这条指令是逐条锁定出来的，不是猜的</b> —— 没锁定过就是灰的。</p>
-  <p class="note"><b>这是云台自己的例程（0x08），不是上面那个「一键自检」</b> —— 上面那个只测量、
-    不驱动电机例程。点下去云台会转遍各轴、几十秒后自己回位。
-    <b>我们分不清它到底是自检还是校准，别频繁点。</b></p>
+  <p class="note"><b>这是关节粗校准（04/08，dissector 命名：Gimbal Calibration），不是电机自检</b> —— 上面那个「一键自检」只测量、
+    不驱动电机；这个会转遍各轴、几十秒后自己回位。<b>校准是会写进云台参数的操作，不要频繁点。</b></p>
   <p class="note">转动测试跑三段，每段窗口都是 <b>2.9 秒</b>：
     <b>①空白对照</b>什么都不发，量出云台静止时的漂移底噪；
     <b>②单帧</b>发一条速度帧再发停止；
@@ -1046,12 +1049,18 @@ let lastBatt=null, lastBattDiff=undefined;   // lastBattDiff 只用来判断「�
 // 姿态看门狗看不见这种指令,得单独有一只眼睛盯「推送还在不在」。
 let rxPushT=0, rxPushN=0;
 const SILENCE_MS=3000;   // 判定「遥测静默」的门槛,cmdScan 的武装期基线、tryCmd 的观察循环共用
-// "cs/ci" → 最近一份推送载荷。6·云台功能的 modeSet() 拿它比对 04/1c、04/27 切换前后有没有变
-// (见 decode() 里的写入处),不进 recBuf——那张表只在 recOn 时才存,常态下是关的。
+// "cs/ci" → 最近一份推送载荷(见 decode() 里的写入处),不进 recBuf——那张表只在 recOn 时才存,
+// 常态下是关的。modeSet() 原来拿它比对 04/1c、04/27 有没有变,现在改用 04/05 读回来确认
+// (更硬的证据,见 modeSet() 注释),这张表继续维护,留给以后的分析用。
 const lastPush = {};
-// 04/30 只在电机自检例程期间见过,含义没确认过 —— 只记「收到了什么」,不编它的意思。
+// 04/30 = Auto Calibration Status(dissector 0x30):progress(uint8@0) status(uint8@1),
+// 只在 04/08 关节粗校准期间见过 —— 04/08 本身就是 Gimbal Calibration,不是自检(见 decode() 里的注释)。
 // seq30 靠每来一帧就加一,给 tryCmd 的采样循环当「有没有新帧」的看门狗用,沿用 attSeq 的思路。
 let last30=null, seq30=0;
+// 04/27 异常状态位的最新解码 + 收到时刻;04/05 dissector 字段(仅展示)的最新解码 + mode + 收到时刻。
+// 待机判据(suspendGimbal)与模式读回确认(modeSet)都靠"收到时刻有没有前进"判断反馈是不是新的。
+let lastFlags027=null, lastFlags027At=0;
+let last0405Fields=null, last0405Mode=null, last0405At=0;
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
@@ -1153,6 +1162,39 @@ function recPush(e){
 function recStart(){ recBuf.length=0; recOn=true; bulkBegin(); }
 function recStop(){ recOn=false; bulkEnd(); return recBuf.length; }
 
+/* 04/27 云台异常状态位 —— 逐位照抄 dji-dumlv1-gimbal.lua dissector,不自己编、不合并、不省略。
+   byte3 的 0x06 是 dissector 自己写的两位掩码(不是两个独立开关位),原样当一个数值处理,不拆位。
+   每个字节都留一道"未定义位"兜底:实测 byte0 见过 0x28(不在下表里),没对上表的位必须单独列出来,
+   吞掉就等于假装我们把整个字节都看懂了。 */
+const FLAGS_04_27 = {
+  0: [[0x01,'横滚已锁定'],[0x02,'俯仰已锁定'],[0x04,'偏航已锁定']],
+  1: [[0x01,'开机后关节锁定'],[0x02,'开机时关节锁定'],[0x04,'电机保护'],[0x08,'开机时有近期错误'],
+      [0x10,'升级中'],[0x20,'偏航到限位'],[0x40,'近期错误或自拍'],[0x80,'全景就绪']],
+  2: [[0x02,'风扇方向'],[0x04,'竖直方向'],[0x08,'手电筒模式'],[0x10,'竖屏'],[0x20,'竖直时的云台朝向']],
+  3: [[0x01,'手机脱离云台'],[0x20,'跟踪时偏航受限'],[0x40,'跟踪时俯仰受限']],   // 0x06 单独处理,见下方
+  4: [[0x01,'睡眠模式']],
+};
+const FLAGS_04_27_B3_GRAVITY_MASK = 0x06;   // byte3 的两位掩码字段,dissector 就是这么写的,不是普通开关位
+function decodeGimbalFlags(pl){
+  const bytes=[pl[0]||0, pl[1]||0, pl[2]||0, pl[3]||0, pl[4]||0];
+  const list=[];
+  for(let i=0;i<5;i++){
+    let known = (i===3) ? FLAGS_04_27_B3_GRAVITY_MASK : 0;
+    for(const [bit,name] of FLAGS_04_27[i]){
+      known |= bit;
+      if(bytes[i]&bit) list.push(name);
+    }
+    if(i===3 && (bytes[3]&FLAGS_04_27_B3_GRAVITY_MASK))
+      list.push(`云台重力=0x${(bytes[3]&FLAGS_04_27_B3_GRAVITY_MASK).toString(16)}`);
+    const unknown = bytes[i] & ~known & 0xff;
+    if(unknown) list.push(`未定义位(byte${i}) 0x${unknown.toString(16).padStart(2,'0')}`);
+  }
+  return { list, sleepMode: !!(bytes[4]&0x01), bytes };
+}
+
+// 04/05 offset6 mask 0xc0 报的模式,来自 dissector,跟 04/4C 的锁定/跟随/FPV 不是同一套编号(见 MODE_4C_TO_05)
+const MODE_0405_NAMES=['YawNoFollow','FPV','YawFollow','AutoCalibrate'];
+
 function decode(m, hide){
   const cmdSet=m[9], cmdId=m[10], pl=m.slice(11,m.length-2);
   const seq = m[6] | (m[7]<<8);
@@ -1221,8 +1263,16 @@ function decode(m, hide){
     }
   }
 
-  // 0x08 例程期间会推送 04/30,含义未确认 —— 只记下来,tryCmd 的轨迹日志里如实带一行「收到了」。
+  // 0x08(关节粗校准)期间会推送 04/30(校准进度) —— 记下来,tryCmd 的轨迹日志里如实带一行「收到了」。
   if(cmdSet===0x04 && cmdId===0x30){ last30=[...pl]; seq30++; }
+
+  // 04/27 云台异常状态位,逐位定义见 decodeGimbalFlags 上方的表(dissector 来源,不是猜的)。
+  // sleepMode 也是 suspendGimbal() 判「待机/恢复有没有生效」的首选证据(比遥测停没停硬,见该处注释)。
+  if(cmdSet===0x04 && cmdId===0x27 && pl.length>=5){
+    lastFlags027 = decodeGimbalFlags(pl);
+    lastFlags027At = Date.now();
+    $('st-flags').textContent = lastFlags027.list.length ? lastFlags027.list.join('、') : '无异常';
+  }
 
   // 姿态帧:载荷 [24:40]=四元数、[12:16]=毫秒计时器。折叠与否都要解 —— 状态盘靠它。
   if(cmdSet===0x04 && cmdId===0x05 && pl.length>=40){
@@ -1233,6 +1283,16 @@ function decode(m, hide){
     $('st-euler').textContent = `${r0(e.roll)} / ${r0(e.pitch)} / ${r0(e.yaw)}`;
     $('st-up').textContent = fmtDur((pl[12]|(pl[13]<<8)|(pl[14]<<16)|(pl[15]<<24))>>>0);
     pushAtt(e);
+
+    // 04/05 dissector 字段(pitch/roll/yaw/mode/roll_adjust/yaw_angle,单位度×10)—— 只做展示,
+    // 绝不拿来替换上面 decodeQuat 那条实测验证过的姿态解算。之前相关性分析找到的
+    // 「[4:6]↔偏航」正好对上这里的 yaw(offset 4),这条巧合值得当交叉验证记下来。
+    const s16=(lo,hi)=>{ const v=pl[lo]|(pl[hi]<<8); return v>=0x8000 ? v-0x10000 : v; };
+    const mode0405=(pl[6]&0xc0)>>6;
+    last0405Fields = { pitch:s16(0,1)/10, roll:s16(2,3)/10, yaw:s16(4,5)/10, mode:mode0405,
+      rollAdjust:(pl[7]>=128?pl[7]-256:pl[7])/10, yawAngle:(pl[8]|(pl[9]<<8))/10 };
+    last0405Mode = mode0405; last0405At = Date.now();
+    $('st-mode0405').textContent = MODE_0405_NAMES[mode0405] ?? `未知(${mode0405})`;
   }
 
   // 版本应答里出现 ASCII "GB66" 就认定是 OM6。实测这台机器 04/14(绝对/相对角度)
@@ -2907,7 +2967,7 @@ async function tryCmd(ci, opts={}){
   // 前置检查都要红字说明、不能静默 return —— 用户点了按钮却什么都没发生,会被误当成「这条没反应」。
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(labRunning || tryRunning){ log('有别的任务在跑（实验室采集/扫描/试验之一),等它结束','l-err'); return; }
-  // 电机自检例程按钮豁免这个确认框:0x08 已经试过、后果已知,风险确认框拦的是「未知指令」,
+  // 关节粗校准按钮豁免这个确认框:0x08 已经试过、后果已知,风险确认框拦的是「未知指令」,
   // 这条已经不是未知的了,再拦没有意义。三个「试 0xXX」按钮照旧要勾。
   if(!opts.skipRiskGate && !$('tryOk').checked){ log('试之前请先勾选风险确认。','l-err'); return; }
   if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果,试了也白试','l-err'); return; }
@@ -2968,8 +3028,8 @@ async function tryCmd(ci, opts={}){
       const axisNow=lastLevel?lastLevel.axis:null;
       samples.push({t:now, yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll, axis:axisNow});
 
-      // 例程期间会推 04/30,含义没确认过——如实带一行「收到了」,对不上就只写这些,不编它的意思。
-      if(seq30!==seen30){ seen30=seq30; log(`  收到 04/30 = ${hex(last30)}（例程状态推送，含义未确认）`); }
+      // 04/08 关节粗校准期间会推 04/30(校准进度,dissector 0x30=Auto Calibration Status)。
+      if(seq30!==seen30){ seen30=seq30; log(`  收到 04/30 = ${hex(last30)}（校准进度 progress=${last30[0]} status=${last30[1]}）`); }
 
       /* 主轴一变就立刻记一行,不等整秒:回位那一刻往往正好触发退出,
          等下一个整秒就永远等不到了,而「什么时候回的位」恰恰是最关键的一条证据。 */
@@ -3052,7 +3112,7 @@ async function tryCmd(ci, opts={}){
         maxDyaw=Math.max(maxDyaw,dy); maxDpitch=Math.max(maxDpitch,dp); maxDroll=Math.max(maxDroll,dr);
         const axisNow=lastLevel?lastLevel.axis:null;
         samples.push({t:now, yaw:lastEuler.yaw, pitch:lastEuler.pitch, roll:lastEuler.roll, axis:axisNow});
-        if(seq30!==seen30){ seen30=seq30; log(`  收到 04/30 = ${hex(last30)}（例程状态推送，含义未确认）`); }
+        if(seq30!==seen30){ seen30=seq30; log(`  收到 04/30 = ${hex(last30)}（校准进度 progress=${last30[0]} status=${last30[1]}）`); }
         if(axisNow!==prevAxis){
           log(`  t=${((now-t0)/1000).toFixed(1)}s  重力主轴 ${fmtAxis(prevAxis)}→${fmtAxis(axisNow)}`);
           prevAxis=axisNow;
@@ -3478,6 +3538,25 @@ function buildReport(){
     L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）—— 与 OM6 未必一致，以实测为准');
   }
 
+  L.push('', '===== 云台异常状态位（04/27，按位解码）=====');
+  if(!lastFlags027) L.push('（还没收到 04/27）');
+  else{
+    L.push(`原始字节  ${hex(lastFlags027.bytes)}`);
+    L.push(lastFlags027.list.length ? `置位项    ${lastFlags027.list.join('、')}` : '置位项    无异常');
+    L.push('位定义来源：dji-dumlv1-gimbal.lua dissector，逐位照抄，未定义位单独列出不吞掉');
+  }
+
+  L.push('', '===== 04/05 已解出的字段（仅展示，不用于姿态解算）=====');
+  if(!last0405Fields) L.push('（还没收到 04/05）');
+  else{
+    const f=last0405Fields;
+    L.push(`pitch=${f.pitch.toFixed(1)}°  roll=${f.roll.toFixed(1)}°  yaw=${f.yaw.toFixed(1)}°  `+
+      `mode=${f.mode}（${MODE_0405_NAMES[f.mode] ?? '未知'}）  roll_adjust=${f.rollAdjust.toFixed(1)}°  yaw_angle=${f.yawAngle.toFixed(1)}°`);
+    L.push('字段名与偏移来源：dji-dumlv1-gimbal.lua dissector（pitch/roll/yaw/mode/roll_adjust/yaw_angle）——'+
+      '不是我们猜的，之前相关性分析找到的「[4:6]↔偏航」正好对上这里的 yaw(offset 4)，可当交叉验证。');
+    L.push('姿态解算仍然只认 [24:40] 四元数（decodeQuat）——这一节只做展示，绝不替换那条实测验证过的路径。');
+  }
+
   const map=fieldMap(recBuf);
   L.push('', `===== 字段图谱（共 ${recBuf.length} 帧记录）=====`);
   if(!map.length) L.push('（没有记录。先点「开始记录」，或跑一次自检/激励采集/扫描。）');
@@ -3833,6 +3912,9 @@ let featRunning=false;
 function featBusy(){ return labRunning || tryRunning || gotoRunning || probeRunning || featRunning; }
 
 const MODE_NAMES=['锁定','跟随','FPV'];
+// 04/4C 的 mode 编号(锁定/跟随/FPV)与 04/05 offset6 报的 mode(YawNoFollow/FPV/YawFollow/AutoCalibrate)
+// 不是同一套,不能直接比较,要按 dissector 的对应关系映射着比。
+const MODE_4C_TO_05 = {0:0, 1:2, 2:1};   // 锁定→YawNoFollow  跟随→YawFollow  FPV→FPV
 async function modeSet(m){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
@@ -3840,24 +3922,31 @@ async function modeSet(m){
   ['btnModeLock','btnModeFollow','btnModeFpv'].forEach(id=>$(id).disabled=true);
   try{
     log(`—— 跟随模式:切到「${MODE_NAMES[m]}」(04/4C,按协议表,OM6 未确认)——`);
-    // 模式切换本身不一定产生位移,姿态判据在这里用不上 —— 改用「握手 + 状态推送有没有变」两条证据。
-    // 0x1c=28、0x27=39,查表比魔数好认;lastPush 由 decode() 维护(见该处注释)。
-    const base1c=lastPush['4/28'], base27=lastPush['4/39'];
+    // 读回来确认,比「状态推送有没有变」硬得多:04/05 offset6 mask 0xc0 直接报了当前 mode(dissector),
+    // 等它自己说出跟指令要的一致,才是真的确认生效,而不是"应答了 + 别的什么东西变了"这种旁证。
+    // payload 第二字节是 dissector 说的 cmd(uint8@1),不是 mode 的高位字节——两者字节序上凑巧一样,
+    // 但含义不同,别按 uint16 理解。
+    const want = MODE_4C_TO_05[m];
+    const wasAt = last0405At;
     const seq=0xD100|m;
     const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x4C, payload:[m&0xff,0x00]}), seq);
     if(!ok){ log('❌ 04/4C 没有应答。','l-err'); return; }
-    let changed=false;
+    let seen=false, matched=false, gotMode=null;
     const t1=Date.now();
-    while(Date.now()-t1<3000){
+    while(Date.now()-t1<4000){
       await sleep(150);
-      const c1c=lastPush['4/28'], c27=lastPush['4/39'];
-      if((base1c && c1c && hex(c1c)!==hex(base1c)) || (base27 && c27 && hex(c27)!==hex(base27))){ changed=true; break; }
+      if(last0405At>wasAt){
+        seen=true; gotMode=last0405Mode;
+        if(gotMode===want){ matched=true; break; }
+      }
     }
-    if(changed){
+    if(matched){
       saveFeat('mode',{ok:true, at:Date.now()});
-      log(`✅ 04/4C 应答了返回码 0,04/1c 或 04/27 的状态推送内容也变了 —— 「${MODE_NAMES[m]}」在这台机器上生效。`,'l-ack');
+      log(`✅ 04/4C 应答了返回码 0,04/05 读回来的 mode 也是「${MODE_0405_NAMES[want]}」—— 「${MODE_NAMES[m]}」在这台机器上生效。`,'l-ack');
+    }else if(seen){
+      log(`⚠ 04/4C 有应答,但 04/05 读回来的模式对不上 —— 要的是「${MODE_0405_NAMES[want]}」,读回来是「${MODE_0405_NAMES[gotMode] ?? gotMode}」。`,'l-err');
     }else{
-      log('⚠ 应答了但没看到状态变化 —— 可能生效了、也可能这条在 OM6 上是别的意思。','l-err');
+      log('⚠ 应答了,但 4 秒内没收到新的 04/05 帧 —— 没有反馈可用。','l-err');
     }
   } finally {
     featRunning=false;
@@ -3869,6 +3958,11 @@ $('btnModeLock').onclick=()=>modeSet(0);
 $('btnModeFollow').onclick=()=>modeSet(1);
 $('btnModeFpv').onclick=()=>modeSet(2);
 
+// 实测优先于文档:真机上 0x2AB5 让遥测停、0x7EF2 让遥测回来,跟 dissector 的枚举名正相反
+// (dissector 写的是 0x2AB5="Resume"、0x7EF2="Suspend")。这台 OM6 与文档相反,按钮接线是对的
+// (btnSuspend→suspendGimbal(true)→发下面这个 SUSPEND_CMD),不是我们接反了——按实测效果命名,别按文档命名。
+const SUSPEND_CMD = 0x2AB5;   // 实测:发出去之后遥测停
+const RESUME_CMD  = 0x7EF2;   // 实测:发出去之后遥测回来
 async function suspendGimbal(on){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
@@ -3879,31 +3973,38 @@ async function suspendGimbal(on){
   featRunning=true;
   ['btnSuspend','btnResume'].forEach(id=>$(id).disabled=true);
   try{
-    log(`—— ${on?'待机':'恢复'}(04/0D,按协议表,OM6 未确认)——`);
+    log(`—— ${on?'待机':'恢复'}(04/0D,按协议表,OM6 未确认;常量按实测对调,见 SUSPEND_CMD 注释)——`);
     const seq=on?0xD2F2:0xD2B5;
-    const payload=on?[0xF2,0x7E]:[0xB5,0x2A];   // uint16 LE:0x7EF2 挂起 / 0x2AB5 恢复
+    const payload=on?i16(SUSPEND_CMD):i16(RESUME_CMD);
     const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x0D, payload}), seq);
-    if(!ok) log('⚠ 04/0D 没有应答 —— 继续按遥测有没有停/回来判断,应答不是唯一证据。','l-err');
+    if(!ok) log('⚠ 04/0D 没有应答 —— 继续按下面的判据判断,应答不是唯一证据。','l-err');
     const t0=Date.now();
+    // 判据升级:04/27 byte4 bit0 是睡眠位(dissector),它自己说睡了/醒了比"遥测停没停"硬得多——
+    // 遥测停也可能是别的原因。但 04/27 也可能跟遥测一起停,拿不到就退回原来的遥测判据,
+    // 日志里说明用的是哪条证据,不能让人以为两条证据一样硬。
+    const wasFlagsAt=lastFlags027At;
     if(on){
-      let stopped=false;
+      let stopped=false, evidence=null;
       while(Date.now()-t0<8000){
         await sleep(200);
-        if(rxPushT && Date.now()-rxPushT>=SILENCE_MS){ stopped=true; break; }
+        if(lastFlags027At>wasFlagsAt && lastFlags027 && lastFlags027.sleepMode){ stopped=true; evidence='flag'; break; }
+        if(rxPushT && Date.now()-rxPushT>=SILENCE_MS){ stopped=true; evidence='silence'; break; }
       }
       if(stopped){
         saveFeat('suspend',{ok:true, at:Date.now()});
-        log('✅ 待机成功 —— 主动推送已经停了。点「恢复」叫回来;万一恢复不了就按云台电源键。','l-ack');
+        log(`✅ 待机成功 —— ${evidence==='flag' ? '04/27 睡眠位(byte4 bit0)已置 1,它自己说它睡了' : '拿不到 04/27,退回遥测判据:主动推送已经停了'}。`+
+            '点「恢复」叫回来;万一恢复不了就按云台电源键。','l-ack');
       }else{
-        log('⚠ 发过去了,但 8 秒内遥测没停 —— 它可能没进待机。','l-err');
+        log('⚠ 发过去了,但 8 秒内既没等到睡眠位置 1、遥测也没停 —— 它可能没进待机。','l-err');
       }
     }else{
-      let woke=false;
+      let woke=false, evidence=null;
       while(Date.now()-t0<8000){
         await sleep(200);
-        if(rxPushT>=t0){ woke=true; break; }
+        if(lastFlags027At>wasFlagsAt && lastFlags027 && !lastFlags027.sleepMode){ woke=true; evidence='flag'; break; }
+        if(rxPushT>=t0){ woke=true; evidence='silence'; break; }
       }
-      if(woke) log('✅ 恢复成功 —— 遥测回来了。','l-ack');
+      if(woke) log(`✅ 恢复成功 —— ${evidence==='flag' ? '04/27 睡眠位已回到 0' : '拿不到 04/27,退回遥测判据:遥测回来了'}。`,'l-ack');
       else log('❌ 恢复没生效 —— 试试「唤醒」按钮重连,再不行按电源键。','l-err');
     }
   } finally {
