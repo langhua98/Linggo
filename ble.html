@@ -224,6 +224,14 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 .lab-ok input{width:auto}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 
+/* ── 用户参数面板(04/10 扫描结果表) ── 表格本身横向滚动,别让页面整体横向滚动 */
+#param-table{overflow-x:auto}
+.ptbl{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;white-space:nowrap}
+.ptbl th,.ptbl td{padding:4px 7px;border-top:1px solid #10181d;text-align:left}
+.ptbl th{color:var(--dim);font-weight:500}
+.ptbl td{color:var(--ink)}
+.ptbl button{padding:2px 8px;font-size:11px}
+
 /* ── 高级折叠区 ── */
 #adv{ border-top:1px solid var(--line);margin-top:4px }
 #adv>summary{
@@ -421,6 +429,38 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <input type="range" id="pwm1" min="-661" max="661" step="1" value="0" disabled></label>
   <label class="fld"><span class="lab"><span>通道 3</span><span class="val" id="vPwm2">1024</span></span>
     <input type="range" id="pwm2" min="-661" max="661" step="1" value="0" disabled></label>
+
+  <p class="eyebrow" style="margin-top:16px">用户参数面板（04/10 读 · 04/0F 写）</p>
+  <p class="note" style="margin-top:0"><b>04/10 是纯读，零风险</b>——扫描会把索引 0~63 逐个问一遍，
+    问不到的会返回负数错误码，那是正常情况，不是出错。<b>04/0F 写进的是运行时参数，不进
+    flash</b>：断电、或点上面「恢复默认参数」就回去了；只有再点危险区的「保存参数到 flash」
+    才永久生效——这跟危险区那两条不是一回事，风险程度不一样，别混着说。下面 04/24 那张 74
+    字节结构表的字段名是<b>按字节偏移</b>排的，不是按 04/10 的索引排的，<b>没有任何证据说
+    两套编号是同一回事</b>——两张表分开看，谁也别拿去套谁，这个项目已经因为拿别的机器的文档
+    去套 OM6（04/0c 速度帧载荷顺序）栽过一次，不能再来一次。</p>
+  <div class="row">
+    <button id="btnParamScan" disabled>扫描参数表（04/10，索引 0~63）</button>
+    <button id="btnParamRead24" disabled>读参数结构（04/24）</button>
+  </div>
+  <div id="param-table"></div>
+  <div id="params-note" class="note"></div>
+  <div id="p24-note" class="note"></div>
+
+  <p class="note" style="margin-top:14px"><b>写参数（04/0F）：</b>先「扫描」或点上面表格里的
+    「填入」看看现在是什么值，再改——没有基准的写没有意义。</p>
+  <div class="grid3">
+    <label class="fld" style="margin:0"><span class="lab"><span>索引</span></span>
+      <input type="number" id="pwIdx" min="0" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>长度</span></span>
+      <select id="pwSize" disabled><option value="1">1</option><option value="2">2</option>
+        <option value="4">4</option><option value="8">8</option></select></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>值</span></span>
+      <input type="number" id="pwVal" value="0" disabled></label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnParamWrite" disabled>写入并读回验证</button>
+  </div>
+  <div id="pwrite-note" class="note"></div>
 
   <div class="danger-zone">
     <p class="eyebrow">危险区 · 会永久改写云台参数</p>
@@ -860,7 +900,8 @@ function setState(s,txt){
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto',
    'btnBoostAtt','btnReadCtrl','btnReadDevState','btnRotate90','btnLockAxes',
-   'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults']
+   'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
+   'btnParamScan','btnParamRead24','pwIdx','pwSize','pwVal','btnParamWrite']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -3606,6 +3647,29 @@ function buildReport(){
     L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）—— 与 OM6 未必一致，以实测为准');
   }
 
+  L.push('', '===== 用户参数（04/10 / 04/24）=====');
+  {
+    // 跟其它节一样从 localStorage 读,不依赖内存变量。
+    const f=loadFeat();
+    if(!f.params || !f.params.n) L.push('04/10 扫描：尚未扫描');
+    else{
+      L.push(`04/10 扫描：成功 ${f.params.n} 条（${new Date(f.params.at).toISOString()}）`);
+      for(const it of f.params.items){
+        const uStr = it.u===null ? '(见 hex)' : it.u;
+        L.push(`  idx=${it.idx}  size=${it.size}  hex=${hex(it.bytes)}  无符号=${uStr}`);
+      }
+      (f.params.errLines||[]).forEach(l=>L.push('  '+l));
+    }
+    if(!f.p24) L.push('04/24 结构：尚未读取');
+    else if(!f.p24.ok) L.push(`04/24 结构：⚠ 应答 ${f.p24.len!==undefined?f.p24.len:'?'} 字节，长度对不上 74`);
+    else{
+      L.push(`04/24 结构：✅ 长度对得上 74（${new Date(f.p24.at).toISOString()}）`);
+      for(const fd of f.p24.fields) L.push(`  ${fd.cn}(${fd.name})  偏移${fd.off}  ${fd.hex}  = ${fd.v}`);
+      L.push(`  另有 ${f.p24.unnamedLen} 字节未命名，原始：${f.p24.unnamedHex}`);
+    }
+    L.push('索引体系（04/10）与偏移体系（04/24）是两回事，本页没有把它们对应起来。');
+  }
+
   L.push('', '===== 云台异常状态位（04/27，按位解码）=====');
   if(!lastFlags027) L.push('（还没收到 04/27）');
   else{
@@ -3973,6 +4037,33 @@ function refreshFeatNotes(){
   const restoreEl=$('restoredefaults-note');
   if(restoreEl) restoreEl.textContent = f.restoreDefaults
     ? `${f.restoreDefaults.ok?'✅ 已恢复默认':'⚠ 应答异常'}（${new Date(f.restoreDefaults.at).toISOString()}）` : '（尚未做过）';
+  // 第二轮新增:用户参数面板。表格要跟着 note 一起从存档重画,换个会话回来也看得见——
+  // 不能只画 note 文字,表格空着会让人以为「按了扫描但没结果」。
+  const paramsEl=$('params-note');
+  if(paramsEl){
+    paramsEl.textContent = f.params
+      ? `上次扫描：成功 ${f.params.n} 条（${new Date(f.params.at).toISOString()}）`
+      : '尚未扫描';
+    renderParamTable(f.params ? f.params.items : [], f.params ? f.params.errLines : []);
+  }
+  const p24El=$('p24-note');
+  if(p24El){
+    if(!f.p24) p24El.textContent='尚未读取';
+    else if(!f.p24.ok){
+      p24El.textContent = f.p24.len!==undefined
+        ? `⚠ 上次应答 ${f.p24.len} 字节，对不上 74（${new Date(f.p24.at).toISOString()}）`
+        : `❌ 上次没有应答（${new Date(f.p24.at).toISOString()}）`;
+    }else{
+      const lines=(f.p24.fields||[]).map(fd=>`${fd.cn}(${fd.name}) 偏移${fd.off} ${fd.hex} = ${fd.v}`);
+      lines.push(`另有 ${f.p24.unnamedLen} 字节未命名，原始：${f.p24.unnamedHex}`);
+      lines.push(`（${new Date(f.p24.at).toISOString()}）`);
+      p24El.innerHTML=lines.map(l=>l.replace(/</g,'&lt;')).join('<br>');
+    }
+  }
+  const pwriteEl=$('pwrite-note');
+  if(pwriteEl) pwriteEl.textContent = f.paramWrite
+    ? `上次写索引 ${f.paramWrite.idx}（长度${f.paramWrite.size}）：${f.paramWrite.note}（${new Date(f.paramWrite.at).toISOString()}）`
+    : '（尚未做过）';
 }
 
 /* 发一帧并等它的应答(flags=0x40 已要求应答),只回答「有没有收到返回码 0 的应答」这一件事 ——
@@ -4467,6 +4558,296 @@ async function restoreDefaults(){
   }
 }
 $('btnRestoreDefaults').onclick=()=>restoreDefaults();
+
+/* ════════════ 6·云台功能 · 第二轮新增(用户参数面板:04/10 读 / 04/0F 写 / 04/24 结构) ════════════
+   来源同上,另加 dji-dumlv1-gimbal.lua 里 0x0f/0x10/0x24 三段。用户明确要求全部做出来、不要
+   再劝阻,但每条写指令都必须自己读回来验证 —— 这条原则贯穿全模块,status===0 从不单独当作生效证据。 */
+
+/* ── 04/10 应答解析,单独抽出来方便直接喂字节数组测试,不用走蓝牙 ──
+   status 打头,之后循环:idx(int8)>=0 是成功项,后跟 size(u8)+size 字节小端值;
+   idx<0 时这个字节本身就是错误码,offset 只挪 1。size 只认 1/2/4/8,dissector 对其它值的
+   处理是照样当 1 字节解 —— 抄这个 fallback,不能改成报错,真机给别的 size 时还得继续往下解。 */
+function parseParamsGet(pl){
+  if(!pl || pl.length<1) return {status:null, items:[]};
+  const status=pl[0];
+  const items=[];
+  let offset=1;
+  while(offset<pl.length){
+    const idxByte=pl[offset];
+    const idx = idxByte>=0x80 ? idxByte-0x100 : idxByte;   // int8
+    offset+=1;
+    if(idx<0){ items.push({idx, err:true}); continue; }
+    if(offset>=pl.length) break;              // 截断了,size 字节都没有
+    const rawSize=pl[offset]; offset+=1;
+    const size = (rawSize===1||rawSize===2||rawSize===4||rawSize===8) ? rawSize : 1;
+    if(offset+size>pl.length) break;          // 截断了,凑不够 size 字节
+    const bytes=pl.slice(offset, offset+size);
+    offset+=size;
+    // 8 字节的值超过 2^53,Number 算出来会丢精度 —— 只给 hex,u/i 置 null,别硬凑。
+    let u=null, i=null;
+    if(size<=4){
+      u=0; for(let k=size-1;k>=0;k--) u=u*256+bytes[k];
+      const bits=size*8;
+      i = (bytes[size-1]&0x80) ? u-Math.pow(2,bits) : u;
+    }
+    items.push({idx, size, bytes, u, i});
+  }
+  return {status, items};
+}
+
+/* 把用户填的整数值按 size 编成小端字节。允许负数按补码;超出该长度能表示的范围直接拒绝
+   ——静默截断会把「填错了」偷偷变成「发了另一个值出去」,比拒绝危险得多。size=8 用 BigInt,
+   避免 2^53 以外精度丢失。
+   范围取「有符号下界 ~ 无符号上界」的并集,而不是只认有符号:表格里的「填入」按钮搬的是
+   无符号值(我们根本不知道每个参数是有符号还是无符号),2 字节的 0xF000 读回来是 61440,
+   只认有符号就会把「原样写回刚读到的值」这条最该走通的路给堵死。 */
+function encodeParamValue(rawStr, size){
+  if(!/^-?\d+$/.test(String(rawStr).trim())) throw new Error('值必须是整数（不支持小数）');
+  const s=String(rawStr).trim();
+  if(size===8){
+    const v=BigInt(s);
+    const min=-(1n<<63n), max=(1n<<64n)-1n;
+    if(v<min||v>max) throw new Error(`超出 8 字节可表示范围（${min}~${max}）`);
+    let u = v<0n ? v+(1n<<64n) : v;
+    const bytes=[];
+    for(let k=0;k<8;k++){ bytes.push(Number(u & 0xffn)); u >>= 8n; }
+    return bytes;
+  }
+  const v=parseInt(s,10);
+  const bits=size*8, min=-(2**(bits-1)), max=2**bits-1;
+  if(v<min||v>max) throw new Error(`超出 ${size} 字节可表示范围（${min}~${max}）`);
+  let u = v<0 ? v+2**bits : v;
+  const bytes=[];
+  for(let k=0;k<size;k++){ bytes.push(u & 0xff); u=Math.floor(u/256); }
+  return bytes;
+}
+
+/* 04/24 具名字段表,偏移/长度照抄 dissector(第一节表格) —— 这套编号是按字节偏移排的,
+   跟 04/10 的索引编号是两套体系,别在这份表里夹带任何「等同于哪个 idx」的猜测。 */
+const P24_FIELDS=[
+  {name:'preset_id',           cn:'Preset Id',            off:2,  len:1},
+  {name:'yaw_speed',           cn:'Yaw Speed',             off:9,  len:2},
+  {name:'pitch_speed',         cn:'Pitch Speed',           off:13, len:2},
+  {name:'yaw_deadband',        cn:'Yaw Deadband',          off:17, len:2},
+  {name:'pitch_deadband',      cn:'Pitch Deadband',        off:21, len:2},
+  {name:'stick_yaw_speed',     cn:'Stick Yaw Speed',       off:25, len:2},
+  {name:'stick_pitch_speed',   cn:'Stick Pitch Speed',     off:29, len:2},
+  {name:'stick_yaw_smooth',    cn:'Stick Yaw Smooth',      off:33, len:2},
+  {name:'stick_pitch_smooth',  cn:'Stick Pitch Smooth',    off:37, len:2},
+  {name:'roll_speed',          cn:'Roll Speed',            off:47, len:2},
+  {name:'roll_deadband',       cn:'Roll Deadband',         off:51, len:2},
+  {name:'yaw_accel',           cn:'Yaw Accel',             off:55, len:2},
+  {name:'pitch_accel',         cn:'Pitch Accel',           off:59, len:2},
+  {name:'roll_accel',          cn:'Roll Accel',            off:63, len:2},
+  {name:'yaw_smooth_track',    cn:'Yaw Smooth Track',      off:67, len:1},
+  {name:'pitch_smooth_track',  cn:'Pitch Smooth Track',    off:70, len:1},
+  {name:'roll_smooth_track',   cn:'Roll Smooth Track',     off:73, len:1},
+];
+// 74 字节里没被上表覆盖的那些偏移(unknownXX)——按偏移逐个扣掉具名区间,剩下的原样收进 hex,
+// 不吞掉,顺带也是「具名字段表跟 74 对得上」的一个交叉验证(算出来应为 44)。
+function extractUnnamed74(pl){
+  const covered=new Array(74).fill(false);
+  for(const f of P24_FIELDS) for(let o=f.off;o<f.off+f.len;o++) covered[o]=true;
+  const bytes=[];
+  for(let o=0;o<74;o++) if(!covered[o]) bytes.push(pl[o]);
+  return bytes;
+}
+
+/* ── 扫描结果表格:成功项渲染成表,失败索引汇总成文字,「填入」按钮把该行数据搬进写入框 ──
+   两块内容(表+错误摘要)都从存档重画(见 refreshFeatNotes),不是只在当次扫描时画一次。 */
+function paramTableRow(it){
+  const cell=v=>v===null?'—':String(v);
+  return `<tr><td>${it.idx}</td><td>${it.size}</td><td>${hex(it.bytes)}</td>`+
+    `<td>${cell(it.u)}</td><td>${cell(it.i)}</td>`+
+    `<td><button type="button" class="ptbl-fill" data-idx="${it.idx}" data-size="${it.size}" `+
+    `data-u="${it.u===null?'':it.u}">填入</button></td></tr>`;
+}
+function renderParamTable(items, errLines){
+  const el=$('param-table'); if(!el) return;
+  items=items||[]; errLines=errLines||[];
+  if(!items.length && !errLines.length){ el.innerHTML=''; return; }
+  let html='';
+  if(items.length){
+    html+='<table class="ptbl"><thead><tr><th>索引</th><th>长度</th><th>原始(hex)</th>'+
+      '<th>无符号</th><th>有符号</th><th></th></tr></thead><tbody>'+
+      items.map(paramTableRow).join('')+'</tbody></table>';
+  }
+  errLines.forEach(l=>{ html+=`<p class="note" style="margin-top:6px">${l}</p>`; });
+  el.innerHTML=html;
+  el.querySelectorAll('.ptbl-fill').forEach(btn=>{
+    btn.onclick=()=>{
+      $('pwIdx').value=btn.dataset.idx;
+      $('pwSize').value=btn.dataset.size;
+      if(btn.dataset.u!=='') $('pwVal').value=btn.dataset.u;
+    };
+  });
+}
+
+/* ── 扫描:04/10,索引 0~63 ── 每帧问 4 个(应答最坏 1+4×10=41 字节载荷,跟已跑通的 04/05
+   同量级),一帧问 64 个应答会长到没法保证。共 16 帧,帧间 sleep(150) 别把云台打爆。
+   应答按请求顺序一一对应(dissector:"given indexes...returns a list of their values"),
+   所以逐项跟本帧发出去的 idxs 按位置对齐 —— 失败项那个字节本身是错误码,不是原始索引,
+   原始索引得靠位置对应找回来,不能直接拿 err 项的 idx 字段当索引用。 */
+async function paramScan(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  featRunning=true;
+  $('btnParamScan').disabled=true;
+  try{
+    log('—— 扫描用户参数表(04/10,索引 0~63,每帧问 4 个,共 16 帧)——');
+    const okItems=[];
+    const failByCode=new Map();   // 错误码 → [原始索引...]
+    for(let base=0; base<64; base+=4){
+      const idxs=[base,base+1,base+2,base+3];
+      const seq=0xDD00|base;
+      const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x10, payload:idxs}), seq);
+      if(ok && featAckPayload){
+        const {items}=parseParamsGet(featAckPayload);
+        items.forEach((it,k)=>{
+          const reqIdx=idxs[k];
+          if(it.err){ const arr=failByCode.get(it.idx)||[]; arr.push(reqIdx); failByCode.set(it.idx,arr); }
+          else okItems.push(it);
+        });
+      }else{
+        log(`⚠ 索引 ${idxs.join(',')} 这帧没有应答,跳过`,'l-err');
+      }
+      await sleep(150);
+    }
+    const errLines=[...failByCode.entries()]
+      .map(([code,idxArr])=>`索引 ${idxArr.join(', ')} 返回错误码 ${code}（该索引不存在）`);
+    renderParamTable(okItems, errLines);
+    if(okItems.length===0){
+      const msg='这台机器上 0~63 号索引一个都读不出来,04/10 在 OM6 上可能不是这个用法';
+      log('⚠ '+msg,'l-err');
+    }else{
+      log(`✅ 扫描完成:成功 ${okItems.length} 条${errLines.length?'；'+errLines.join('；'):''}`,'l-ack');
+    }
+    saveFeat('params',{n:okItems.length, at:Date.now(), items:okItems, errLines});
+  } finally {
+    featRunning=false;
+    $('btnParamScan').disabled=!linkOn;
+    refreshFeatNotes();
+  }
+}
+$('btnParamScan').onclick=()=>paramScan();
+
+/* ── 04/24 结构:空载荷读,应答正好 74 字节才按偏移解 ── 长度不对就如实说不对、给原始 hex,
+   不强行按偏移去解一段长度不对的载荷(规格明确要求)。 */
+async function readParams24(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  featRunning=true;
+  $('btnParamRead24').disabled=true;
+  try{
+    log('—— 读参数结构(04/24,空载荷)——');
+    const seq=0xDE00|(seqNo++ & 0xff);
+    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x24, payload:[]}), seq);
+    if(!ok || !featAckPayload){
+      log('❌ 04/24 没有应答。','l-err');
+      $('p24-note').textContent='❌ 没有应答';
+      saveFeat('p24',{ok:false, at:Date.now()});
+      return;
+    }
+    const pl=featAckPayload;
+    if(pl.length!==74){
+      const msg=`⚠ 应答 ${pl.length} 字节,dissector 说该结构是 74 字节,对不上,按原始字节给出:${hex(pl)}`;
+      log(msg,'l-err');
+      $('p24-note').textContent=msg;
+      saveFeat('p24',{ok:false, len:pl.length, at:Date.now()});
+      return;
+    }
+    const fields=P24_FIELDS.map(f=>{
+      const bytes=pl.slice(f.off,f.off+f.len);
+      let v=0; for(let k=f.len-1;k>=0;k--) v=v*256+bytes[k];
+      return {name:f.name, cn:f.cn, off:f.off, len:f.len, v, hex:hex(bytes)};
+    });
+    const unnamedBytes=extractUnnamed74(pl);
+    const unnamedHex=hex(unnamedBytes);
+    const lines=fields.map(f=>`${f.cn}(${f.name})  偏移${f.off}  ${f.hex}  = ${f.v}`);
+    lines.push(`另有 ${unnamedBytes.length} 字节未命名,原始:${unnamedHex}`);
+    log('✅ 04/24 应答 74 字节,已解出具名字段：\n'+lines.join('\n'),'l-ack');
+    $('p24-note').innerHTML=lines.map(l=>l.replace(/</g,'&lt;')).join('<br>');
+    saveFeat('p24',{ok:true, at:Date.now(), fields, unnamedLen:unnamedBytes.length, unnamedHex});
+  } finally {
+    featRunning=false;
+    $('btnParamRead24').disabled=!linkOn;
+    refreshFeatNotes();
+  }
+}
+$('btnParamRead24').onclick=()=>readParams24();
+
+/* ── 写:04/0F,写完必须读回来验证 ── 复用 sendAndWaitAck 发 04/10 单索引读,
+   读一次当 before、写完再读一次当 after,四种结果分开判,status===0 绝不单独当生效证据。 */
+async function paramRead1(idx){
+  const seq=0xDF00|(seqNo++ & 0xff);
+  const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x10, payload:[idx&0xff]}), seq);
+  if(!ok || !featAckPayload) return null;
+  const {items}=parseParamsGet(featAckPayload);
+  const it=items[0];
+  return (it && !it.err) ? it : null;
+}
+async function paramWrite(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  const idx=parseInt($('pwIdx').value,10);
+  const size=parseInt($('pwSize').value,10);
+  const rawVal=$('pwVal').value;
+  if(!Number.isFinite(idx) || idx<0 || idx>127){ log('⚠ 索引必须在 0~127','l-err'); return; }
+  if(![1,2,4,8].includes(size)){ log('⚠ 长度必须是 1/2/4/8','l-err'); return; }
+  let valueBytes;
+  try{ valueBytes=encodeParamValue(rawVal, size); }
+  catch(e){ log('⚠ '+e.message,'l-err'); return; }
+  featRunning=true;
+  $('btnParamWrite').disabled=true;
+  try{
+    log(`—— 写参数(04/0F,索引 ${idx},长度 ${size})——`);
+    const beforeItem=await paramRead1(idx);
+    if(!beforeItem) log('⚠ 写之前读不到这个索引,写完没有对照基准','l-err');
+    const beforeDesc = beforeItem
+      ? `hex=${hex(beforeItem.bytes)}${beforeItem.u!==null?`（=${beforeItem.u}）`:''}`
+      : '读不到';
+    const expectHex=hex(valueBytes);
+    if(!confirm(`索引 ${idx}：旧值 ${beforeDesc} → 新值 ${rawVal}（hex=${expectHex}）。\n`+
+      '这条只改运行时参数,不进 flash;要永久生效还得点危险区的「保存参数到 flash」。确定要写吗?')){
+      log('已取消写参数。'); return;
+    }
+    const seqW=0xDF00|(seqNo++ & 0xff);
+    const ok=await sendAndWaitAck(buildDuml({seq:seqW, flags:0x40, cmdSet:0x04, cmdId:0x0F,
+      payload:[idx&0xff, size, ...valueBytes]}), seqW);
+    const status = (ok && featAckPayload && featAckPayload.length) ? featAckPayload[0] : null;
+    if(!ok) log('⚠ 04/0F 没有应答','l-err');
+    else log(`04/0F 应答 status=${status}`, status===0?'l-ack':'l-err');
+
+    const afterItem=await paramRead1(idx);
+    let note;
+    if(!afterItem){
+      note='⚠ 写完读不回来,无法确认';
+      log(note,'l-err');
+    }else{
+      const afterHex=hex(afterItem.bytes);
+      if(afterHex===expectHex){
+        note=`✅ 写进去了（读回 = 期望,hex=${afterHex}）`;
+        log(note,'l-ack');
+      }else if(!beforeItem){
+        note=`⚠ 读回 hex=${afterHex},与期望 ${expectHex} 不符,且写前没读到基准,判不出是否真的变了`;
+        log(note,'l-err');
+      }else if(afterHex!==hex(beforeItem.bytes)){
+        note=`⚠ 值变了但不等于你写的 —— 写了 ${expectHex},读回 ${afterHex}（原值 hex=${hex(beforeItem.bytes)}）`;
+        log(note,'l-err');
+      }else{
+        note=`❌ 没变（status=${status},返回码不代表生效）`;
+        log(note,'l-err');
+      }
+    }
+    $('pwrite-note').textContent=`索引 ${idx}：${note}`;
+    saveFeat('paramWrite',{idx, size, note, at:Date.now()});
+  } finally {
+    featRunning=false;
+    $('btnParamWrite').disabled=!linkOn;
+    refreshFeatNotes();
+  }
+}
+$('btnParamWrite').onclick=()=>paramWrite();
 
 $('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $('btnCal').disabled=false; }); };
 
