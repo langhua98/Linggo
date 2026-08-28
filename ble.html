@@ -414,8 +414,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div id="rotate90-note" class="note"></div>
   <div id="lockaxes-note" class="note"></div>
   <div class="row" style="margin-top:8px">
-    <button id="btnRollMinus" disabled>横滚微调 −1°（04/07）</button>
-    <button id="btnRollPlus" disabled>横滚微调 +1°（04/07）</button>
+    <button id="btnRollMinus" disabled>横滚微调 −5（约 0.5°，04/07）</button>
+    <button id="btnRollPlus" disabled>横滚微调 +5（约 0.5°，04/07）</button>
   </div>
   <div id="rolltrim-note" class="note"></div>
 
@@ -429,9 +429,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <input type="range" id="pwm1" min="-661" max="661" step="1" value="0" disabled></label>
   <label class="fld"><span class="lab"><span>通道 3</span><span class="val" id="vPwm2">1024</span></span>
     <input type="range" id="pwm2" min="-661" max="661" step="1" value="0" disabled></label>
+  <div id="pwm-map-note" class="note"></div>
 
   <p class="eyebrow" style="margin-top:16px">用户参数面板（04/10 读 · 04/0F 写）</p>
-  <p class="note" style="margin-top:0"><b>04/10 是纯读，零风险</b>——扫描会把索引 0~63 逐个问一遍，
+  <p class="note" style="margin-top:0"><b>04/10 是纯读，零风险</b>——扫描会把索引 0~127 逐个问一遍，
     问不到的会返回负数错误码，那是正常情况，不是出错。<b>04/0F 写进的是运行时参数，不进
     flash</b>：断电、或点上面「恢复默认参数」就回去了；只有再点危险区的「保存参数到 flash」
     才永久生效——这跟危险区那两条不是一回事，风险程度不一样，别混着说。下面 04/24 那张 74
@@ -439,7 +440,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     两套编号是同一回事</b>——两张表分开看，谁也别拿去套谁，这个项目已经因为拿别的机器的文档
     去套 OM6（04/0c 速度帧载荷顺序）栽过一次，不能再来一次。</p>
   <div class="row">
-    <button id="btnParamScan" disabled>扫描参数表（04/10，索引 0~63）</button>
+    <button id="btnParamScan" disabled>扫描参数表（04/10，索引 0~127）</button>
     <button id="btnParamRead24" disabled>读参数结构（04/24）</button>
   </div>
   <div id="param-table"></div>
@@ -3644,7 +3645,26 @@ function buildReport(){
     L.push(`跟随模式 04/4C   ${f.mode ? (f.mode.ok?`✅ 已验证（${fmtAt(f.mode)}）`:`⚠ 应答了但没确认生效（${fmtAt(f.mode)}）`) : '⚠ 尚未确认'}`);
     L.push(`待机     04/0D   ${f.suspend ? (f.suspend.ok?`✅ 已验证（${fmtAt(f.suspend)}）`:`⚠ 应答了但遥测没停（${fmtAt(f.suspend)}）`) : '⚠ 尚未确认'}`);
     L.push(`绝对角度 04/0A   ${f.abs ? (f.abs.ok?`✅ 已验证，误差 ${f.abs.err}°（${fmtAt(f.abs)}）`:`⚠ 试过但误差偏大或没动，误差 ${f.abs.err}°（${fmtAt(f.abs)}）`) : '⚠ 尚未确认'}`);
-    L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）—— 与 OM6 未必一致，以实测为准');
+    // 这条是已经试出结果的阴性结论,不是「还没测」——「⚠ 尚未确认」会让人以为随时能补测,
+    // 实际上前后频率量出来是同一个数,这台机器上这条指令就是不生效,得用 ❌ 跟"待确认"分开。
+    L.push(`提高姿态推送 04/1E   ${f.boost ? (f.boost.ok?`✅ 已验证提升（${f.boost.note}，${fmtAt(f.boost)}）`:`❌ 这台机器上提不高姿态推送频率（${f.boost.note}，${fmtAt(f.boost)}）`) : '⚠ 尚未确认'}`);
+    /* 下面这几条本来一条都没进报告 —— 而报告正是要粘给别人看的唯一产物。
+       真机上横竖屏、锁定、横滚微调、PWM 都实测过了,结果却只留在日志里,一刷新就没了。
+       页面上有按钮、报告里就该有它的结论,否则等于测了个寂寞。 */
+    L.push(`横竖屏旋转 04/3A   ${f.rotate90 ? (f.rotate90.ok?`✅ 04/27 竖屏位翻转过（${fmtAt(f.rotate90)}）`:`⚠ 应答了但竖屏位没变化（${fmtAt(f.rotate90)}）`) : '⚠ 尚未确认'}`);
+    L.push(`锁定各轴   04/39   ${f.lockaxes ? (f.lockaxes.ok?`✅ 04/27 锁定位变化过（${fmtAt(f.lockaxes)}）`:`⚠ 应答了但锁定位没变化（${fmtAt(f.lockaxes)}）`) : '⚠ 尚未确认'}`);
+    // 横滚微调这条要报「每单位多少度」而不只是「动没动」—— 那个速率是能拿去校准的数。
+    L.push(`横滚微调   04/07   ${f.rolltrim ? (f.rolltrim.ok
+      ? `✅ 实测 ${f.rolltrim.delta}°／${f.rolltrim.rate!=null?`${f.rolltrim.rate}°每单位`:'?'}（${fmtAt(f.rolltrim)}）`
+      : `⚠ 试过但位移 ${f.rolltrim.delta}° 未超阈值（${fmtAt(f.rolltrim)}）`) : '⚠ 尚未确认'}`);
+    {
+      const m=f.pwmMap||{};
+      const mapped=[1,2,3].filter(ch=>m[ch]).map(ch=>`通道${ch}→${AXIS_CN[m[ch].axis]||m[ch].axis}（${m[ch].deg>=0?'+':''}${m[ch].deg}°）`);
+      L.push(`PWM 控制   04/01   ${mapped.length?`✅ 实测通道映射：${mapped.join('，')}`:'⚠ 尚未测出通道↔轴的对应关系'}`);
+    }
+    L.push(`保存到flash 04/11   ${f.saveFlash ? (f.saveFlash.ok?`已写入（${fmtAt(f.saveFlash)}）`:`⚠ 应答异常（${fmtAt(f.saveFlash)}）`) : '（尚未做过）'}`);
+    L.push(`恢复默认   04/13   ${f.restoreDefaults ? (f.restoreDefaults.ok?`已恢复（${fmtAt(f.restoreDefaults)}）`:`⚠ 应答异常（${fmtAt(f.restoreDefaults)}）`) : '（尚未做过）'}`);
+    L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）+ dji-dumlv1-gimbal.lua —— 与 OM6 未必一致，以实测为准');
   }
 
   L.push('', '===== 用户参数（04/10 / 04/24）=====');
@@ -3661,7 +3681,14 @@ function buildReport(){
       (f.params.errLines||[]).forEach(l=>L.push('  '+l));
     }
     if(!f.p24) L.push('04/24 结构：尚未读取');
-    else if(!f.p24.ok) L.push(`04/24 结构：⚠ 应答 ${f.p24.len!==undefined?f.p24.len:'?'} 字节，长度对不上 74`);
+    else if(!f.p24.ok){
+      // 「完全无应答」和「应答了但长度不对」是两种证据强度不一样的结论,不能用同一句话糊过去:
+      // 完全无应答是已经试出的阴性结论(这台机器上不支持这条读取),长度不对只说明长度跟
+      // dissector 对不上,不代表这条指令本身不可用,不能升级成「不支持」。
+      const atTxt=f.p24.at?new Date(f.p24.at).toISOString():'';
+      if(f.p24.len!==undefined) L.push(`04/24 结构：⚠ 应答 ${f.p24.len} 字节，长度对不上 74（${atTxt}）`);
+      else L.push(`04/24 结构：❌ 完全无应答 —— 这台机器上不支持这条 74 字节结构读取（${atTxt}）`);
+    }
     else{
       L.push(`04/24 结构：✅ 长度对得上 74（${new Date(f.p24.at).toISOString()}）`);
       for(const fd of f.p24.fields) L.push(`  ${fd.cn}(${fd.name})  偏移${fd.off}  ${fd.hex}  = ${fd.v}`);
@@ -4004,6 +4031,18 @@ function saveFeat(name, val){
     localStorage.setItem(FEAT_KEY, JSON.stringify(all));
   }catch{}
 }
+/* PWM 通道↔轴映射面板的说明文字:把静态的"通道顺序未知"换成动态的——测出来的通道
+   写"通道 3 → 横滚（实测 −6.2°）",没测出来的还老实写"未知"。从 saveFeat 里读,不依赖
+   内存变量,换个会话回来也看得见。 */
+function renderPwmMapNote(){
+  const el=$('pwm-map-note'); if(!el) return;
+  const map=(loadFeat().pwmMap)||{};
+  const lines=[1,2,3].map(ch=>{
+    const m=map[ch];
+    return m ? `通道 ${ch} → ${AXIS_CN[m.axis]||m.axis}（实测 ${m.deg>=0?'+':''}${m.deg}°）` : `通道 ${ch} → 未知`;
+  });
+  el.textContent='通道↔轴对应关系（实测得出，非协议表声明）：'+lines.join('；');
+}
 // 每块 note 只有两种措辞:真验证过就报时间,没验证过就老实说「按协议表实现」——
 // 不能写成「未测试」那种弱化说法,那会让人以为随时可以补测,而不是「跟 OM6 不一定对得上」。
 function refreshFeatNotes(){
@@ -4030,7 +4069,8 @@ function refreshFeatNotes(){
     ? `${f.lockaxes.ok?'✅ 锁定位变化过':'⚠ 试过但锁定位没变'}（${new Date(f.lockaxes.at).toISOString()}）` : UNCONFIRMED;
   const rollEl=$('rolltrim-note');
   if(rollEl) rollEl.textContent = f.rolltrim
-    ? `${f.rolltrim.ok?'✅':'⚠'} 上次实测横滚变化 ${f.rolltrim.delta}°（${new Date(f.rolltrim.at).toISOString()}）` : UNCONFIRMED;
+    ? `${f.rolltrim.ok?'✅':'⚠'} 上次实测横滚变化 ${f.rolltrim.delta}°`+
+      `${f.rolltrim.rate!=null?`（速率 ${f.rolltrim.rate}°/单位）`:''}（${new Date(f.rolltrim.at).toISOString()}）` : UNCONFIRMED;
   const saveFlashEl=$('saveflash-note');
   if(saveFlashEl) saveFlashEl.textContent = f.saveFlash
     ? `${f.saveFlash.ok?'✅ 已写入':'⚠ 应答异常'}（${new Date(f.saveFlash.at).toISOString()}）` : '（尚未做过）';
@@ -4064,6 +4104,7 @@ function refreshFeatNotes(){
   if(pwriteEl) pwriteEl.textContent = f.paramWrite
     ? `上次写索引 ${f.paramWrite.idx}（长度${f.paramWrite.size}）：${f.paramWrite.note}（${new Date(f.paramWrite.at).toISOString()}）`
     : '（尚未做过）';
+  renderPwmMapNote();
 }
 
 /* 发一帧并等它的应答(flags=0x40 已要求应答),只回答「有没有收到返回码 0 的应答」这一件事 ——
@@ -4423,7 +4464,11 @@ async function lockAxes(){
 $('btnLockAxes').onclick=()=>lockAxes();
 
 /* ── 动作:04/07 横滚微调 ── 载荷是单字节 int8 调整量,复用现成的 waitSettle + lastEuler
-   判姿态里的横滚角有没有跟着变。 */
+   判姿态里的横滚角有没有跟着变。
+   步长用 ±5,不用 ±1:姿态读数本身量化到 0.1°,真机连按五次 ±1,符号 5/5 全对、净移动量
+   对得上(−0.3°=−3 个 0.1°台阶),但单步 ±1 恰好卡在这个量化台阶上,拿 0.3° 的阈值去卡它
+   必然判成"没变化"——这是我们自己把一个其实有效的功能判死了。±5(预期约 0.5°)才能稳稳
+   高出量化噪声一截,阈值相应降到 0.15°(大于一个量化台阶、小于预期位移)。 */
 async function rollTrim(delta){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
@@ -4440,9 +4485,12 @@ async function rollTrim(delta){
     await waitSettle();
     const after=lastEuler.roll;
     const d=d180(after-before);
-    const changed=Math.abs(d)>0.3;
-    saveFeat('rolltrim',{ok:changed, delta:+d.toFixed(1), at:Date.now()});
-    log(`${changed?'✅':'⚠'} 横滚 ${before.toFixed(1)}° → ${after.toFixed(1)}°  Δ${d>=0?'+':''}${d.toFixed(1)}°`+
+    const changed=Math.abs(d)>0.15;
+    // 每单位的实测速率比单纯"变了/没变"有用得多——这是一个可以拿去校准的数。
+    const rate=Math.abs(d)/Math.abs(delta);
+    const rateTxt=`实测 Δ${Math.abs(d).toFixed(1)}°/${Math.abs(delta)} 单位 = ${rate.toFixed(2)}°/单位`;
+    saveFeat('rolltrim',{ok:changed, delta:+d.toFixed(1), rate:+rate.toFixed(2), at:Date.now()});
+    log(`${changed?'✅':'⚠'} 横滚 ${before.toFixed(1)}° → ${after.toFixed(1)}°  Δ${d>=0?'+':''}${d.toFixed(1)}°  ${rateTxt}`+
         `${changed?'':'（没有可测的变化）'}`, changed?'l-ack':'l-err');
   } finally {
     featRunning=false;
@@ -4450,8 +4498,8 @@ async function rollTrim(delta){
     refreshFeatNotes();
   }
 }
-$('btnRollMinus').onclick=()=>rollTrim(-1);
-$('btnRollPlus').onclick=()=>rollTrim(1);
+$('btnRollMinus').onclick=()=>rollTrim(-5);
+$('btnRollPlus').onclick=()=>rollTrim(5);
 
 /* ── PWM 控制(04/01)── 载荷是 3×uint16 LE 原始杆量,中位 1024,范围 363~1685。
    松手/离开/失焦都要发回中位,不然云台会照最后的杆量一直转 —— pointerup 管正常松手、
@@ -4459,7 +4507,10 @@ $('btnRollPlus').onclick=()=>rollTrim(1);
    三个都接上才堵得住(见规格要求)。 */
 const pwmVal=[1024,1024,1024];
 let pwmTimer=null, pwmHome=null;
+let pwmMoved=[false,false,false];   // 本次会话里,通道 0/1/2(对应 UI 通道 1/2/3)有没有离开过中位
 const pwmClamp=v=>Math.max(363,Math.min(1685,Math.round(v)));
+// 通道↔轴的中文名,PWM 映射面板和别处("横滚"这套叫法跟 lockAxes/rotate90 保持一致)都用得到。
+const AXIS_CN={yaw:'偏航', pitch:'俯仰', roll:'横滚'};
 function buildPwmFrame(){
   return buildDuml({seq:seqNo++ & 0xffff, flags:0x00, cmdSet:0x04, cmdId:0x01,
     payload:[...i16(pwmVal[0]),...i16(pwmVal[1]),...i16(pwmVal[2])]});
@@ -4468,9 +4519,18 @@ function pwmOnInput(idx){
   pwmVal[idx]=pwmClamp(1024 + +$('pwm'+idx).value);
   $('vPwm'+idx).textContent=pwmVal[idx];
   // 拿会话开始时的姿态当基准,松手回中位那一刻用现成的 reportDelta 报"这段杆量有没有让它动"。
-  if(!pwmHome){ pwmHome=lastEuler?{...lastEuler}:null; log('—— PWM 控制开始(04/01,通道顺序未知,按协议表原样发)——'); }
+  if(!pwmHome){
+    pwmHome=lastEuler?{...lastEuler}:null; pwmMoved=[false,false,false];
+    log('—— PWM 控制开始(04/01,通道↔轴对应关系见下方说明,按协议表原样发)——');
+  }
+  if(pwmVal[idx]!==1024) pwmMoved[idx]=true;
   if(!pwmTimer) pwmTimer=setInterval(()=>send(buildPwmFrame()),100);
 }
+/* 通道↔轴映射:只有恰好一个通道在本次会话里离开过中位,且三轴位移里有一个绝对值最大
+   且 ≥2° 才敢记下来——多个通道同时动,测不出到底是谁带动的那一轴,硬记就是瞎猜,
+   还不如老实写"未知"。真机实测过一次:通道 3 单独推到 +234,ΔRoll −6.2°(|ΔYaw|、
+   |ΔPitch| 都 <0.2°),这就是"通道 3 → 横滚"这条结论的来源。按通道号存成一张表,
+   三个通道各自独立累积,后测的覆盖先测的——不是一次会话冲掉整张表。 */
 function pwmRelease(idx){
   pwmVal[idx]=1024;
   $('vPwm'+idx).textContent='1024';
@@ -4478,8 +4538,26 @@ function pwmRelease(idx){
   if(pwmVal.every(v=>v===1024)){
     if(pwmTimer){ clearInterval(pwmTimer); pwmTimer=null; }
     send(buildPwmFrame());   // 补发一次中位,确保云台真的收到了停止指令,不是只停了本地定时器
-    if(pwmHome) reportDelta('PWM 会话结束', pwmHome);
+    if(pwmHome){
+      reportDelta('PWM 会话结束', pwmHome);
+      const movedChs=[0,1,2].filter(c=>pwmMoved[c]);
+      if(movedChs.length===1 && lastEuler){
+        const dy=d180(lastEuler.yaw-pwmHome.yaw), dp=d180(lastEuler.pitch-pwmHome.pitch), dr=d180(lastEuler.roll-pwmHome.roll);
+        const axes=[['yaw',dy],['pitch',dp],['roll',dr]].sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
+        const [axis,deg]=axes[0];
+        if(Math.abs(deg)>=2){
+          const ch=movedChs[0]+1;   // UI 上通道从 1 起编号
+          const map=(loadFeat().pwmMap)||{};
+          map[ch]={ch, axis, deg:+deg.toFixed(1), at:Date.now()};
+          saveFeat('pwmMap', map);
+          log(`✅ 通道 ${ch} → ${AXIS_CN[axis]}（实测 ${deg>=0?'+':''}${deg.toFixed(1)}°）,已记入通道映射。`,'l-ack');
+        }
+      }else if(movedChs.length>1){
+        log('本次多个通道同时动,测不出单通道对应关系。','l-sys');
+      }
+    }
     pwmHome=null;
+    refreshFeatNotes();
   }
 }
 // 连接状态切换(setState)、页面切走/切后台(window blur)都要强制回中位 —— 不能只指望
@@ -4565,8 +4643,12 @@ $('btnRestoreDefaults').onclick=()=>restoreDefaults();
 
 /* ── 04/10 应答解析,单独抽出来方便直接喂字节数组测试,不用走蓝牙 ──
    status 打头,之后循环:idx(int8)>=0 是成功项,后跟 size(u8)+size 字节小端值;
-   idx<0 时这个字节本身就是错误码,offset 只挪 1。size 只认 1/2/4/8,dissector 对其它值的
-   处理是照样当 1 字节解 —— 抄这个 fallback,不能改成报错,真机给别的 size 时还得继续往下解。 */
+   idx<0 时这个字节本身就是错误码,offset 只挪 1。
+   size 的取值:dissector 说只认 1/2/4/8、其它值当 1 字节解 —— 这条在 OM6 上是错的。
+   真机应答里索引 0x2d 报过 size=0x20(32 字节全零),照 dissector 的 fallback 会把这 32 个零
+   拆成十几条假记录(每个零字节都被当成"下一条的 idx"接着往下解),一帧问 4 个索引却"解出"
+   十几条,里面十条都是垃圾。以实测为准:云台报多少字节就吃多少字节,不做 1/2/4/8 的白名单
+   截断,只在真的会越界时才停(下面 offset+size>pl.length 那个保护)。 */
 function parseParamsGet(pl){
   if(!pl || pl.length<1) return {status:null, items:[]};
   const status=pl[0];
@@ -4578,9 +4660,8 @@ function parseParamsGet(pl){
     offset+=1;
     if(idx<0){ items.push({idx, err:true}); continue; }
     if(offset>=pl.length) break;              // 截断了,size 字节都没有
-    const rawSize=pl[offset]; offset+=1;
-    const size = (rawSize===1||rawSize===2||rawSize===4||rawSize===8) ? rawSize : 1;
-    if(offset+size>pl.length) break;          // 截断了,凑不够 size 字节
+    const size=pl[offset]; offset+=1;         // 原样取云台报的 size,不做 1/2/4/8 fallback
+    if(offset+size>pl.length) break;          // 截断了,凑不够 size 字节(唯一的越界保护)
     const bytes=pl.slice(offset, offset+size);
     offset+=size;
     // 8 字节的值超过 2^53,Number 算出来会丢精度 —— 只给 hex,u/i 置 null,别硬凑。
@@ -4657,7 +4738,12 @@ function extractUnnamed74(pl){
    两块内容(表+错误摘要)都从存档重画(见 refreshFeatNotes),不是只在当次扫描时画一次。 */
 function paramTableRow(it){
   const cell=v=>v===null?'—':String(v);
-  return `<tr><td>${it.idx}</td><td>${it.size}</td><td>${hex(it.bytes)}</td>`+
+  // 32 字节这种长记录(真机索引 0x2d 报过)整条 hex 摆进表格会把一行撑爆 —— 表格里只截前
+  // 8 字节做展示,完整 hex 仍然原样存进 saveFeat/报告,不会真的丢数据,只是不摆在表格里。
+  const bytesTxt = it.bytes.length>8
+    ? `${hex(it.bytes.slice(0,8))}…(共 ${it.bytes.length} 字节)`
+    : hex(it.bytes);
+  return `<tr><td>${it.idx}</td><td>${it.size}</td><td>${bytesTxt}</td>`+
     `<td>${cell(it.u)}</td><td>${cell(it.i)}</td>`+
     `<td><button type="button" class="ptbl-fill" data-idx="${it.idx}" data-size="${it.size}" `+
     `data-u="${it.u===null?'':it.u}">填入</button></td></tr>`;
@@ -4683,31 +4769,49 @@ function renderParamTable(items, errLines){
   });
 }
 
-/* ── 扫描:04/10,索引 0~63 ── 每帧问 4 个(应答最坏 1+4×10=41 字节载荷,跟已跑通的 04/05
+/* ── 扫描:04/10,索引 0~127 ── 每帧问 4 个(应答最坏 1+4×10=41 字节载荷,跟已跑通的 04/05
    同量级),一帧问 64 个应答会长到没法保证。共 16 帧,帧间 sleep(150) 别把云台打爆。
    应答按请求顺序一一对应(dissector:"given indexes...returns a list of their values"),
    所以逐项跟本帧发出去的 idxs 按位置对齐 —— 失败项那个字节本身是错误码,不是原始索引,
-   原始索引得靠位置对应找回来,不能直接拿 err 项的 idx 字段当索引用。 */
+   原始索引得靠位置对应找回来,不能直接拿 err 项的 idx 字段当索引用。
+   每帧解析完还要自证一遍没有失位:问 4 个索引就该解出 4 项,且逐项位置要跟请求的 idxs
+   对齐(成功项的 idx 得等于它在请求里对应位置的那个索引)。这道对账不是可有可无的保险——
+   它才是第一时间能抓出 parseParamsGet 那个 size fallback bug 的东西:一帧问 4 个却"解出"
+   十几项,项数一对就露馅了,不用等人工去翻十几条假记录才发现不对。对不上就整帧不采信。 */
 async function paramScan(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
   featRunning=true;
   $('btnParamScan').disabled=true;
   try{
-    log('—— 扫描用户参数表(04/10,索引 0~63,每帧问 4 个,共 16 帧)——');
+    /* 范围 0~127 而不是 0~63:真机上 0~63 全部答出了值,一个错误码都没有 ——
+       「问到头也没碰到边界」说明表还没到头。索引字段是 int8,正数上限就是 127,
+       所以往上补到 127 才算真的问完;问不到的索引会回负数错误码,那是正常结果不是故障。 */
+    log('—— 扫描用户参数表(04/10,索引 0~127,每帧问 4 个,共 32 帧)——');
     const okItems=[];
     const failByCode=new Map();   // 错误码 → [原始索引...]
-    for(let base=0; base<64; base+=4){
+    const misaligned=[];          // 失位清单:每项是那一帧问的 idxs 数组
+    for(let base=0; base<128; base+=4){
       const idxs=[base,base+1,base+2,base+3];
       const seq=0xDD00|base;
       const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x10, payload:idxs}), seq);
       if(ok && featAckPayload){
         const {items}=parseParamsGet(featAckPayload);
-        items.forEach((it,k)=>{
-          const reqIdx=idxs[k];
-          if(it.err){ const arr=failByCode.get(it.idx)||[]; arr.push(reqIdx); failByCode.set(it.idx,arr); }
-          else okItems.push(it);
-        });
+        // 自证没有失位:项数必须等于请求数,且每个成功项的 idx 必须等于它所在位置对应的
+        // 请求索引(错误项本身那个字节是错误码,不是索引,不参与位置比对)。任一条不满足,
+        // 这帧整帧作废,一项都不采信——总比信一半、信错了要安全。
+        const countOk = items.length===idxs.length;
+        const posOk = countOk && items.every((it,k)=> it.err || it.idx===idxs[k]);
+        if(!countOk || !posOk){
+          misaligned.push(idxs.slice());
+          log(`⚠ 索引 ${idxs.join(',')} 这帧解出 ${items.length} 项（应为 4），解析可能失位，原始应答：${hex(featAckPayload)}`,'l-err');
+        }else{
+          items.forEach((it,k)=>{
+            const reqIdx=idxs[k];
+            if(it.err){ const arr=failByCode.get(it.idx)||[]; arr.push(reqIdx); failByCode.set(it.idx,arr); }
+            else okItems.push(it);
+          });
+        }
       }else{
         log(`⚠ 索引 ${idxs.join(',')} 这帧没有应答,跳过`,'l-err');
       }
@@ -4715,14 +4819,18 @@ async function paramScan(){
     }
     const errLines=[...failByCode.entries()]
       .map(([code,idxArr])=>`索引 ${idxArr.join(', ')} 返回错误码 ${code}（该索引不存在）`);
+    if(misaligned.length){
+      errLines.push(`⚠ 失位清单：${misaligned.map(a=>a.join('/')).join('；')}（这些帧未采信）`);
+    }
     renderParamTable(okItems, errLines);
+    const tailNote = misaligned.length ? `（其中 ${misaligned.length} 帧解析失位，未采信）` : '';
     if(okItems.length===0){
-      const msg='这台机器上 0~63 号索引一个都读不出来,04/10 在 OM6 上可能不是这个用法';
+      const msg=`这台机器上 0~127 号索引一个都读不出来,04/10 在 OM6 上可能不是这个用法${tailNote}`;
       log('⚠ '+msg,'l-err');
     }else{
-      log(`✅ 扫描完成:成功 ${okItems.length} 条${errLines.length?'；'+errLines.join('；'):''}`,'l-ack');
+      log(`✅ 扫描完成:成功 ${okItems.length} 条${errLines.length?'；'+errLines.join('；'):''}${tailNote}`,'l-ack');
     }
-    saveFeat('params',{n:okItems.length, at:Date.now(), items:okItems, errLines});
+    saveFeat('params',{n:okItems.length, at:Date.now(), items:okItems, errLines, misaligned});
   } finally {
     featRunning=false;
     $('btnParamScan').disabled=!linkOn;
@@ -4807,8 +4915,11 @@ async function paramWrite(){
       ? `hex=${hex(beforeItem.bytes)}${beforeItem.u!==null?`（=${beforeItem.u}）`:''}`
       : '读不到';
     const expectHex=hex(valueBytes);
+    // 新值跟当前值撞了要提前说清楚:写完读回来必然等于期望,那不代表写入路径真的验证过了。
+    const sameAsBefore = beforeItem && hex(beforeItem.bytes)===expectHex;
+    const sameWarn = sameAsBefore ? '\n⚠ 新值与当前值相同，写完无法验证是否生效。' : '';
     if(!confirm(`索引 ${idx}：旧值 ${beforeDesc} → 新值 ${rawVal}（hex=${expectHex}）。\n`+
-      '这条只改运行时参数,不进 flash;要永久生效还得点危险区的「保存参数到 flash」。确定要写吗?')){
+      '这条只改运行时参数,不进 flash;要永久生效还得点危险区的「保存参数到 flash」。确定要写吗?'+sameWarn)){
       log('已取消写参数。'); return;
     }
     const seqW=0xDF00|(seqNo++ & 0xff);
@@ -4820,7 +4931,14 @@ async function paramWrite(){
 
     const afterItem=await paramRead1(idx);
     let note;
-    if(!afterItem){
+    if(sameAsBefore){
+      // 优先级最高,盖过下面的四态判定:新值本来就等于旧值,写完读回来天然等于期望,
+      // 这次写入什么都没证明——真机上就撞过"索引0/size1/值0"这个案例,旧值本来就是0,
+      // 三个值全相等,读回来当然等于期望,我们之前照四态判定打了个✅"写进去了",
+      // 那是假阳性:这次写入完全没有验证写入路径是不是真的通的。
+      note=`⚠ 新值与旧值相同（都是 hex=${expectHex}），这次写入证明不了任何事 —— 换一个不同的值再试`;
+      log(note,'l-err');
+    }else if(!afterItem){
       note='⚠ 写完读不回来,无法确认';
       log(note,'l-err');
     }else{
