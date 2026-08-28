@@ -287,6 +287,9 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <div id="st-limit" class="limit-bar" hidden></div>
   <p class="note" style="margin-top:8px">云台状态位（04/27）：<b id="st-flags">—</b></p>
+  <p class="note">手柄状态（04/57）：<b id="st-0457">—</b><br>字节含义 dissector 没给，不编——只报原始值，和「跟上一帧比变了哪个字节」。</p>
+  <p class="note">延时状态（04/38）：<b id="st-0438">—</b><br>dissector 说这条只有 1 字节、低 2 位是状态；OM6 实测 5 字节，后 4 字节含义未知，不猜。</p>
+  <p class="note">云台型号（04/1C）：<b id="st-041c">—</b><br>只报原始字节，没有型号对照表，不翻译成任何型号名。</p>
 </section>
 
 <!-- 控制 -->
@@ -366,6 +369,16 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     我们真机扫描时它们都有应答。<b>但那份文档不是 OM6 的</b> —— 同一份文档给的速度指令载荷
     跟我们实测的顺序和长度都不一样。所以每个按钮点下去都会<b>自己量一遍效果</b>，
     量到了才算数；标着「未确认」的就是还没在这台机器上验证过。</p>
+
+  <p class="eyebrow" style="margin-top:16px">设备信息（11 条零风险读）</p>
+  <p class="note" style="margin-top:0">全部是 flags=0x40、空载荷的读指令，一帧写的都没有，一个按钮按顺序问完、帧间隔 150ms。
+    dissector 对这 11 条全都没有字段定义（都是注释掉的），下表「可能的解读」只给机械换算
+    （u8/u16/i16/u32/i32，长度够再额外给 ASCII），<b>不编字段名、不带单位</b>。</p>
+  <div class="row">
+    <button id="btnReadInfo" disabled>读设备信息（11 条零风险读）</button>
+  </div>
+  <div id="devinfo-table"></div>
+  <div id="devinfo-note" class="note"></div>
 
   <p class="eyebrow" style="margin-top:16px">跟随模式（04/4C）</p>
   <div class="row">
@@ -888,7 +901,7 @@ function setState(s,txt){
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
-   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite']
+   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -1145,6 +1158,25 @@ let last30=null, seq30=0;
 // 待机判据(suspendGimbal)与模式读回确认(modeSet)都靠"收到时刻有没有前进"判断反馈是不是新的。
 let lastFlags027=null, lastFlags027At=0;
 let last0405Fields=null, last0405Mode=null, last0405At=0;
+/* 04/57(手柄状态)、04/38(延时状态)、04/1c(云台型号)——真机每次连上就在推,以前只存进
+   lastPush 就没有下文了。dissector 对这三条要么没有字段定义、要么(04/38)跟真机对不上,
+   所以只做机械展示,见 decode() 里的对应分支和下面的 render0457。 */
+let last0457=null, last0457ChangeTxt='';
+let last0438=null, last041c=null;
+/* 04/57 每 20~50ms 一帧,字节没变就不刷 DOM——刷了会拖慢渲染,也没有信息量。
+   变化说明留着不清空,松手之后还能在界面上看见最近一次变化是哪个字节。 */
+function render0457(bytes){
+  const el=$('st-0457'), prev=last0457;
+  last0457=bytes;
+  if(!el) return;
+  if(prev){
+    const diffs=[];
+    for(let i=0;i<bytes.length && i<prev.length;i++) if(bytes[i]!==prev[i]) diffs.push(`byte${i}: ${prev[i]}→${bytes[i]}`);
+    if(!diffs.length) return;
+    last0457ChangeTxt = diffs.join('、');
+  }
+  el.textContent = `${hex(bytes)}　最近变化: ${last0457ChangeTxt||'（尚未见到变化）'}`;
+}
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
@@ -1314,6 +1346,25 @@ function decode(m, hide){
   // modeSet() 判「模式切没切换」靠的是 04/1c、04/27 这两条推送内容有没有变 —— 这两条整帧没解过,
   // 存最新一份供它比对就够,不需要额外解析字段。只存推送(非应答),常态下就在维护,不必等 recOn。
   if((m[8]&0x80)===0 && cmdSet===0x04 && (cmdId===0x1c||cmdId===0x27)) lastPush[cmdSet+'/'+cmdId]=[...pl];
+
+  /* 三条常驻推送,字段含义 dissector 没给全(04/38 只给了低 2 位),所以只做机械展示,
+     不编字段名、不猜后面的字节——见 render0457 和上面的状态变量声明处的注释。 */
+  if(cmdSet===0x04 && (m[8]&0x80)===0 && pl.length){
+    if(cmdId===0x1c){
+      last041c=[...pl];   // lastPush['4/1c'] 已经在上面那行存过同一份了,这里只管渲染
+      const el=$('st-041c');
+      if(el) el.textContent = `${hex(last041c)}${last041c.length===1?`（十进制 ${last041c[0]}）`:''}`;
+    }else if(cmdId===0x38){
+      last0438=[...pl];
+      lastPush[cmdSet+'/'+cmdId]=last0438;
+      const status=pl[0]&0x03;   // dissector:低 2 位=Timelapse Status,其余字节 dissector 没有定义
+      const el=$('st-0438');
+      if(el) el.textContent = `${hex(last0438)}　status(低2位)=${status}`+
+        (pl.length!==1 ? `　⚠ dissector 说这条只有 1 字节,OM6 实测 ${pl.length} 字节,后 ${pl.length-1} 字节含义未知` : '');
+    }else if(cmdId===0x57){
+      render0457([...pl]);
+    }
+  }
 
   /* 电池:真机四个样本坐实 [0]=电量%、[1:3]=总压 mV(LE u16)、[16:18]/[18:20]=两节电芯 mV,
      跨两次会话、跨一次充电,电芯和 − 总压恒等于 14~15mV。但 05/06 长度不定 —— 回归测试会喂
@@ -3650,6 +3701,19 @@ function buildReport(){
       '04/39（应答 0x00 但锁定位不变）、04/0B / 00/0C（应答但全是常量，读不出信息）。');
   }
 
+  L.push('', '===== 设备信息（零风险读）=====');
+  {
+    const f=loadFeat();
+    if(!f.devInfo) L.push('尚未读取');
+    else{
+      L.push(`读取时间：${new Date(f.devInfo.at).toISOString()}`);
+      for(const r of f.devInfo.rows){
+        L.push(`0x${r.cs.toString(16).padStart(2,'0')}/0x${r.ci.toString(16).padStart(2,'0')}  ${r.name}  应答=${r.hex||'—'}  ${r.read}`);
+      }
+      L.push('dissector 对这 11 条全都没有字段定义（都是注释掉的），「可能的解读」只是机械换算，不是字段含义。');
+    }
+  }
+
   L.push('', '===== 用户参数（04/10）=====');
   {
     // 跟其它节一样从 localStorage 读,不依赖内存变量。
@@ -4073,6 +4137,15 @@ function refreshFeatNotes(){
   if(pwriteEl) pwriteEl.textContent = f.paramWrite
     ? `上次写索引 ${f.paramWrite.idx}（长度${f.paramWrite.size}）：${f.paramWrite.note}（${new Date(f.paramWrite.at).toISOString()}）`
     : '（尚未做过）';
+  // 第三轮新增:设备信息表(11 条零风险读)。跟参数扫描表一个待遇——表格从存档重画,
+  // 不是只画一行 note 文字,换个会话回来也看得见结果。
+  const devInfoEl=$('devinfo-note');
+  if(devInfoEl){
+    devInfoEl.textContent = f.devInfo
+      ? `上次读取：${new Date(f.devInfo.at).toISOString()}`
+      : '尚未读取';
+    renderDevInfoTable(f.devInfo ? f.devInfo.rows : []);
+  }
   renderPwmMapNote();
 }
 
@@ -4749,6 +4822,87 @@ async function paramWrite(){
   }
 }
 $('btnParamWrite').onclick=()=>paramWrite();
+
+/* ════════════ 6·云台功能 · 第三轮新增(设备信息:11 条零风险读,一个按钮问完) ════════════
+   来源同上:cmdSet 0x04 六条(dji-dumlv1-gimbal.lua) + cmdSet 0x00 五条(dji-dumlv1-general.lua)。
+   这 11 条 dissector 全都没有字段定义(都是注释掉的),用户明确要求一个按钮问完、不要做
+   十一个按钮——结果只做机械换算,不编字段名、不带单位,编一个字段名出来就是造假。 */
+const DEV_INFO_CMDS=[
+  {cs:0x04, ci:0x45, name:'云台温度（Gimbal Get Temp）'},
+  {cs:0x04, ci:0x02, name:'云台位置（Gimbal Get Position）'},
+  {cs:0x04, ci:0x1c, name:'云台型号（Gimbal Type Get）'},
+  {cs:0x04, ci:0x36, name:'手柄参数（Gimbal Handle Params Get）'},
+  {cs:0x04, ci:0x32, name:'Robin 参数（Robin Params Get）'},
+  {cs:0x04, ci:0x2b, name:'教程状态（Gimbal Tutorial Status Get）'},
+  {cs:0x00, ci:0x54, name:'温度信息（Get Temperature Info）'},
+  {cs:0x00, ci:0x55, name:'累计使用时长（Get Alive Time）'},
+  {cs:0x00, ci:0x51, name:'序列号（Get Serial Number）'},
+  {cs:0x00, ci:0x4b, name:'设备时间（Get Date/Time）'},
+  {cs:0x00, ci:0x47, name:'电源状态（Power State）'},
+];
+/* 只给无歧义的机械换算,ASCII 是"额外给出"、不是取代数值换算——长度对上 1/2/4 该给的
+   u/i 照给,凑巧同时也是可打印 ASCII 就多加一行,两者不冲突、不用二选一。 */
+function devInfoReadGuess(pl){
+  if(!pl || !pl.length) return '⚠ 有应答但载荷为空';
+  const bytes=[...pl], parts=[];
+  if(bytes.length>=2 && bytes.every(b=>b>=0x20 && b<=0x7e)) parts.push(`ASCII="${String.fromCharCode(...bytes)}"`);
+  if(bytes.length===1){
+    parts.push(`u8=${bytes[0]}`);
+  }else if(bytes.length===2){
+    const u=bytes[0]|(bytes[1]<<8);
+    parts.push(`u16=${u}（小端）`, `i16=${u>=0x8000?u-0x10000:u}`);
+  }else if(bytes.length===4){
+    const u=(bytes[0]|(bytes[1]<<8)|(bytes[2]<<16)|(bytes[3]<<24))>>>0;
+    parts.push(`u32=${u}（小端）`, `i32=${u>=0x80000000?u-0x100000000:u}`);
+  }else{
+    /* 长度不是 1/2/4 就没有无歧义的数值读法,这句话必须出现——哪怕上面已经给了 ASCII。
+       只看到一行 ASCII 的人分不清是「换算不出来」还是「我们没算」,而这两件事差很远。 */
+    parts.push('（长度不是 1/2/4，没有无歧义的数值读法，只给 hex，不换算）');
+  }
+  return parts.join('  ');
+}
+function renderDevInfoTable(rows){
+  const el=$('devinfo-table'); if(!el) return;
+  if(!rows || !rows.length){ el.innerHTML=''; return; }
+  el.innerHTML = '<table class="ptbl"><thead><tr><th>指令</th><th>名称</th>'+
+    '<th>应答 hex</th><th>可能的解读</th></tr></thead><tbody>'+
+    rows.map(r=>`<tr><td>0x${r.cs.toString(16).padStart(2,'0')}/0x${r.ci.toString(16).padStart(2,'0')}</td>`+
+      `<td>${r.name}</td><td>${r.hex||'—'}</td><td>${r.read}</td></tr>`).join('')+
+    '</tbody></table>';
+}
+async function readDeviceInfo(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  featRunning=true;
+  $('btnReadInfo').disabled=true;
+  try{
+    log('—— 读设备信息(11 条零风险读,flags=0x40,空载荷,帧间隔 150ms)——');
+    const rows=[];
+    for(const cmd of DEV_INFO_CMDS){
+      const seq=0xE000|(seqNo++ & 0xff);
+      const tag=`0x${cmd.cs.toString(16).padStart(2,'0')}/0x${cmd.ci.toString(16).padStart(2,'0')}`;
+      const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:cmd.cs, cmdId:cmd.ci, payload:[]}), seq);
+      if(!ok){
+        rows.push({cs:cmd.cs, ci:cmd.ci, name:cmd.name, hex:null, read:'❌ 无应答'});
+        log(`❌ ${tag} ${cmd.name} 无应答`,'l-err');
+      }else{
+        const hx=hex(featAckPayload||[]);
+        const read=devInfoReadGuess(featAckPayload);
+        rows.push({cs:cmd.cs, ci:cmd.ci, name:cmd.name, hex:hx, read});
+        log(`${tag} ${cmd.name}  ${hx||'(空)'}  ${read}`,'l-ack');
+      }
+      await sleep(150);
+    }
+    renderDevInfoTable(rows);
+    saveFeat('devInfo', {at:Date.now(), rows});
+    log('✅ 设备信息读取完成。','l-ack');
+  } finally {
+    featRunning=false;
+    $('btnReadInfo').disabled=!linkOn;
+    refreshFeatNotes();
+  }
+}
+$('btnReadInfo').onclick=()=>readDeviceInfo();
 
 $('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $('btnCal').disabled=false; }); };
 
