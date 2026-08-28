@@ -344,22 +344,16 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。<span id="gotoStat"></span></p>
 </section>
 
-<!-- 一键探测 -->
+<!-- 报告 -->
 <section>
-  <p class="eyebrow">5 · 一键探测</p>
-  <p class="note">跑一遍完整体检，把结果整理成可复制的报告：
-    查版本 → 一键自检 → 扫 cmdSet <b>05</b>、<b>00</b>、<b>04 的 0x40~0x7f</b>
-    → 扫出「待机」线索就逐条锁定 → 生成报告并自动复制。约两三分钟，全程有进度。<br>
-    <b>会往云台发未知指令</b>（只发空载荷读取、自动跳过已知会动的那几条）。
-    最坏情况可能需要用 Mimo 恢复出厂设置。云台放开阔处、别夹东西。<br>
-    <b>cmdSet 04 的 0x00~0x3f 不再扫</b> —— 已经扫过三遍，一次动作、一次静默都没有，排除了。</p>
-  <label class="lab-ok"><input type="checkbox" id="probeOk">我明白风险，继续</label>
-  <div class="row" style="margin-top:8px">
-    <button id="btnProbeAll" class="primary" disabled>一键探测并生成报告</button>
-    <button id="btnProbeStop" class="danger" disabled>中止</button>
+  <p class="eyebrow">4 · 报告</p>
+  <p class="note" style="margin-top:0">把版本、电池、云台功能、用户参数的结果汇总成一份可复制的文本。
+    <b>只汇总已有的结果，不会往云台发任何指令</b>——想先补齐数据，去下面「云台功能」逐项验证，
+    或去折叠区「协议实验室」跑一键探测。</p>
+  <div class="row" style="margin-bottom:8px">
+    <button id="btnMakeReport" class="primary">生成报告</button>
   </div>
-  <div class="lab-head"><span id="probe-step">空闲</span><span id="probe-eta"></span></div>
-  <textarea id="lab-report" readonly placeholder="点「一键探测并生成报告」把版本、自检、扫描、待机锁定结果汇总到这里，跑完自动复制。长按可全选拷贝。"></textarea>
+  <textarea id="lab-report" readonly placeholder="点「生成报告」把版本、电池、云台功能、用户参数的结果汇总到这里。长按可全选拷贝。"></textarea>
   <div class="row" style="margin-top:8px">
     <button id="btnCopyReport">复制报告</button>
   </div>
@@ -367,7 +361,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 <!-- 云台功能（按开源协议表） -->
 <section>
-  <p class="eyebrow">6 · 云台功能</p>
+  <p class="eyebrow">5 · 云台功能</p>
   <p class="note">这几条来自开源协议表（<b>lib-osmo-ble</b> 的 PROTOCOL.md，DJI Osmo Pocket 3），
     我们真机扫描时它们都有应答。<b>但那份文档不是 OM6 的</b> —— 同一份文档给的速度指令载荷
     跟我们实测的顺序和长度都不一样。所以每个按钮点下去都会<b>自己量一遍效果</b>，
@@ -394,26 +388,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <div id="abs-note" class="note"></div>
 
-  <p class="eyebrow" style="margin-top:16px">读取（零风险，都是读）</p>
+  <p class="eyebrow" style="margin-top:16px">动作（会真的动，用姿态实测验证）</p>
   <div class="row">
-    <button id="btnBoostAtt" disabled>提高姿态推送（04/1E）</button>
-  </div>
-  <div id="boost-note" class="note"></div>
-  <div class="row" style="margin-top:8px">
-    <button id="btnReadCtrl" disabled>读控制状态（04/0B）</button>
-    <button id="btnReadDevState" disabled>读设备状态（00/0C）</button>
-  </div>
-  <div id="readctrl-note" class="note"></div>
-  <div id="readdev-note" class="note"></div>
-
-  <p class="eyebrow" style="margin-top:16px">动作（会真的动，用 04/27 状态位或姿态实测验证）</p>
-  <div class="row">
-    <button id="btnRotate90" disabled>横竖屏旋转（04/3A）</button>
-    <button id="btnLockAxes" disabled>锁定各轴（04/39）</button>
-  </div>
-  <div id="rotate90-note" class="note"></div>
-  <div id="lockaxes-note" class="note"></div>
-  <div class="row" style="margin-top:8px">
     <button id="btnRollMinus" disabled>横滚微调 −5（约 0.5°，04/07）</button>
     <button id="btnRollPlus" disabled>横滚微调 +5（约 0.5°，04/07）</button>
   </div>
@@ -435,17 +411,14 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="note" style="margin-top:0"><b>04/10 是纯读，零风险</b>——扫描会把索引 0~127 逐个问一遍，
     问不到的会返回负数错误码，那是正常情况，不是出错。<b>04/0F 写进的是运行时参数，不进
     flash</b>：断电、或点上面「恢复默认参数」就回去了；只有再点危险区的「保存参数到 flash」
-    才永久生效——这跟危险区那两条不是一回事，风险程度不一样，别混着说。下面 04/24 那张 74
-    字节结构表的字段名是<b>按字节偏移</b>排的，不是按 04/10 的索引排的，<b>没有任何证据说
-    两套编号是同一回事</b>——两张表分开看，谁也别拿去套谁，这个项目已经因为拿别的机器的文档
+    才永久生效——这跟危险区那两条不是一回事，风险程度不一样，别混着说。<b>索引编号（04/10）和
+    字节偏移编号是两套不同的体系，没有证据说能互相对应</b>——这个项目已经因为拿别的机器的文档
     去套 OM6（04/0c 速度帧载荷顺序）栽过一次，不能再来一次。</p>
   <div class="row">
     <button id="btnParamScan" disabled>扫描参数表（04/10，索引 0~127）</button>
-    <button id="btnParamRead24" disabled>读参数结构（04/24）</button>
   </div>
   <div id="param-table"></div>
   <div id="params-note" class="note"></div>
-  <div id="p24-note" class="note"></div>
 
   <p class="note" style="margin-top:14px"><b>写参数（04/0F）：</b>先「扫描」或点上面表格里的
     「填入」看看现在是什么值，再改——没有基准的写没有意义。</p>
@@ -478,7 +451,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 <!-- 日志 -->
 <section style="border-bottom:none">
-  <p class="eyebrow" style="flex-wrap:wrap"><span>4 · 日志</span>
+  <p class="eyebrow" style="flex-wrap:wrap"><span>6 · 日志</span>
     <span class="log-tools">
       <select id="logLevel">
         <option value="quiet" selected>精简 · 只看收发与应答</option>
@@ -633,6 +606,20 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <p class="note" style="margin-top:6px">整窗记账是<b>宁可多跳</b>，所以要有退路：清空只删本机记下的
     「上次会动」，不动你在上面手填的那几条。</p>
+
+  <p class="eyebrow" style="margin-top:20px">一键探测并生成报告</p>
+  <p class="note" style="margin-top:0">跑一遍完整体检，把结果整理成可复制的报告：
+    查版本 → 一键自检 → 扫 cmdSet <b>05</b>、<b>00</b>、<b>04 的 0x40~0x7f</b>
+    → 扫出「待机」线索就逐条锁定 → 生成报告并自动复制。约两三分钟，全程有进度。<br>
+    <b>会往云台发未知指令</b>（只发空载荷读取、自动跳过已知会动的那几条）。
+    最坏情况可能需要用 Mimo 恢复出厂设置。云台放开阔处、别夹东西。<br>
+    <b>cmdSet 04 的 0x00~0x3f 不再扫</b> —— 已经扫过三遍，一次动作、一次静默都没有，排除了。</p>
+  <label class="lab-ok"><input type="checkbox" id="probeOk">我明白风险，继续</label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnProbeAll" class="primary" disabled>一键探测并生成报告</button>
+    <button id="btnProbeStop" class="danger" disabled>中止</button>
+  </div>
+  <div class="lab-head"><span id="probe-step">空闲</span><span id="probe-eta"></span></div>
 
   <p class="eyebrow" style="margin-top:20px">单条 cmdId 试验</p>
   <p class="note" style="margin-top:0"><b>会让云台真的动。</b>用下面「试指定 cmdId」框逐条发单帧
@@ -900,9 +887,8 @@ function setState(s,txt){
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnAuto','btnScan','btnProbeAll',
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto',
-   'btnBoostAtt','btnReadCtrl','btnReadDevState','btnRotate90','btnLockAxes',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
-   'btnParamScan','btnParamRead24','pwIdx','pwSize','pwVal','btnParamWrite']
+   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -3645,14 +3631,6 @@ function buildReport(){
     L.push(`跟随模式 04/4C   ${f.mode ? (f.mode.ok?`✅ 已验证（${fmtAt(f.mode)}）`:`⚠ 应答了但没确认生效（${fmtAt(f.mode)}）`) : '⚠ 尚未确认'}`);
     L.push(`待机     04/0D   ${f.suspend ? (f.suspend.ok?`✅ 已验证（${fmtAt(f.suspend)}）`:`⚠ 应答了但遥测没停（${fmtAt(f.suspend)}）`) : '⚠ 尚未确认'}`);
     L.push(`绝对角度 04/0A   ${f.abs ? (f.abs.ok?`✅ 已验证，误差 ${f.abs.err}°（${fmtAt(f.abs)}）`:`⚠ 试过但误差偏大或没动，误差 ${f.abs.err}°（${fmtAt(f.abs)}）`) : '⚠ 尚未确认'}`);
-    // 这条是已经试出结果的阴性结论,不是「还没测」——「⚠ 尚未确认」会让人以为随时能补测,
-    // 实际上前后频率量出来是同一个数,这台机器上这条指令就是不生效,得用 ❌ 跟"待确认"分开。
-    L.push(`提高姿态推送 04/1E   ${f.boost ? (f.boost.ok?`✅ 已验证提升（${f.boost.note}，${fmtAt(f.boost)}）`:`❌ 这台机器上提不高姿态推送频率（${f.boost.note}，${fmtAt(f.boost)}）`) : '⚠ 尚未确认'}`);
-    /* 下面这几条本来一条都没进报告 —— 而报告正是要粘给别人看的唯一产物。
-       真机上横竖屏、锁定、横滚微调、PWM 都实测过了,结果却只留在日志里,一刷新就没了。
-       页面上有按钮、报告里就该有它的结论,否则等于测了个寂寞。 */
-    L.push(`横竖屏旋转 04/3A   ${f.rotate90 ? (f.rotate90.ok?`✅ 04/27 竖屏位翻转过（${fmtAt(f.rotate90)}）`:`⚠ 应答了但竖屏位没变化（${fmtAt(f.rotate90)}）`) : '⚠ 尚未确认'}`);
-    L.push(`锁定各轴   04/39   ${f.lockaxes ? (f.lockaxes.ok?`✅ 04/27 锁定位变化过（${fmtAt(f.lockaxes)}）`:`⚠ 应答了但锁定位没变化（${fmtAt(f.lockaxes)}）`) : '⚠ 尚未确认'}`);
     // 横滚微调这条要报「每单位多少度」而不只是「动没动」—— 那个速率是能拿去校准的数。
     L.push(`横滚微调   04/07   ${f.rolltrim ? (f.rolltrim.ok
       ? `✅ 实测 ${f.rolltrim.delta}°／${f.rolltrim.rate!=null?`${f.rolltrim.rate}°每单位`:'?'}（${fmtAt(f.rolltrim)}）`
@@ -3665,9 +3643,14 @@ function buildReport(){
     L.push(`保存到flash 04/11   ${f.saveFlash ? (f.saveFlash.ok?`已写入（${fmtAt(f.saveFlash)}）`:`⚠ 应答异常（${fmtAt(f.saveFlash)}）`) : '（尚未做过）'}`);
     L.push(`恢复默认   04/13   ${f.restoreDefaults ? (f.restoreDefaults.ok?`已恢复（${fmtAt(f.restoreDefaults)}）`:`⚠ 应答异常（${fmtAt(f.restoreDefaults)}）`) : '（尚未做过）'}`);
     L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）+ dji-dumlv1-gimbal.lua —— 与 OM6 未必一致，以实测为准');
+    // 阴性结论必须写死在报告里,不能因为按钮删了就一起没了 —— 不写这一行,过几个月又会有人
+    // (我)照着 dissector 把这几条重做一遍,重新踩一遍已经踩过的坑。
+    L.push('这台机器上实测无效、已从界面移除：04/1E（量过，提不高姿态推送频率）、'+
+      '04/24（完全无应答）、04/3A（应答 0x00 但竖屏位不变，试过两次）、'+
+      '04/39（应答 0x00 但锁定位不变）、04/0B / 00/0C（应答但全是常量，读不出信息）。');
   }
 
-  L.push('', '===== 用户参数（04/10 / 04/24）=====');
+  L.push('', '===== 用户参数（04/10）=====');
   {
     // 跟其它节一样从 localStorage 读,不依赖内存变量。
     const f=loadFeat();
@@ -3694,21 +3677,9 @@ function buildReport(){
       }
       L.push('  观察：索引 93~103 一段按 int16 有符号读是成对的正负值（±0.1° 量级），与本协议其它角度字段同单位；是否为行程软限位尚未验证——改一个再看云台行程有没有变即可确认。');
     }
-    if(!f.p24) L.push('04/24 结构：尚未读取');
-    else if(!f.p24.ok){
-      // 「完全无应答」和「应答了但长度不对」是两种证据强度不一样的结论,不能用同一句话糊过去:
-      // 完全无应答是已经试出的阴性结论(这台机器上不支持这条读取),长度不对只说明长度跟
-      // dissector 对不上,不代表这条指令本身不可用,不能升级成「不支持」。
-      const atTxt=f.p24.at?new Date(f.p24.at).toISOString():'';
-      if(f.p24.len!==undefined) L.push(`04/24 结构：⚠ 应答 ${f.p24.len} 字节，长度对不上 74（${atTxt}）`);
-      else L.push(`04/24 结构：❌ 完全无应答 —— 这台机器上不支持这条 74 字节结构读取（${atTxt}）`);
-    }
-    else{
-      L.push(`04/24 结构：✅ 长度对得上 74（${new Date(f.p24.at).toISOString()}）`);
-      for(const fd of f.p24.fields) L.push(`  ${fd.cn}(${fd.name})  偏移${fd.off}  ${fd.hex}  = ${fd.v}`);
-      L.push(`  另有 ${f.p24.unnamedLen} 字节未命名，原始：${f.p24.unnamedHex}`);
-    }
-    L.push('索引体系（04/10）与偏移体系（04/24）是两回事，本页没有把它们对应起来。');
+    // 索引编号(04/10)和字节偏移编号是两套不同的体系——这个项目已经因为拿别的机器的文档
+    // 去套 OM6 栽过一次,这层区分不能丢,即使原来用来对照的 04/24 读取已经删掉。
+    L.push('注：04/10 用的是按索引编号，跟按字节偏移编号是两套不同的体系，不能拿来互相套用。');
   }
 
   L.push('', '===== 云台异常状态位（04/27，按位解码）=====');
@@ -3766,6 +3737,8 @@ function makeReport(){
   $('lab-report').value=txt;
   log(`—— 报告已生成:${txt.length} 字符、${txt.split('\n').length} 行。长按文本框可全选拷贝。——`);
 }
+// 只汇总已有结果、不发任何指令,所以不跟连接状态挂钩,断着也能按——跟 btnCopyReport 一个待遇。
+$('btnMakeReport').onclick=()=>makeReport();
 
 /* 剪贴板可能不存在、也可能被拒(Bluefy 上就拒过)。无论成败都把内容选中,
    失败时至少还能长按选区手动拷贝 —— 早先「复制日志」失败了只报错,没有后路。 */
@@ -4071,16 +4044,6 @@ function refreshFeatNotes(){
   if(absEl) absEl.textContent = !f.abs ? UNCONFIRMED
     : f.abs.ok ? `✅ 已在这台机器上验证，误差 ${f.abs.err}°（${new Date(f.abs.at).toISOString()}）`
                : `⚠ 试过但误差偏大或没动（误差 ${f.abs.err}°，${new Date(f.abs.at).toISOString()}）`;
-  // 第一轮新增的这几个:同一套「测过就报证据,没测过就老实说没测过」,不写「未测试」这种弱化说法。
-  const boostEl=$('boost-note');
-  if(boostEl) boostEl.textContent = f.boost
-    ? `${f.boost.ok?'✅':'⚠'} ${f.boost.note}（${new Date(f.boost.at).toISOString()}）` : UNCONFIRMED;
-  const rot90El=$('rotate90-note');
-  if(rot90El) rot90El.textContent = f.rotate90
-    ? `${f.rotate90.ok?'✅ 竖屏位翻转过':'⚠ 试过但竖屏位没变'}（${new Date(f.rotate90.at).toISOString()}）` : UNCONFIRMED;
-  const lockEl=$('lockaxes-note');
-  if(lockEl) lockEl.textContent = f.lockaxes
-    ? `${f.lockaxes.ok?'✅ 锁定位变化过':'⚠ 试过但锁定位没变'}（${new Date(f.lockaxes.at).toISOString()}）` : UNCONFIRMED;
   const rollEl=$('rolltrim-note');
   if(rollEl) rollEl.textContent = f.rolltrim
     ? `${f.rolltrim.ok?'✅':'⚠'} 上次实测横滚变化 ${f.rolltrim.delta}°`+
@@ -4099,20 +4062,6 @@ function refreshFeatNotes(){
       ? `上次扫描：成功 ${f.params.n} 条（${new Date(f.params.at).toISOString()}）`
       : '尚未扫描';
     renderParamTable(f.params ? f.params.items : [], f.params ? f.params.errLines : []);
-  }
-  const p24El=$('p24-note');
-  if(p24El){
-    if(!f.p24) p24El.textContent='尚未读取';
-    else if(!f.p24.ok){
-      p24El.textContent = f.p24.len!==undefined
-        ? `⚠ 上次应答 ${f.p24.len} 字节，对不上 74（${new Date(f.p24.at).toISOString()}）`
-        : `❌ 上次没有应答（${new Date(f.p24.at).toISOString()}）`;
-    }else{
-      const lines=(f.p24.fields||[]).map(fd=>`${fd.cn}(${fd.name}) 偏移${fd.off} ${fd.hex} = ${fd.v}`);
-      lines.push(`另有 ${f.p24.unnamedLen} 字节未命名，原始：${f.p24.unnamedHex}`);
-      lines.push(`（${new Date(f.p24.at).toISOString()}）`);
-      p24El.innerHTML=lines.map(l=>l.replace(/</g,'&lt;')).join('<br>');
-    }
   }
   const pwriteEl=$('pwrite-note');
   if(pwriteEl) pwriteEl.textContent = f.paramWrite
@@ -4303,180 +4252,6 @@ $('btnAbsGoto').onclick=()=>absGoto();
    来源同上:lib-osmo-ble PROTOCOL.md + dji-dumlv1-gimbal.lua / dji-dumlv1-general.lua dissector。
    跟前面三个功能一个原则:返回码 0 只说明指令被认得,不说明真的生效了,每条都要自己找证据。 */
 
-/* ── 读取:04/1E 提高姿态推送 ──
-   dissector 里这条指令的载荷字段是注释掉的,只能发空载荷试。姿态只有约 1Hz 是所有测量精度的
-   天花板,所以"有没有提高"必须真的量前后两段窗口里 04/05 帧的计数,不能发完看返回码就算数。
-   attSeq 只在 04/05(姿态)帧里才 ++(见 pushAtt),比全局 rxPushN(什么推送都算)更准。 */
-async function boostAttPush(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnBoostAtt').disabled=true;
-  try{
-    log('—— 提高姿态推送(04/1E,dissector 里载荷字段被注释掉,发空载荷)——');
-    const beforeMs=5000;
-    const b0=attSeq;
-    await sleep(beforeMs);
-    const beforeHz=(attSeq-b0)/(beforeMs/1000);
-    const seq=0xD500|(seqNo++ & 0xff);
-    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x1E, payload:[]}), seq);
-    if(!ok) log('⚠ 04/1E 没有应答 —— 继续量频率,应答不是唯一证据。','l-err');
-    const afterMs=10000;   // 规格要求:数发完之后 10 秒内收到多少帧
-    const a0=attSeq;
-    await sleep(afterMs);
-    const afterHz=(attSeq-a0)/(afterMs/1000);
-    const changed=Math.abs(afterHz-beforeHz)>0.3;   // 阈值防抖动/取样误差把"没变"误判成"变了"
-    const note=`发前实测 ${beforeHz.toFixed(2)}Hz → 发后 ${afterHz.toFixed(2)}Hz`;
-    log(`${changed?'✅':'⚠'} ${note}${changed?'':'（没变化）'}`, changed?'l-ack':'l-err');
-    saveFeat('boost',{ok:changed, note, at:Date.now()});
-  } finally {
-    featRunning=false;
-    $('btnBoostAtt').disabled=!linkOn;
-    refreshFeatNotes();
-  }
-}
-$('btnBoostAtt').onclick=()=>boostAttPush();
-
-/* ── 读取:04/0B 读控制状态、00/0C 读设备状态 ──
-   两条都是空载荷读,零风险。应答直接解出 dissector 给的字段,读类指令的证据就是读到的值本身,
-   不用另外做"生效判断"。 */
-async function readCtrlState(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnReadCtrl').disabled=true;
-  try{
-    log('—— 读控制状态(04/0B,空载荷)——');
-    const seq=0xD600|(seqNo++ & 0xff);
-    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x0B, payload:[]}), seq);
-    if(!ok || !featAckPayload){ log('❌ 04/0B 没有应答。','l-err'); $('readctrl-note').textContent='❌ 没有应答'; return; }
-    const pl=featAckPayload;
-    if(pl.length<4){
-      const t=`应答只有 ${pl.length} 字节,不够 status+flags+unknown2:${hex(pl)}`;
-      log('⚠ '+t,'l-err'); $('readctrl-note').textContent=t; return;
-    }
-    const status=pl[0], flagsB=pl[1];
-    const u2raw=pl[2]|(pl[3]<<8), unk2=u2raw>=0x8000?u2raw-0x10000:u2raw;
-    const txt=`status=${status}  flags=0x${flagsB.toString(16).padStart(2,'0')}(最高位${(flagsB&0x80)?' 1':' 0'})  unknown2=${unk2}`;
-    log('✅ 04/0B 应答: '+txt,'l-ack');
-    $('readctrl-note').textContent=txt;
-  } finally {
-    featRunning=false;
-    $('btnReadCtrl').disabled=!linkOn;
-  }
-}
-$('btnReadCtrl').onclick=()=>readCtrlState();
-
-async function readDevState(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnReadDevState').disabled=true;
-  try{
-    log('—— 读设备状态(00/0C,空载荷)——');
-    const seq=0xD700|(seqNo++ & 0xff);
-    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x00, cmdId:0x0C, payload:[]}), seq);
-    if(!ok || !featAckPayload){ log('❌ 00/0C 没有应答。','l-err'); $('readdev-note').textContent='❌ 没有应答'; return; }
-    const pl=featAckPayload;
-    if(pl.length<6){
-      const t=`应答只有 ${pl.length} 字节,不够 status+unknown1+state:${hex(pl)}`;
-      log('⚠ '+t,'l-err'); $('readdev-note').textContent=t; return;
-    }
-    const status=pl[0], unk1=pl[1];
-    const state=(pl[2]|(pl[3]<<8)|(pl[4]<<16)|(pl[5]<<24))>>>0;
-    const txt=`status=${status}  unknown1=${unk1}  state=0x${state.toString(16).padStart(8,'0')}`;
-    log('✅ 00/0C 应答: '+txt,'l-ack');
-    $('readdev-note').textContent=txt;
-  } finally {
-    featRunning=false;
-    $('btnReadDevState').disabled=!linkOn;
-  }
-}
-$('btnReadDevState').onclick=()=>readDevState();
-
-/* ── 动作:04/3A 横竖屏旋转 ──
-   之前扫描发空载荷收到过 0x00 但没看到动作,那次的动作检测有约 1 秒盲区,很可能漏看了。
-   这次有 04/27 byte2 的竖屏位(0x10)可读,翻了就是翻了,比"看云台转没转"硬得多。 */
-async function rotate90(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnRotate90').disabled=true;
-  try{
-    log('—— 横竖屏旋转(04/3A,dissector 里载荷字段被注释掉,发空载荷)——');
-    const before=lastFlags027?(lastFlags027.bytes[2]&0x10):null;
-    const wasAt=lastFlags027At;
-    const seq=0xD800|(seqNo++ & 0xff);
-    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x3A, payload:[]}), seq);
-    if(!ok) log('⚠ 04/3A 没有应答 —— 继续按竖屏位判断,应答不是唯一证据。','l-err');
-    let after=before, flipped=false;
-    const t0=Date.now();
-    while(Date.now()-t0<4000){
-      await sleep(150);
-      if(lastFlags027At>wasAt){
-        after=lastFlags027.bytes[2]&0x10;
-        if(after!==before){ flipped=true; break; }
-      }
-    }
-    if(before===null){
-      log('⚠ 还没收到过 04/27,读不到竖屏位,判不出效果。','l-err');
-    }else if(flipped){
-      saveFeat('rotate90',{ok:true, at:Date.now()});
-      log(`✅ 04/27 竖屏位(byte2 0x10)由 ${before?'1':'0'} 翻到 ${after?'1':'0'} —— 横竖屏旋转在这台机器上生效。`,'l-ack');
-    }else{
-      saveFeat('rotate90',{ok:false, at:Date.now()});
-      log('⚠ 应答了,但 4 秒内竖屏位没有变化。','l-err');
-    }
-  } finally {
-    featRunning=false;
-    $('btnRotate90').disabled=!linkOn;
-    refreshFeatNotes();
-  }
-}
-$('btnRotate90').onclick=()=>rotate90();
-
-/* ── 动作:04/39 锁定各轴 ── 判据是 04/27 byte0 的三个锁定位(0x01/0x02/0x04)有没有变化,
-   不管切换成了哪个方向,状态位跟着动就是证据。 */
-async function lockAxes(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnLockAxes').disabled=true;
-  try{
-    log('—— 锁定各轴(04/39,dissector 里载荷字段被注释掉,发空载荷)——');
-    const before=lastFlags027?(lastFlags027.bytes[0]&0x07):null;
-    const wasAt=lastFlags027At;
-    const seq=0xD900|(seqNo++ & 0xff);
-    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x39, payload:[]}), seq);
-    if(!ok) log('⚠ 04/39 没有应答 —— 继续按锁定位判断,应答不是唯一证据。','l-err');
-    let after=before, changed=false;
-    const t0=Date.now();
-    while(Date.now()-t0<4000){
-      await sleep(150);
-      if(lastFlags027At>wasAt){
-        after=lastFlags027.bytes[0]&0x07;
-        if(after!==before){ changed=true; break; }
-      }
-    }
-    const AX3=[[0x01,'横滚'],[0x02,'俯仰'],[0x04,'偏航']];
-    if(before===null){
-      log('⚠ 还没收到过 04/27,读不到锁定位,判不出效果。','l-err');
-    }else if(changed){
-      const flipped=AX3.filter(([b])=>((before^after)&b)).map(([,n])=>n).join('、');
-      saveFeat('lockaxes',{ok:true, at:Date.now()});
-      log(`✅ 04/27 锁定位由 0x${before.toString(16)} 变到 0x${after.toString(16)}（${flipped||'—'}变化）—— 锁定各轴在这台机器上生效。`,'l-ack');
-    }else{
-      saveFeat('lockaxes',{ok:false, at:Date.now()});
-      log('⚠ 应答了,但 4 秒内锁定位没有变化。','l-err');
-    }
-  } finally {
-    featRunning=false;
-    $('btnLockAxes').disabled=!linkOn;
-    refreshFeatNotes();
-  }
-}
-$('btnLockAxes').onclick=()=>lockAxes();
-
 /* ── 动作:04/07 横滚微调 ── 载荷是单字节 int8 调整量,复用现成的 waitSettle + lastEuler
    判姿态里的横滚角有没有跟着变。
    步长用 ±5,不用 ±1:姿态读数本身量化到 0.1°,真机连按五次 ±1,符号 5/5 全对、净移动量
@@ -4651,8 +4426,9 @@ async function restoreDefaults(){
 }
 $('btnRestoreDefaults').onclick=()=>restoreDefaults();
 
-/* ════════════ 6·云台功能 · 第二轮新增(用户参数面板:04/10 读 / 04/0F 写 / 04/24 结构) ════════════
-   来源同上,另加 dji-dumlv1-gimbal.lua 里 0x0f/0x10/0x24 三段。用户明确要求全部做出来、不要
+/* ════════════ 6·云台功能 · 第二轮新增(用户参数面板:04/10 读 / 04/0F 写) ════════════
+   来源同上,另加 dji-dumlv1-gimbal.lua 里 0x0f/0x10 两段(0x24 结构读真机上完全无应答,
+   已从界面删掉,见 buildReport 里「实测无效」那一行)。用户明确要求全部做出来、不要
    再劝阻,但每条写指令都必须自己读回来验证 —— 这条原则贯穿全模块,status===0 从不单独当作生效证据。 */
 
 /* ── 04/10 应答解析,单独抽出来方便直接喂字节数组测试,不用走蓝牙 ──
@@ -4714,37 +4490,6 @@ function encodeParamValue(rawStr, size){
   let u = v<0 ? v+2**bits : v;
   const bytes=[];
   for(let k=0;k<size;k++){ bytes.push(u & 0xff); u=Math.floor(u/256); }
-  return bytes;
-}
-
-/* 04/24 具名字段表,偏移/长度照抄 dissector(第一节表格) —— 这套编号是按字节偏移排的,
-   跟 04/10 的索引编号是两套体系,别在这份表里夹带任何「等同于哪个 idx」的猜测。 */
-const P24_FIELDS=[
-  {name:'preset_id',           cn:'Preset Id',            off:2,  len:1},
-  {name:'yaw_speed',           cn:'Yaw Speed',             off:9,  len:2},
-  {name:'pitch_speed',         cn:'Pitch Speed',           off:13, len:2},
-  {name:'yaw_deadband',        cn:'Yaw Deadband',          off:17, len:2},
-  {name:'pitch_deadband',      cn:'Pitch Deadband',        off:21, len:2},
-  {name:'stick_yaw_speed',     cn:'Stick Yaw Speed',       off:25, len:2},
-  {name:'stick_pitch_speed',   cn:'Stick Pitch Speed',     off:29, len:2},
-  {name:'stick_yaw_smooth',    cn:'Stick Yaw Smooth',      off:33, len:2},
-  {name:'stick_pitch_smooth',  cn:'Stick Pitch Smooth',    off:37, len:2},
-  {name:'roll_speed',          cn:'Roll Speed',            off:47, len:2},
-  {name:'roll_deadband',       cn:'Roll Deadband',         off:51, len:2},
-  {name:'yaw_accel',           cn:'Yaw Accel',             off:55, len:2},
-  {name:'pitch_accel',         cn:'Pitch Accel',           off:59, len:2},
-  {name:'roll_accel',          cn:'Roll Accel',            off:63, len:2},
-  {name:'yaw_smooth_track',    cn:'Yaw Smooth Track',      off:67, len:1},
-  {name:'pitch_smooth_track',  cn:'Pitch Smooth Track',    off:70, len:1},
-  {name:'roll_smooth_track',   cn:'Roll Smooth Track',     off:73, len:1},
-];
-// 74 字节里没被上表覆盖的那些偏移(unknownXX)——按偏移逐个扣掉具名区间,剩下的原样收进 hex,
-// 不吞掉,顺带也是「具名字段表跟 74 对得上」的一个交叉验证(算出来应为 44)。
-function extractUnnamed74(pl){
-  const covered=new Array(74).fill(false);
-  for(const f of P24_FIELDS) for(let o=f.off;o<f.off+f.len;o++) covered[o]=true;
-  const bytes=[];
-  for(let o=0;o<74;o++) if(!covered[o]) bytes.push(pl[o]);
   return bytes;
 }
 
@@ -4915,51 +4660,6 @@ async function paramScan(){
   }
 }
 $('btnParamScan').onclick=()=>paramScan();
-
-/* ── 04/24 结构:空载荷读,应答正好 74 字节才按偏移解 ── 长度不对就如实说不对、给原始 hex,
-   不强行按偏移去解一段长度不对的载荷(规格明确要求)。 */
-async function readParams24(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnParamRead24').disabled=true;
-  try{
-    log('—— 读参数结构(04/24,空载荷)——');
-    const seq=0xDE00|(seqNo++ & 0xff);
-    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x24, payload:[]}), seq);
-    if(!ok || !featAckPayload){
-      log('❌ 04/24 没有应答。','l-err');
-      $('p24-note').textContent='❌ 没有应答';
-      saveFeat('p24',{ok:false, at:Date.now()});
-      return;
-    }
-    const pl=featAckPayload;
-    if(pl.length!==74){
-      const msg=`⚠ 应答 ${pl.length} 字节,dissector 说该结构是 74 字节,对不上,按原始字节给出:${hex(pl)}`;
-      log(msg,'l-err');
-      $('p24-note').textContent=msg;
-      saveFeat('p24',{ok:false, len:pl.length, at:Date.now()});
-      return;
-    }
-    const fields=P24_FIELDS.map(f=>{
-      const bytes=pl.slice(f.off,f.off+f.len);
-      let v=0; for(let k=f.len-1;k>=0;k--) v=v*256+bytes[k];
-      return {name:f.name, cn:f.cn, off:f.off, len:f.len, v, hex:hex(bytes)};
-    });
-    const unnamedBytes=extractUnnamed74(pl);
-    const unnamedHex=hex(unnamedBytes);
-    const lines=fields.map(f=>`${f.cn}(${f.name})  偏移${f.off}  ${f.hex}  = ${f.v}`);
-    lines.push(`另有 ${unnamedBytes.length} 字节未命名,原始:${unnamedHex}`);
-    log('✅ 04/24 应答 74 字节,已解出具名字段：\n'+lines.join('\n'),'l-ack');
-    $('p24-note').innerHTML=lines.map(l=>l.replace(/</g,'&lt;')).join('<br>');
-    saveFeat('p24',{ok:true, at:Date.now(), fields, unnamedLen:unnamedBytes.length, unnamedHex});
-  } finally {
-    featRunning=false;
-    $('btnParamRead24').disabled=!linkOn;
-    refreshFeatNotes();
-  }
-}
-$('btnParamRead24').onclick=()=>readParams24();
 
 /* ── 写:04/0F,写完必须读回来验证 ── 复用 sendAndWaitAck 发 04/10 单索引读,
    读一次当 before、写完再读一次当 after,四种结果分开判,status===0 绝不单独当生效证据。 */
