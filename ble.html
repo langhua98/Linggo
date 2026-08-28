@@ -349,6 +349,36 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
 </section>
 
+<!-- 云台功能（按开源协议表） -->
+<section>
+  <p class="eyebrow">6 · 云台功能</p>
+  <p class="note">这几条来自开源协议表（<b>lib-osmo-ble</b> 的 PROTOCOL.md，DJI Osmo Pocket 3），
+    我们真机扫描时它们都有应答。<b>但那份文档不是 OM6 的</b> —— 同一份文档给的速度指令载荷
+    跟我们实测的顺序和长度都不一样。所以每个按钮点下去都会<b>自己量一遍效果</b>，
+    量到了才算数；标着「未确认」的就是还没在这台机器上验证过。</p>
+
+  <p class="eyebrow" style="margin-top:16px">跟随模式（04/4C）</p>
+  <div class="row">
+    <button id="btnModeLock" disabled>锁定</button>
+    <button id="btnModeFollow" disabled>跟随</button>
+    <button id="btnModeFpv" disabled>FPV</button>
+  </div>
+  <div id="mode-note" class="note"></div>
+
+  <p class="eyebrow" style="margin-top:16px">待机 / 恢复（04/0D）</p>
+  <div class="row">
+    <button id="btnSuspend" disabled>待机</button>
+    <button id="btnResume" disabled>恢复</button>
+  </div>
+  <div id="susp-note" class="note"></div>
+
+  <p class="eyebrow" style="margin-top:16px">转到指定角度 · 绝对（04/0A）</p>
+  <div class="row">
+    <button id="btnAbsGoto" disabled>按上面「转到指定角度」的设定，用绝对角度指令执行</button>
+  </div>
+  <div id="abs-note" class="note"></div>
+</section>
+
 <!-- 日志 -->
 <section style="border-bottom:none">
   <p class="eyebrow" style="flex-wrap:wrap"><span>4 · 日志</span>
@@ -483,7 +513,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     跳过永久跳过表和下面输入框里指定的 cmdId；姿态看门狗一动就<b>把这两帧姿态之间发过的那几条
     整窗记下</b>（姿态只有约 1Hz，分辨不到具体是哪一条）、发零速、等停、重取基准后继续往下扫，
     一轮里动了 3 次才整体停下。即便如此，未知 cmdId 仍可能落进
-    校准或固件模式，<b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。扫之前把云台放在开阔处、别夹东西。</p>
+    校准或固件模式，<b>最坏情况可能需要用 Mimo 恢复出厂设置</b>。扫之前把云台放在开阔处、别夹东西。<br>
+    <b>扫描只发空载荷，所以看不见「必须带参数才动作」的写指令</b> —— <code>04/0D</code>（待机）
+    就是这么被漏掉的：它一直在应答列表里回 <code>00</code>，但空载荷对它是无操作。
+    带参数的指令只能靠协议表或抓包认出来，扫描帮不上忙。</p>
   <div class="grid3">
     <label class="fld" style="margin:0"><span class="lab"><span>cmdSet</span></span>
       <input type="text" id="scanCs" value="04" autocapitalize="off" spellcheck="false"></label>
@@ -717,6 +750,11 @@ const PROBES = [
 // 诊断进行中是个 Map: seq → {payload, at};非诊断状态下为 null。
 let probeResults = null;
 
+/* 6·云台功能(04/4C、04/0D、04/0A)自己的握手证据。不借用 probeResults ——
+   那张表只认 PROBES 里列出的固定 seq,借用会漏判也可能误判到不相关的应答。
+   命中一次就把 seq 清空,避免收到迟到的重复应答污染下一次调用。 */
+let featAckSeq=null, featAckPayload=null;
+
 /* ── 试过哪些设备 ──
    iOS 上匿名外设只显示一串系统编号,四个长得一模一样,逐个试的时候根本记不住
    试过哪个。按 dev.id 记结论(规范保证同一设备 + 同一源下它是稳定的),
@@ -762,7 +800,8 @@ function setState(s,txt){
   linkOn = on;
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnAuto','btnScan','btnProbeAll',
-   'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow']
+   'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
+   'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto']
     .forEach(i=>$(i).disabled=!on);
   if(!on){ stimAbort=true; recOn=false; }
   $('btnRecOff').disabled=true;
@@ -773,6 +812,7 @@ function setState(s,txt){
   refreshStandbyBtn();
   refreshRiskBtns();
   refreshProbeBtn();
+  refreshFeatNotes();   // 6·云台功能:每块 note 是不是「已验证」跟连接状态无关,但按钮可用性变了值得重画一次
 }
 
 async function connect(anyDevice){
@@ -1006,6 +1046,9 @@ let lastBatt=null, lastBattDiff=undefined;   // lastBattDiff 只用来判断「�
 // 姿态看门狗看不见这种指令,得单独有一只眼睛盯「推送还在不在」。
 let rxPushT=0, rxPushN=0;
 const SILENCE_MS=3000;   // 判定「遥测静默」的门槛,cmdScan 的武装期基线、tryCmd 的观察循环共用
+// "cs/ci" → 最近一份推送载荷。6·云台功能的 modeSet() 拿它比对 04/1c、04/27 切换前后有没有变
+// (见 decode() 里的写入处),不进 recBuf——那张表只在 recOn 时才存,常态下是关的。
+const lastPush = {};
 // 04/30 只在电机自检例程期间见过,含义没确认过 —— 只记「收到了什么」,不编它的意思。
 // seq30 靠每来一帧就加一,给 tryCmd 的采样循环当「有没有新帧」的看门狗用,沿用 attSeq 的思路。
 let last30=null, seq30=0;
@@ -1135,6 +1178,12 @@ function decode(m, hide){
   if(probeResults && !probeResults.has(seq) && PROBES.some(p=>p.seq===seq)){
     probeResults.set(seq, {payload:pl, at:Date.now()});
   }
+
+  // 6·云台功能:握手证据只认自己发过的 seq,跟 probeResults 分开一张表(见该变量声明处的注释)。
+  if(featAckSeq!==null && seq===featAckSeq){ featAckPayload=[...pl]; featAckSeq=null; }
+  // modeSet() 判「模式切没切换」靠的是 04/1c、04/27 这两条推送内容有没有变 —— 这两条整帧没解过,
+  // 存最新一份供它比对就够,不需要额外解析字段。只存推送(非应答),常态下就在维护,不必等 recOn。
+  if((m[8]&0x80)===0 && cmdSet===0x04 && (cmdId===0x1c||cmdId===0x27)) lastPush[cmdSet+'/'+cmdId]=[...pl];
 
   /* 电池:真机四个样本坐实 [0]=电量%、[1:3]=总压 mV(LE u16)、[16:18]/[18:20]=两节电芯 mV,
      跨两次会话、跨一次充电,电芯和 − 总压恒等于 14~15mV。但 05/06 长度不定 —— 回归测试会喂
@@ -3418,6 +3467,17 @@ function buildReport(){
     }
   }
 
+  L.push('', '===== 云台功能（按协议表）=====');
+  {
+    // 跟其它节一样从 localStorage 读,不依赖内存变量 —— 换个会话也要读得出结果。
+    const f=loadFeat();
+    const fmtAt=e=>e&&e.at?new Date(e.at).toISOString():'';
+    L.push(`跟随模式 04/4C   ${f.mode ? (f.mode.ok?`✅ 已验证（${fmtAt(f.mode)}）`:`⚠ 应答了但没确认生效（${fmtAt(f.mode)}）`) : '⚠ 尚未确认'}`);
+    L.push(`待机     04/0D   ${f.suspend ? (f.suspend.ok?`✅ 已验证（${fmtAt(f.suspend)}）`:`⚠ 应答了但遥测没停（${fmtAt(f.suspend)}）`) : '⚠ 尚未确认'}`);
+    L.push(`绝对角度 04/0A   ${f.abs ? (f.abs.ok?`✅ 已验证，误差 ${f.abs.err}°（${fmtAt(f.abs)}）`:`⚠ 试过但误差偏大或没动，误差 ${f.abs.err}°（${fmtAt(f.abs)}）`) : '⚠ 尚未确认'}`);
+    L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）—— 与 OM6 未必一致，以实测为准');
+  }
+
   const map=fieldMap(recBuf);
   L.push('', `===== 字段图谱（共 ${recBuf.length} 帧记录）=====`);
   if(!map.length) L.push('（没有记录。先点「开始记录」，或跑一次自检/激励采集/扫描。）');
@@ -3713,6 +3773,198 @@ $('gotoDeg').addEventListener('input',()=>{
 });
 $('btnGoto').onclick=()=>{ gotoRelative($('gotoAx').value, +$('gotoDeg').value); };
 $('btnGotoStop').onclick=()=>{ gotoAbort=true; };
+
+/* ════════════ 6·云台功能(按开源协议表) ════════════
+   来源:开源项目 lib-osmo-ble 的 PROTOCOL.md(DJI Osmo Pocket 3 的 cmdSet 0x04 命令表)。
+   我们真机扫描过这三条,都有应答 —— 但那只说明「云台认识这条指令」,不说明「它做了
+   文档说的那件事」。同一份文档给的 04/0c 速度帧载荷顺序、长度跟我们实测的完全对不上,
+   所以每个功能都必须自己拿真机量一遍效果,不能只看返回码 0x00 就宣布成功。 */
+
+const FEAT_KEY='om_ble_feat';   // { devId: { mode:{ok,at}, suspend:{ok,at}, abs:{ok,err,at} } }
+function loadFeat(){
+  try{ return JSON.parse(localStorage.getItem(FEAT_KEY)||'{}')[(dev&&dev.id)||'?'] || {}; }catch{ return {}; }
+}
+function saveFeat(name, val){
+  try{
+    const all=JSON.parse(localStorage.getItem(FEAT_KEY)||'{}');
+    const id=(dev&&dev.id)||'?';
+    all[id]=all[id]||{};
+    all[id][name]=val;
+    localStorage.setItem(FEAT_KEY, JSON.stringify(all));
+  }catch{}
+}
+// 每块 note 只有两种措辞:真验证过就报时间,没验证过就老实说「按协议表实现」——
+// 不能写成「未测试」那种弱化说法,那会让人以为随时可以补测,而不是「跟 OM6 不一定对得上」。
+function refreshFeatNotes(){
+  const f=loadFeat(), UNCONFIRMED='⚠ 按协议表实现，OM6 上尚未确认';
+  const modeEl=$('mode-note');
+  if(modeEl) modeEl.textContent = (f.mode&&f.mode.ok)
+    ? `✅ 已在这台机器上验证（${new Date(f.mode.at).toISOString()}）` : UNCONFIRMED;
+  const suspEl=$('susp-note');
+  if(suspEl) suspEl.textContent = (f.suspend&&f.suspend.ok)
+    ? `✅ 已在这台机器上验证（${new Date(f.suspend.at).toISOString()}）` : UNCONFIRMED;
+  const absEl=$('abs-note');
+  if(!absEl) return;
+  absEl.textContent = !f.abs ? UNCONFIRMED
+    : f.abs.ok ? `✅ 已在这台机器上验证，误差 ${f.abs.err}°（${new Date(f.abs.at).toISOString()}）`
+               : `⚠ 试过但误差偏大或没动（误差 ${f.abs.err}°，${new Date(f.abs.at).toISOString()}）`;
+}
+
+/* 发一帧并等它的应答(flags=0x40 已要求应答),只回答「有没有收到返回码 0 的应答」这一件事 ——
+   返回码 0 只说明这条指令被认得,不说明它按预期生效了,三个功能各自还要再验一遍实际效果。 */
+async function sendAndWaitAck(frame, seq, timeoutMs=1500){
+  featAckSeq=seq; featAckPayload=null;
+  await send(frame);
+  const t0=Date.now();
+  while(Date.now()-t0<timeoutMs){
+    if(featAckPayload!==null) return true;
+    await sleep(50);
+  }
+  featAckSeq=null;
+  return false;
+}
+// 别的任务在跑时不要抢——labRunning/tryRunning/gotoRunning/probeRunning 各自都假设
+// 自己独占 seq 分配和姿态观测窗,同时发帧会把彼此的判据都搅乱。
+/* featRunning 是这三个新功能自己的互斥位。原来 featBusy() 只认 labRunning/tryRunning/
+   gotoRunning/probeRunning —— 那几个功能谁都没置过它们,于是「待机」和「模式切换」
+   可以同时开跑:两条指令交错发出去、两个验证窗口互相看对方造成的动静,
+   结论就成了掷骰子。 */
+let featRunning=false;
+function featBusy(){ return labRunning || tryRunning || gotoRunning || probeRunning || featRunning; }
+
+const MODE_NAMES=['锁定','跟随','FPV'];
+async function modeSet(m){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  featRunning=true;
+  ['btnModeLock','btnModeFollow','btnModeFpv'].forEach(id=>$(id).disabled=true);
+  try{
+    log(`—— 跟随模式:切到「${MODE_NAMES[m]}」(04/4C,按协议表,OM6 未确认)——`);
+    // 模式切换本身不一定产生位移,姿态判据在这里用不上 —— 改用「握手 + 状态推送有没有变」两条证据。
+    // 0x1c=28、0x27=39,查表比魔数好认;lastPush 由 decode() 维护(见该处注释)。
+    const base1c=lastPush['4/28'], base27=lastPush['4/39'];
+    const seq=0xD100|m;
+    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x4C, payload:[m&0xff,0x00]}), seq);
+    if(!ok){ log('❌ 04/4C 没有应答。','l-err'); return; }
+    let changed=false;
+    const t1=Date.now();
+    while(Date.now()-t1<3000){
+      await sleep(150);
+      const c1c=lastPush['4/28'], c27=lastPush['4/39'];
+      if((base1c && c1c && hex(c1c)!==hex(base1c)) || (base27 && c27 && hex(c27)!==hex(base27))){ changed=true; break; }
+    }
+    if(changed){
+      saveFeat('mode',{ok:true, at:Date.now()});
+      log(`✅ 04/4C 应答了返回码 0,04/1c 或 04/27 的状态推送内容也变了 —— 「${MODE_NAMES[m]}」在这台机器上生效。`,'l-ack');
+    }else{
+      log('⚠ 应答了但没看到状态变化 —— 可能生效了、也可能这条在 OM6 上是别的意思。','l-err');
+    }
+  } finally {
+    featRunning=false;
+    ['btnModeLock','btnModeFollow','btnModeFpv'].forEach(id=>$(id).disabled=!linkOn);
+    refreshFeatNotes();
+  }
+}
+$('btnModeLock').onclick=()=>modeSet(0);
+$('btnModeFollow').onclick=()=>modeSet(1);
+$('btnModeFpv').onclick=()=>modeSet(2);
+
+async function suspendGimbal(on){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  // 待机会让云台停止响应包括这个页面在内的一切指令,风险确认框拦不住误触,必须二次确认。
+  if(on && !confirm('待机后云台会停止响应所有指令(包括这个页面),只能点「恢复」或按云台电源键叫回来。确定要待机吗?')){
+    log('已取消待机。'); return;
+  }
+  featRunning=true;
+  ['btnSuspend','btnResume'].forEach(id=>$(id).disabled=true);
+  try{
+    log(`—— ${on?'待机':'恢复'}(04/0D,按协议表,OM6 未确认)——`);
+    const seq=on?0xD2F2:0xD2B5;
+    const payload=on?[0xF2,0x7E]:[0xB5,0x2A];   // uint16 LE:0x7EF2 挂起 / 0x2AB5 恢复
+    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x0D, payload}), seq);
+    if(!ok) log('⚠ 04/0D 没有应答 —— 继续按遥测有没有停/回来判断,应答不是唯一证据。','l-err');
+    const t0=Date.now();
+    if(on){
+      let stopped=false;
+      while(Date.now()-t0<8000){
+        await sleep(200);
+        if(rxPushT && Date.now()-rxPushT>=SILENCE_MS){ stopped=true; break; }
+      }
+      if(stopped){
+        saveFeat('suspend',{ok:true, at:Date.now()});
+        log('✅ 待机成功 —— 主动推送已经停了。点「恢复」叫回来;万一恢复不了就按云台电源键。','l-ack');
+      }else{
+        log('⚠ 发过去了,但 8 秒内遥测没停 —— 它可能没进待机。','l-err');
+      }
+    }else{
+      let woke=false;
+      while(Date.now()-t0<8000){
+        await sleep(200);
+        if(rxPushT>=t0){ woke=true; break; }
+      }
+      if(woke) log('✅ 恢复成功 —— 遥测回来了。','l-ack');
+      else log('❌ 恢复没生效 —— 试试「唤醒」按钮重连,再不行按电源键。','l-err');
+    }
+  } finally {
+    featRunning=false;
+    ['btnSuspend','btnResume'].forEach(id=>$(id).disabled=!linkOn);
+    refreshFeatNotes();
+  }
+}
+$('btnSuspend').onclick=()=>suspendGimbal(true);
+$('btnResume').onclick=()=>suspendGimbal(false);
+
+async function absGoto(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果','l-err'); return; }
+  const axis=$('gotoAx').value, delta=+$('gotoDeg').value;
+  // 故意不用 d180 折算:折算会把「270°」悄悄改写成「-90°」,对 yaw 这种循环轴数值上等价,
+  // 但对 pitch/roll 这种没有物理意义的「转一圈回来」的轴,那就是把「超范围」偷偷改成了「合法」——
+  // 拒绝必须看原始和,不能看折算后的。
+  const target=lastEuler[axis]+delta;
+  // 载荷是 i16×10,装不下 ±180° 以外的值 —— 拒绝比截断安全,截断会把「转太远」悄悄改成「转到别处」。
+  if(Math.abs(target)>180){
+    log(`⚠ 目标角 ${target.toFixed(1)}° 超出 ±180° —— 已拒绝。换个轴或改小相对角度再试。`,'l-err');
+    return;
+  }
+  featRunning=true;
+  $('btnAbsGoto').disabled=true;
+  try{
+    const pitchDeg=axis==='pitch'?target:lastEuler.pitch;
+    const rollDeg =axis==='roll' ?target:lastEuler.roll;
+    const yawDeg  =axis==='yaw'  ?target:lastEuler.yaw;
+    const flags=(axis==='pitch'?1:0)|(axis==='roll'?2:0)|(axis==='yaw'?4:0);
+    const speed100=6000;   // 60°/s×100,先求稳的温和值,不是标定出来的
+    const payload=[...i16(Math.round(pitchDeg*10)), ...i16(Math.round(rollDeg*10)), ...i16(Math.round(yawDeg*10)),
+      ...i16(speed100), flags, Math.floor(speed100/2000)];
+    const seq=0xD400|(seqNo++ & 0xff);
+    log(`—— 绝对角度(04/0A,按协议表,OM6 未确认):${axis} 目标 ${target>=0?'+':''}${target.toFixed(1)}° ——`);
+    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x0A, payload}), seq);
+    if(!ok){ log('❌ 04/0A 没有应答。','l-err'); return; }
+    // 上限 15 秒,复用 waitSettle 的判据(它一次只等最多 3 秒,连着调直到停稳或耗尽预算)。
+    let settled=false;
+    const t0=Date.now();
+    while(Date.now()-t0<15000){ settled=await waitSettle(); if(settled) break; }
+    const actual=lastEuler[axis], err=d180(actual-target);
+    const line=`实到 ${actual.toFixed(1)}°  目标 ${target.toFixed(1)}°  误差 ${err.toFixed(1)}°  `+
+               `${settled?'已停稳':'⚠ 15s 内没等到停稳'}`;
+    if(Math.abs(err)<5){
+      saveFeat('abs',{ok:true, err:+err.toFixed(1), at:Date.now()});
+      log(`✅ 绝对角度指令在这台机器上可用。${line}   `+
+          `这比现在的航位推算闭环准,以后「转到指定角度」可以考虑走这条(暂未切换)。`,'l-ack');
+    }else{
+      saveFeat('abs',{ok:false, err:+err.toFixed(1), at:Date.now()});
+      log(`⚠ 误差偏大或根本没动。${line}`,'l-err');
+    }
+  } finally {
+    featRunning=false;
+    $('btnAbsGoto').disabled=!linkOn;
+    refreshFeatNotes();
+  }
+}
+$('btnAbsGoto').onclick=()=>absGoto();
 
 $('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $('btnCal').disabled=false; }); };
 
