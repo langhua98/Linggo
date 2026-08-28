@@ -3676,9 +3676,23 @@ function buildReport(){
       L.push(`04/10 扫描：成功 ${f.params.n} 条（${new Date(f.params.at).toISOString()}）`);
       for(const it of f.params.items){
         const uStr = it.u===null ? '(见 hex)' : it.u;
-        L.push(`  idx=${it.idx}  size=${it.size}  hex=${hex(it.bytes)}  无符号=${uStr}`);
+        const iStr = it.i===null ? '(见 hex)' : it.i;
+        // 无符号之外再带一栏有符号:size=2 的项负数按无符号读会变成 65186 这种看不出规律的
+        // 数,只有摆出有符号值,93~103 那段成对的正负值规律才看得出来(见下方观察)。
+        L.push(`  idx=${it.idx}  size=${it.size}  hex=${hex(it.bytes)}  无符号=${uStr}  有符号=${iStr}`);
       }
       (f.params.errLines||[]).forEach(l=>L.push('  '+l));
+      if(f.params.retried && f.params.retried.length){
+        L.push(`  其中 ${f.params.retried.length} 条是批量问不到、单独补问回来的：${f.params.retried.join(', ')}`);
+      }
+      if(f.params.absent && f.params.absent.length){
+        L.push(`  确认不存在（批量 + 单独补问均无结果）：${f.params.absent.join(', ')}`);
+      }
+      if(f.params.statuses && f.params.statuses.length){
+        const codes=f.params.statuses.map(s=>'0x'+s.toString(16)).join('、');
+        L.push(`  注：有非零 status 出现过（${codes}），真机上它与「有索引缺席」相关，但 104 那帧 status=0 也缺席过 —— 所以只作展示，不参与判定。`);
+      }
+      L.push('  观察：索引 93~103 一段按 int16 有符号读是成对的正负值（±0.1° 量级），与本协议其它角度字段同单位；是否为行程软限位尚未验证——改一个再看云台行程有没有变即可确认。');
     }
     if(!f.p24) L.push('04/24 结构：尚未读取');
     else if(!f.p24.ok){
@@ -4769,15 +4783,41 @@ function renderParamTable(items, errLines){
   });
 }
 
-/* ── 扫描:04/10,索引 0~127 ── 每帧问 4 个(应答最坏 1+4×10=41 字节载荷,跟已跑通的 04/05
-   同量级),一帧问 64 个应答会长到没法保证。共 16 帧,帧间 sleep(150) 别把云台打爆。
-   应答按请求顺序一一对应(dissector:"given indexes...returns a list of their values"),
-   所以逐项跟本帧发出去的 idxs 按位置对齐 —— 失败项那个字节本身是错误码,不是原始索引,
-   原始索引得靠位置对应找回来,不能直接拿 err 项的 idx 字段当索引用。
-   每帧解析完还要自证一遍没有失位:问 4 个索引就该解出 4 项,且逐项位置要跟请求的 idxs
-   对齐(成功项的 idx 得等于它在请求里对应位置的那个索引)。这道对账不是可有可无的保险——
-   它才是第一时间能抓出 parseParamsGet 那个 size fallback bug 的东西:一帧问 4 个却"解出"
-   十几项,项数一对就露馅了,不用等人工去翻十几条假记录才发现不对。对不上就整帧不采信。 */
+/* ── 对齐判据:子序列,不是"逐位对齐" ── 真机实测(见 SPEC14):问 4 个索引,云台对不存在
+   的索引不回错误码,而是把那几项整条略过——问 104,105,106,107 只答回 104/105/107,106
+   直接消失,status 还是 0x00。上一轮「项数必须恰好等于 4、逐位对齐」的规矩会把这种合法的
+   部分应答当成解析失位整帧扔掉,是判据本身错了,不是数据坏了。
+   所以只要求:成功项按出现顺序,在本帧请求列表 idxs 里能找到一条严格递增、不重复的路径
+   （即成功项的 idx 序列是 idxs 的子序列),缺席的位置直接跳过不计。
+   这条判据没有放弃防线:上一轮 0x2d(size=32)被 parseParamsGet 的 size fallback 拆散时,
+   解出来是一长串 idx=0 的假记录——0 既不在 idxs 里、找不到落脚位置,子序列判据照样会在
+   第一条假记录上失败,整帧照样判失位不采信。放宽的只是"必须凑够 4 项"，不是"顺序和归属
+   可以乱来"。 */
+function matchParamsFrame(items, idxs){
+  // 用一个只能前进的游标 p 在 idxs 里给每个 item 找位置:
+  //   非错误项——idx 就是真实索引,必须能在游标之后找到,找到后游标移到它后面一格
+  //     (这就保证了子序列的"严格递增、不重复");
+  //   错误项——那个字节本身是错误码,不是索引,没法知道它对应请求里的哪个位置。真机这次
+  //     没出现过这种项(缺席都是整条略过,不是回错误码),但保留这条处理:按"消耗游标当前
+  //     指向的那个请求位置"做兜底记账,不代表验证过对应关系,只是不让这类项凭空丢失线索。
+  // 任一项在游标之后找不到落脚点,就说明这一帧解析跑飞了(例如上面说的 size fallback 假记
+  // 录),返回 null,整帧作废、一项都不采信——总比信一半、信错了要安全。
+  let p=0;
+  const matched=[];   // {item, reqIdx}
+  for(const it of items){
+    if(it.err){
+      if(p>=idxs.length) return null;
+      matched.push({item:it, reqIdx:idxs[p]});
+      p++;
+      continue;
+    }
+    while(p<idxs.length && idxs[p]!==it.idx) p++;
+    if(p>=idxs.length) return null;
+    matched.push({item:it, reqIdx:idxs[p]});
+    p++;
+  }
+  return matched;
+}
 async function paramScan(){
   if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
   if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
@@ -4790,47 +4830,84 @@ async function paramScan(){
     log('—— 扫描用户参数表(04/10,索引 0~127,每帧问 4 个,共 32 帧)——');
     const okItems=[];
     const failByCode=new Map();   // 错误码 → [原始索引...]
-    const misaligned=[];          // 失位清单:每项是那一帧问的 idxs 数组
+    const misaligned=[];          // 失位清单:每项是那一帧问的 idxs 数组(防线仍在,见上方注释)
+    const missingIdxs=[];         // 这一轮没拿到确定结果(既没有值也没有错误码)的索引,留给下面补问
+    // status 只记录不判定:真机上 0xe7 常和缺席一起出现,但 104 那帧缺席时 status 却是 0x00,
+    // 说明它跟"有没有缺席"没有可靠的对应关系,只能展示给人看,不能拿来做任何判断。
+    const statusSet=new Set();
+    let nonzeroStatusFrames=0;
     for(let base=0; base<128; base+=4){
       const idxs=[base,base+1,base+2,base+3];
       const seq=0xDD00|base;
       const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x10, payload:idxs}), seq);
       if(ok && featAckPayload){
-        const {items}=parseParamsGet(featAckPayload);
-        // 自证没有失位:项数必须等于请求数,且每个成功项的 idx 必须等于它所在位置对应的
-        // 请求索引(错误项本身那个字节是错误码,不是索引,不参与位置比对)。任一条不满足,
-        // 这帧整帧作废,一项都不采信——总比信一半、信错了要安全。
-        const countOk = items.length===idxs.length;
-        const posOk = countOk && items.every((it,k)=> it.err || it.idx===idxs[k]);
-        if(!countOk || !posOk){
+        const {status, items}=parseParamsGet(featAckPayload);
+        if(status){ statusSet.add(status); nonzeroStatusFrames++; }
+        const matched=matchParamsFrame(items, idxs);
+        if(!matched){
           misaligned.push(idxs.slice());
-          log(`⚠ 索引 ${idxs.join(',')} 这帧解出 ${items.length} 项（应为 4），解析可能失位，原始应答：${hex(featAckPayload)}`,'l-err');
+          missingIdxs.push(...idxs);   // 整帧不采信,这 4 个索引这一轮等于什么都没问到,一起留给补问
+          log(`⚠ 索引 ${idxs.join(',')} 这帧的应答不是请求列表的合法子序列，解析可能跑飞，整帧不采信，原始应答：${hex(featAckPayload)}`,'l-err');
         }else{
-          items.forEach((it,k)=>{
-            const reqIdx=idxs[k];
-            if(it.err){ const arr=failByCode.get(it.idx)||[]; arr.push(reqIdx); failByCode.set(it.idx,arr); }
-            else okItems.push(it);
+          const present=new Set();
+          matched.forEach(({item,reqIdx})=>{
+            present.add(reqIdx);
+            if(item.err){ const arr=failByCode.get(item.idx)||[]; arr.push(reqIdx); failByCode.set(item.idx,arr); }
+            else okItems.push(item);
           });
+          idxs.forEach(i=>{ if(!present.has(i)) missingIdxs.push(i); });   // 缺席:整条被云台略过的索引
         }
       }else{
         log(`⚠ 索引 ${idxs.join(',')} 这帧没有应答,跳过`,'l-err');
+        missingIdxs.push(...idxs);
       }
       await sleep(150);
     }
+
+    // 缺席补问(见 SPEC14 三):批量问漏掉的索引,可能是"真不存在",也可能是"一帧挤不下/
+    // 云台批量处理有限制"——这两者必须分开,靠的就是单独用 04/10 单索引再问一次。
+    // 上限设 48:真机这次缺席约 20 个远够用,设上限是怕把一次扫描拖太长,超出部分只记数不补问。
+    const uniqMissing=[...new Set(missingIdxs)].sort((a,b)=>a-b);
+    const RETRY_CAP=48;
+    const toRetry=uniqMissing.slice(0,RETRY_CAP);
+    const skippedRetry=uniqMissing.length-toRetry.length;
+    const retried=[];   // 批量问不到、单独问得到的索引——说明是批量应答的限制,不是索引不存在
+    const absent=[];    // 单独问了还是没有,才算确认不存在
+    for(const idx of toRetry){
+      const it=await paramRead1(idx);
+      if(it){
+        okItems.push(it);
+        retried.push(idx);
+        log(`索引 ${idx} 批量问不到、单独问得到 —— 是批量应答的限制，不是这个索引不存在`,'l-ack');
+      }else{
+        absent.push(idx);
+      }
+      await sleep(120);
+    }
+
     const errLines=[...failByCode.entries()]
       .map(([code,idxArr])=>`索引 ${idxArr.join(', ')} 返回错误码 ${code}（该索引不存在）`);
     if(misaligned.length){
       errLines.push(`⚠ 失位清单：${misaligned.map(a=>a.join('/')).join('；')}（这些帧未采信）`);
     }
-    renderParamTable(okItems, errLines);
-    const tailNote = misaligned.length ? `（其中 ${misaligned.length} 帧解析失位，未采信）` : '';
-    if(okItems.length===0){
-      const msg=`这台机器上 0~127 号索引一个都读不出来,04/10 在 OM6 上可能不是这个用法${tailNote}`;
-      log('⚠ '+msg,'l-err');
-    }else{
-      log(`✅ 扫描完成:成功 ${okItems.length} 条${errLines.length?'；'+errLines.join('；'):''}${tailNote}`,'l-ack');
+    if(skippedRetry>0){
+      errLines.push(`⚠ 缺席索引共 ${uniqMissing.length} 个，超过补问上限 ${RETRY_CAP}，还剩 ${skippedRetry} 个未补问`);
     }
-    saveFeat('params',{n:okItems.length, at:Date.now(), items:okItems, errLines, misaligned});
+    renderParamTable(okItems, errLines);
+
+    if(okItems.length===0){
+      log('⚠ 这台机器上 0~127 号索引一个都读不出来,04/10 在 OM6 上可能不是这个用法','l-err');
+    }else{
+      // 失位帧数也要挂在结论行上:那一行是唯一会被完整读到的一行,失位清单只藏在
+      // errLines 里的话,「成功 N 条」看着就像全须全尾,而实际上有整帧数据被丢掉了。
+      const misTail = misaligned.length ? `；另有 ${misaligned.length} 帧解析失位，未采信` : '';
+      log(`✅ 扫描完成：成功 ${okItems.length} 条（其中 ${retried.length} 条是补问回来的）；确认不存在 ${absent.length} 个索引：${absent.join(', ')||'无'}${misTail}`,'l-ack');
+    }
+    if(nonzeroStatusFrames>0){
+      const codes=[...statusSet].map(s=>'0x'+s.toString(16)).join('、');
+      log(`注：有 ${nonzeroStatusFrames} 帧的 status 非零（${codes} 等），真机上它与「有索引缺席」相关，但 104 那帧 status=0 也缺席过 —— 所以只作展示，不参与任何判定。`,'l-err');
+    }
+    saveFeat('params',{n:okItems.length, at:Date.now(), items:okItems, errLines, misaligned, retried, absent, statuses:[...statusSet]});
   } finally {
     featRunning=false;
     $('btnParamScan').disabled=!linkOn;
