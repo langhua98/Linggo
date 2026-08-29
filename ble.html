@@ -288,6 +288,14 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div id="st-limit" class="limit-bar" hidden></div>
   <p class="note" style="margin-top:8px">云台状态位（04/27）：<b id="st-flags">—</b></p>
   <p class="note">手柄状态（04/57）：<b id="st-0457">—</b><br>字节含义 dissector 没给，不编——只报原始值，和「跟上一帧比变了哪个字节」。</p>
+  <div class="row" style="margin-top:4px">
+    <button id="btnLearnKeys" disabled>学习手柄按键</button>
+    <button id="btnKeysStop" hidden>结束学习</button>
+    <button id="btnClearKeys">清空按键映射</button>
+  </div>
+  <div class="lab-head" id="keys-head" hidden><span id="keys-step">空闲</span><span id="keys-eta"></span></div>
+  <p class="note" id="keys-note">已学会 0/9 个控件</p>
+  <div id="keys-table"></div>
   <p class="note">延时状态（04/38）：<b id="st-0438">—</b><br>dissector 说这条只有 1 字节、低 2 位是状态；OM6 实测 5 字节，后 4 字节含义未知，不猜。</p>
   <p class="note">云台型号（04/1C）：<b id="st-041c">—</b><br>只报原始字节，没有型号对照表，不翻译成任何型号名。</p>
 </section>
@@ -901,9 +909,11 @@ function setState(s,txt){
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
-   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo']
+   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo','btnLearnKeys']
     .forEach(i=>$(i).disabled=!on);
-  if(!on){ stimAbort=true; recOn=false; }
+  // 断开时手柄按键学习向导要能中止,不能卡在某一步——keysSkip 让它跳出正在等的采集/缓冲窗口,
+  // keysStop 让外层步骤循环收尾。btnClearKeys 不在上面那个数组里(纯本地操作,断没断都能点)。
+  if(!on){ stimAbort=true; recOn=false; keysStop=true; keysSkip=true; }
   $('btnRecOff').disabled=true;
   if(!on){ stopHold(); clearLimit(); pwmForceCenter(); }
   $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
@@ -1164,19 +1174,248 @@ let last0405Fields=null, last0405Mode=null, last0405At=0;
 let last0457=null, last0457ChangeTxt='';
 let last0438=null, last041c=null;
 /* 04/57 每 20~50ms 一帧,字节没变就不刷 DOM——刷了会拖慢渲染,也没有信息量。
-   变化说明留着不清空,松手之后还能在界面上看见最近一次变化是哪个字节。 */
+   变化说明留着不清空,松手之后还能在界面上看见最近一次变化是哪个字节。
+   paint0457 单独拆出来,是因为学习向导学会一个键之后要立刻把"已识别"那行刷出来,
+   但那一刻 last0457 本身并没有变化(diff 判据会让它提前 return),不能走 render0457 的主路径。 */
+function paint0457(bytes){
+  const el=$('st-0457'); if(!el) return;
+  const named = describeKeyState(bytes);   // 没学过映射时返回空串,不额外加一行
+  el.innerHTML = `${hex(bytes)}　最近变化: ${last0457ChangeTxt||'（尚未见到变化）'}`+
+    (named ? `<br>已识别: ${named}` : '');
+}
 function render0457(bytes){
-  const el=$('st-0457'), prev=last0457;
+  const prev=last0457;
   last0457=bytes;
-  if(!el) return;
+  if(!$('st-0457')) return;
   if(prev){
     const diffs=[];
     for(let i=0;i<bytes.length && i<prev.length;i++) if(bytes[i]!==prev[i]) diffs.push(`byte${i}: ${prev[i]}→${bytes[i]}`);
     if(!diffs.length) return;
     last0457ChangeTxt = diffs.join('、');
   }
-  el.textContent = `${hex(bytes)}　最近变化: ${last0457ChangeTxt||'（尚未见到变化）'}`;
+  paint0457(bytes);
 }
+
+/* ════════════ 手柄按键学习向导(04/57) ════════════
+   dissector 对 04/57 一个字段都没定义,哪个字节对应哪个键只能靠人按、页面记。
+   这一批全程只监听,不发送任何帧——04/57 是云台自己在常驻推的遥测,不需要问它要。
+   基线必须实测:真机 byte4 常态就是 1,假设全零会把每个键都误判成"变了"。 */
+const KEYS_KEY='om_ble_keys';
+// 步骤顺序即向导播报顺序,来自实体控件清单。expect 只是预期展示用,实测按"采集期
+// 出现过的不同值个数"判 analog/switch,跟这里标的不一致时以实测为准,不硬套。
+const KEY_STEPS=[
+  {key:'stick_up',    name:'摇杆 上',      expect:'analog'},
+  {key:'stick_down',  name:'摇杆 下',      expect:'analog'},
+  {key:'stick_left',  name:'摇杆 左',      expect:'analog'},
+  {key:'stick_right', name:'摇杆 右',      expect:'analog'},
+  {key:'shutter',     name:'拍摄键',       expect:'switch'},
+  {key:'mode',        name:'M 键',         expect:'switch'},
+  {key:'trigger',     name:'扳机',         expect:'switch'},
+  {key:'zoom_up',     name:'变焦拨轮 上',  expect:'analog'},
+  {key:'zoom_down',   name:'变焦拨轮 下',  expect:'analog'},
+];
+const KEY_STEP_NAME={}; KEY_STEPS.forEach(s=>KEY_STEP_NAME[s.key]=s.name);
+const nameOfKeyStep = key => KEY_STEP_NAME[key]||key;
+
+// 跟 MAP_KEY/DPU_KEY/FEAT_KEY 一套做法:按 dev.id 分开存,没连过设备就当空存档,不报错。
+function loadKeys(){
+  try{ return JSON.parse(localStorage.getItem(KEYS_KEY)||'{}')[(dev&&dev.id)||'?'] || {}; }catch{ return {}; }
+}
+function saveKeys(obj){
+  try{
+    const all=JSON.parse(localStorage.getItem(KEYS_KEY)||'{}');
+    all[(dev&&dev.id)||'?'] = {...obj, at:Date.now()};
+    localStorage.setItem(KEYS_KEY, JSON.stringify(all));
+  }catch{}
+}
+
+/* 04/57 已命名的状态:只翻译学过的字节,没学过的字节继续只报原始值——
+   不能因为学会了几个键就假装整帧都懂了。switch 只在等于"按下值"时才提一句(松开态没有
+   信息量),analog 只在偏离基线时才提(静止态同理),两条都是为了别把这一行刷成噪音。 */
+function describeKeyState(bytes){
+  const binds=(loadKeys().binds)||{};
+  const parts=[];
+  for(const key of Object.keys(binds)){
+    const b=binds[key], v=bytes[b.byte];
+    if(v===undefined) continue;
+    if(b.type==='switch'){ if(v===b.down) parts.push(`${nameOfKeyStep(key)} 按下`); }
+    else if(v!==b.base) parts.push(`${nameOfKeyStep(key)} 值 ${v}`);
+  }
+  return parts.join(' · ');
+}
+
+/* keysCollectHook:向导某一步的采集窗口打开时,decode() 里 04/57 分支会把每一帧原始载荷
+   转发到这里(见 decode() 的改动)。不用 last0457 轮询,是因为 render0457 在字节没变时会
+   提前 return、轮询会在两帧之间漏采样——短暂的一两帧过渡态正是判定要看的东西。 */
+let keysCollectHook=null;
+let keysRunning=false, keysSkip=false, keysStop=false;
+const KEYS_BASELINE_MS=1500, KEYS_COLLECT_MS=3000, KEYS_GAP_MS=1000;
+
+// 取一段窗口里逐字节"出现过的值→次数"。留次数不是只留集合:pickMode 要拿"次数最多"
+// 当"最能代表这段时间的状态"——基线可能因为遥测噪声不是单一值,按下期间也可能混进
+// 按下前/松开后那一两帧的过渡值,次数最多的那个比"随便挑一个"更可信。
+async function keysCollectWindow(ms, label){
+  $('keys-step').textContent=label;
+  const counts=[];
+  keysCollectHook = bytes=>{
+    for(let i=0;i<bytes.length;i++){
+      if(!counts[i]) counts[i]=new Map();
+      counts[i].set(bytes[i], (counts[i].get(bytes[i])||0)+1);
+    }
+  };
+  const t0=Date.now();
+  try{
+    while(true){
+      const left=ms-(Date.now()-t0);
+      if(left<=0 || keysStop || keysSkip) break;
+      $('keys-eta').textContent=(left/1000).toFixed(1)+'s';
+      await sleep(Math.min(100,left));
+    }
+  } finally { keysCollectHook=null; }
+  return counts;
+}
+async function keysWait(ms){
+  const t0=Date.now();
+  while(Date.now()-t0<ms){ if(keysStop) break; await sleep(100); }
+}
+function pickMode(map, exclude){
+  let bestV=null, bestN=-1;
+  for(const [v,n] of map){
+    if(exclude && exclude.has(v)) continue;
+    if(n>bestN){ bestN=n; bestV=v; }
+  }
+  return bestV;
+}
+// 从存档里摘掉某个 key 之前的结果(不管上次是绑定成功、没检测到变化还是有歧义)——
+// 重新学一遍时不能让旧结论跟新结论并存,不然"已学会 N/9"会数错、界面上还留着自相矛盾的两条。
+function keysDropPrior(binds, unmapped, ambiguous, key){
+  delete binds[key]; delete ambiguous[key];
+  const i=unmapped.indexOf(key); if(i>=0) unmapped.splice(i,1);
+}
+function renderKeysNote(){
+  const el=$('keys-note'); if(!el) return;
+  const {binds={}, unmapped=[], ambiguous={}} = loadKeys();
+  const learned=KEY_STEPS.filter(s=>binds[s.key]);
+  const notLearned=KEY_STEPS.filter(s=>!binds[s.key]);
+  let txt=`已学会 ${learned.length}/${KEY_STEPS.length} 个控件`;
+  if(notLearned.length) txt+=`　未识别: ${notLearned.map(s=>{
+    const why = ambiguous[s.key] ? `歧义(byte ${ambiguous[s.key].join('、byte ')})`
+              : unmapped.includes(s.key) ? '无变化' : '未测';
+    return `${s.name}(${why})`;
+  }).join('、')}`;
+  el.textContent=txt;
+}
+function renderKeysTable(){
+  const el=$('keys-table'); if(!el) return;
+  const {binds={}} = loadKeys();
+  const keys=Object.keys(binds);
+  if(!keys.length){ el.innerHTML=''; return; }
+  // 冲突只在展示时算,不额外存档——存档允许一个字节挂多个 key,冲突就是"同一 byte 出现≥2 次"。
+  const byByte={};
+  keys.forEach(k=>{ const b=binds[k].byte; (byByte[b]=byByte[b]||[]).push(k); });
+  el.innerHTML = '<table class="ptbl"><thead><tr><th>控件</th><th>byte</th><th>类型</th>'+
+    '<th>基线</th><th>按下值 / 采集值</th><th></th></tr></thead><tbody>'+
+    keys.map(k=>{
+      const b=binds[k], conflict=byByte[b.byte].length>1;
+      const valTxt = b.type==='switch' ? `按下=${b.down}` : `采集=[${b.vals.join(',')}]`;
+      return `<tr><td>${nameOfKeyStep(k)}</td><td>${b.byte}${conflict?' ⚠':''}</td><td>${b.type}</td>`+
+        `<td>${b.base}</td><td>${valTxt}</td>`+
+        `<td>${conflict?`⚠ 与「${byByte[b.byte].filter(x=>x!==k).map(nameOfKeyStep).join('、')}」共用同一字节`:''}</td></tr>`;
+    }).join('')+'</tbody></table>';
+}
+
+async function learnKeys(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  featRunning=true; keysRunning=true; keysStop=false;
+  $('btnLearnKeys').textContent='跳过这一步';
+  $('btnKeysStop').hidden=false; $('keys-head').hidden=false;
+  const saved=loadKeys();
+  const binds={...(saved.binds||{})}, unmapped=[...(saved.unmapped||[])], ambiguous={...(saved.ambiguous||{})};
+  log('—— 学习手柄按键:全程只监听,一帧都不发(独占 04/57 观测窗,别的任务同时动云台会把'+
+      '"按键引起的变化"和"运动引起的变化"搅在一起)——');
+  try{
+    for(let i=0;i<KEY_STEPS.length;i++){
+      if(keysStop) break;
+      keysSkip=false;
+      const step=KEY_STEPS[i];
+      const baseCounts=await keysCollectWindow(KEYS_BASELINE_MS,
+        `第 ${i+1}/${KEY_STEPS.length} 步：取「${step.name}」空闲基线…`);
+      if(keysStop) break;
+      if(keysSkip){ log(`  ${step.name}：已跳过（基线阶段，未测）`); continue; }
+      const collCounts=await keysCollectWindow(KEYS_COLLECT_MS,
+        `第 ${i+1}/${KEY_STEPS.length} 步：请按住「${step.name}」约 2 秒，然后松开`);
+      if(keysStop) break;
+      if(keysSkip){ log(`  ${step.name}：已跳过（采集阶段，未测）`); continue; }
+
+      keysDropPrior(binds, unmapped, ambiguous, step.key);
+      // 判定:采集期任意一字节出现过"基线集合里没有"的值,就算这个字节变了。
+      const changed=[];
+      const len=Math.max(baseCounts.length, collCounts.length);
+      for(let b=0;b<len;b++){
+        const baseSet=baseCounts[b] ? new Set(baseCounts[b].keys()) : new Set();
+        const collMap=collCounts[b];
+        if(!collMap) continue;
+        for(const v of collMap.keys()) if(!baseSet.has(v)){ changed.push(b); break; }
+      }
+
+      if(changed.length===0){
+        unmapped.push(step.key);
+        log(`  ${step.name}：⚠ 没检测到变化，不绑定（可能这个控件不在 04/57 里，或者按的时候没按到）`,'l-err');
+      }else if(changed.length===1){
+        const byte=changed[0], collMap=collCounts[byte], baseMap=baseCounts[byte]||new Map();
+        const vals=[...collMap.keys()].sort((a,b)=>a-b);
+        // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
+        const type = vals.length>=3 ? 'analog' : 'switch';
+        const base = pickMode(baseMap);
+        const bind={byte, base, vals, type};
+        // down 只在 switch 时有意义:采集期里"不属于基线集合"的新值中,次数最多的那个——
+        // 按住的时长通常占采集窗口的大头,频次最高的新值最可能就是"按下"稳态,
+        // 而不是按下/松开瞬间那一两帧的过渡值。
+        if(type==='switch') bind.down = pickMode(collMap, new Set(baseMap.keys()));
+        const conflictWith=Object.keys(binds).filter(k=>binds[k].byte===byte);
+        if(conflictWith.length) log(`  ⚠ byte${byte} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
+          `「${step.name}」也让它变化 —— 两者可能共用一个字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
+        binds[step.key]=bind;
+        log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}，`+
+          `基线=${base}，采集值=[${vals.join(',')}]`,'l-ack');
+      }else{
+        ambiguous[step.key]=changed;
+        log(`  ${step.name}：⚠ ${changed.length} 个字节同时变了（byte ${changed.join('、byte ')}），`+
+          `分不清是哪个，不绑定`,'l-err');
+      }
+      saveKeys({binds, unmapped, ambiguous});
+      renderKeysNote(); renderKeysTable();
+      if(last0457) paint0457(last0457);   // 立刻用刚学到的映射重画一次"已识别"那行
+
+      if(i<KEY_STEPS.length-1 && !keysStop){
+        $('keys-step').textContent='松手，准备下一步…'; $('keys-eta').textContent='';
+        await keysWait(KEYS_GAP_MS);
+      }
+    }
+  } finally {
+    keysCollectHook=null; featRunning=false; keysRunning=false; keysSkip=false;
+    $('btnLearnKeys').textContent='学习手柄按键'; $('btnLearnKeys').disabled=!linkOn;
+    $('btnKeysStop').hidden=true; $('keys-head').hidden=true;
+    $('keys-step').textContent='空闲'; $('keys-eta').textContent='';
+    renderKeysNote(); renderKeysTable();
+    log('—— 学习结束 ——');
+  }
+}
+$('btnLearnKeys').onclick=()=>{ if(keysRunning) keysSkip=true; else learnKeys(); };
+$('btnKeysStop').onclick=()=>{ keysStop=true; keysSkip=true; };
+// 纯本地操作,不需要连着设备也能点(不进 setState 的启用数组)——学歪了要能重来。
+$('btnClearKeys').onclick=()=>{
+  try{
+    const all=JSON.parse(localStorage.getItem(KEYS_KEY)||'{}');
+    delete all[(dev&&dev.id)||'?'];
+    localStorage.setItem(KEYS_KEY, JSON.stringify(all));
+  }catch{}
+  renderKeysNote(); renderKeysTable();
+  if(last0457) paint0457(last0457);   // last0457 本身没变,直接重画:上面"已识别"那行要跟着清空
+  log('已清空按键映射');
+};
+renderKeysNote(); renderKeysTable();   // 页面刚加载时,把上次会话存下的结果先摆出来
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
@@ -1363,6 +1602,8 @@ function decode(m, hide){
         (pl.length!==1 ? `　⚠ dissector 说这条只有 1 字节,OM6 实测 ${pl.length} 字节,后 ${pl.length-1} 字节含义未知` : '');
     }else if(cmdId===0x57){
       render0457([...pl]);
+      // 学习向导采集窗口打开时才转发,平时(keysCollectHook 为 null)零开销——见该向导的注释。
+      if(keysCollectHook) keysCollectHook([...pl]);
     }
   }
 
@@ -3750,6 +3991,35 @@ function buildReport(){
     // 索引编号(04/10)和字节偏移编号是两套不同的体系——这个项目已经因为拿别的机器的文档
     // 去套 OM6 栽过一次,这层区分不能丢,即使原来用来对照的 04/24 读取已经删掉。
     L.push('注：04/10 用的是按索引编号，跟按字节偏移编号是两套不同的体系，不能拿来互相套用。');
+  }
+
+  L.push('', '===== 手柄按键映射（04/57）=====');
+  {
+    // 跟其它节一样从 localStorage 读,不依赖内存变量——换个会话也要读得出结果。
+    const {binds={}, unmapped=[], ambiguous={}} = loadKeys();
+    if(!Object.keys(binds).length && !unmapped.length && !Object.keys(ambiguous).length){
+      L.push('尚未学习（点「学习手柄按键」走一遍向导——dissector 对这条一个字段都没定义，只能靠人按、页面记）');
+    }else{
+      for(const s of KEY_STEPS){
+        const b=binds[s.key];
+        if(b){
+          L.push(`${s.name}(${s.key})  → byte${b.byte}  类型=${b.type}  `+
+            `${b.type==='switch'?`按下=${b.down}`:`基线=${b.base}，采集值=[${b.vals.join(',')}]`}`);
+        }else if(ambiguous[s.key]){
+          L.push(`${s.name}(${s.key})  ⚠ 有歧义，byte ${ambiguous[s.key].join('、byte ')} 同时变了，未绑定`);
+        }else if(unmapped.includes(s.key)){
+          L.push(`${s.name}(${s.key})  ⚠ 没检测到变化，未绑定`);
+        }else{
+          L.push(`${s.name}(${s.key})  尚未学习`);
+        }
+      }
+      // 冲突展示跟界面上 renderKeysTable 用同一份判据:同一 byte 出现在多个 binds 里就是冲突,
+      // 不额外存一份"冲突表"——存档允许一个字节挂多个 key,冲突只在展示时算出来。
+      const byByte={};
+      Object.keys(binds).forEach(k=>{ const byte=binds[k].byte; (byByte[byte]=byByte[byte]||[]).push(k); });
+      Object.entries(byByte).filter(([,ks])=>ks.length>1).forEach(([byte,ks])=>
+        L.push(`⚠ byte${byte} 同时绑了：${ks.map(nameOfKeyStep).join('、')}（不覆盖，两条并列）`));
+    }
   }
 
   L.push('', '===== 云台异常状态位（04/27，按位解码）=====');
