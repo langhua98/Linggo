@@ -226,6 +226,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 /* ── 用户参数面板(04/10 扫描结果表) ── 表格本身横向滚动,别让页面整体横向滚动 */
 #param-table{overflow-x:auto}
+/* ── 带载荷试指令结果表 ── 同上,列多容易挤爆,横向滚动局限在表格自己身上 */
+#trypl-table{overflow-x:auto}
 .ptbl{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px;white-space:nowrap}
 .ptbl th,.ptbl td{padding:4px 7px;border-top:1px solid #10181d;text-align:left}
 .ptbl th{color:var(--dim);font-weight:500}
@@ -456,6 +458,80 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnParamWrite" disabled>写入并读回验证</button>
   </div>
   <div id="pwrite-note" class="note"></div>
+
+  <p class="eyebrow" style="margin-top:16px">Gimbal Movement（04/15）</p>
+  <p class="note" style="margin-top:0">载荷 20 字节：前 9 个字段（本节 9 个输入框）+ 11 字节 reserved（dissector
+    原文「should be zero-filled」，这里固定填 0，不给用户填的机会）。<b>dissector 只给了每个字段的刻度，
+    没给是哪根轴</b>——跟 PWM 那三个通道一样，界面只敢标刻度，不敢标轴，哪个字段对哪根轴要靠下面
+    「发送并测效果」自己测出来。<b>幅度天然受限</b>：0.04°/单位的字段最多 ±5.08°，0.1°/单位的字段
+    最多 ±12.7°——这条指令再怎么填都转不远，不是安全带，是它本来就没有更大的行程可言。</p>
+  <div class="grid3">
+    <label class="fld" style="margin:0"><span class="lab"><span>字段0（0.04°/单位）</span></span>
+      <input type="number" id="mv0" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段1（0.04°/单位）</span></span>
+      <input type="number" id="mv1" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段2（0.04°/单位）</span></span>
+      <input type="number" id="mv2" min="-128" max="127" value="0" disabled></label>
+  </div>
+  <div class="grid3" style="margin-top:8px">
+    <label class="fld" style="margin:0"><span class="lab"><span>字段3（0.1°/单位）</span></span>
+      <input type="number" id="mv3" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段4（0.1°/单位）</span></span>
+      <input type="number" id="mv4" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段5（0.1°/单位）</span></span>
+      <input type="number" id="mv5" min="-128" max="127" value="0" disabled></label>
+  </div>
+  <div class="grid3" style="margin-top:8px">
+    <label class="fld" style="margin:0"><span class="lab"><span>字段6（百分比）</span></span>
+      <input type="number" id="mv6" min="0" max="255" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段7（百分比）</span></span>
+      <input type="number" id="mv7" min="0" max="255" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段8（dissector 命名 roll_adjust，无刻度）</span></span>
+      <input type="number" id="mv8" min="0" max="255" value="0" disabled></label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnMoveSend" disabled>发送并测效果</button>
+  </div>
+  <div id="move-note" class="note"></div>
+  <div id="move-map-note" class="note"></div>
+
+  <p class="eyebrow" style="margin-top:16px">带载荷试指令</p>
+  <p class="note" style="margin-top:0">下面这 9 条写指令，dissector 一个字段都没给——上面「cmdId 扫描」
+    只发空载荷，测不出「必须带参数才动作」的指令，<code>04/0D</code>（待机）就是这么被漏掉的：
+    它一直回 <code>00</code>，但要带 2 字节参数才真的动作。这个面板补的就是这个洞：带着你填的载荷发
+    一帧，量姿态、04/27、04/57、遥测帧数，四项里只要有一项真的变了才算「有效果」——
+    <b>返回码 0 不算数，它只说明云台认得这条指令，不说明它做了什么。</b></p>
+  <label class="fld" style="margin:8px 0 0"><span class="lab"><span>预置指令</span></span>
+    <select id="tryPlSel" disabled>
+      <option value="04/58">04/58 手柄摇杆控制使能（Handheld Stick Control Enable）</option>
+      <option value="04/37">04/37 延时摄影参数（Timelapse Params Set）</option>
+      <option value="04/34">04/34 手柄参数写（Handle Params Set）</option>
+      <option value="04/2C">04/2C 教程步骤（Tutorial Step Set）</option>
+      <option value="04/56">04/56 通知相机 ID（Notify Camera Id）</option>
+      <option value="04/03">04/03 云台设参数（Gimbal Set Param）</option>
+      <option value="00/45">00/45 睡眠控制（Sleep Control）</option>
+      <option value="00/48">00/48 LED 控制（LED Control）</option>
+      <option value="00/5A">00/5A 播放提示音（Play Sound）</option>
+      <option value="custom">自定义</option>
+    </select></label>
+  <div class="grid3" style="margin-top:8px">
+    <label class="fld" style="margin:0"><span class="lab"><span>cmdSet（hex）</span></span>
+      <input type="text" id="tryPlCs" value="04" autocapitalize="off" spellcheck="false" readonly disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>cmdId（hex）</span></span>
+      <input type="text" id="tryPlCi" value="58" autocapitalize="off" spellcheck="false" readonly disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>载荷（空格分隔十六进制，可留空）</span></span>
+      <input type="text" id="tryPlHex" value="" placeholder="例如 01 00" autocapitalize="off" spellcheck="false" disabled></label>
+  </div>
+  <p class="note" style="margin-top:6px"><code>00/07</code> 进 Loader、<code>00/08</code>~<code>0A</code>
+    固件升级、<code>00/0B</code> 重启芯片、<code>00/0D</code> 改硬件 ID、<code>00/50</code> 写序列号
+    ——这几条能把云台刷成砖，不是「功能」。<b>自定义框里填了这几条会被拒绝发送，不是尽力而为。</b></p>
+  <label class="lab-ok"><input type="checkbox" id="tryPlOk" disabled>会往云台发未知指令的未知载荷，我承担风险</label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnTryPlOne" disabled>试这一条并测效果</button>
+    <button id="btnTryPlSweep" disabled>扫一遍单字节载荷 0~3</button>
+  </div>
+  <div id="trypl-table"></div>
+  <div id="trypl-note" class="note"></div>
 
   <div class="danger-zone">
     <p class="eyebrow">危险区 · 会永久改写云台参数</p>
@@ -909,8 +985,12 @@ function setState(s,txt){
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
-   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo','btnLearnKeys']
+   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo','btnLearnKeys',
+   'btnMoveSend','mv0','mv1','mv2','mv3','mv4','mv5','mv6','mv7','mv8',
+   'tryPlSel','tryPlCs','tryPlCi','tryPlHex']
     .forEach(i=>$(i).disabled=!on);
+  // btnTryPlOne/btnTryPlSweep 不在上面这个数组里——它们还要受 tryPlOk 风险确认框控制,
+  // 直接跟着 on 一刀切会在没勾选时被连接状态误点亮,交给 refreshTryPlBtns 统一判。
   // 断开时手柄按键学习向导要能中止,不能卡在某一步——keysSkip 让它跳出正在等的采集/缓冲窗口,
   // keysStop 让外层步骤循环收尾。btnClearKeys 不在上面那个数组里(纯本地操作,断没断都能点)。
   if(!on){ stimAbort=true; recOn=false; keysStop=true; keysSkip=true; }
@@ -922,6 +1002,7 @@ function setState(s,txt){
   refreshStandbyBtn();
   refreshRiskBtns();
   refreshProbeBtn();
+  refreshTryPlBtns();   // 带载荷试指令:跟 refreshRiskBtns 一个模式,连接状态变了也要重判一次
   refreshFeatNotes();   // 6·云台功能:每块 note 是不是「已验证」跟连接状态无关,但按钮可用性变了值得重画一次
 }
 
@@ -3932,6 +4013,15 @@ function buildReport(){
       const mapped=[1,2,3].filter(ch=>m[ch]).map(ch=>`通道${ch}→${AXIS_CN[m[ch].axis]||m[ch].axis}（${m[ch].deg>=0?'+':''}${m[ch].deg}°）`);
       L.push(`PWM 控制   04/01   ${mapped.length?`✅ 实测通道映射：${mapped.join('，')}`:'⚠ 尚未测出通道↔轴的对应关系'}`);
     }
+    {
+      // 第四轮新增:04/15 Gimbal Movement,字段↔轴映射跟 PWM 通道映射同一个待遇。
+      const m=f.moveMap||{};
+      const mapped=Object.keys(m).map(k=>`字段${m[k].field}→${AXIS_CN[m[k].axis]||m[k].axis}（${m[k].degPerUnit}°/单位）`);
+      L.push(`Gimbal Movement 04/15   ${f.move
+        ? (f.move.ok ? `✅ 实测有效果（Δ偏航 ${f.move.dyaw}° 俯仰 ${f.move.dpitch}° 横滚 ${f.move.droll}°，${fmtAt(f.move)}）`
+                     : `⚠ 应答 status=${f.move.status} 但姿态没动（${fmtAt(f.move)}）`)
+        : '⚠ 尚未确认'}${mapped.length?`；已测出字段↔轴映射：${mapped.join('，')}`:''}`);
+    }
     L.push(`保存到flash 04/11   ${f.saveFlash ? (f.saveFlash.ok?`已写入（${fmtAt(f.saveFlash)}）`:`⚠ 应答异常（${fmtAt(f.saveFlash)}）`) : '（尚未做过）'}`);
     L.push(`恢复默认   04/13   ${f.restoreDefaults ? (f.restoreDefaults.ok?`已恢复（${fmtAt(f.restoreDefaults)}）`:`⚠ 应答异常（${fmtAt(f.restoreDefaults)}）`) : '（尚未做过）'}`);
     L.push('来源：lib-osmo-ble PROTOCOL.md（Osmo Pocket 3）+ dji-dumlv1-gimbal.lua —— 与 OM6 未必一致，以实测为准');
@@ -3940,6 +4030,23 @@ function buildReport(){
     L.push('这台机器上实测无效、已从界面移除：04/1E（量过，提不高姿态推送频率）、'+
       '04/24（完全无应答）、04/3A（应答 0x00 但竖屏位不变，试过两次）、'+
       '04/39（应答 0x00 但锁定位不变）、04/0B / 00/0C（应答但全是常量，读不出信息）。');
+  }
+
+  L.push('', '===== 带载荷试指令 =====');
+  {
+    // 跟其它块一样从 localStorage 读,不依赖内存变量——换个会话也要读得出来。
+    const f=loadFeat();
+    if(!f.tryPayload || !f.tryPayload.rows || !f.tryPayload.rows.length){
+      L.push('尚未试过（这 9 条 dissector 一个字段都没给，只能带着载荷试——见下方「带载荷试指令」面板）');
+    }else{
+      L.push('这 9 条 dissector 只有名字、没有字段定义：04/58、04/37、04/34、04/2C、04/56、04/03、00/45、00/48、00/5A');
+      L.push('判据：04/27、04/57、姿态、遥测四项里任何一项真的变了才算「有效果」，返回码 0 单独不算数');
+      for(const r of f.tryPayload.rows){
+        L.push(`0x${r.cs.toString(16).padStart(2,'0')}/0x${r.ci.toString(16).padStart(2,'0')}  载荷=[${r.payload.join(',')||'空'}]  `+
+          `${r.status}  04/27:${r.flags027}  04/57:${r.b057}  姿态:${r.att}  遥测:${r.tele}  ${r.verdict}  `+
+          `（${new Date(r.at).toISOString()}）`);
+      }
+    }
   }
 
   L.push('', '===== 设备信息（零风险读）=====');
@@ -4417,6 +4524,22 @@ function refreshFeatNotes(){
     renderDevInfoTable(f.devInfo ? f.devInfo.rows : []);
   }
   renderPwmMapNote();
+  // 第四轮新增:04/15 Gimbal Movement + 带载荷试指令,跟其它块一样只从 saveFeat 存档重画。
+  const moveEl=$('move-note');
+  if(moveEl) moveEl.textContent = f.move
+    ? (f.move.ok
+        ? `✅ 上次实测 Δ偏航 ${f.move.dyaw}° 俯仰 ${f.move.dpitch}° 横滚 ${f.move.droll}°`+
+          `（status=${f.move.status}，${new Date(f.move.at).toISOString()}）`
+        : `⚠ 应答 status=${f.move.status}，但姿态没动（${new Date(f.move.at).toISOString()}）`)
+    : '⚠ 按协议表实现，OM6 上尚未确认';
+  renderMoveMapNote();
+  const tryPlEl=$('trypl-note');
+  if(tryPlEl){
+    tryPlEl.textContent = (f.tryPayload && f.tryPayload.rows && f.tryPayload.rows.length)
+      ? `已试 ${f.tryPayload.rows.length} 条（最近一次 ${new Date(f.tryPayload.at).toISOString()}）`
+      : '尚未试过';
+    renderTryPlTable(f.tryPayload ? f.tryPayload.rows : []);
+  }
 }
 
 /* 发一帧并等它的应答(flags=0x40 已要求应答),只回答「有没有收到返回码 0 的应答」这一件事 ——
@@ -5173,6 +5296,286 @@ async function readDeviceInfo(){
   }
 }
 $('btnReadInfo').onclick=()=>readDeviceInfo();
+
+/* ════════════ 6·云台功能 · 第四轮新增(04/15 Gimbal Movement + 带载荷试指令) ════════════
+   来源:dji-dumlv1-gimbal.lua dissector cmdId 0x15(字段布局完整,20 字节)+ cmdSet 0x00/0x04
+   另外 9 条只给了名字、一个字段都没有的写指令。前者做成正经控件,后者做成「带载荷试」的
+   面板——扫描器只发空载荷,天生看不见「必须带参数才动作」的写指令(04/0D 待机就是这么漏掉的),
+   给这批做「发空载荷」的按钮等于白做一次同样的事。 */
+
+/* 04/15 载荷布局逐字节照抄 dissector:前 6 个 int8(0.04°×3 + 0.1°×3)、2 个 uint8 百分比、
+   1 个 uint8(dissector 命名 roll_adjust,但没给刻度)、11 字节 reserved 固定 0。
+   字段↔轴的对应关系 dissector 完全没给,只能靠这里的自动记映射逻辑实测出来。 */
+function toInt8(v){ return v<0 ? (256+v)&0xff : v&0xff; }
+async function moveGimbalSend(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果','l-err'); return; }
+  const ids=['mv0','mv1','mv2','mv3','mv4','mv5','mv6','mv7','mv8'];
+  const vals=ids.map(id=>{ const v=parseInt($(id).value,10); return Number.isFinite(v)?v:0; });
+  // 范围校验要在这里挡,不能指望云台自己拒绝越界值——它更可能悄悄截断,截断出来的实测结果会是假的。
+  for(let i=0;i<6;i++) if(vals[i]<-128||vals[i]>127){ log(`⚠ 字段${i} 超出 -128~127,已取消`,'l-err'); return; }
+  for(let i=6;i<9;i++) if(vals[i]<0||vals[i]>255){ log(`⚠ 字段${i} 超出 0~255,已取消`,'l-err'); return; }
+  featRunning=true;
+  $('btnMoveSend').disabled=true;
+  try{
+    log(`—— Gimbal Movement(04/15,按 dissector 字段布局,OM6 未确认哪个字段对哪根轴):`+
+        `字段=[${vals.join(',')}]（后 11 字节固定 0）——`);
+    await waitSettle();
+    const before={...lastEuler};
+    const payload=[toInt8(vals[0]),toInt8(vals[1]),toInt8(vals[2]),toInt8(vals[3]),toInt8(vals[4]),toInt8(vals[5]),
+      vals[6]&0xff, vals[7]&0xff, vals[8]&0xff, ...Array(11).fill(0)];
+    const seq=0xE100|(seqNo++ & 0xff);
+    const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:0x04, cmdId:0x15, payload}), seq);
+    const status=(ok && featAckPayload && featAckPayload.length) ? featAckPayload[0] : null;
+    if(!ok){ log('❌ 04/15 没有应答。','l-err'); saveFeat('move',{ok:false, status:null, at:Date.now()}); return; }
+    await waitSettle();
+    const after={...lastEuler};
+    const dy=Math.abs(d180(after.yaw-before.yaw)), dp=Math.abs(d180(after.pitch-before.pitch)), dr=Math.abs(d180(after.roll-before.roll));
+    // 返回码 0 不单独构成「有效果」——这是这个项目一以贯之的判据,判据只看姿态真的动没动。
+    const moved = dy>=0.3 || dp>=0.3 || dr>=0.3;
+    const verdictTxt = moved
+      ? `✅ Δ偏航 ${dy.toFixed(2)}° 俯仰 ${dp.toFixed(2)}° 横滚 ${dr.toFixed(2)}°`
+      : `⚠ 应答 status=${status},但姿态没动`;
+    log(`04/15  ${verdictTxt}`, moved?'l-ack':'l-err');
+    saveFeat('move', {ok:moved, status, dyaw:+dy.toFixed(2), dpitch:+dp.toFixed(2), droll:+dr.toFixed(2), at:Date.now()});
+
+    // 自动记映射:只有恰好一个字段非零才敢认领某根轴——多个字段同时非零测不出是谁带动的,
+    // 硬记就是瞎猜,宁可不记也不能编。跟 PWM 通道映射(pwmRelease)同一个套路。
+    const nonzero=[]; vals.forEach((v,i)=>{ if(v!==0) nonzero.push(i); });
+    if(moved && nonzero.length===1){
+      const axes=[['yaw',dy],['pitch',dp],['roll',dr]].sort((a,b)=>b[1]-a[1]);
+      const [axis,deg]=axes[0], field=nonzero[0];
+      const degPerUnit=deg/Math.abs(vals[field]);
+      const map=(loadFeat().moveMap)||{};
+      map[field]={field, axis, degPerUnit:+degPerUnit.toFixed(3), at:Date.now()};
+      saveFeat('moveMap', map);
+      log(`✅ 字段${field} → ${AXIS_CN[axis]||axis}（实测 ${degPerUnit.toFixed(3)}°/单位）,已记入字段↔轴映射。`,'l-ack');
+    }else if(nonzero.length>1){
+      log('本次多个字段同时非零,测不出单字段对应关系,不记映射。','l-sys');
+    }
+  } finally {
+    featRunning=false;
+    $('btnMoveSend').disabled=!linkOn;
+    refreshFeatNotes();
+  }
+}
+$('btnMoveSend').onclick=()=>moveGimbalSend();
+// 字段↔轴映射说明区:从 saveFeat 存档重画,换个会话回来也看得见——跟 renderPwmMapNote 同一个理由。
+function renderMoveMapNote(){
+  const el=$('move-map-note'); if(!el) return;
+  const map=(loadFeat().moveMap)||{};
+  const keys=Object.keys(map);
+  el.textContent = keys.length
+    ? '已测出的字段↔轴对应关系（实测得出，非协议表声明）：'+keys.map(k=>{
+        const m=map[k]; return `字段${m.field} → ${AXIS_CN[m.axis]||m.axis}（实测 ${m.degPerUnit}°/单位）`;
+      }).join('；')
+    : '尚未测出字段↔轴对应关系';
+}
+
+/* ── 带载荷试指令 ── 这批写指令 dissector 一个字段都没给,扫描器只发空载荷天生测不出
+   「必须带参数才动作」的指令,这里补的就是这个洞:带着填的载荷发一帧,拿 04/27、04/57、
+   姿态、遥测四项判有没有效果,任何一项变了才算,返回码 0 不单独算数。 */
+// 保留拒绝清单:这几条能把云台刷成砖,不是「功能」,自定义框里填了也要拒绝——是硬拒绝,不是尽力而为。
+const BRICK_CMDS=[[0x00,0x07],[0x00,0x08],[0x00,0x09],[0x00,0x0a],[0x00,0x0b],[0x00,0x0d],[0x00,0x50]];
+const BRICK_REASON={
+  '0/7':'进 Loader(Enter Upgrade Mode)', '0/8':'固件升级准备(Update Confirm)',
+  '0/9':'固件升级数据传输(Update Transmit)', '0/10':'固件升级校验(Update Finish)',
+  '0/11':'重启芯片(Reboot Chip)', '0/13':'改硬件 ID(Set Device Version)',
+  '0/80':'写序列号(Set Serial Number)'
+};
+function isBrickCmd(cs,ci){ return BRICK_CMDS.some(([c,i])=>c===cs&&i===ci); }
+const TRYPL_PRESETS={
+  '04/58':{cs:0x04,ci:0x58}, '04/37':{cs:0x04,ci:0x37}, '04/34':{cs:0x04,ci:0x34},
+  '04/2C':{cs:0x04,ci:0x2c}, '04/56':{cs:0x04,ci:0x56}, '04/03':{cs:0x04,ci:0x03},
+  '00/45':{cs:0x00,ci:0x45}, '00/48':{cs:0x00,ci:0x48}, '00/5A':{cs:0x00,ci:0x5a},
+};
+// 选中预置项就自动填好 cmdSet/cmdId 并锁只读,不然手抖改错一个字符,试出来的结论就挂在错的指令上。
+function onTryPlSelChange(){
+  const v=$('tryPlSel').value;
+  const preset=TRYPL_PRESETS[v];
+  if(preset){
+    $('tryPlCs').value=preset.cs.toString(16).padStart(2,'0');
+    $('tryPlCi').value=preset.ci.toString(16).padStart(2,'0');
+    $('tryPlCs').readOnly=true; $('tryPlCi').readOnly=true;
+  }else{
+    $('tryPlCs').readOnly=false; $('tryPlCi').readOnly=false;
+  }
+}
+$('tryPlSel').addEventListener('change', onTryPlSelChange);
+// 跟 refreshRiskBtns 一个模式:没勾风险确认框就置灰,理由长在按钮旁边,不是等点了才在日志里回一句——
+// 真机上日志在页面很下面,连点了很多次都看不见,只觉得按钮坏了。
+function refreshTryPlBtns(){
+  if(featBusy()) return;   // 有任务在跑时别抢着开关按钮
+  const ok=$('tryPlOk') && $('tryPlOk').checked;
+  ['btnTryPlOne','btnTryPlSweep'].forEach(id=>{ if($(id)) $(id).disabled = !linkOn || !activeWrite || !ok; });
+}
+$('tryPlOk').addEventListener('change', ()=>refreshTryPlBtns());
+// 空格分隔的十六进制载荷,留空就是空载荷——容错要宽松,过滤掉空串与 NaN。
+/* 解不出来就返回 null,绝不静默丢掉那一段。原来的写法把解不出的项 filter 掉,
+   于是打错的 "zz" 会变成空载荷发出去 —— 而空载荷正是我们已知没有效果的那个,
+   人会以为「试过 zz、没效果」,其实压根没发对东西。这类静默降级比报错危险得多。 */
+function parseHexPayload(s){
+  const toks=(s||'').trim().split(/\s+/).filter(Boolean);
+  const out=[];
+  for(const t of toks){
+    if(!/^[0-9a-fA-F]{1,2}$/.test(t)) return null;
+    out.push(parseInt(t,16));
+  }
+  return out;
+}
+function renderTryPlTable(rows){
+  const el=$('trypl-table'); if(!el) return;
+  if(!rows || !rows.length){ el.innerHTML=''; return; }
+  el.innerHTML = '<table class="ptbl"><thead><tr><th>指令</th><th>载荷</th><th>返回码</th>'+
+    '<th>04/27</th><th>04/57</th><th>姿态</th><th>遥测</th><th>结论</th></tr></thead><tbody>'+
+    rows.map(r=>`<tr><td>0x${r.cs.toString(16).padStart(2,'0')}/0x${r.ci.toString(16).padStart(2,'0')}</td>`+
+      `<td>${r.payload.length?hex(r.payload):'(空)'}</td><td>${r.status}</td>`+
+      `<td>${r.flags027}</td><td>${r.b057}</td><td>${r.att}</td><td>${r.tele}</td><td>${r.verdict}</td></tr>`).join('')+
+    '</tbody></table>';
+}
+// 存档只追加、不覆盖,换个会话回来还能看见之前试过什么;上限 100 条纯粹防止 localStorage 无限膨胀。
+function appendTryPlRows(newRows){
+  const f=loadFeat();
+  const rows=[...((f.tryPayload&&f.tryPayload.rows)||[]), ...newRows];
+  while(rows.length>100) rows.shift();
+  saveFeat('tryPayload', {at:Date.now(), rows});
+}
+
+/* 一次试探的完整测量:基线(04/27、04/57、欧拉角、attSeq)→ 发一帧等应答 → 观察 4 秒 → 逐项比对。
+   四项里只要有一项真的变了就是「有效果」,返回码单独不算——跟 04/15 用的是同一条判据。
+   telemetryStopped 单独抛给调用方,是因为「扫一遍」要靠它决定还发不发下一个载荷值。 */
+async function tryPayloadRun(cs, ci, payloadBytes){
+  await waitSettle();
+  const flagsBefore = lastFlags027 ? {list:[...lastFlags027.list]} : null;
+  const b057Before = last0457 ? [...last0457] : null;
+  const eulerBefore = lastEuler ? {...lastEuler} : null;
+  const attSeqBefore = attSeq;
+  const tag=`0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}`;
+  log(`—— 带载荷试指令 ${tag}  载荷=[${payloadBytes.join(',')||'空'}] ——`);
+  const seq=0xE200|(seqNo++ & 0xff);
+  const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:cs, cmdId:ci, payload:payloadBytes}), seq);
+  const status=(ok && featAckPayload && featAckPayload.length) ? featAckPayload[0] : null;
+  const statusTxt = ok ? `status=${status}` : '无应答';
+
+  await sleep(4000);   // dissector 对这批指令一个字段都没给,只能固定窗口整体看有没有动静
+
+  let flags027Txt='未变', flags027Changed=false;
+  if(!flagsBefore && !lastFlags027) flags027Txt='未变（无数据）';
+  else{
+    const beforeList=flagsBefore?flagsBefore.list:[];
+    const afterList=lastFlags027?lastFlags027.list:[];
+    const added=afterList.filter(x=>!beforeList.includes(x));
+    const removed=beforeList.filter(x=>!afterList.includes(x));
+    if(added.length||removed.length){
+      flags027Changed=true;
+      flags027Txt=[...added.map(x=>'+'+x), ...removed.map(x=>'-'+x)].join('、');
+    }
+  }
+
+  let b057Txt='未变', b057Changed=false;
+  const b057After = last0457 ? [...last0457] : null;
+  if(!b057Before && !b057After) b057Txt='未变（无数据）';
+  else if(!b057Before || !b057After) b057Txt='未变（前后只有一侧有数据）';
+  else{
+    const diffs=[];
+    for(let i=0;i<b057After.length && i<b057Before.length;i++) if(b057After[i]!==b057Before[i]) diffs.push(`byte${i}: ${b057Before[i]}→${b057After[i]}`);
+    if(diffs.length){ b057Changed=true; b057Txt=diffs.join('、'); }
+  }
+
+  let attTxt='未动', attChanged=false;
+  if(!eulerBefore || !lastEuler) attTxt='未动（无姿态数据）';
+  else{
+    const dy=Math.abs(d180(lastEuler.yaw-eulerBefore.yaw));
+    const dp=Math.abs(d180(lastEuler.pitch-eulerBefore.pitch));
+    const dr=Math.abs(d180(lastEuler.roll-eulerBefore.roll));
+    attChanged = dy>=0.3 || dp>=0.3 || dr>=0.3;
+    if(attChanged) attTxt=`Δ偏航${dy.toFixed(2)}° 俯仰${dp.toFixed(2)}° 横滚${dr.toFixed(2)}°`;
+  }
+
+  const frames=attSeq-attSeqBefore;
+  const telemetryStopped = frames===0;
+  const teleTxt = telemetryStopped ? '⚠ 遥测已停（0 帧，疑似待机/关机）' : `收到 ${frames} 帧`;
+
+  // 返回码 0 不单独构成「有效果」——判据只看这四项里有没有任何一项真的变了。
+  const anyEffect = flags027Changed || b057Changed || attChanged || telemetryStopped;
+  const verdict = anyEffect ? '✅ 有可见效果' : '⚠ 只有返回码，无可见效果';
+  log(`${tag}  载荷=[${payloadBytes.join(',')||'空'}]  ${statusTxt}  04/27:${flags027Txt}  04/57:${b057Txt}  `+
+      `姿态:${attTxt}  遥测:${teleTxt}  ${verdict}`, anyEffect?'l-ack':'l-sys');
+
+  const row={cs, ci, payload:[...payloadBytes], status:statusTxt, flags027:flags027Txt, b057:b057Txt,
+    att:attTxt, tele:teleTxt, verdict, at:Date.now()};
+  return {row, telemetryStopped};
+}
+// 试之前先挡住会刷砖的那 7 条——自定义框里填了也不放行,这是保留拒绝,不是尽力而为。
+function readTryPlTarget(){
+  const cs=parseInt($('tryPlCs').value,16), ci=parseInt($('tryPlCi').value,16);
+  if(!Number.isFinite(cs)||cs<0||cs>255||!Number.isFinite(ci)||ci<0||ci>255){
+    log('⚠ cmdSet/cmdId 不是合法的十六进制字节','l-err'); return null;
+  }
+  if(isBrickCmd(cs,ci)){
+    const key=cs+'/'+ci;
+    log(`❌ 已拒绝发送 0x${cs.toString(16).padStart(2,'0')}/0x${ci.toString(16).padStart(2,'0')}`+
+        `——${BRICK_REASON[key]||'保留拒绝指令'}，这条能把云台刷成砖，不是功能，不会尽力而为地发出去。`,'l-err');
+    return null;
+  }
+  return {cs,ci};
+}
+async function tryPayloadOne(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  if(!$('tryPlOk').checked){ log('试之前请先勾选风险确认。','l-err'); return; }
+  if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果,试了也白试','l-err'); return; }
+  const target=readTryPlTarget(); if(!target) return;
+  const payloadBytes=parseHexPayload($('tryPlHex').value);
+  if(payloadBytes===null){
+    log('⚠ 载荷不是合法的十六进制（要形如 "01 02 ff"，空格分隔，每项 1~2 位）——没发任何东西。','l-err');
+    return;
+  }
+  featRunning=true;
+  ['btnTryPlOne','btnTryPlSweep'].forEach(id=>$(id).disabled=true);
+  try{
+    const {row}=await tryPayloadRun(target.cs, target.ci, payloadBytes);
+    appendTryPlRows([row]);
+  } finally {
+    featRunning=false;
+    refreshTryPlBtns();
+    refreshFeatNotes();
+  }
+}
+$('btnTryPlOne').onclick=()=>tryPayloadOne();
+
+async function tryPayloadSweep(){
+  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  if(!$('tryPlOk').checked){ log('试之前请先勾选风险确认。','l-err'); return; }
+  if(!lastEuler){ log('还没收到姿态帧,没有反馈就判不出有没有效果,试了也白试','l-err'); return; }
+  const target=readTryPlTarget(); if(!target) return;
+  featRunning=true;
+  ['btnTryPlOne','btnTryPlSweep'].forEach(id=>$(id).disabled=true);
+  try{
+    log(`—— 扫一遍单字节载荷 0~3(0x${target.cs.toString(16).padStart(2,'0')}/`+
+        `0x${target.ci.toString(16).padStart(2,'0')}) ——`);
+    for(let v=0; v<=3; v++){
+      if(!linkOn){ log('连接已断开,停止扫描','l-err'); break; }
+      const {row, telemetryStopped}=await tryPayloadRun(target.cs, target.ci, [v]);
+      appendTryPlRows([row]);
+      // 遥测停了要立刻中止,不能闷头把剩下的值继续发下去——这是待机/关机的特征,
+      // 接着发只会对着一台不响应的设备刷指令。
+      if(telemetryStopped){
+        log('⚠ 遥测已停，可能进了待机/关机，先点上面「唤醒」把它叫回来 —— 已中止本轮扫描。','l-err');
+        break;
+      }
+      if(v<3) await sleep(1500);
+    }
+  } finally {
+    featRunning=false;
+    refreshTryPlBtns();
+    refreshFeatNotes();
+  }
+}
+$('btnTryPlSweep').onclick=()=>tryPayloadSweep();
+onTryPlSelChange();   // 页面刚加载时把 cmdSet/cmdId 按默认选中项(04/58)填好
 
 $('btnCal').onclick=()=>{ $('btnCal').disabled=true; calibrate().finally(()=>{ $('btnCal').disabled=false; }); };
 
