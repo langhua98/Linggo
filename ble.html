@@ -495,44 +495,6 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <div id="move-note" class="note"></div>
   <div id="move-map-note" class="note"></div>
 
-  <p class="eyebrow" style="margin-top:16px">带载荷试指令</p>
-  <p class="note" style="margin-top:0">下面这 9 条写指令，dissector 一个字段都没给——上面「cmdId 扫描」
-    只发空载荷，测不出「必须带参数才动作」的指令，<code>04/0D</code>（待机）就是这么被漏掉的：
-    它一直回 <code>00</code>，但要带 2 字节参数才真的动作。这个面板补的就是这个洞：带着你填的载荷发
-    一帧，量姿态、04/27、04/57、遥测帧数，四项里只要有一项真的变了才算「有效果」——
-    <b>返回码 0 不算数，它只说明云台认得这条指令，不说明它做了什么。</b></p>
-  <label class="fld" style="margin:8px 0 0"><span class="lab"><span>预置指令</span></span>
-    <select id="tryPlSel" disabled>
-      <option value="04/58">04/58 手柄摇杆控制使能（Handheld Stick Control Enable）</option>
-      <option value="04/37">04/37 延时摄影参数（Timelapse Params Set）</option>
-      <option value="04/34">04/34 手柄参数写（Handle Params Set）</option>
-      <option value="04/2C">04/2C 教程步骤（Tutorial Step Set）</option>
-      <option value="04/56">04/56 通知相机 ID（Notify Camera Id）</option>
-      <option value="04/03">04/03 云台设参数（Gimbal Set Param）</option>
-      <option value="00/45">00/45 睡眠控制（Sleep Control）</option>
-      <option value="00/48">00/48 LED 控制（LED Control）</option>
-      <option value="00/5A">00/5A 播放提示音（Play Sound）</option>
-      <option value="custom">自定义</option>
-    </select></label>
-  <div class="grid3" style="margin-top:8px">
-    <label class="fld" style="margin:0"><span class="lab"><span>cmdSet（hex）</span></span>
-      <input type="text" id="tryPlCs" value="04" autocapitalize="off" spellcheck="false" readonly disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>cmdId（hex）</span></span>
-      <input type="text" id="tryPlCi" value="58" autocapitalize="off" spellcheck="false" readonly disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>载荷（空格分隔十六进制，可留空）</span></span>
-      <input type="text" id="tryPlHex" value="" placeholder="例如 01 00" autocapitalize="off" spellcheck="false" disabled></label>
-  </div>
-  <p class="note" style="margin-top:6px"><code>00/07</code> 进 Loader、<code>00/08</code>~<code>0A</code>
-    固件升级、<code>00/0B</code> 重启芯片、<code>00/0D</code> 改硬件 ID、<code>00/50</code> 写序列号
-    ——这几条能把云台刷成砖，不是「功能」。<b>自定义框里填了这几条会被拒绝发送，不是尽力而为。</b></p>
-  <label class="lab-ok"><input type="checkbox" id="tryPlOk" disabled>会往云台发未知指令的未知载荷，我承担风险</label>
-  <div class="row" style="margin-top:8px">
-    <button id="btnTryPlOne" disabled>试这一条并测效果</button>
-    <button id="btnTryPlSweep" disabled>扫一遍单字节载荷 0~3</button>
-  </div>
-  <div id="trypl-table"></div>
-  <div id="trypl-note" class="note"></div>
-
   <div class="danger-zone">
     <p class="eyebrow">危险区 · 会永久改写云台参数</p>
     <p class="note" style="margin-top:0"><b>这两条往云台永久写入，写坏了这边没有撤销手段，得用 DJI Mimo
@@ -703,6 +665,46 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <p class="note" style="margin-top:6px">整窗记账是<b>宁可多跳</b>，所以要有退路：清空只删本机记下的
     「上次会动」，不动你在上面手填的那几条。</p>
+
+  <!-- 带载荷试指令：按「探索工具进折叠区、功能留可见区」这条规矩放在这里。
+       它跟「一键探测」同类 —— 是用来找功能的工具，本身不是功能。 -->
+  <p class="eyebrow" style="margin-top:20px">带载荷试指令</p>
+  <p class="note" style="margin-top:0">下面这 9 条写指令，dissector 一个字段都没给——上面「cmdId 扫描」
+    只发空载荷，测不出「必须带参数才动作」的指令，<code>04/0D</code>（待机）就是这么被漏掉的：
+    它一直回 <code>00</code>，但要带 2 字节参数才真的动作。这个面板补的就是这个洞：带着你填的载荷发
+    一帧，量姿态、04/27、04/57、遥测帧数，四项里只要有一项真的变了才算「有效果」——
+    <b>返回码 0 不算数，它只说明云台认得这条指令，不说明它做了什么。</b></p>
+  <label class="fld" style="margin:8px 0 0"><span class="lab"><span>预置指令</span></span>
+    <select id="tryPlSel" disabled>
+      <option value="04/58">04/58 手柄摇杆控制使能（Handheld Stick Control Enable）</option>
+      <option value="04/37">04/37 延时摄影参数（Timelapse Params Set）</option>
+      <option value="04/34">04/34 手柄参数写（Handle Params Set）</option>
+      <option value="04/2C">04/2C 教程步骤（Tutorial Step Set）</option>
+      <option value="04/56">04/56 通知相机 ID（Notify Camera Id）</option>
+      <option value="04/03">04/03 云台设参数（Gimbal Set Param）</option>
+      <option value="00/45">00/45 睡眠控制（Sleep Control）</option>
+      <option value="00/48">00/48 LED 控制（LED Control）</option>
+      <option value="00/5A">00/5A 播放提示音（Play Sound）</option>
+      <option value="custom">自定义</option>
+    </select></label>
+  <div class="grid3" style="margin-top:8px">
+    <label class="fld" style="margin:0"><span class="lab"><span>cmdSet（hex）</span></span>
+      <input type="text" id="tryPlCs" value="04" autocapitalize="off" spellcheck="false" readonly disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>cmdId（hex）</span></span>
+      <input type="text" id="tryPlCi" value="58" autocapitalize="off" spellcheck="false" readonly disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>载荷（空格分隔十六进制，可留空）</span></span>
+      <input type="text" id="tryPlHex" value="" placeholder="例如 01 00" autocapitalize="off" spellcheck="false" disabled></label>
+  </div>
+  <p class="note" style="margin-top:6px"><code>00/07</code> 进 Loader、<code>00/08</code>~<code>0A</code>
+    固件升级、<code>00/0B</code> 重启芯片、<code>00/0D</code> 改硬件 ID、<code>00/50</code> 写序列号
+    ——这几条能把云台刷成砖，不是「功能」。<b>自定义框里填了这几条会被拒绝发送，不是尽力而为。</b></p>
+  <label class="lab-ok"><input type="checkbox" id="tryPlOk" disabled>会往云台发未知指令的未知载荷，我承担风险</label>
+  <div class="row" style="margin-top:8px">
+    <button id="btnTryPlOne" disabled>试这一条并测效果</button>
+    <button id="btnTryPlSweep" disabled>扫一遍单字节载荷 0~3</button>
+  </div>
+  <div id="trypl-table"></div>
+  <div id="trypl-note" class="note"></div>
 
   <p class="eyebrow" style="margin-top:20px">一键探测并生成报告</p>
   <p class="note" style="margin-top:0">跑一遍完整体检，把结果整理成可复制的报告：
