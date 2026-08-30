@@ -2570,17 +2570,26 @@ async function selfCheck(){
     if(!stopOk){
       log('  停车检查未通过,跳过收尾 —— 云台停不下来时闭环没有意义。','l-err');
     }else{
-      // 画圆是对称的,净位移本该接近 0;撞过末端才留残差,先把姿态收回去
-      if(lastEuler){
-        const res=['yaw','pitch','roll'].some(ax=>Math.abs(d180(lastEuler[ax]-home[ax]))>5);
-        if(res){ log('  有残差(说明撞到过末端),先收回起点…'); await goHome(home); }
-      }
-      // 再调平,让归位点是个确定的位姿 —— 「回到检测完成后的初始位置」
-      // 只有在这个位姿本身确定时才有意义。映射没学到就跳过,如实记当前位姿。
-      if(axisMap && lastLevel && lastLevel.tilt>LVL_TOL){
-        $('chk-step').textContent='收尾调平…';
-        await levelUp(true, true);
-      }
+      /* 收尾这一段也要走批量静音。自检主体在 bulkBegin/bulkEnd 之间不逐帧打 TX,
+         但归位和收尾调平发生在 bulkEnd 之后 —— 它们照样发几十帧速度指令,于是把
+         TX 刷满日志,还得看运气:净位移够不够 5°、要不要调平,决定了这次刷不刷、
+         刷多少。同一个按钮跑出来的日志时长时短,这不是「有时噪声大」,是行为不一致。
+         而且 levelUp(_,true) 那个 true 本来就是「安静执行」的意思,却把原始帧全打出来,
+         自相矛盾。第二次 bulkEnd 的返回值用不上(链路质量已经由第一次算过),直接丢掉。 */
+      bulkBegin();
+      try{
+        // 画圆是对称的,净位移本该接近 0;撞过末端才留残差,先把姿态收回去
+        if(lastEuler){
+          const res=['yaw','pitch','roll'].some(ax=>Math.abs(d180(lastEuler[ax]-home[ax]))>5);
+          if(res){ log('  有残差(说明撞到过末端),先收回起点…'); await goHome(home); }
+        }
+        // 再调平,让归位点是个确定的位姿 —— 「回到检测完成后的初始位置」
+        // 只有在这个位姿本身确定时才有意义。映射没学到就跳过,如实记当前位姿。
+        if(axisMap && lastLevel && lastLevel.tilt>LVL_TOL){
+          $('chk-step').textContent='收尾调平…';
+          await levelUp(true, true);
+        }
+      } finally { bulkEnd(); }
       if(lastLevel && lastEuler){
         saveHome({rollDev:rollDevOf(lastLevel)||0, pitchDev:pitchDevOf(lastLevel)||0,
                   yaw:lastEuler.yaw, axis:lastLevel.axis, at:Date.now()});
