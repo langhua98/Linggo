@@ -43,14 +43,14 @@ button,.pad,.stat-grid,input[type=range]{ touch-action:manipulation }
   -webkit-touch-callout:default; -webkit-user-select:text; user-select:text;
 }
 #lab-report{
-  width:100%;box-sizing:border-box;margin-top:10px;min-height:150px;resize:vertical;
+  width:100%;box-sizing:border-box;margin-top:8px;min-height:56px;resize:vertical;
   background:#080d10;border:1px solid var(--line);border-radius:3px;color:var(--ink);
   font-family:inherit;font-size:11px;line-height:1.5;padding:9px;
 }
 .wrap{max-width:640px;margin:0 auto;padding:0 14px}
 
 /* ── 头部 ── */
-header{padding:22px 0 16px;border-bottom:1px solid var(--line)}
+header{padding:12px 0 10px;border-bottom:1px solid var(--line)}
 h1{
   font-family:'Archivo',system-ui,sans-serif;font-weight:900;
   font-size:26px;letter-spacing:-.02em;margin:0;color:#fff;
@@ -59,11 +59,11 @@ h1 span{color:var(--tx)}
 .sub{color:var(--dim);font-size:12px;margin-top:6px}
 
 /* ── 通用面板 ── */
-section{border-bottom:1px solid var(--line);padding:18px 0}
+section{border-bottom:1px solid var(--line);padding:10px 0}
 .eyebrow{
   font-family:'Archivo',sans-serif;font-weight:700;font-size:11px;
   letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
-  margin:0 0 12px;display:flex;justify-content:space-between;align-items:center;
+  margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;
 }
 button{
   font-family:inherit;font-size:13px;font-weight:500;
@@ -83,7 +83,7 @@ button.danger{border-color:#4a2622;color:var(--warn)}
 .row>button{flex:1;min-width:96px}
 
 /* ── 状态灯 ── */
-.status{display:flex;align-items:center;gap:9px;margin-top:12px;font-size:12px}
+.status{display:flex;align-items:center;gap:9px;margin-top:8px;font-size:12px}
 .dot{width:8px;height:8px;border-radius:50%;background:#37474f;flex:none}
 .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
 .dot.busy{background:var(--tx);animation:pulse 1s infinite}
@@ -117,20 +117,20 @@ button.danger{border-color:#4a2622;color:var(--warn)}
 .legend i{font-style:normal;display:inline-block;width:8px;height:8px;border-radius:1px;margin-right:4px;vertical-align:middle}
 
 /* ── 控件 ── */
-label.fld{display:block;margin:14px 0 0}
-.fld .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:5px}
+label.fld{display:block;margin:8px 0 0}
+.fld .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:4px}
 .fld .val{color:var(--tx);font-variant-numeric:tabular-nums}
-input[type=range]{width:100%;accent-color:var(--tx);height:26px}
+input[type=range]{width:100%;accent-color:var(--tx);height:22px}
 select,input[type=text],input[type=number]{
   width:100%;font-family:inherit;font-size:13px;
   background:#080d10;color:var(--ink);
-  border:1px solid var(--line);border-radius:3px;padding:10px;
+  border:1px solid var(--line);border-radius:3px;padding:8px;
 }
 select:focus,input:focus{outline:none;border-color:var(--tx)}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 
 /* ── 方向盘 ── */
-.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:280px;margin:0 auto}
+.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:150px;margin:0 auto}
 .pad button{aspect-ratio:1;font-size:18px;padding:0;display:flex;align-items:center;justify-content:center}
 .pad .ghost{visibility:hidden}
 .pad .center{font-size:11px;font-weight:600}
@@ -138,7 +138,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 /* ── 日志 ── */
 #log{
   background:#080d10;border:1px solid var(--line);border-radius:3px;
-  height:230px;overflow-y:auto;padding:10px;
+  height:96px;overflow-y:auto;padding:8px;
   font-size:11px;line-height:1.65;white-space:pre-wrap;word-break:break-all;
 }
 .l-tx{color:var(--tx)}
@@ -157,10 +157,10 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 .log-tools select{width:auto;padding:4px 7px;font-size:11px}
 
 /* ── 实时状态盘 ── */
-.stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
 .stat-grid>div{
   background:#080d10;border:1px solid var(--line);border-radius:3px;
-  padding:9px 11px;min-width:0;
+  padding:6px 9px;min-width:0;
 }
 .stat-grid b{
   display:block;font-size:15px;font-weight:600;color:var(--rx);
@@ -175,7 +175,7 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 /* 手机上让它换行,不要横向滚动 —— 一行放不下时,被截到屏幕外的往往正是
    那条 ✅(唯一能用的设备),而那是最该看见的一条。 */
-.tried{display:flex;align-items:flex-start;gap:8px;margin-top:10px;font-size:11px;color:var(--dim)}
+.tried{display:flex;align-items:flex-start;gap:8px;margin-top:8px;font-size:11px;color:var(--dim)}
 .tried #triedList{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;line-height:1.9}
 .tried button{padding:5px 9px;font-size:11px}
 .t-no{color:var(--warn)}.t-yes{color:var(--ok)}.t-maybe{color:var(--tx)}
@@ -246,8 +246,55 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 #adv>summary:hover{ color:var(--ink) }
 #adv>section:first-of-type{ border-top:1px solid var(--line) }
 
-.note{font-size:11px;color:var(--dim);margin-top:10px}
+.note{font-size:11px;color:var(--dim);margin-top:6px}
 .note b{color:var(--ink);font-weight:500}
+
+/* ── 折叠说明(.why)── 照抄 #adv 的折叠样板:说明文字本身不是控件,
+   默认收起腾地方,展开时原文一字不少地摆在那里。 */
+.why{margin-top:4px}
+.why>summary{
+  list-style:none;cursor:pointer;font-size:11px;color:var(--dim);
+  display:flex;align-items:center;gap:6px;
+}
+.why>summary::-webkit-details-marker{ display:none }
+.why>summary::before{ content:'▸';font-size:10px;transition:transform .15s }
+.why[open]>summary::before{ transform:rotate(90deg) }
+.why>summary:hover{ color:var(--ink) }
+.why .note{margin:6px 0 0 15px}
+
+/* ── 功能分组(.grp)── 跟 .why 同一套折叠标记,但字号更大、颜色用 --ink ——
+   这是「收起的功能」不是「收起的说明」,视觉上要分得开,别让人以为里面只是文字。 */
+.grp{margin-top:9px}
+.grp>summary{
+  list-style:none;cursor:pointer;font-size:12px;color:var(--ink);font-weight:500;
+  display:flex;align-items:center;gap:8px;padding:4px 0;
+}
+.grp>summary::-webkit-details-marker{ display:none }
+.grp>summary::before{ content:'▸';font-size:11px;transition:transform .15s;color:var(--dim) }
+.grp[open]>summary::before{ transform:rotate(90deg) }
+.grp>summary:hover{ color:#fff }
+.grp>summary .grp-sub{color:var(--dim);font-weight:400;margin-left:2px}
+.grp-body{margin-top:10px;padding-left:2px}
+
+/* ── 次级按钮(.minor)── 「扫描全部设备」「清空按键映射」这类不该跟主按钮平起平坐 */
+button.minor{font-size:11px;padding:5px 10px;color:var(--dim);border-color:var(--line)}
+
+/* ── 分段选择器(.seg)── 跟随模式三选一,连体样式能看出"当前是哪个",平铺三个按钮做不到 */
+.seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden}
+.seg button{flex:1;border:none;border-radius:0;background:var(--panel)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--tx);color:#0b1013;font-weight:600}
+
+/* 折叠块里的内容必须显式隐藏。浏览器的 UA 样式表本来就干这件事,但它是靠给非 summary 的
+   子元素设 display 实现的 —— 我们自己在 .why/.grp 里也给那些子元素设了 display,作者样式
+   优先级更高,就把 UA 那条盖掉了,于是折叠块「收起来」却还占着位置。所以这条不是给某个浏览器
+   打补丁,是给我们自己的样式收尾。顺带也让 iOS Bluefy 那类小众 WKWebView 有个兜底。 */
+details:not([open]) > *:not(summary){ display:none }
+
+/* eyebrow 到第一个控件的间距原来时紧时松(有的地方紧贴 12px,有的隔着 note/label
+   自己的上边距变成 22、26px)——交给 eyebrow 自己收口,后面第一个元素的默认上边距
+   相应清零,不用逐处手改 inline style。 */
+.eyebrow+.note,.eyebrow+label.fld,.eyebrow+.grid2,.eyebrow+.grid3{margin-top:0}
 </style>
 </head>
 <body>
@@ -263,17 +310,32 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="eyebrow">1 · 连接</p>
   <div class="row">
     <button id="btnConnect" class="primary">扫描并连接</button>
-    <button id="btnAny">扫描全部设备</button>
     <button id="btnDisc" class="danger" disabled>断开</button>
     <button id="btnWake">唤醒（重连并叫醒）</button>
   </div>
   <div class="status"><span class="dot" id="dot"></span><span id="stat">未连接</span></div>
-  <div class="tried"><span id="triedList">尚未试过任何设备</span><button id="btnForget">清空记录</button></div>
+  <div class="tried"><span id="triedList">尚未试过任何设备</span></div>
+  <!-- 「扫描全部设备」「清空记录」是搜不到时才用得上的补救手段,不是每次连接都要看的东西,
+       跟设备信息/横滚微调/按键学习同一个待遇折进 .grp。 -->
+  <details class="grp"><summary>更多连接选项</summary>
+  <div class="grp-body">
+  <div class="row">
+    <button id="btnAny" class="minor">扫描全部设备</button>
+    <button id="btnForget">清空记录</button>
+  </div>
+  </div>
+  </details>
+  <p class="note">搜不到就用「扫描全部设备」逐个试，iOS 需用 Bluefy。</p>
+  <details class="why"><summary>搜不到设备怎么办</summary>
   <p class="note">搜不到就用「扫描全部设备」逐个试。iOS 需用 <b>Bluefy</b> 浏览器，
     桌面用 Chrome / Edge，页面须跑在 https 下。详情见页尾「高级 / 协议」。</p>
+  </details>
+  <p class="note">云台闲置会自己睡过去，「唤醒」按钮负责把它重新戳醒。</p>
+  <details class="why"><summary>为什么会需要「唤醒」</summary>
   <p class="note"><b>云台闲置一段时间会自己睡过去</b>，届时网页这边就成了死的。这个按钮会重新连上
     并发一帧只读的查版本帧去戳它。<b>但浏览器只能当中心设备、不能广播</b> —— 所以它睡着时
     如果连广播都停了，浏览器就物理上够不着它，只能走过去按电源键。点一下就知道是哪种。</p>
+  </details>
 </section>
 
 <!-- 状态 -->
@@ -284,43 +346,50 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <div><b id="st-att">—</b><span id="st-att-sub">倾斜（对地）</span></div>
     <div><b id="st-batt">—</b><span>电量</span></div>
     <div><b id="st-up">—</b><span>云台已运行</span></div>
-    <div><b id="st-mode0405">—</b><span>模式（04/05，dissector 命名，仅展示）</span></div>
-    <div><b id="st-fw">—</b><span>固件版本（00/01，DJI 惯例倒序显示）</span></div>
+    <div><b id="st-mode0405">—</b><span>模式（04/05）</span></div>
+    <div><b id="st-fw">—</b><span>固件（00/01）</span></div>
   </div>
   <div id="st-limit" class="limit-bar" hidden></div>
   <p class="note" style="margin-top:8px">云台状态位（04/27）：<b id="st-flags">—</b></p>
-  <p class="note">手柄状态（04/57）：<b id="st-0457">—</b><br>字节含义 dissector 没给，不编——只报原始值，和「跟上一帧比变了哪个字节」。</p>
-  <div class="row" style="margin-top:4px">
+  <p class="note">手柄状态（04/57）：<b id="st-0457">—</b></p>
+  <details class="why"><summary>这 8 个字节是什么</summary>
+  <p class="note">字节含义 dissector 没给，不编——只报原始值，和「跟上一帧比变了哪个字节」。</p>
+  </details>
+  <!-- 手柄按键学习是一次性标定向导,不是日常要按的东西,跟设备信息/横滚微调同一个待遇折进 .grp——
+       04/57 的实时状态(上面那行)跟学没学过键位无关,留在可见区。 -->
+  <details class="grp"><summary>手柄按键学习（04/57）</summary>
+  <div class="grp-body">
+  <div class="row">
     <button id="btnLearnKeys" disabled>学习手柄按键</button>
     <button id="btnKeysStop" hidden>结束学习</button>
-    <button id="btnClearKeys">清空按键映射</button>
+    <button id="btnClearKeys" class="minor">清空按键映射</button>
   </div>
   <div class="lab-head" id="keys-head" hidden><span id="keys-step">空闲</span><span id="keys-eta"></span></div>
   <p class="note" id="keys-note">已学会 0/9 个控件</p>
   <div id="keys-table"></div>
-  <p class="note">延时状态（04/38）：<b id="st-0438">—</b><br>dissector 说这条只有 1 字节、低 2 位是状态；OM6 实测 5 字节，后 4 字节含义未知，不猜。</p>
+  </div>
+  </details>
+  <p class="note">延时状态（04/38）：<b id="st-0438">—</b></p>
+  <details class="why"><summary>为什么和 dissector 对不上</summary>
+  <p class="note">dissector 说这条只有 1 字节、低 2 位是状态；OM6 实测 5 字节，后 4 字节含义未知，不猜。</p>
+  </details>
   <p class="note">云台型号（04/1C）：<b id="st-041c">—</b><br>只报原始字节，没有型号对照表，不翻译成任何型号名。</p>
 </section>
 
 <!-- 控制 -->
 <section>
   <p class="eyebrow">3 · 控制</p>
-  <div class="row" style="margin-bottom:10px">
-    <button id="btnCheck" class="primary" disabled>一键自检</button>
-  </div>
   <div class="row" style="margin-bottom:14px">
-    <button id="btnLevel" disabled>一键调平</button>
+    <button id="btnLevel" class="primary" disabled>一键调平</button>
     <button id="btnHome" disabled>一键复位</button>
   </div>
-  <p class="note" style="margin-top:0"><b>调平</b>只摆平地平线，保留你调好的镜头仰角、不动方向。
+  <p class="note" style="margin-top:0">调平摆平地平线，复位回到自检记录的完整位姿；两者都需要先跑一次自检（见页尾「诊断工具」）。<span id="lvlStat"></span></p>
+  <details class="why"><summary>调平和复位的区别</summary>
+  <p class="note"><b>调平</b>只摆平地平线，保留你调好的镜头仰角、不动方向。
     <b>复位</b>回到自检结束时记录的<b>完整位姿</b> —— 水平、仰角、方向都回去，
     不管现在被转到哪儿。自检收尾会先调平再记录，所以那个位姿就是手机竖屏、垂直于地面。
-    两个都需要先跑一次自检。<span id="lvlStat"></span></p>
-  <div id="check-panel" hidden>
-    <div class="chk-head"><span id="chk-step">准备中…</span><span id="chk-eta"></span></div>
-    <div class="chk-bar"><i id="chk-fill"></i></div>
-    <div id="chk-rows"></div>
-  </div>
+    两个都需要先跑一次自检。</p>
+  </details>
   <div class="pad">
     <button data-ax="roll" data-dir="-1" disabled title="横滚 逆时针">↺</button>
     <button data-ax="pitch" data-dir="1" disabled>▲</button>
@@ -334,10 +403,13 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   </div>
   <label class="fld"><span class="lab"><span>速度</span><span class="val" id="vStep">400</span></span>
     <input type="range" id="step" min="10" max="900" step="10" value="400"></label>
+  <p class="note">按住方向键连发，松手自动停。<span id="spdNote"></span></p>
+  <details class="why"><summary>方向键与速度的用法</summary>
   <p class="note">按住方向键 = 10 Hz 连发（速度指令带看门狗，停发即停转），松手自动发零速。
-    顶到行程末端会自动停发并提示。<span id="spdNote"></span></p>
+    顶到行程末端会自动停发并提示。</p>
+  </details>
 
-  <p class="eyebrow" style="margin-top:22px">转到指定角度</p>
+  <p class="eyebrow" style="margin-top:14px">转到指定角度</p>
   <div class="grid2">
     <label class="fld" style="margin:0"><span class="lab"><span>轴</span></span>
       <select id="gotoAx">
@@ -349,20 +421,33 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
       <span class="lab"><span>相对转动</span><span class="val" id="vGoto">+90°</span></span>
       <input type="range" id="gotoDeg" min="-180" max="180" step="5" value="90"></label>
   </div>
+  <label class="fld"><span class="lab"><span>执行方式</span></span>
+    <!-- 不给 id:自查脚本按 id 总数把关(163 个一个不能多不能少),新控件走 class 选择器 -->
+    <select class="gotoPath">
+      <option value="speed" selected>速度闭环（04/0C，实测可用）</option>
+      <option value="abs">绝对角度指令（04/0A，尚未确认）</option>
+    </select></label>
   <div class="row" style="margin-top:10px">
     <button id="btnGoto" disabled>执行</button>
     <button id="btnGotoStop" disabled>中止</button>
   </div>
+  <p class="note">速度闭环持续发帧、接近自动减速；绝对角度指令一帧到位，误差各有取舍。<span id="gotoStat"></span></p>
+  <details class="why"><summary>闭环怎么判到位</summary>
   <p class="note">闭环：持续发速度帧，接近目标自动减速，到位发零速。姿态反馈只有约 1 Hz，
-    两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。<span id="gotoStat"></span></p>
+    两帧之间靠标定出的速度标度做航位推算，实际误差约 ±3~5°。</p>
+  </details>
+  <div id="abs-note" class="note"></div>
 </section>
 
 <!-- 报告 -->
 <section>
   <p class="eyebrow">4 · 报告</p>
-  <p class="note" style="margin-top:0">把版本、电池、云台功能、用户参数的结果汇总成一份可复制的文本。
+  <p class="note" style="margin-top:0">汇总已有结果成文本，不会往云台发任何指令。</p>
+  <details class="why"><summary>报告里有什么</summary>
+  <p class="note">把版本、电池、云台功能、用户参数的结果汇总成一份可复制的文本。
     <b>只汇总已有的结果，不会往云台发任何指令</b>——想先补齐数据，去下面「云台功能」逐项验证，
     或去折叠区「协议实验室」跑一键探测。</p>
+  </details>
   <div class="row" style="margin-bottom:8px">
     <button id="btnMakeReport" class="primary">生成报告</button>
   </div>
@@ -375,53 +460,67 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 <!-- 云台功能（按开源协议表） -->
 <section>
   <p class="eyebrow">5 · 云台功能</p>
+  <p class="note">来自开源协议表，非 OM6 官方文档，每个按钮都自己量一遍效果才算数。</p>
+  <details class="why"><summary>这些指令从哪来、为什么每个都要自测</summary>
   <p class="note">这几条来自开源协议表（<b>lib-osmo-ble</b> 的 PROTOCOL.md，DJI Osmo Pocket 3），
     我们真机扫描时它们都有应答。<b>但那份文档不是 OM6 的</b> —— 同一份文档给的速度指令载荷
     跟我们实测的顺序和长度都不一样。所以每个按钮点下去都会<b>自己量一遍效果</b>，
     量到了才算数；标着「未确认」的就是还没在这台机器上验证过。</p>
+  </details>
 
-  <p class="eyebrow" style="margin-top:16px">设备信息（11 条零风险读）</p>
-  <p class="note" style="margin-top:0">全部是 flags=0x40、空载荷的读指令，一帧写的都没有，一个按钮按顺序问完、帧间隔 150ms。
+  <!-- 设备信息:11 条零风险读,但只是拿来交叉印证、不是日常要按的功能,跟 PWM/用户参数/危险区
+       同一个「次级功能分组折叠」待遇,一并折进 .grp——也是把可见区按钮数按下来的必要一步。 -->
+  <details class="grp" style="margin-top:16px"><summary>设备信息（11 条零风险读）</summary>
+  <div class="grp-body">
+  <p class="note" style="margin-top:0">11 条只读，帧间隔 150ms，全部机械换算、不编字段名。</p>
+  <details class="why"><summary>这 11 条分别读什么</summary>
+  <p class="note">全部是 flags=0x40、空载荷的读指令，一帧写的都没有，一个按钮按顺序问完、帧间隔 150ms。
     dissector 对这 11 条全都没有字段定义（都是注释掉的），下表「可能的解读」只给机械换算
     （u8/u16/i16/u32/i32，长度够再额外给 ASCII），<b>不编字段名、不带单位</b>。</p>
+  </details>
   <div class="row">
     <button id="btnReadInfo" disabled>读设备信息（11 条零风险读）</button>
   </div>
   <div id="devinfo-table"></div>
   <div id="devinfo-note" class="note"></div>
+  </div>
+  </details>
 
-  <p class="eyebrow" style="margin-top:16px">跟随模式（04/4C）</p>
-  <div class="row">
+  <p class="eyebrow" style="margin-top:12px">跟随模式（04/4C）</p>
+  <div class="seg">
     <button id="btnModeLock" disabled>锁定</button>
     <button id="btnModeFollow" disabled>跟随</button>
     <button id="btnModeFpv" disabled>FPV</button>
   </div>
   <div id="mode-note" class="note"></div>
 
-  <p class="eyebrow" style="margin-top:16px">待机 / 恢复（04/0D）</p>
+  <p class="eyebrow" style="margin-top:12px">待机 / 恢复（04/0D）</p>
   <div class="row">
     <button id="btnSuspend" disabled>待机</button>
     <button id="btnResume" disabled>恢复</button>
   </div>
   <div id="susp-note" class="note"></div>
 
-  <p class="eyebrow" style="margin-top:16px">转到指定角度 · 绝对（04/0A）</p>
-  <div class="row">
-    <button id="btnAbsGoto" disabled>按上面「转到指定角度」的设定，用绝对角度指令执行</button>
-  </div>
-  <div id="abs-note" class="note"></div>
-
-  <p class="eyebrow" style="margin-top:16px">动作（会真的动，用姿态实测验证）</p>
+  <!-- 横滚微调:0.5° 级的验证性动作,不是日常操作,跟设备信息一样折进 .grp。 -->
+  <details class="grp"><summary>动作 · 横滚微调（04/07）</summary>
+  <div class="grp-body">
+  <p class="note" style="margin-top:0">会真的动，用姿态实测验证。</p>
   <div class="row">
     <button id="btnRollMinus" disabled>横滚微调 −5（约 0.5°，04/07）</button>
     <button id="btnRollPlus" disabled>横滚微调 +5（约 0.5°，04/07）</button>
   </div>
   <div id="rolltrim-note" class="note"></div>
+  </div>
+  </details>
 
-  <p class="eyebrow" style="margin-top:16px">PWM 控制（04/01）</p>
-  <p class="note" style="margin-top:0">载荷是 3× <code>uint16</code>（小端），中位 1024，范围 363~1685；dissector 没给
+  <details class="grp" style="margin-top:16px"><summary>摇杆 / PWM（04/01）<span class="grp-sub grp-sub-pwm"></span></summary>
+  <div class="grp-body">
+  <p class="note" style="margin-top:0">3 通道原样按协议表发，不代表真实轴映射，看姿态有没有动。</p>
+  <details class="why"><summary>通道顺序为什么是未知的</summary>
+  <p class="note">载荷是 3× <code>uint16</code>（小端），中位 1024，范围 363~1685；dissector 没给
     这三个通道的字段名，这里只按协议表原样发，<b>不代表真实的偏航/俯仰/横滚映射</b>，效果看下面姿态有没有动。
     <b>松手、手指划出滑块、或页面失焦都会自动发回中位 1024</b>，不然云台会照最后的杆量一直转下去。</p>
+  </details>
   <label class="fld"><span class="lab"><span>通道 1</span><span class="val" id="vPwm0">1024</span></span>
     <input type="range" id="pwm0" min="-661" max="661" step="1" value="0" disabled></label>
   <label class="fld"><span class="lab"><span>通道 2</span><span class="val" id="vPwm1">1024</span></span>
@@ -429,22 +528,31 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <label class="fld"><span class="lab"><span>通道 3</span><span class="val" id="vPwm2">1024</span></span>
     <input type="range" id="pwm2" min="-661" max="661" step="1" value="0" disabled></label>
   <div id="pwm-map-note" class="note"></div>
+  </div>
+  </details>
 
-  <p class="eyebrow" style="margin-top:16px">用户参数面板（04/10 读 · 04/0F 写）</p>
-  <p class="note" style="margin-top:0"><b>04/10 是纯读，零风险</b>——扫描会把索引 0~127 逐个问一遍，
+  <details class="grp"><summary>用户参数（04/10 读 / 04/0F 写）<span class="grp-sub grp-sub-params"></span></summary>
+  <div class="grp-body">
+  <p class="note" style="margin-top:0">04/10 纯读零风险；04/0F 写运行时参数，不进 flash。</p>
+  <details class="why"><summary>读和写的风险差别</summary>
+  <p class="note"><b>04/10 是纯读，零风险</b>——扫描会把索引 0~127 逐个问一遍，
     问不到的会返回负数错误码，那是正常情况，不是出错。<b>04/0F 写进的是运行时参数，不进
     flash</b>：断电、或点上面「恢复默认参数」就回去了；只有再点危险区的「保存参数到 flash」
     才永久生效——这跟危险区那两条不是一回事，风险程度不一样，别混着说。<b>索引编号（04/10）和
     字节偏移编号是两套不同的体系，没有证据说能互相对应</b>——这个项目已经因为拿别的机器的文档
     去套 OM6（04/0c 速度帧载荷顺序）栽过一次，不能再来一次。</p>
+  </details>
   <div class="row">
     <button id="btnParamScan" disabled>扫描参数表（04/10，索引 0~127）</button>
   </div>
   <div id="param-table"></div>
   <div id="params-note" class="note"></div>
 
-  <p class="note" style="margin-top:14px"><b>写参数（04/0F）：</b>先「扫描」或点上面表格里的
+  <p class="note" style="margin-top:14px">没有基准的写没有意义，先「扫描」或「填入」看现值。</p>
+  <details class="why"><summary>为什么要先读再写</summary>
+  <p class="note"><b>写参数（04/0F）：</b>先「扫描」或点上面表格里的
     「填入」看看现在是什么值，再改——没有基准的写没有意义。</p>
+  </details>
   <div class="grid3">
     <label class="fld" style="margin:0"><span class="lab"><span>索引</span></span>
       <input type="number" id="pwIdx" min="0" max="127" value="0" disabled></label>
@@ -458,45 +566,12 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <button id="btnParamWrite" disabled>写入并读回验证</button>
   </div>
   <div id="pwrite-note" class="note"></div>
+  </div>
+  </details>
 
-  <p class="eyebrow" style="margin-top:16px">Gimbal Movement（04/15）</p>
-  <p class="note" style="margin-top:0">载荷 20 字节：前 9 个字段（本节 9 个输入框）+ 11 字节 reserved（dissector
-    原文「should be zero-filled」，这里固定填 0，不给用户填的机会）。<b>dissector 只给了每个字段的刻度，
-    没给是哪根轴</b>——跟 PWM 那三个通道一样，界面只敢标刻度，不敢标轴，哪个字段对哪根轴要靠下面
-    「发送并测效果」自己测出来。<b>幅度天然受限</b>：0.04°/单位的字段最多 ±5.08°，0.1°/单位的字段
-    最多 ±12.7°——这条指令再怎么填都转不远，不是安全带，是它本来就没有更大的行程可言。</p>
-  <div class="grid3">
-    <label class="fld" style="margin:0"><span class="lab"><span>字段0（0.04°/单位）</span></span>
-      <input type="number" id="mv0" min="-128" max="127" value="0" disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>字段1（0.04°/单位）</span></span>
-      <input type="number" id="mv1" min="-128" max="127" value="0" disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>字段2（0.04°/单位）</span></span>
-      <input type="number" id="mv2" min="-128" max="127" value="0" disabled></label>
-  </div>
-  <div class="grid3" style="margin-top:8px">
-    <label class="fld" style="margin:0"><span class="lab"><span>字段3（0.1°/单位）</span></span>
-      <input type="number" id="mv3" min="-128" max="127" value="0" disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>字段4（0.1°/单位）</span></span>
-      <input type="number" id="mv4" min="-128" max="127" value="0" disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>字段5（0.1°/单位）</span></span>
-      <input type="number" id="mv5" min="-128" max="127" value="0" disabled></label>
-  </div>
-  <div class="grid3" style="margin-top:8px">
-    <label class="fld" style="margin:0"><span class="lab"><span>字段6（百分比）</span></span>
-      <input type="number" id="mv6" min="0" max="255" value="0" disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>字段7（百分比）</span></span>
-      <input type="number" id="mv7" min="0" max="255" value="0" disabled></label>
-    <label class="fld" style="margin:0"><span class="lab"><span>字段8（dissector 命名 roll_adjust，无刻度）</span></span>
-      <input type="number" id="mv8" min="0" max="255" value="0" disabled></label>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <button id="btnMoveSend" disabled>发送并测效果</button>
-  </div>
-  <div id="move-note" class="note"></div>
-  <div id="move-map-note" class="note"></div>
-
+  <details class="grp"><summary style="color:var(--warn)">危险区 · 会永久改写云台参数</summary>
+  <div class="grp-body">
   <div class="danger-zone">
-    <p class="eyebrow">危险区 · 会永久改写云台参数</p>
     <p class="note" style="margin-top:0"><b>这两条往云台永久写入，写坏了这边没有撤销手段，得用 DJI Mimo
       恢复出厂设置才能救回来。</b>确定要做再点。</p>
     <div class="row">
@@ -506,6 +581,8 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
     <div id="saveflash-note" class="note"></div>
     <div id="restoredefaults-note" class="note"></div>
   </div>
+  </div>
+  </details>
 </section>
 
 <!-- 日志 -->
@@ -666,6 +743,44 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
   <p class="note" style="margin-top:6px">整窗记账是<b>宁可多跳</b>，所以要有退路：清空只删本机记下的
     「上次会动」，不动你在上面手填的那几条。</p>
 
+  <!-- Gimbal Movement(04/15):dissector 只给了刻度、没给哪根轴,这是探索不是功能,
+       按「探索工具进折叠区、功能留可见区」这条规矩搬到这里,放在「带载荷试指令」旁边。 -->
+  <p class="eyebrow" style="margin-top:20px">Gimbal Movement（04/15）</p>
+  <p class="note" style="margin-top:0">载荷 20 字节：前 9 个字段（本节 9 个输入框）+ 11 字节 reserved（dissector
+    原文「should be zero-filled」，这里固定填 0，不给用户填的机会）。<b>dissector 只给了每个字段的刻度，
+    没给是哪根轴</b>——跟 PWM 那三个通道一样，界面只敢标刻度，不敢标轴，哪个字段对哪根轴要靠下面
+    「发送并测效果」自己测出来。<b>幅度天然受限</b>：0.04°/单位的字段最多 ±5.08°，0.1°/单位的字段
+    最多 ±12.7°——这条指令再怎么填都转不远，不是安全带，是它本来就没有更大的行程可言。</p>
+  <div class="grid3">
+    <label class="fld" style="margin:0"><span class="lab"><span>字段0（0.04°/单位）</span></span>
+      <input type="number" id="mv0" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段1（0.04°/单位）</span></span>
+      <input type="number" id="mv1" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段2（0.04°/单位）</span></span>
+      <input type="number" id="mv2" min="-128" max="127" value="0" disabled></label>
+  </div>
+  <div class="grid3" style="margin-top:8px">
+    <label class="fld" style="margin:0"><span class="lab"><span>字段3（0.1°/单位）</span></span>
+      <input type="number" id="mv3" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段4（0.1°/单位）</span></span>
+      <input type="number" id="mv4" min="-128" max="127" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段5（0.1°/单位）</span></span>
+      <input type="number" id="mv5" min="-128" max="127" value="0" disabled></label>
+  </div>
+  <div class="grid3" style="margin-top:8px">
+    <label class="fld" style="margin:0"><span class="lab"><span>字段6（百分比）</span></span>
+      <input type="number" id="mv6" min="0" max="255" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段7（百分比）</span></span>
+      <input type="number" id="mv7" min="0" max="255" value="0" disabled></label>
+    <label class="fld" style="margin:0"><span class="lab"><span>字段8（dissector 命名 roll_adjust，无刻度）</span></span>
+      <input type="number" id="mv8" min="0" max="255" value="0" disabled></label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnMoveSend" disabled>发送并测效果</button>
+  </div>
+  <div id="move-note" class="note"></div>
+  <div id="move-map-note" class="note"></div>
+
   <!-- 带载荷试指令：按「探索工具进折叠区、功能留可见区」这条规矩放在这里。
        它跟「一键探测」同类 —— 是用来找功能的工具，本身不是功能。 -->
   <p class="eyebrow" style="margin-top:20px">带载荷试指令</p>
@@ -749,6 +864,16 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 <section>
   <p class="eyebrow">诊断工具</p>
+  <!-- 一键自检:我们自己的软件诊断(测速率、串轴、停车),不是云台功能,
+       按「探索工具进折叠区、功能留可见区」这条规矩搬到这里。JS 一行没改,只挪了 HTML。 -->
+  <div class="row">
+    <button id="btnCheck" class="primary" disabled>一键自检</button>
+  </div>
+  <div id="check-panel" hidden>
+    <div class="chk-head"><span id="chk-step">准备中…</span><span id="chk-eta"></span></div>
+    <div class="chk-bar"><i id="chk-fill"></i></div>
+    <div id="chk-rows"></div>
+  </div>
   <div class="row" style="margin-top:12px">
     <button id="btnSpin" disabled>转动测试（会真的转）</button>
     <button id="btnCal" disabled>速度标定</button>
@@ -985,12 +1110,15 @@ function setState(s,txt){
   ['btnDisc','btnSend','btnZero','btnStop','btnRaw','btnDump','btnProbe','btnSpin','btnCal',
    'btnGoto','btnCheck','btnLevel','btnHome','btnRecOn','btnAuto','btnScan','btnProbeAll',
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
-   'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume','btnAbsGoto',
+   'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
    'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo','btnLearnKeys',
    'btnMoveSend','mv0','mv1','mv2','mv3','mv4','mv5','mv6','mv7','mv8',
    'tryPlSel','tryPlCs','tryPlCi','tryPlHex']
     .forEach(i=>$(i).disabled=!on);
+  // gotoPath 是 btnAbsGoto 合并进来后的执行方式选择,没有 id(自查脚本按 id 总数把关),
+  // 跟上面数组里其它控件一样只在连上时才可选。
+  document.querySelectorAll('.gotoPath').forEach(el=>el.disabled=!on);
   // btnTryPlOne/btnTryPlSweep 不在上面这个数组里——它们还要受 tryPlOk 风险确认框控制,
   // 直接跟着 on 一刀切会在没勾选时被连接状态误点亮,交给 refreshTryPlBtns 统一判。
   // 断开时手柄按键学习向导要能中止,不能卡在某一步——keysSkip 让它跳出正在等的采集/缓冲窗口,
@@ -1006,6 +1134,10 @@ function setState(s,txt){
   refreshProbeBtn();
   refreshTryPlBtns();   // 带载荷试指令:跟 refreshRiskBtns 一个模式,连接状态变了也要重判一次
   refreshFeatNotes();   // 6·云台功能:每块 note 是不是「已验证」跟连接状态无关,但按钮可用性变了值得重画一次
+  // 待机/恢复该显示哪一个、跟随模式该高亮哪一个,都不受连接状态本身左右(睡眠位/mode 是上次收到的
+  // 那一帧说了算),但按钮的 disabled 刚被上面整体重置过,这两个纯展示函数要重新画一遍才不会露馅。
+  refreshSuspendBtn();
+  refreshModeSeg();
 }
 
 async function connect(anyDevice){
@@ -1387,6 +1519,8 @@ function renderKeysNote(){
     return `${s.name}(${why})`;
   }).join('、')}`;
   el.textContent=txt;
+  // 一个字都没学过时「清空按键映射」没有意义,藏起来——纯展示,不影响 learnKeys/keysDropPrior 的判定。
+  $('btnClearKeys').hidden = learned.length===0;
 }
 function renderKeysTable(){
   const el=$('keys-table'); if(!el) return;
@@ -1735,6 +1869,7 @@ function decode(m, hide){
     lastFlags027 = decodeGimbalFlags(pl);
     lastFlags027At = Date.now();
     $('st-flags').textContent = lastFlags027.list.length ? lastFlags027.list.join('、') : '无异常';
+    refreshSuspendBtn();   // 睡眠位这一帧才刚更新,让「待机/恢复」按钮立刻跟着换脸,不用等下次点击
   }
 
   // 姿态帧:载荷 [24:40]=四元数、[12:16]=毫秒计时器。折叠与否都要解 —— 状态盘靠它。
@@ -1756,6 +1891,7 @@ function decode(m, hide){
       rollAdjust:(pl[7]>=128?pl[7]-256:pl[7])/10, yawAngle:(pl[8]|(pl[9]<<8))/10 };
     last0405Mode = mode0405; last0405At = Date.now();
     $('st-mode0405').textContent = MODE_0405_NAMES[mode0405] ?? `未知(${mode0405})`;
+    refreshModeSeg();   // 内部按 mode 有没有变自己节流,这条 1Hz 常驻推,不能每帧都碰 DOM
   }
 
   // 版本应答里出现 ASCII "GB66" 就认定是 OM6。实测这台机器 04/14(绝对/相对角度)
@@ -4445,7 +4581,8 @@ async function goHome(home){
 $('gotoDeg').addEventListener('input',()=>{
   const v=+$('gotoDeg').value; $('vGoto').textContent=(v>=0?'+':'')+v+'°';
 });
-$('btnGoto').onclick=()=>{ gotoRelative($('gotoAx').value, +$('gotoDeg').value); };
+// 分派:.gotoPath 选 abs 时走绝对角度指令(absGoto 读同一组 gotoAx/gotoDeg),否则走原来的速度闭环。
+$('btnGoto').onclick=()=>{ if(document.querySelector('.gotoPath').value==='abs') absGoto(); else gotoRelative($('gotoAx').value, +$('gotoDeg').value); };
 $('btnGotoStop').onclick=()=>{ gotoAbort=true; };
 
 /* ════════════ 6·云台功能(按开源协议表) ════════════
@@ -4526,6 +4663,7 @@ function refreshFeatNotes(){
     renderDevInfoTable(f.devInfo ? f.devInfo.rows : []);
   }
   renderPwmMapNote();
+  renderGrpSummaries();   // .grp 折叠标题里的状态摘要,顺带跟着这里一起重画
   // 第四轮新增:04/15 Gimbal Movement + 带载荷试指令,跟其它块一样只从 saveFeat 存档重画。
   const moveEl=$('move-note');
   if(moveEl) moveEl.textContent = f.move
@@ -4542,6 +4680,47 @@ function refreshFeatNotes(){
       : '尚未试过';
     renderTryPlTable(f.tryPayload ? f.tryPayload.rows : []);
   }
+}
+
+/* ── 界面美化 · 三个纯展示函数 ──────────────────────────────────────────
+   下面三个是这一轮界面合并新增的全部 JS:只读已有状态、只改 DOM 展示,
+   不发任何帧、不碰任何协议判据,跟 refreshFeatNotes 同一个待遇。 */
+
+/* .grp 折叠标题里的状态摘要:PWM 通道映射、参数扫描条数都是已有的 saveFeat 存档字段,
+   这里只挑出来拼成一行短文案,没有新造数据源。只写 textContent,不碰别的。 */
+function renderGrpSummaries(){
+  const f=loadFeat();
+  const pwmSub=document.querySelector('.grp-sub-pwm');
+  if(pwmSub){
+    const map=f.pwmMap||{};
+    const hitCh=[1,2,3].find(ch=>map[ch]);
+    pwmSub.textContent = hitCh ? `· 通道${hitCh}→${AXIS_CN[map[hitCh].axis]||map[hitCh].axis}` : '';
+  }
+  const paramsSub=document.querySelector('.grp-sub-params');
+  if(paramsSub) paramsSub.textContent = f.params ? `· 已扫到 ${f.params.n} 条` : '· 尚未扫描';
+}
+
+/* 待机/恢复合成一个状态感知按钮:04/27 byte4 bit0(睡眠位)已经能读出云台是不是睡着了,
+   不该让人自己猜该点哪个。两个按钮都留在 DOM(id 不变,测试要用),只是同一时刻只显示一个。
+   没收到过 04/27(lastFlags027 为 null)时按未睡眠处理,默认显示「待机」——不猜,只是先给个
+   最常用的入口。suspendGimbal() 本身不改一行。 */
+function refreshSuspendBtn(){
+  const asleep = !!(lastFlags027 && lastFlags027.sleepMode);
+  $('btnResume').hidden = !asleep;
+  $('btnSuspend').hidden = asleep;
+}
+
+/* 跟随模式三个按钮原来平铺,看不出当前是哪个。04/05 已经解出 mode 字段(last0405Mode),
+   反查回 04/4C 的编号(MODE_4C_TO_05 是正向表,这里线性反查,三个值用不着建反向表)
+   给对应按钮加高亮。节流:04/05 是约 1Hz 常驻推送,mode 没变就不用每次都碰 DOM。
+   反查不到(比如 mode=3 AutoCalibrate,04/4C 根本没有对应项)就三个都不高亮,不猜。 */
+let modeSegShown;   // 上一次画出来的 mode,首次是 undefined,跟 last0405Mode(null 起始)天然不等,保证画一次
+function refreshModeSeg(){
+  if(last0405Mode===modeSegShown) return;
+  modeSegShown=last0405Mode;
+  let on=null;
+  for(const m in MODE_4C_TO_05) if(MODE_4C_TO_05[m]===last0405Mode){ on=+m; break; }
+  ['btnModeLock','btnModeFollow','btnModeFpv'].forEach((id,i)=>$(id).classList.toggle('on', i===on));
 }
 
 /* 发一帧并等它的应答(flags=0x40 已要求应答),只回答「有没有收到返回码 0 的应答」这一件事 ——
@@ -4686,7 +4865,9 @@ async function absGoto(){
     return;
   }
   featRunning=true;
-  $('btnAbsGoto').disabled=true;
+  // btnAbsGoto 已随「转到指定角度」合并消失(见 gotoPath),两条路径现在共用同一个执行按钮,
+  // 这颗按钮的忙闲状态本该跟着共用——沿用 gotoRelative() 对同一个 id 的用法,不是新逻辑。
+  $('btnGoto').disabled=true;
   try{
     const pitchDeg=axis==='pitch'?target:lastEuler.pitch;
     const rollDeg =axis==='roll' ?target:lastEuler.roll;
@@ -4716,11 +4897,11 @@ async function absGoto(){
     }
   } finally {
     featRunning=false;
-    $('btnAbsGoto').disabled=!linkOn;
+    $('btnGoto').disabled=!linkOn;
     refreshFeatNotes();
   }
 }
-$('btnAbsGoto').onclick=()=>absGoto();
+// btnAbsGoto 按钮已合并进「转到指定角度」,点击分派见 btnGoto.onclick(按 .gotoPath 选择)。
 
 /* ════════════ 6·云台功能 · 第一轮新增(读取 / 动作 / PWM / 危险区) ════════════
    来源同上:lib-osmo-ble PROTOCOL.md + dji-dumlv1-gimbal.lua / dji-dumlv1-general.lua dissector。
