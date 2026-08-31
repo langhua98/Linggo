@@ -1651,7 +1651,10 @@ async function learnKeys(){
         // 17/33(0x11/0x21):基线的 bit0 全程都在,每次只多点亮一个 bit,旧的"≥3 个不同值
         // =analog"粗判把它错判成了模拟量。位掩码的指纹是"基线的位全都还在、且每次改动只
         // 多点亮一两个位",真的模拟量(大幅度跳变)一般凑不出这个形状。
-        const popcount = n => { let c=0; while(n){ c+=n&1; n&=n-1; } return c; };
+        /* Kernighan:n &= n-1 每次清掉最低的那个 1,清了几次就有几个 1 —— 所以是 c++,
+           不是 c += n&1。混着写的话只有 bit0 会被数到:popcount(30) 会返回 0 而不是 4,
+           于是「只多点亮一两个位」这个条件几乎恒成立,任何基线为 0 的字节都被判成位掩码。 */
+        const popcount = n => { let c=0; while(n){ n&=n-1; c++; } return c; };
         const nonBase = vals.filter(v=>v!==base);
         const isBitmask = base!==null && nonBase.length>0 &&
           nonBase.every(v => (v & base)===base && popcount(v ^ base)<=2);
