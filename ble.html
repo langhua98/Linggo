@@ -359,6 +359,12 @@ details:not([open]) > *:not(summary){ display:none }
        04/57 的实时状态(上面那行)跟学没学过键位无关,留在可见区。 -->
   <details class="grp"><summary>手柄按键学习（04/57）</summary>
   <div class="grp-body">
+  <!-- 这条警告不是可有可无的客套话:旧版向导的提示语是「请按住 XXX 约 2 秒,然后松开」,
+       对 M 键来说那句话字面上就是关机操作 —— 工具把人引向了关机。新版不再提示按住,
+       但光是"不说"不够,得把这件事明确写出来。用户实测告知:M 键单击=切换模式,
+       按住 2 秒=关机。 -->
+  <p class="note" style="margin-top:0"><b>⚠ M 键：单击 = 切换模式，按住 2 秒 = 关机。</b>
+    学习时<b>只单击</b>，别按住。（单击会真的把云台模式切一档，这是正常的副作用。）</p>
   <div class="row">
     <button id="btnKeysWatch" disabled>开始监听</button>
     <button id="btnKeysRebase" class="minor" hidden>重新取基线</button>
@@ -4648,10 +4654,14 @@ function buildReport(){
 
   L.push('', '===== 手柄按键映射（04/57）=====');
   {
+    /* 实体按键的语义只能靠人告知,dissector 一个字段都没有。这条记进报告是因为
+       它同时是一条安全提示:旧版向导提示「按住约 2 秒」,对 M 键而言那就是关机指令。 */
+    L.push('实体按键语义（用户实测告知）：M 键 单击 = 切换模式，按住 2 秒 = 关机 —— 学习时只单击。');
     // 跟其它节一样从 localStorage 读,不依赖内存变量——换个会话也要读得出结果。
     const {binds={}, unmapped=[], ambiguous={}, alsoPush={}, alsoPushOnce={}, inconsistent={}} = loadKeys();
     if(!Object.keys(binds).length && !unmapped.length && !Object.keys(ambiguous).length && !Object.keys(inconsistent).length){
-      L.push('尚未学习（点「学习手柄按键」走一遍向导——dissector 对这条一个字段都没定义，只能靠人按、页面记）');
+      L.push('尚未学习（点「开始监听」，按一个控件，页面报出哪个字节变了，你再给它命名——'+
+        'dissector 对这条一个字段都没定义，只能靠人按、页面记）');
     }else{
       L.push('每个控件测两轮，两轮 changed 字节集合完全相同才绑定——测不出重复的就不算数。');
       for(const s of KEY_STEPS){
