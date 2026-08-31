@@ -1484,7 +1484,11 @@ const KEYS_NOISE_PUSH = new Set([
    编字段名就是造假。只在 learnKeys 的采集窗口期间挂上,窗口结束就置 null,平时零开销。 */
 let keysPushHook=null;
 let keysRunning=false, keysSkip=false, keysStop=false;
-const KEYS_BASELINE_MS=1500, KEYS_COLLECT_MS=3000, KEYS_GAP_MS=1000;
+// 单轮基线/采集时长本身不用变,变的是"测几轮":原来一步只测一轮就下结论,真机上同一个
+// 控件连测四次给出四个矛盾答案,根因就是这里没有"能不能复现"的概念。改成两轮后采集窗口
+// 从 3.0s 缩到 2.5s(总时长打平),KEYS_ROUND_GAP_MS 是两轮之间"松手"的缓冲——给被测控件
+// 一个明确回到静止态的窗口,不然第二轮的基线会被第一轮按压的尾迹污染,两轮就不是独立观测了。
+const KEYS_BASELINE_MS=1500, KEYS_COLLECT_MS=2500, KEYS_ROUND_GAP_MS=800, KEYS_GAP_MS=1000;
 
 // 取一段窗口里逐字节"出现过的值→次数"。留次数不是只留集合:pickMode 要拿"次数最多"
 // 当"最能代表这段时间的状态"——基线可能因为遥测噪声不是单一值,按下期间也可能混进
@@ -1511,7 +1515,9 @@ async function keysCollectWindow(ms, label){
 }
 async function keysWait(ms){
   const t0=Date.now();
-  while(Date.now()-t0<ms){ if(keysStop) break; await sleep(100); }
+  // 也要看 keysSkip:两轮之间"松手"的缓冲、跟下一步之间的间隔都算这一步的一部分,
+  // 按了跳过就该立刻放行,不然人明明点了跳过还要干等这段本来就没意义的等待。
+  while(Date.now()-t0<ms){ if(keysStop || keysSkip) break; await sleep(100); }
 }
 function pickMode(map, exclude){
   let bestV=null, bestN=-1;
@@ -1521,59 +1527,177 @@ function pickMode(map, exclude){
   }
   return bestV;
 }
-// 从存档里摘掉某个 key 之前的结果(不管上次是绑定成功、没检测到变化还是有歧义)——
+/* pickExtreme:返回 |v-base| 最大的那个值——跟 pickMode(出现次数最多)是两种截然不同的
+   "代表值"取法,分别对应两种截然不同的控件行为。pickMode 对"按住不放的按钮"成立,因为
+   按住的稳态占了采集窗口的大头;但摇杆推一下就自动回中,窗口里绝大多数帧仍然是中位——
+   真机上摇杆左就是这样被记成"基线=0,采集值=0(众数)"却打了个 ✅,因为出现次数最多的值
+   压根不是"被推到的那个值"。pickExtreme 只关心"离基线最远走到过哪",这才是"到底有没有
+   测到行程"该问的问题。 */
+function pickExtreme(map, base){
+  let bestV=null, bestD=-1;
+  for(const v of map.keys()){
+    const d=Math.abs(v-base);
+    if(d>bestD){ bestD=d; bestV=v; }
+  }
+  return bestV;
+}
+// 把两轮的逐字节计数加总——两轮各自的 changed 字节集合已经判定"完全相同"才会走到这一步,
+// 值集合改用两轮合并后的结果,是因为单轮样本量小、容易被一两帧过渡态带偏,合并能把
+// "稳定复现的值"跟"偶然噪声"稍微分开一点,而不是随便拿其中一轮的数当数。
+function mergeByteCounts(a, b){
+  const len=Math.max(a.length, b.length), out=[];
+  for(let i=0;i<len;i++){
+    const m=new Map(a[i]||[]);
+    if(b[i]) for(const [v,n] of b[i]) m.set(v, (m.get(v)||0)+n);
+    out[i]=m;
+  }
+  return out;
+}
+// 判据不变:采集期出现过"基线集合里没有"的值就算这个字节变了——从 learnKeys 里抽出来,
+// 是因为两轮各自都要单独算一次(算完才能拿去比"两轮是不是同一组字节"),不能只算一次。
+function computeChangedBytes(baseCounts, collCounts){
+  const changed=[];
+  const len=Math.max(baseCounts.length, collCounts.length);
+  for(let b=0;b<len;b++){
+    const baseSet=baseCounts[b] ? new Set(baseCounts[b].keys()) : new Set();
+    const collMap=collCounts[b];
+    if(!collMap) continue;
+    for(const v of collMap.keys()) if(!baseSet.has(v)){ changed.push(b); break; }
+  }
+  return changed;
+}
+// 两轮"changed"是否是完全相同的一组字节——长度相等不代表集合相同([2,3] 跟 [2,4] 长度一样
+// 但不是同一组字节,得排序后逐个比。这就是"两遍必须精确复现"这句话字面上的判据。
+function sameByteSet(a, b){
+  if(a.length!==b.length) return false;
+  const sa=[...a].sort((x,y)=>x-y), sb=[...b].sort((x,y)=>x-y);
+  return sa.every((v,i)=>v===sb[i]);
+}
+// 从存档里摘掉某个 key 之前的结果(不管上次是绑定成功、没检测到变化、有歧义还是两遍不一致)——
 // 重新学一遍时不能让旧结论跟新结论并存,不然"已学会 N/9"会数错、界面上还留着自相矛盾的两条。
-function keysDropPrior(binds, unmapped, ambiguous, key, alsoPush){
+function keysDropPrior(binds, unmapped, ambiguous, key, alsoPush, inconsistent, alsoPushOnce){
   delete binds[key]; delete ambiguous[key];
   if(alsoPush) delete alsoPush[key];   // 重学这一步时,上一轮"顺带记到的推送"也跟着作废,不能新旧并存
+  // inconsistent/alsoPushOnce 是两遍复现校验新增的两个桶,道理跟 alsoPush 一样——重学这一步
+  // 就要把上一轮"两遍不一致"的结论和"只见一遍的推送"一起清掉,这个坑上一版已经踩过一次了。
+  if(inconsistent) delete inconsistent[key];
+  if(alsoPushOnce) delete alsoPushOnce[key];
   const i=unmapped.indexOf(key); if(i>=0) unmapped.splice(i,1);
+}
+/* keysRunRound:两轮流程里"取基线→采集(带表外推送监听)"这一段完全一样,只有播报文案里的
+   轮次号不同——抽成函数是为了不让两份几乎一样的采集代码分开改,改一处漏一处。
+   返回 null 表示这一轮没走完(被 stop 或 skip 打断),调用方据此判断是整体停止还是跳过整步。 */
+async function keysRunRound(i, step, round){
+  const baseCounts=await keysCollectWindow(KEYS_BASELINE_MS,
+    `第 ${i+1}/${KEY_STEPS.length} 步 · 第 ${round}/2 遍：取「${step.name}」空闲基线…`);
+  if(keysStop || keysSkip) return null;
+  const pushSeen=new Map();   // tag('cs/ci',两位十六进制) → {cs, ci, hex}(只留第一帧)
+  keysPushHook = (cs, ci, pl)=>{
+    const tag = cs.toString(16).padStart(2,'0')+'/'+ci.toString(16).padStart(2,'0');
+    if(KEYS_NOISE_PUSH.has(tag) || pushSeen.has(tag)) return;
+    pushSeen.set(tag, {cs, ci, hex: hex(pl)});
+  };
+  let collCounts;
+  try{
+    collCounts=await keysCollectWindow(KEYS_COLLECT_MS,
+      `第 ${i+1}/${KEY_STEPS.length} 步 · 第 ${round}/2 遍：请按住「${step.name}」约 2 秒，然后松开`);
+  } finally { keysPushHook=null; }
+  if(keysStop || keysSkip) return null;
+  return {baseCounts, collCounts, pushSeen};
+}
+// 冲突展示、共用字节警告、报告里的按键节都要拿"哪个字节被哪些控件绑了"当基础数据,
+// 抽成一份公用统计,不然三处各写各的容易口径对不上。
+const bytesOfBind = b => b.type==='axis16' ? [b.off, b.off+1] : [b.byte];
+function keysByteOwners(binds){
+  const byByte={};
+  Object.keys(binds).forEach(k=>bytesOfBind(binds[k]).forEach(byte=>(byByte[byte]=byByte[byte]||[]).push(k)));
+  return byByte;
+}
+// 阈值定成 3:两个控件共用一个字节是说得过去的(比如同一个摇杆的两个方向恰好都挂在
+// 相邻字节上,冲突提示已经覆盖这种情况);三个以上还这样,就不像是"共用"而是这个字节
+// 本身对大多数控件都敏感——真机上 byte2 被摇杆上/下、M 键、变焦上/下五个控件都绑过,
+// 这种情况下几条结论都不该被当真,得单独喊出来,不能让它们看起来是五条并列的正常结论。
+const KEYS_SHARED_BYTE_WARN=3;
+function keysSharedByteWarnings(binds){
+  const byByte=keysByteOwners(binds);
+  return Object.entries(byByte)
+    .filter(([,ks])=>ks.length>=KEYS_SHARED_BYTE_WARN)
+    .map(([byte,ks])=>`⚠ byte${byte} 被 ${ks.length} 个控件都绑上了（${ks.map(nameOfKeyStep).join('、')}）—— `+
+      `一个字节对大多数控件都变，它多半不是按键字段，这几条别当结论用。`);
 }
 function renderKeysNote(){
   const el=$('keys-note'); if(!el) return;
-  const {binds={}, unmapped=[], ambiguous={}} = loadKeys();
+  const {binds={}, unmapped=[], ambiguous={}, inconsistent={}} = loadKeys();
   const learned=KEY_STEPS.filter(s=>binds[s.key]);
   const notLearned=KEY_STEPS.filter(s=>!binds[s.key]);
-  let txt=`已学会 ${learned.length}/${KEY_STEPS.length} 个控件`;
-  if(notLearned.length) txt+=`　未识别: ${notLearned.map(s=>{
-    const why = ambiguous[s.key] ? `歧义(byte ${ambiguous[s.key].join('、byte ')})`
+  let html=`已学会 ${learned.length}/${KEY_STEPS.length} 个控件`;
+  if(notLearned.length) html+=`　未识别: ${notLearned.map(s=>{
+    // inconsistent 要排在 ambiguous 前面判:同一个 key 理论上不会同时落进两个桶(learnKeys
+    // 里两条分支互斥),但万一存档是老版本残留,按"更该被注意"的顺序判总没错。
+    const why = inconsistent[s.key] ? '两遍不一致'
+              : ambiguous[s.key] ? `歧义(byte ${ambiguous[s.key].join('、byte ')})`
               : unmapped.includes(s.key) ? '无变化' : '未测';
     return `${s.name}(${why})`;
   }).join('、')}`;
-  el.textContent=txt;
+  // 共用字节警告要单独醒目一行,不能混进"未识别"那句被当成普通提示扫过去——用 <b> 加粗,
+  // 所以这里改用 innerHTML;拼进去的都是固定的控件名/字节号,不是任意用户输入,不用转义。
+  keysSharedByteWarnings(binds).forEach(w=> html += '<br><b>'+w+'</b>');
+  el.innerHTML=html;
   // 一个字都没学过时「清空按键映射」没有意义,藏起来——纯展示,不影响 learnKeys/keysDropPrior 的判定。
   $('btnClearKeys').hidden = learned.length===0;
 }
 function renderKeysTable(){
   const el=$('keys-table'); if(!el) return;
-  const {binds={}, alsoPush={}} = loadKeys();
+  const {binds={}, alsoPush={}, alsoPushOnce={}, inconsistent={}} = loadKeys();
   const keys=Object.keys(binds);
   // 冲突只在展示时算,不额外存档——存档允许一个字节挂多个 key,冲突就是"同一 byte 出现≥2 次"。
-  // axis16 占两个字节(off、off+1),跟单字节类型的 byte 字段不是一回事,按类型分别取用到的字节表。
-  const bytesOf = b => b.type==='axis16' ? [b.off, b.off+1] : [b.byte];
-  const byByte={};
-  keys.forEach(k=>{ bytesOf(binds[k]).forEach(byte=>(byByte[byte]=byByte[byte]||[]).push(k)); });
+  const byByte=keysByteOwners(binds);
   let html='';
   if(keys.length){
     html += '<table class="ptbl"><thead><tr><th>控件</th><th>byte</th><th>类型</th>'+
       '<th>基线</th><th>按下值 / 采集值</th><th></th></tr></thead><tbody>'+
       keys.map(k=>{
-        const b=binds[k], used=bytesOf(b);
+        const b=binds[k], used=bytesOfBind(b);
         const conflictKeys=[...new Set(used.flatMap(byte=>byByte[byte]))].filter(x=>x!==k);
         const byteTxt = b.type==='axis16' ? `${b.off}~${b.off+1}` : `${b.byte}`;
         const valTxt = b.type==='switch' ? `按下=${b.down}`
           : b.type==='bitmask' ? `点亮位=[${b.bits.map(bit=>'0x'+bit.toString(16).padStart(2,'0')).join(',')}]`
+          // peak 是离基线最远的采集值(见 pickExtreme),vals 仍保留两遍合并后的完整集合供人核对。
+          : b.type==='analog' ? `采集=[${b.vals.join(',')}]，peak=${b.peak}`
           : `采集=[${b.vals.join(',')}]`;
         return `<tr><td>${nameOfKeyStep(k)}</td><td>${byteTxt}${conflictKeys.length?' ⚠':''}</td><td>${b.type}</td>`+
           `<td>${b.base}</td><td>${valTxt}</td>`+
           `<td>${conflictKeys.length?`⚠ 与「${conflictKeys.map(nameOfKeyStep).join('、')}」共用同一字节`:''}</td></tr>`;
       }).join('')+'</tbody></table>';
   }
+  // 共用字节警告(跟逐控件那行小字 ⚠ 不是一回事——那个只说"跟谁冲突",这个是"这字节
+  // 大概率压根不是按键字段"的醒目结论,得单独一段,不能混在表格小字里被扫过去)。
+  const shared=keysSharedByteWarnings(binds);
+  if(shared.length) html += '<p class="note"><b>'+shared.join('<br>')+'</b></p>';
+  // 两遍不一致:不绑定,但得让人看见两遍各自到底测到了哪些字节在打架,不能只在日志里一晃而过。
+  const incKeys=Object.keys(inconsistent).filter(k=>inconsistent[k]);
+  if(incKeys.length){
+    const fmtBytes=a=>(a&&a.length)?'byte'+a.join('、byte'):'无变化';
+    html += '<p class="note">⚠ 两遍结果不一致，未绑定（测不出重复的就不算数）：<br>'+
+      incKeys.map(k=>`${nameOfKeyStep(k)}：第1遍 ${fmtBytes(inconsistent[k].r1)}，第2遍 ${fmtBytes(inconsistent[k].r2)}`)
+        .join('<br>')+'</p>';
+  }
   // 表外推送:窗口期间抓到的、dissector 表里根本没有的推送——只给 cs/ci 和原始 hex,
   // 不解析、不猜含义(KEYS_NOISE_PUSH 已经把常态噪声排除掉了,剩下的才值得看)。
+  // alsoPush 现在是"两遍都见到"才有资格进来的,可信度比原来单轮版本高。
   const pushSteps=Object.keys(alsoPush).filter(k=>alsoPush[k] && alsoPush[k].length);
   if(pushSteps.length){
     html += '<p class="note">'+pushSteps.map(k=>
-      `${nameOfKeyStep(k)} 窗口内还触发了推送：`+alsoPush[k].map(p=>
+      `${nameOfKeyStep(k)} 窗口内两遍都触发了推送：`+alsoPush[k].map(p=>
+        `0x${p.cs.toString(16).padStart(2,'0')}/0x${p.ci.toString(16).padStart(2,'0')} 载荷 ${p.hex}`).join('，')
+    ).join('<br>')+'</p>';
+  }
+  // alsoPushOnce:只在一遍里见到的表外推送——单列且标注"可能是巧合",真机上 04/50 本来就
+  // 会自己冒一下,不跟按键窗口对齐的话不能当"按键事件走了这条通道"的证据。
+  const pushOnceSteps=Object.keys(alsoPushOnce).filter(k=>alsoPushOnce[k] && alsoPushOnce[k].length);
+  if(pushOnceSteps.length){
+    html += '<p class="note">'+pushOnceSteps.map(k=>
+      `${nameOfKeyStep(k)} 窗口内只在一遍里见到推送（可能是巧合）：`+alsoPushOnce[k].map(p=>
         `0x${p.cs.toString(16).padStart(2,'0')}/0x${p.ci.toString(16).padStart(2,'0')} 载荷 ${p.hex}`).join('，')
     ).join('<br>')+'</p>';
   }
@@ -1588,128 +1712,163 @@ async function learnKeys(){
   $('btnKeysStop').hidden=false; $('keys-head').hidden=false;
   const saved=loadKeys();
   const binds={...(saved.binds||{})}, unmapped=[...(saved.unmapped||[])], ambiguous={...(saved.ambiguous||{})};
-  // alsoPush:每一步"顺带记到的表外推送",跟 binds/unmapped/ambiguous 一样存档、一样在重学
-  // 这一步时被 keysDropPrior 清掉——见该函数声明处的注释。
+  // alsoPush:每一步"顺带记到的表外推送(两遍都见到才算数)",跟 binds/unmapped/ambiguous
+  // 一样存档、一样在重学这一步时被 keysDropPrior 清掉——见该函数声明处的注释。
   const alsoPush={...(saved.alsoPush||{})};
-  log('—— 学习手柄按键:全程只监听,一帧都不发(独占 04/57 观测窗,别的任务同时动云台会把'+
+  // inconsistent/alsoPushOnce:两遍复现校验新增的两个桶,同样存档、同样被 keysDropPrior 清掉。
+  const inconsistent={...(saved.inconsistent||{})};
+  const alsoPushOnce={...(saved.alsoPushOnce||{})};
+  log('—— 学习手柄按键:每个控件测两轮,两轮结果不一致就不绑定(测不出重复的就不算数)——'+
+      '全程只监听,一帧都不发(独占 04/57 观测窗,别的任务同时动云台会把'+
       '"按键引起的变化"和"运动引起的变化"搅在一起)——');
   try{
     for(let i=0;i<KEY_STEPS.length;i++){
       if(keysStop) break;
       keysSkip=false;
       const step=KEY_STEPS[i];
-      const baseCounts=await keysCollectWindow(KEYS_BASELINE_MS,
-        `第 ${i+1}/${KEY_STEPS.length} 步：取「${step.name}」空闲基线…`);
-      if(keysStop) break;
-      if(keysSkip){ log(`  ${step.name}：已跳过（基线阶段，未测）`); continue; }
-      // 表外推送只在"按住"这段采集窗口记,基线阶段没人在按键,不该混进这段判定里——
-      // keysPushHook 跟 keysCollectHook 是两个独立的钩子,分别用自己的 finally 清空,互不干扰。
-      const pushSeen=new Map();   // tag('cs/ci',两位十六进制) → {cs, ci, hex}(只留第一帧)
-      keysPushHook = (cs, ci, pl)=>{
-        const tag = cs.toString(16).padStart(2,'0')+'/'+ci.toString(16).padStart(2,'0');
-        if(KEYS_NOISE_PUSH.has(tag) || pushSeen.has(tag)) return;
-        pushSeen.set(tag, {cs, ci, hex: hex(pl)});
-      };
-      let collCounts;
-      try{
-        collCounts=await keysCollectWindow(KEYS_COLLECT_MS,
-          `第 ${i+1}/${KEY_STEPS.length} 步：请按住「${step.name}」约 2 秒，然后松开`);
-      } finally { keysPushHook=null; }
-      if(keysStop) break;
-      if(keysSkip){ log(`  ${step.name}：已跳过（采集阶段，未测）`); continue; }
 
-      // keysDropPrior 要先于下面这行执行——它会把上一轮的 alsoPush[step.key] 一并清掉,
-      // 顺序反了就会把刚采到的新结果自己删掉。
-      keysDropPrior(binds, unmapped, ambiguous, step.key, alsoPush);
-      if(pushSeen.size){
-        alsoPush[step.key]=[...pushSeen.values()];
+      const r1=await keysRunRound(i, step, 1);
+      if(keysStop) break;
+      if(!r1){ log(`  ${step.name}：已跳过（第 1 遍未测完，整步作废）`); continue; }
+
+      $('keys-step').textContent=`第 ${i+1}/${KEY_STEPS.length} 步：松手，准备第 2/2 遍…`; $('keys-eta').textContent='';
+      await keysWait(KEYS_ROUND_GAP_MS);
+      if(keysStop) break;
+      if(keysSkip){ log(`  ${step.name}：已跳过（两遍之间被跳过，整步作废）`); continue; }
+
+      const r2=await keysRunRound(i, step, 2);
+      if(keysStop) break;
+      if(!r2){ log(`  ${step.name}：已跳过（第 2 遍未测完，整步作废）`); continue; }
+
+      // keysDropPrior 要先于下面这些赋值执行——它会把上一轮的 alsoPush/inconsistent/
+      // alsoPushOnce[step.key] 一并清掉,顺序反了就会把刚采到的新结果自己删掉。
+      keysDropPrior(binds, unmapped, ambiguous, step.key, alsoPush, inconsistent, alsoPushOnce);
+
+      // 表外推送:两遍都见到的才进 alsoPush,只在一遍见到的进 alsoPushOnce 并标"可能是巧合"——
+      // 真机上有一条跟按键无关的 04/50 自己冒出来过,单轮出现管不住这种噪声。
+      const tags1=new Set(r1.pushSeen.keys()), tags2=new Set(r2.pushSeen.keys());
+      const pushBoth=[...tags1].filter(t=>tags2.has(t)).map(t=>r1.pushSeen.get(t));
+      const pushOnly=[...new Set([...tags1,...tags2])].filter(t=>!(tags1.has(t)&&tags2.has(t)))
+        .map(t=>r1.pushSeen.get(t)||r2.pushSeen.get(t));
+      if(pushBoth.length){
+        alsoPush[step.key]=pushBoth;
         /* 当场就要打出来。表外推送是这个向导最值钱的产出 —— 真机上 04/50、04/69 这两条
            dissector 指令表里根本没有,只在按键窗口里冒出来。只写进存档和报告的话,人做完
            九步、屏幕上一个字没提,根本不会想到去翻。抓到就说,这才叫"记录"。 */
-        alsoPush[step.key].forEach(p=>log(
-          `    窗口内还触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
+        pushBoth.forEach(p=>log(
+          `    窗口内两遍都触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
           `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}`,'l-ack'));
       }
-      // 判定:采集期任意一字节出现过"基线集合里没有"的值,就算这个字节变了。
-      const changed=[];
-      const len=Math.max(baseCounts.length, collCounts.length);
-      for(let b=0;b<len;b++){
-        const baseSet=baseCounts[b] ? new Set(baseCounts[b].keys()) : new Set();
-        const collMap=collCounts[b];
-        if(!collMap) continue;
-        for(const v of collMap.keys()) if(!baseSet.has(v)){ changed.push(b); break; }
+      if(pushOnly.length){
+        alsoPushOnce[step.key]=pushOnly;
+        pushOnly.forEach(p=>log(
+          `    窗口内只有一遍触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
+          `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}（只见一遍，可能是巧合）`));
       }
 
-      if(changed.length===0){
-        unmapped.push(step.key);
-        log(`  ${step.name}：⚠ 没检测到变化，不绑定（可能这个控件不在 04/57 里，或者按的时候没按到）`,'l-err');
-      }else if(changed.length===1){
-        const byte=changed[0], collMap=collCounts[byte], baseMap=baseCounts[byte]||new Map();
-        const vals=[...collMap.keys()].sort((a,b)=>a-b);
-        const base = pickMode(baseMap);
-        // 位掩码判据,要在 analog/switch 之前判——真机 M 键基线=1(0x01),按下分别变成
-        // 17/33(0x11/0x21):基线的 bit0 全程都在,每次只多点亮一个 bit,旧的"≥3 个不同值
-        // =analog"粗判把它错判成了模拟量。位掩码的指纹是"基线的位全都还在、且每次改动只
-        // 多点亮一两个位",真的模拟量(大幅度跳变)一般凑不出这个形状。
-        /* Kernighan:n &= n-1 每次清掉最低的那个 1,清了几次就有几个 1 —— 所以是 c++,
-           不是 c += n&1。混着写的话只有 bit0 会被数到:popcount(30) 会返回 0 而不是 4,
-           于是「只多点亮一两个位」这个条件几乎恒成立,任何基线为 0 的字节都被判成位掩码。 */
-        const popcount = n => { let c=0; while(n){ n&=n-1; c++; } return c; };
-        const nonBase = vals.filter(v=>v!==base);
-        const isBitmask = base!==null && nonBase.length>0 &&
-          nonBase.every(v => (v & base)===base && popcount(v ^ base)<=2);
-        let type, bind;
-        if(isBitmask){
-          type='bitmask';
-          const bits=[...new Set(nonBase.map(v=>v ^ base))].sort((a,b)=>a-b);
-          bind={byte, base, vals, type, bits};
-          log(`  ${step.name}：✅ byte${byte}，类型=位掩码，基线=0x${base.toString(16).padStart(2,'0')}，`+
-            `按下点亮 ${bits.map(bt=>'0x'+bt.toString(16).padStart(2,'0')).join(' / ')}`,'l-ack');
-        }else{
-          // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
-          type = vals.length>=3 ? 'analog' : 'switch';
-          bind={byte, base, vals, type};
-          // down 只在 switch 时有意义:采集期里"不属于基线集合"的新值中,次数最多的那个——
-          // 按住的时长通常占采集窗口的大头,频次最高的新值最可能就是"按下"稳态,
-          // 而不是按下/松开瞬间那一两帧的过渡值。
-          if(type==='switch') bind.down = pickMode(collMap, new Set(baseMap.keys()));
-          log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}，`+
-            `基线=${base}，采集值=[${vals.join(',')}]`,'l-ack');
-        }
-        const conflictWith=Object.keys(binds).filter(k=>binds[k].byte===byte);
-        if(conflictWith.length) log(`  ⚠ byte${byte} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
-          `「${step.name}」也让它变化 —— 两者可能共用一个字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
-        binds[step.key]=bind;
-      }else if(changed.length===2 && changed[1]===changed[0]+1){
-        // 相邻两字节同时变,是一个 int16 小端量的高低字节,不是歧义——真机摇杆上/下报
-        // byte2、byte3 同时变,左/右报 byte0、byte1 同时变,都是这个形状(摇杆有正负,故转
-        // 有符号)。不相邻或≥3 个字节仍然落下面的歧义分支——真机"扳机→byte0,1,2,3"就是
-        // 两个摇杆轴同时被碰到,不是扳机自己的字节,判歧义才是对的。
-        const off=changed[0];
-        const toI16 = u => u>=0x8000 ? u-0x10000 : u;
-        // 采集窗口只按字节各自记了"值→次数",没留逐帧的高低字节配对——用每个字节里
-        // 出现次数最多的值(pickMode)拼成代表值,跟单字节判定里 down 的取法同一个道理:
-        // 按住稳态占窗口大头,频次最高的组合最可能代表"按下这个方向"的状态。
-        const baseLo=pickMode(baseCounts[off]||new Map())||0, baseHi=pickMode(baseCounts[off+1]||new Map())||0;
-        const collLo=pickMode(collCounts[off])||0, collHi=pickMode(collCounts[off+1])||0;
-        const base=toI16((baseLo | (baseHi<<8)) & 0xffff);
-        const val=toI16((collLo | (collHi<<8)) & 0xffff);
-        const bind={off, span:2, type:'axis16', base, vals:[val]};
-        const conflictWith=Object.keys(binds).filter(k=>{
-          const bb=binds[k], used=bb.type==='axis16'?[bb.off,bb.off+1]:[bb.byte];
-          return used.includes(off) || used.includes(off+1);
-        });
-        if(conflictWith.length) log(`  ⚠ byte${off}~${off+1} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
-          `「${step.name}」也让它变化 —— 两者可能共用字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
-        binds[step.key]=bind;
-        log(`  ${step.name}：✅ byte${off}~${off+1} 合成 int16（摇杆是 16 位量，两个字节一起变`+
-          `是正常的，不是歧义），基线=${base}，采集值=${val}`,'l-ack');
+      const changed1=computeChangedBytes(r1.baseCounts, r1.collCounts);
+      const changed2=computeChangedBytes(r2.baseCounts, r2.collCounts);
+
+      if(!sameByteSet(changed1, changed2)){
+        // 两遍不一致就是这次改动要堵的那个洞:真机上同一个控件连测四次给出四个矛盾答案,
+        // 根因就是原来只测一轮就下结论。这里宁可不绑定,也不能拿一遍的结果当数。
+        inconsistent[step.key]={r1:changed1, r2:changed2};
+        const fmtBytes=a=>a.length?'byte'+a.join('、byte'):'无变化';
+        log(`  ${step.name}：⚠ 两遍结果不一致（第1遍 ${fmtBytes(changed1)}，第2遍 ${fmtBytes(changed2)}），`+
+          `不绑定 —— 测不出重复的就不算数`,'l-err');
       }else{
-        ambiguous[step.key]=changed;
-        log(`  ${step.name}：⚠ ${changed.length} 个字节同时变了（byte ${changed.join('、byte ')}），`+
-          `分不清是哪个，不绑定`,'l-err');
+        // 两遍是同一组字节(含两遍都是空集这个"一致的阴性"),值集合用两轮合并后的结果。
+        const changed=changed1;
+        const baseCounts=mergeByteCounts(r1.baseCounts, r2.baseCounts);
+        const collCounts=mergeByteCounts(r1.collCounts, r2.collCounts);
+
+        if(changed.length===0){
+          unmapped.push(step.key);
+          log(`  ${step.name}：⚠ 两遍都没检测到变化，不绑定（可能这个控件不在 04/57 里，或者按的时候没按到）`,'l-err');
+        }else if(changed.length===1){
+          const byte=changed[0], collMap=collCounts[byte], baseMap=baseCounts[byte]||new Map();
+          const vals=[...collMap.keys()].sort((a,b)=>a-b);
+          const base = pickMode(baseMap);
+          // 位掩码判据,要在 analog/switch 之前判——真机 M 键基线=1(0x01),按下分别变成
+          // 17/33(0x11/0x21):基线的 bit0 全程都在,每次只多点亮一个 bit,旧的"≥3 个不同值
+          // =analog"粗判把它错判成了模拟量。位掩码的指纹是"基线的位全都还在、且每次改动只
+          // 多点亮一两个位",真的模拟量(大幅度跳变)一般凑不出这个形状。
+          /* Kernighan:n &= n-1 每次清掉最低的那个 1,清了几次就有几个 1 —— 所以是 c++,
+             不是 c += n&1。混着写的话只有 bit0 会被数到:popcount(30) 会返回 0 而不是 4,
+             于是「只多点亮一两个位」这个条件几乎恒成立,任何基线为 0 的字节都被判成位掩码。 */
+          const popcount = n => { let c=0; while(n){ n&=n-1; c++; } return c; };
+          const nonBase = vals.filter(v=>v!==base);
+          const isBitmask = base!==null && nonBase.length>0 &&
+            nonBase.every(v => (v & base)===base && popcount(v ^ base)<=2);
+          let type, bind;
+          if(isBitmask){
+            // 位掩码是"按住的稳态占窗口大头"的形状,继续用 pickMode/现有判据,不改成 pickExtreme——
+            // 位掩码本来就要看"哪些位被稳定点亮",不是看"离基线最远走到哪",跟摇杆那种回中的
+            // 控件不是一回事。
+            type='bitmask';
+            const bits=[...new Set(nonBase.map(v=>v ^ base))].sort((a,b)=>a-b);
+            bind={byte, base, vals, type, bits};
+            log(`  ${step.name}：✅ byte${byte}，类型=位掩码，基线=0x${base.toString(16).padStart(2,'0')}，`+
+              `按下点亮 ${bits.map(bt=>'0x'+bt.toString(16).padStart(2,'0')).join(' / ')}（两遍一致）`,'l-ack');
+          }else{
+            // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
+            type = vals.length>=3 ? 'analog' : 'switch';
+            bind={byte, base, vals, type};
+            if(type==='switch'){
+              // down 只在 switch 时有意义:继续用 pickMode——按住的时长通常占采集窗口的大头,
+              // 频次最高的新值最可能就是"按下"稳态,而不是按下/松开瞬间那一两帧的过渡值,
+              // 这跟位掩码同理,都是"稳态占大头"的控件,不该套 pickExtreme。
+              bind.down = pickMode(collMap, new Set(baseMap.keys()));
+            }else{
+              // analog 反过来:vals 保留两遍合并后的完整集合供人核对,另存 peak(离基线最远的
+              // 采集值)当代表值——见 pickExtreme 声明处的注释,这才是"到底测到没测到"该看的数。
+              bind.peak = pickExtreme(collMap, base);
+            }
+            log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}`+
+              `${type==='analog'?`，peak=${bind.peak}`:''}，基线=${base}，采集值=[${vals.join(',')}]（两遍一致）`,'l-ack');
+          }
+          const conflictWith=Object.keys(binds).filter(k=>binds[k].byte===byte);
+          if(conflictWith.length) log(`  ⚠ byte${byte} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
+            `「${step.name}」也让它变化 —— 两者可能共用一个字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
+          binds[step.key]=bind;
+        }else if(changed.length===2 && changed[1]===changed[0]+1){
+          // 相邻两字节同时变,是一个 int16 小端量的高低字节,不是歧义——真机摇杆上/下报
+          // byte2、byte3 同时变,左/右报 byte0、byte1 同时变,都是这个形状(摇杆有正负,故转
+          // 有符号)。不相邻或≥3 个字节仍然落下面的歧义分支——真机"扳机→byte0,1,2,3"就是
+          // 两个摇杆轴同时被碰到,不是扳机自己的字节,判歧义才是对的。
+          const off=changed[0];
+          const toI16 = u => u>=0x8000 ? u-0x10000 : u;
+          const baseLo=pickMode(baseCounts[off]||new Map())||0, baseHi=pickMode(baseCounts[off+1]||new Map())||0;
+          // 代表值改用 pickExtreme(见函数声明处注释):摇杆推一下就自动回中,窗口里绝大多数
+          // 帧都是中位,pickMode 选出来的代表值几乎总等于基线——真机摇杆左就是这样被记成
+          // "基线=0,采集值=0"却打了勾,这里换成"离基线最远"才对得上"到底测没测到行程"这问题。
+          const collLo=pickExtreme(collCounts[off], baseLo), collHi=pickExtreme(collCounts[off+1], baseHi);
+          const base=toI16((baseLo | (baseHi<<8)) & 0xffff);
+          const val=toI16(((collLo??0) | ((collHi??0)<<8)) & 0xffff);
+          if(val===base){
+            // 两个字节各自确实"变过"(不然进不了这个分支),但离基线最远的组合拼出来还是
+            // 基线本身——说明抓到的都是过渡噪声,没抓到真正的行程,不能算测到,不绑定。
+            unmapped.push(step.key);
+            log(`  ${step.name}：⚠ 采集到的值和基线相同，等于没测到，不绑定`,'l-err');
+          }else{
+            const bind={off, span:2, type:'axis16', base, vals:[val]};
+            const conflictWith=Object.keys(binds).filter(k=>{
+              const bb=binds[k], used=bb.type==='axis16'?[bb.off,bb.off+1]:[bb.byte];
+              return used.includes(off) || used.includes(off+1);
+            });
+            if(conflictWith.length) log(`  ⚠ byte${off}~${off+1} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
+              `「${step.name}」也让它变化 —— 两者可能共用字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
+            binds[step.key]=bind;
+            log(`  ${step.name}：✅ byte${off}~${off+1} 合成 int16（摇杆是 16 位量，两个字节一起变`+
+              `是正常的，不是歧义），基线=${base}，采集值=${val}（两遍一致）`,'l-ack');
+          }
+        }else{
+          ambiguous[step.key]=changed;
+          log(`  ${step.name}：⚠ ${changed.length} 个字节同时变了（byte ${changed.join('、byte ')}），`+
+            `分不清是哪个，不绑定`,'l-err');
+        }
       }
-      saveKeys({binds, unmapped, ambiguous, alsoPush});
+      saveKeys({binds, unmapped, ambiguous, alsoPush, inconsistent, alsoPushOnce});
       renderKeysNote(); renderKeysTable();
       if(last0457) paint0457(last0457);   // 立刻用刚学到的映射重画一次"已识别"那行
 
@@ -4356,20 +4515,28 @@ function buildReport(){
   L.push('', '===== 手柄按键映射（04/57）=====');
   {
     // 跟其它节一样从 localStorage 读,不依赖内存变量——换个会话也要读得出结果。
-    const {binds={}, unmapped=[], ambiguous={}, alsoPush={}} = loadKeys();
-    if(!Object.keys(binds).length && !unmapped.length && !Object.keys(ambiguous).length){
+    const {binds={}, unmapped=[], ambiguous={}, alsoPush={}, alsoPushOnce={}, inconsistent={}} = loadKeys();
+    if(!Object.keys(binds).length && !unmapped.length && !Object.keys(ambiguous).length && !Object.keys(inconsistent).length){
       L.push('尚未学习（点「学习手柄按键」走一遍向导——dissector 对这条一个字段都没定义，只能靠人按、页面记）');
     }else{
-      // axis16 占两个字节(off、off+1),跟单字节类型的 byte 字段不是一回事,取用到的字节要分类型算。
-      const bytesOf = b => b.type==='axis16' ? [b.off, b.off+1] : [b.byte];
+      L.push('每个控件测两轮，两轮 changed 字节集合完全相同才绑定——测不出重复的就不算数。');
       for(const s of KEY_STEPS){
         const b=binds[s.key];
         if(b){
           const byteTxt = b.type==='axis16' ? `byte${b.off}~${b.off+1}` : `byte${b.byte}`;
           const valTxt = b.type==='switch' ? `按下=${b.down}`
             : b.type==='bitmask' ? `基线=0x${b.base.toString(16).padStart(2,'0')}，点亮位=[${b.bits.map(bit=>'0x'+bit.toString(16).padStart(2,'0')).join(',')}]`
+            // analog 多带一栏 peak(离基线最远的采集值,见 pickExtreme)——vals 只是完整集合,
+            // 真正拿去判"测没测到"的是 peak,报告里不带这个数,单看 vals 容易误以为已经绑对了。
+            : b.type==='analog' ? `基线=${b.base}，采集值=[${b.vals.join(',')}]，peak=${b.peak}`
             : `基线=${b.base}，采集值=[${b.vals.join(',')}]`;
           L.push(`${s.name}(${s.key})  → ${byteTxt}  类型=${b.type}  ${valTxt}`);
+        }else if(inconsistent[s.key]){
+          // 两遍不一致单列一节里已经有详情,这里仍然逐控件报一句,保持跟 binds/ambiguous/unmapped
+          // 同一个"每个控件都有一行结论"的排版,不能因为不一致就在主列表里消失不见。
+          const fmtBytes=a=>(a&&a.length)?'byte'+a.join('、byte'):'无变化';
+          L.push(`${s.name}(${s.key})  ⚠ 两遍结果不一致（第1遍 ${fmtBytes(inconsistent[s.key].r1)}，`+
+            `第2遍 ${fmtBytes(inconsistent[s.key].r2)}），不绑定 —— 测不出重复的就不算数`);
         }else if(ambiguous[s.key]){
           L.push(`${s.name}(${s.key})  ⚠ 有歧义，byte ${ambiguous[s.key].join('、byte ')} 同时变了，未绑定`);
         }else if(unmapped.includes(s.key)){
@@ -4378,18 +4545,25 @@ function buildReport(){
           L.push(`${s.name}(${s.key})  尚未学习`);
         }
         // 表外推送:不管这一步最终绑没绑成,窗口内抓到的表外推送都要报——按键事件走没走
-        // 04/57 以外的通道，跟这个键最后有没有学成是两件事。
+        // 04/57 以外的通道，跟这个键最后有没有学成是两件事。alsoPush 是两遍都见到的,
+        // alsoPushOnce 只在一遍见到、单列并标"可能是巧合"，别混在一起当同等可信度的证据。
         if(alsoPush[s.key] && alsoPush[s.key].length){
-          L.push('  窗口内还触发了推送：'+alsoPush[s.key].map(p=>
+          L.push('  窗口内两遍都触发了推送：'+alsoPush[s.key].map(p=>
+            `0x${p.cs.toString(16).padStart(2,'0')}/0x${p.ci.toString(16).padStart(2,'0')} 载荷 ${p.hex}`).join('，'));
+        }
+        if(alsoPushOnce[s.key] && alsoPushOnce[s.key].length){
+          L.push('  窗口内只在一遍里见到推送（可能是巧合）：'+alsoPushOnce[s.key].map(p=>
             `0x${p.cs.toString(16).padStart(2,'0')}/0x${p.ci.toString(16).padStart(2,'0')} 载荷 ${p.hex}`).join('，'));
         }
       }
       // 冲突展示跟界面上 renderKeysTable 用同一份判据:同一 byte 出现在多个 binds 里就是冲突,
       // 不额外存一份"冲突表"——存档允许一个字节挂多个 key,冲突只在展示时算出来。
-      const byByte={};
-      Object.keys(binds).forEach(k=>bytesOf(binds[k]).forEach(byte=>(byByte[byte]=byByte[byte]||[]).push(k)));
+      const byByte=keysByteOwners(binds);
       Object.entries(byByte).filter(([,ks])=>ks.length>1).forEach(([byte,ks])=>
         L.push(`⚠ byte${byte} 同时绑了：${ks.map(nameOfKeyStep).join('、')}（不覆盖，两条并列）`));
+      // 共用字节警告(≥3 个控件绑同一字节):跟上面"同时绑了"不是一回事——那个只说冲突,
+      // 这个是"这字节大概率压根不是按键字段"的醒目结论,得单独一行,不能被当成第 4 条并列冲突。
+      keysSharedByteWarnings(binds).forEach(w=>L.push(w));
     }
   }
 
