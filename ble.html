@@ -360,11 +360,15 @@ details:not([open]) > *:not(summary){ display:none }
   <details class="grp"><summary>手柄按键学习（04/57）</summary>
   <div class="grp-body">
   <div class="row">
-    <button id="btnLearnKeys" disabled>学习手柄按键</button>
-    <button id="btnKeysStop" hidden>结束学习</button>
+    <button id="btnKeysWatch" disabled>开始监听</button>
+    <button id="btnKeysRebase" class="minor" hidden>重新取基线</button>
     <button id="btnClearKeys" class="minor">清空按键映射</button>
   </div>
-  <div class="lab-head" id="keys-head" hidden><span id="keys-step">空闲</span><span id="keys-eta"></span></div>
+  <!-- 不再由页面报固定步骤,改成人按什么、这里报刚才哪个字节变了(keys-event),
+       人点下面这排按钮说是哪个控件(keys-label-row);keys-progress 实时报"已记几次". -->
+  <p class="note" id="keys-event">未开始监听</p>
+  <div class="row" id="keys-label-row"></div>
+  <p class="note" id="keys-progress"></p>
   <p class="note" id="keys-note">已学会 0/9 个控件</p>
   <div id="keys-table"></div>
   </div>
@@ -1096,7 +1100,7 @@ function setState(s,txt){
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
-   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnLearnKeys',
+   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnKeysWatch',
    'btnMoveSend','mv0','mv1','mv2','mv3','mv4','mv5','mv6','mv7','mv8',
    'tryPlSel','tryPlCs','tryPlCi','tryPlHex']
     .forEach(i=>$(i).disabled=!on);
@@ -1105,9 +1109,10 @@ function setState(s,txt){
   document.querySelectorAll('.gotoPath').forEach(el=>el.disabled=!on);
   // btnTryPlOne/btnTryPlSweep 不在上面这个数组里——它们还要受 tryPlOk 风险确认框控制,
   // 直接跟着 on 一刀切会在没勾选时被连接状态误点亮,交给 refreshTryPlBtns 统一判。
-  // 断开时手柄按键学习向导要能中止,不能卡在某一步——keysSkip 让它跳出正在等的采集/缓冲窗口,
-  // keysStop 让外层步骤循环收尾。btnClearKeys 不在上面那个数组里(纯本地操作,断没断都能点)。
-  if(!on){ stimAbort=true; recOn=false; keysStop=true; keysSkip=true; }
+  // 断开时手柄按键学习的监听要能自动停——不像旧版靠轮询标志位跳出循环,现在直接调用
+  // keysStopWatching 收尾即可(事件驱动,没有需要跳出的等待循环)。btnClearKeys 不在上面
+  // 那个数组里(纯本地操作,断没断都能点)。
+  if(!on){ stimAbort=true; recOn=false; if(keysWatching) keysStopWatching('设备已断开，监听已自动停止'); }
   $('btnRecOff').disabled=true;
   if(!on){ stopHold(); clearLimit(); pwmForceCenter(); }
   $('btnGotoStop').disabled=true;   // 只在闭环跑起来时才可按
@@ -1398,20 +1403,25 @@ function render0457(bytes){
 /* ════════════ 手柄按键学习向导(04/57) ════════════
    dissector 对 04/57 一个字段都没定义,哪个字节对应哪个键只能靠人按、页面记。
    这一批全程只监听,不发送任何帧——04/57 是云台自己在常驻推的遥测,不需要问它要。
-   基线必须实测:真机 byte4 常态就是 1,假设全零会把每个键都误判成"变了"。 */
+   基线必须实测:真机 byte4 常态就是 1,假设全零会把每个键都误判成"变了"。
+
+   旧版是页面按固定顺序倒数催人按——人跟不上节奏时,按下的动作就落进了下一步的
+   采集窗,于是同一个字节被记到好几个控件名下,界面上显示成"共用同一个字节",
+   其实是错位,不是真的共用。现在反过来:人先按,页面报"刚才哪个字节变了",
+   人再点一下是哪个控件——没有固定节奏,人按多快页面就跟多快。 */
 const KEYS_KEY='om_ble_keys';
-// 步骤顺序即向导播报顺序,来自实体控件清单。expect 只是预期展示用,实测按"采集期
-// 出现过的不同值个数"判 analog/switch,跟这里标的不一致时以实测为准,不硬套。
+// 9 个控件的 key 和中文名,来自实体控件清单——不再是"播报顺序"(旧版按这个顺序倒数
+// 催人按),现在只用来生成命名按钮和报告里的名字,实际测哪个、先测哪个由人自己决定。
 const KEY_STEPS=[
-  {key:'stick_up',    name:'摇杆 上',      expect:'analog'},
-  {key:'stick_down',  name:'摇杆 下',      expect:'analog'},
-  {key:'stick_left',  name:'摇杆 左',      expect:'analog'},
-  {key:'stick_right', name:'摇杆 右',      expect:'analog'},
-  {key:'shutter',     name:'拍摄键',       expect:'switch'},
-  {key:'mode',        name:'M 键',         expect:'switch'},
-  {key:'trigger',     name:'扳机',         expect:'switch'},
-  {key:'zoom_up',     name:'变焦拨轮 上',  expect:'analog'},
-  {key:'zoom_down',   name:'变焦拨轮 下',  expect:'analog'},
+  {key:'stick_up',    name:'摇杆 上'},
+  {key:'stick_down',  name:'摇杆 下'},
+  {key:'stick_left',  name:'摇杆 左'},
+  {key:'stick_right', name:'摇杆 右'},
+  {key:'shutter',     name:'拍摄键'},
+  {key:'mode',        name:'M 键'},
+  {key:'trigger',     name:'扳机'},
+  {key:'zoom_up',     name:'变焦拨轮 上'},
+  {key:'zoom_down',   name:'变焦拨轮 下'},
 ];
 const KEY_STEP_NAME={}; KEY_STEPS.forEach(s=>KEY_STEP_NAME[s.key]=s.name);
 const nameOfKeyStep = key => KEY_STEP_NAME[key]||key;
@@ -1460,16 +1470,16 @@ function describeKeyState(bytes){
   return parts.join(' · ');
 }
 
-/* keysCollectHook:向导某一步的采集窗口打开时,decode() 里 04/57 分支会把每一帧原始载荷
-   转发到这里(见 decode() 的改动)。不用 last0457 轮询,是因为 render0457 在字节没变时会
+/* keysCollectHook:监听打开时,decode() 里 04/57 分支会把每一帧原始载荷转发到这里
+   (见 decode() 的改动)。不用 last0457 轮询,是因为 render0457 在字节没变时会
    提前 return、轮询会在两帧之间漏采样——短暂的一两帧过渡态正是判定要看的东西。 */
 let keysCollectHook=null;
-/* KEYS_NOISE_PUSH:学习窗口里"顺带记录还触发了什么推送"时要排除的常态噪声——这几条云台
+/* KEYS_NOISE_PUSH:事件期间"顺带记录还触发了什么推送"时要排除的常态噪声——这几条云台
    不管按不按键都在推,混进来会把 alsoPush 淹没成流水账,起不到"按键事件走了别的通道"这个
    信号该有的作用。格式跟下面 keysPushHook 拼 tag 的写法一致:两位小写十六进制,不带 0x。 */
 const KEYS_NOISE_PUSH = new Set([
   '04/05',  // 姿态,20~50ms 一帧的常驻遥测,跟按键无关
-  '04/57',  // 手柄状态本身——向导本来就在盯这条,不算"顺带发现"
+  '04/57',  // 手柄状态本身——本来就在盯这条,不算"顺带发现"
   '04/27',  // 异常状态位,常驻推送
   '04/38',  // 延时状态,常驻推送
   '04/1c',  // 云台型号,连上就推,不是按键触发
@@ -1478,46 +1488,50 @@ const KEYS_NOISE_PUSH = new Set([
   '00/00',  // 常驻推送(真机观察,含义未知,dissector 无定义)
   '05/06',  // 电池状态,周期推送
 ]);
-/* keysPushHook:跟 keysCollectHook 是两个独立的挂钩,互不干扰——04/57 之外真机在按键窗口内
+/* keysPushHook:跟 keysCollectHook 是两个独立的挂钩,互不干扰——04/57 之外真机在按键事件里
    还抓到过 dissector 表里根本没有的推送(04/50、04/69),说明按键事件不止走 04/57 一条通道,
    只盯 04/57 会漏。这里不解析载荷,只记 cs/ci 和原始 hex——dissector 连这些 cmdId 都没有,
-   编字段名就是造假。只在 learnKeys 的采集窗口期间挂上,窗口结束就置 null,平时零开销。 */
+   编字段名就是造假。只在一次事件进行期间挂上,事件一冻结就置 null,平时零开销。 */
 let keysPushHook=null;
-let keysRunning=false, keysSkip=false, keysStop=false;
-// 单轮基线/采集时长本身不用变,变的是"测几轮":原来一步只测一轮就下结论,真机上同一个
-// 控件连测四次给出四个矛盾答案,根因就是这里没有"能不能复现"的概念。改成两轮后采集窗口
-// 从 3.0s 缩到 2.5s(总时长打平),KEYS_ROUND_GAP_MS 是两轮之间"松手"的缓冲——给被测控件
-// 一个明确回到静止态的窗口,不然第二轮的基线会被第一轮按压的尾迹污染,两轮就不是独立观测了。
-const KEYS_BASELINE_MS=1500, KEYS_COLLECT_MS=2500, KEYS_ROUND_GAP_MS=800, KEYS_GAP_MS=1000;
 
-// 取一段窗口里逐字节"出现过的值→次数"。留次数不是只留集合:pickMode 要拿"次数最多"
-// 当"最能代表这段时间的状态"——基线可能因为遥测噪声不是单一值,按下期间也可能混进
-// 按下前/松开后那一两帧的过渡值,次数最多的那个比"随便挑一个"更可信。
-async function keysCollectWindow(ms, label){
-  $('keys-step').textContent=label;
-  const counts=[];
-  keysCollectHook = bytes=>{
-    for(let i=0;i<bytes.length;i++){
-      if(!counts[i]) counts[i]=new Map();
-      counts[i].set(bytes[i], (counts[i].get(bytes[i])||0)+1);
-    }
-  };
-  const t0=Date.now();
-  try{
-    while(true){
-      const left=ms-(Date.now()-t0);
-      if(left<=0 || keysStop || keysSkip) break;
-      $('keys-eta').textContent=(left/1000).toFixed(1)+'s';
-      await sleep(Math.min(100,left));
-    }
-  } finally { keysCollectHook=null; }
-  return counts;
+/* 新交互的状态机:不再有"第几步第几轮"这种进度,只剩"在不在监听""有没有一份事件
+   正攒着""有没有一份事件冻结了等人命名""每个控件攒到第几次观测"这几件事。 */
+let keysWatching=false;      // 是否处于监听中——只有这时才挂 keysCollectHook,平时零开销
+let keysBaseCounts=null;     // 基线:开局静置期间逐字节"值→出现次数"(pickMode 要用次数选代表值)
+let keysEventCounts=null;    // 当前事件(从检测到偏离,到 600ms 静默)累计的逐字节计数;不在事件中为 null
+let keysEventPush=null;      // 当前事件期间 keysPushHook 收到的表外推送:tag('cs/ci')→{cs,ci,hex}
+let keysEventTimer=null;     // 600ms"没有新偏离就判定事件结束"的看门狗,每来一帧偏离就重置
+let keysPendingEvent=null;   // 冻结后、等待人命名的事件:{changed,counts,push,at}
+let keysFirstObs={};         // key → 该控件已经攒到的第一次观测,等第二次核对:{changed,counts,push}
+const KEYS_BASE_MS=1500;     // 全程唯一一次强制等待:开局静置取基线
+const KEYS_EVENT_GAP_MS=600; // 事件判定用的静默门槛——见文件顶部这一节的注释
+
+// 逐字节累计"值→出现次数"——基线窗口和事件窗口都要用同一套累计方式,pickMode 才能
+// 在两处都拿到"次数最多的代表值"这个一致的语义,不能一处存集合一处存次数。
+function keysAccumBytes(counts, bytes){
+  for(let i=0;i<bytes.length;i++){
+    if(!counts[i]) counts[i]=new Map();
+    counts[i].set(bytes[i], (counts[i].get(bytes[i])||0)+1);
+  }
 }
-async function keysWait(ms){
-  const t0=Date.now();
-  // 也要看 keysSkip:两轮之间"松手"的缓冲、跟下一步之间的间隔都算这一步的一部分,
-  // 按了跳过就该立刻放行,不然人明明点了跳过还要干等这段本来就没意义的等待。
-  while(Date.now()-t0<ms){ if(keysStop || keysSkip) break; await sleep(100); }
+/* 事件触发判据:当前帧任一字节的值不在基线窗口出现过的值集合里,就算这一帧在"偏离"。
+   跟下面的 computeChangedBytes 判"changed"用的是同一条准则(baseSet 里没见过就算变了),
+   这里只是逐帧问"现在偏不偏离",computeChangedBytes 是事后问"这段窗口有没有偏离过"。 */
+function keysFrameDeviates(bytes){
+  for(let i=0;i<bytes.length;i++){
+    const baseSet=keysBaseCounts[i];
+    if(!baseSet || !baseSet.has(bytes[i])) return true;
+  }
+  return false;
+}
+// 开局静置取基线——全程唯一一次强制等待,不能省:真机 byte4 常态就是 1,
+// 假设基线全零会把每个控件都误判成"变了"。文案由调用方(开始监听/重新取基线)负责。
+async function keysTakeBaseline(){
+  const counts=[];
+  keysCollectHook = bytes=>keysAccumBytes(counts, bytes);
+  await sleep(KEYS_BASE_MS);
+  keysCollectHook=null;
+  return counts;
 }
 function pickMode(map, exclude){
   let bestV=null, bestN=-1;
@@ -1584,26 +1598,42 @@ function keysDropPrior(binds, unmapped, ambiguous, key, alsoPush, inconsistent, 
   if(alsoPushOnce) delete alsoPushOnce[key];
   const i=unmapped.indexOf(key); if(i>=0) unmapped.splice(i,1);
 }
-/* keysRunRound:两轮流程里"取基线→采集(带表外推送监听)"这一段完全一样,只有播报文案里的
-   轮次号不同——抽成函数是为了不让两份几乎一样的采集代码分开改,改一处漏一处。
-   返回 null 表示这一轮没走完(被 stop 或 skip 打断),调用方据此判断是整体停止还是跳过整步。 */
-async function keysRunRound(i, step, round){
-  const baseCounts=await keysCollectWindow(KEYS_BASELINE_MS,
-    `第 ${i+1}/${KEY_STEPS.length} 步 · 第 ${round}/2 遍：取「${step.name}」空闲基线…`);
-  if(keysStop || keysSkip) return null;
-  const pushSeen=new Map();   // tag('cs/ci',两位十六进制) → {cs, ci, hex}(只留第一帧)
-  keysPushHook = (cs, ci, pl)=>{
-    const tag = cs.toString(16).padStart(2,'0')+'/'+ci.toString(16).padStart(2,'0');
-    if(KEYS_NOISE_PUSH.has(tag) || pushSeen.has(tag)) return;
-    pushSeen.set(tag, {cs, ci, hex: hex(pl)});
-  };
-  let collCounts;
-  try{
-    collCounts=await keysCollectWindow(KEYS_COLLECT_MS,
-      `第 ${i+1}/${KEY_STEPS.length} 步 · 第 ${round}/2 遍：请按住「${step.name}」约 2 秒，然后松开`);
-  } finally { keysPushHook=null; }
-  if(keysStop || keysSkip) return null;
-  return {baseCounts, collCounts, pushSeen};
+/* keysOnFrame:keysCollectHook 挂着时,每一帧 04/57 都会走到这里——不管当前有没有
+   事件在进行。事件外只关心"这一帧算不算偏离基线",事件内则不管偏不偏离都要计入
+   逐字节计数(哪怕是回到基线的帧,也是"事件持续到这里"的证据)。 */
+function keysOnFrame(bytes){
+  if(!keysWatching) return;
+  const deviates=keysFrameDeviates(bytes);
+  if(keysEventCounts===null){
+    if(!deviates) return;   // 静止帧,事件外不用管
+    keysEventCounts=[]; keysEventPush={};
+    // 表外推送钩子只在事件进行期间挂着,跟事件窗口同生共死——见其声明处注释
+    keysPushHook=(cs, ci, pl)=>{
+      const tag=cs.toString(16).padStart(2,'0')+'/'+ci.toString(16).padStart(2,'0');
+      if(KEYS_NOISE_PUSH.has(tag) || keysEventPush[tag]) return;
+      keysEventPush[tag]={cs, ci, hex: hex(pl)};
+    };
+  }
+  keysAccumBytes(keysEventCounts, bytes);
+  /* 只有仍在偏离的帧才续命——回到基线的帧不刷新倒计时,让它自然数到 KEYS_EVENT_GAP_MS
+     结束。这一条判据同时覆盖了"人松手回到基线"和"帧根本停了(比如连接卡顿)"两种
+     情况:两种情况下都不会再有偏离帧来续命,600ms 后一样会冻结。 */
+  if(deviates){
+    if(keysEventTimer) clearTimeout(keysEventTimer);
+    keysEventTimer=setTimeout(keysFreezeEvent, KEYS_EVENT_GAP_MS);
+  }
+}
+// 事件结束:冻结当前累计,交给人命名。changed 复用下面的 computeChangedBytes——
+// 判据跟事后统计"这段窗口有没有变过"完全一样,不能因为这里是实时流就换一套标准。
+function keysFreezeEvent(){
+  keysEventTimer=null;
+  const counts=keysEventCounts, push=keysEventPush;
+  keysEventCounts=null; keysEventPush=null; keysPushHook=null;
+  const changed=computeChangedBytes(keysBaseCounts, counts);
+  if(!changed.length) return;   // 触发过偏离但事后一算没有真变化(理论上不该发生,防御一下)
+  if(keysPendingEvent) log('按键学习：上一次变化还没命名就来了新的，已用新的替换','l-err');
+  keysPendingEvent={changed, counts, push, at:Date.now()};
+  keysRenderEvent();
 }
 // 冲突展示、共用字节警告、报告里的按键节都要拿"哪个字节被哪些控件绑了"当基础数据,
 // 抽成一份公用统计,不然三处各写各的容易口径对不上。
@@ -1704,190 +1734,291 @@ function renderKeysTable(){
   el.innerHTML = html;
 }
 
-async function learnKeys(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true; keysRunning=true; keysStop=false;
-  $('btnLearnKeys').textContent='跳过这一步';
-  $('btnKeysStop').hidden=false; $('keys-head').hidden=false;
+// 展示刚捕捉到的事件——没有事件时按"在不在监听"分两种话术,监听中说"等待按键…"
+// 好让人知道页面在盯着,没监听就直说"未开始监听"。
+function keysRenderEvent(){
+  const el=$('keys-event'); if(!el) return;
+  if(!keysWatching){ el.textContent='未开始监听'; return; }
+  if(!keysPendingEvent){ el.textContent='等待按键…'; return; }
+  const {changed, counts}=keysPendingEvent;
+  const fmtHex=v=>'0x'+v.toString(16).padStart(2,'0');
+  const lines=changed.map(b=>{
+    const baseV=pickMode(keysBaseCounts[b]||new Map());
+    const vals=[...(counts[b]||new Map()).keys()].sort((x,y)=>x-y);
+    return `byte${b}　${baseV!==null?fmtHex(baseV):'?'} → ${vals.map(fmtHex).join('/')}`;
+  });
+  el.innerHTML='刚捕捉到一次变化：<br>'+lines.join('<br>')+'<br>这是哪个？';
+}
+function keysSetProgress(text){ const el=$('keys-progress'); if(el) el.textContent=text; }
+
+// 9 个控件名按钮 + 忽略,只需要建一次;是否可点只看在不在监听——见 keysLabelEvent
+// 关于"没有事件时点名字也算一次观测"的处理。
+function keysRenderLabelRow(){
+  const row=$('keys-label-row'); if(!row) return;
+  if(!row.children.length){
+    row.innerHTML=KEY_STEPS.map(s=>`<button id="kl-${s.key}" class="minor">${s.name}</button>`).join('')
+      +'<button id="kl-ignore" class="minor">忽略</button>';
+    KEY_STEPS.forEach(s=>{ $('kl-'+s.key).onclick=()=>keysLabelEvent(s.key); });
+    $('kl-ignore').onclick=keysIgnoreEvent;
+  }
+  row.querySelectorAll('button').forEach(b=>b.disabled=!keysWatching);
+}
+// 人点一个控件名。如果还有一份事件正在攒(没到 600ms 静默),人已经在用这一下点击
+// 告诉我们"就是刚才这下",没必要死等门槛,直接收尾用当前已攒到的数据。
+function keysLabelEvent(key){
+  if(!keysWatching) return;
+  if(keysEventCounts!==null){
+    if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
+    keysFreezeEvent();
+  }
+  const ev=keysPendingEvent;
+  keysPendingEvent=null;
+  // 没有事件就是"按了没反应"——changed=[] 是"这控件不在 04/57 里"这个阴性结论
+  // 必须的另一半证据,不能只让人点个名字却什么都不记。
+  keysCommitObservation(key, {changed: ev?ev.changed:[], counts: ev?ev.counts:[], push: ev?ev.push:{}});
+  keysRenderEvent();
+}
+// 忽略:不管是已经冻结等命名的事件,还是还在攒的事件,一律清空不记。
+function keysIgnoreEvent(){
+  if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
+  keysEventCounts=null; keysEventPush=null; keysPushHook=null;
+  keysPendingEvent=null;
+  keysRenderEvent();
+}
+
+/* keysCommitObservation:同一个控件要连着攒两次观测才下结论——这是"测完一个再测
+   下一个"的底线,只是现在这两次是人连着按的,不用等两轮定时窗口。已经有结论的
+   控件再点一次,视为重新学习:先用 keysDropPrior 清掉旧结论,这次观测从"第一次"
+   算起,不能让新观测跟旧结论的残留混着判"两次是否一致"。 */
+function keysCommitObservation(key, obs){
   const saved=loadKeys();
   const binds={...(saved.binds||{})}, unmapped=[...(saved.unmapped||[])], ambiguous={...(saved.ambiguous||{})};
-  // alsoPush:每一步"顺带记到的表外推送(两遍都见到才算数)",跟 binds/unmapped/ambiguous
-  // 一样存档、一样在重学这一步时被 keysDropPrior 清掉——见该函数声明处的注释。
-  const alsoPush={...(saved.alsoPush||{})};
-  // inconsistent/alsoPushOnce:两遍复现校验新增的两个桶,同样存档、同样被 keysDropPrior 清掉。
+  const alsoPush={...(saved.alsoPush||{})}, alsoPushOnce={...(saved.alsoPushOnce||{})};
   const inconsistent={...(saved.inconsistent||{})};
-  const alsoPushOnce={...(saved.alsoPushOnce||{})};
-  log('—— 学习手柄按键:每个控件测两轮,两轮结果不一致就不绑定(测不出重复的就不算数)——'+
-      '全程只监听,一帧都不发(独占 04/57 观测窗,别的任务同时动云台会把'+
-      '"按键引起的变化"和"运动引起的变化"搅在一起)——');
-  try{
-    for(let i=0;i<KEY_STEPS.length;i++){
-      if(keysStop) break;
-      keysSkip=false;
-      const step=KEY_STEPS[i];
 
-      const r1=await keysRunRound(i, step, 1);
-      if(keysStop) break;
-      if(!r1){ log(`  ${step.name}：已跳过（第 1 遍未测完，整步作废）`); continue; }
-
-      $('keys-step').textContent=`第 ${i+1}/${KEY_STEPS.length} 步：松手，准备第 2/2 遍…`; $('keys-eta').textContent='';
-      await keysWait(KEYS_ROUND_GAP_MS);
-      if(keysStop) break;
-      if(keysSkip){ log(`  ${step.name}：已跳过（两遍之间被跳过，整步作废）`); continue; }
-
-      const r2=await keysRunRound(i, step, 2);
-      if(keysStop) break;
-      if(!r2){ log(`  ${step.name}：已跳过（第 2 遍未测完，整步作废）`); continue; }
-
-      // keysDropPrior 要先于下面这些赋值执行——它会把上一轮的 alsoPush/inconsistent/
-      // alsoPushOnce[step.key] 一并清掉,顺序反了就会把刚采到的新结果自己删掉。
-      keysDropPrior(binds, unmapped, ambiguous, step.key, alsoPush, inconsistent, alsoPushOnce);
-
-      // 表外推送:两遍都见到的才进 alsoPush,只在一遍见到的进 alsoPushOnce 并标"可能是巧合"——
-      // 真机上有一条跟按键无关的 04/50 自己冒出来过,单轮出现管不住这种噪声。
-      const tags1=new Set(r1.pushSeen.keys()), tags2=new Set(r2.pushSeen.keys());
-      const pushBoth=[...tags1].filter(t=>tags2.has(t)).map(t=>r1.pushSeen.get(t));
-      const pushOnly=[...new Set([...tags1,...tags2])].filter(t=>!(tags1.has(t)&&tags2.has(t)))
-        .map(t=>r1.pushSeen.get(t)||r2.pushSeen.get(t));
-      if(pushBoth.length){
-        alsoPush[step.key]=pushBoth;
-        /* 当场就要打出来。表外推送是这个向导最值钱的产出 —— 真机上 04/50、04/69 这两条
-           dissector 指令表里根本没有,只在按键窗口里冒出来。只写进存档和报告的话,人做完
-           九步、屏幕上一个字没提,根本不会想到去翻。抓到就说,这才叫"记录"。 */
-        pushBoth.forEach(p=>log(
-          `    窗口内两遍都触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
-          `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}`,'l-ack'));
-      }
-      if(pushOnly.length){
-        alsoPushOnce[step.key]=pushOnly;
-        pushOnly.forEach(p=>log(
-          `    窗口内只有一遍触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
-          `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}（只见一遍，可能是巧合）`));
-      }
-
-      const changed1=computeChangedBytes(r1.baseCounts, r1.collCounts);
-      const changed2=computeChangedBytes(r2.baseCounts, r2.collCounts);
-
-      if(!sameByteSet(changed1, changed2)){
-        // 两遍不一致就是这次改动要堵的那个洞:真机上同一个控件连测四次给出四个矛盾答案,
-        // 根因就是原来只测一轮就下结论。这里宁可不绑定,也不能拿一遍的结果当数。
-        inconsistent[step.key]={r1:changed1, r2:changed2};
-        const fmtBytes=a=>a.length?'byte'+a.join('、byte'):'无变化';
-        log(`  ${step.name}：⚠ 两遍结果不一致（第1遍 ${fmtBytes(changed1)}，第2遍 ${fmtBytes(changed2)}），`+
-          `不绑定 —— 测不出重复的就不算数`,'l-err');
-      }else{
-        // 两遍是同一组字节(含两遍都是空集这个"一致的阴性"),值集合用两轮合并后的结果。
-        const changed=changed1;
-        const baseCounts=mergeByteCounts(r1.baseCounts, r2.baseCounts);
-        const collCounts=mergeByteCounts(r1.collCounts, r2.collCounts);
-
-        if(changed.length===0){
-          unmapped.push(step.key);
-          log(`  ${step.name}：⚠ 两遍都没检测到变化，不绑定（可能这个控件不在 04/57 里，或者按的时候没按到）`,'l-err');
-        }else if(changed.length===1){
-          const byte=changed[0], collMap=collCounts[byte], baseMap=baseCounts[byte]||new Map();
-          const vals=[...collMap.keys()].sort((a,b)=>a-b);
-          const base = pickMode(baseMap);
-          // 位掩码判据,要在 analog/switch 之前判——真机 M 键基线=1(0x01),按下分别变成
-          // 17/33(0x11/0x21):基线的 bit0 全程都在,每次只多点亮一个 bit,旧的"≥3 个不同值
-          // =analog"粗判把它错判成了模拟量。位掩码的指纹是"基线的位全都还在、且每次改动只
-          // 多点亮一两个位",真的模拟量(大幅度跳变)一般凑不出这个形状。
-          /* Kernighan:n &= n-1 每次清掉最低的那个 1,清了几次就有几个 1 —— 所以是 c++,
-             不是 c += n&1。混着写的话只有 bit0 会被数到:popcount(30) 会返回 0 而不是 4,
-             于是「只多点亮一两个位」这个条件几乎恒成立,任何基线为 0 的字节都被判成位掩码。 */
-          const popcount = n => { let c=0; while(n){ n&=n-1; c++; } return c; };
-          const nonBase = vals.filter(v=>v!==base);
-          const isBitmask = base!==null && nonBase.length>0 &&
-            nonBase.every(v => (v & base)===base && popcount(v ^ base)<=2);
-          let type, bind;
-          if(isBitmask){
-            // 位掩码是"按住的稳态占窗口大头"的形状,继续用 pickMode/现有判据,不改成 pickExtreme——
-            // 位掩码本来就要看"哪些位被稳定点亮",不是看"离基线最远走到哪",跟摇杆那种回中的
-            // 控件不是一回事。
-            type='bitmask';
-            const bits=[...new Set(nonBase.map(v=>v ^ base))].sort((a,b)=>a-b);
-            bind={byte, base, vals, type, bits};
-            log(`  ${step.name}：✅ byte${byte}，类型=位掩码，基线=0x${base.toString(16).padStart(2,'0')}，`+
-              `按下点亮 ${bits.map(bt=>'0x'+bt.toString(16).padStart(2,'0')).join(' / ')}（两遍一致）`,'l-ack');
-          }else{
-            // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
-            type = vals.length>=3 ? 'analog' : 'switch';
-            bind={byte, base, vals, type};
-            if(type==='switch'){
-              // down 只在 switch 时有意义:继续用 pickMode——按住的时长通常占采集窗口的大头,
-              // 频次最高的新值最可能就是"按下"稳态,而不是按下/松开瞬间那一两帧的过渡值,
-              // 这跟位掩码同理,都是"稳态占大头"的控件,不该套 pickExtreme。
-              bind.down = pickMode(collMap, new Set(baseMap.keys()));
-            }else{
-              // analog 反过来:vals 保留两遍合并后的完整集合供人核对,另存 peak(离基线最远的
-              // 采集值)当代表值——见 pickExtreme 声明处的注释,这才是"到底测到没测到"该看的数。
-              bind.peak = pickExtreme(collMap, base);
-            }
-            log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}`+
-              `${type==='analog'?`，peak=${bind.peak}`:''}，基线=${base}，采集值=[${vals.join(',')}]（两遍一致）`,'l-ack');
-          }
-          const conflictWith=Object.keys(binds).filter(k=>binds[k].byte===byte);
-          if(conflictWith.length) log(`  ⚠ byte${byte} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
-            `「${step.name}」也让它变化 —— 两者可能共用一个字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
-          binds[step.key]=bind;
-        }else if(changed.length===2 && changed[1]===changed[0]+1){
-          // 相邻两字节同时变,是一个 int16 小端量的高低字节,不是歧义——真机摇杆上/下报
-          // byte2、byte3 同时变,左/右报 byte0、byte1 同时变,都是这个形状(摇杆有正负,故转
-          // 有符号)。不相邻或≥3 个字节仍然落下面的歧义分支——真机"扳机→byte0,1,2,3"就是
-          // 两个摇杆轴同时被碰到,不是扳机自己的字节,判歧义才是对的。
-          const off=changed[0];
-          const toI16 = u => u>=0x8000 ? u-0x10000 : u;
-          const baseLo=pickMode(baseCounts[off]||new Map())||0, baseHi=pickMode(baseCounts[off+1]||new Map())||0;
-          // 代表值改用 pickExtreme(见函数声明处注释):摇杆推一下就自动回中,窗口里绝大多数
-          // 帧都是中位,pickMode 选出来的代表值几乎总等于基线——真机摇杆左就是这样被记成
-          // "基线=0,采集值=0"却打了勾,这里换成"离基线最远"才对得上"到底测没测到行程"这问题。
-          const collLo=pickExtreme(collCounts[off], baseLo), collHi=pickExtreme(collCounts[off+1], baseHi);
-          const base=toI16((baseLo | (baseHi<<8)) & 0xffff);
-          const val=toI16(((collLo??0) | ((collHi??0)<<8)) & 0xffff);
-          if(val===base){
-            // 两个字节各自确实"变过"(不然进不了这个分支),但离基线最远的组合拼出来还是
-            // 基线本身——说明抓到的都是过渡噪声,没抓到真正的行程,不能算测到,不绑定。
-            unmapped.push(step.key);
-            log(`  ${step.name}：⚠ 采集到的值和基线相同，等于没测到，不绑定`,'l-err');
-          }else{
-            const bind={off, span:2, type:'axis16', base, vals:[val]};
-            const conflictWith=Object.keys(binds).filter(k=>{
-              const bb=binds[k], used=bb.type==='axis16'?[bb.off,bb.off+1]:[bb.byte];
-              return used.includes(off) || used.includes(off+1);
-            });
-            if(conflictWith.length) log(`  ⚠ byte${off}~${off+1} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
-              `「${step.name}」也让它变化 —— 两者可能共用字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
-            binds[step.key]=bind;
-            log(`  ${step.name}：✅ byte${off}~${off+1} 合成 int16（摇杆是 16 位量，两个字节一起变`+
-              `是正常的，不是歧义），基线=${base}，采集值=${val}（两遍一致）`,'l-ack');
-          }
-        }else{
-          ambiguous[step.key]=changed;
-          log(`  ${step.name}：⚠ ${changed.length} 个字节同时变了（byte ${changed.join('、byte ')}），`+
-            `分不清是哪个，不绑定`,'l-err');
-        }
-      }
-      saveKeys({binds, unmapped, ambiguous, alsoPush, inconsistent, alsoPushOnce});
-      renderKeysNote(); renderKeysTable();
-      if(last0457) paint0457(last0457);   // 立刻用刚学到的映射重画一次"已识别"那行
-
-      if(i<KEY_STEPS.length-1 && !keysStop){
-        $('keys-step').textContent='松手，准备下一步…'; $('keys-eta').textContent='';
-        await keysWait(KEYS_GAP_MS);
-      }
-    }
-  } finally {
-    keysCollectHook=null; keysPushHook=null; featRunning=false; keysRunning=false; keysSkip=false;
-    $('btnLearnKeys').textContent='学习手柄按键'; $('btnLearnKeys').disabled=!linkOn;
-    $('btnKeysStop').hidden=true; $('keys-head').hidden=true;
-    $('keys-step').textContent='空闲'; $('keys-eta').textContent='';
+  const hadVerdict=!!binds[key] || unmapped.includes(key) || !!ambiguous[key] || !!inconsistent[key];
+  if(hadVerdict){
+    keysDropPrior(binds, unmapped, ambiguous, key, alsoPush, inconsistent, alsoPushOnce);
+    saveKeys({binds, unmapped, ambiguous, alsoPush, inconsistent, alsoPushOnce});
     renderKeysNote(); renderKeysTable();
-    log('—— 学习结束 ——');
+    delete keysFirstObs[key];
+    log(`${nameOfKeyStep(key)}：已有结论，重新学习——旧结论已清空`);
   }
+
+  const first=keysFirstObs[key];
+  if(!first){
+    keysFirstObs[key]=obs;
+    log(`${nameOfKeyStep(key)}：已记 1 次（再按一次确认）`);
+    keysSetProgress(`已记：${nameOfKeyStep(key)} 1 次（再按一次确认）`);
+    return;
+  }
+  delete keysFirstObs[key];
+  keysFinalizeKey(key, first, obs, binds, unmapped, ambiguous, inconsistent, alsoPush, alsoPushOnce);
 }
-$('btnLearnKeys').onclick=()=>{ if(keysRunning) keysSkip=true; else learnKeys(); };
-$('btnKeysStop').onclick=()=>{ keysStop=true; keysSkip=true; };
+
+/* keysFinalizeKey:两次观测比对——判定分档逻辑照抄自旧版(单字节/相邻两字节合成
+   int16/位掩码/模拟量,以及 pickMode/pickExtreme/popcount),一行没改。旧版基线要
+   合并是因为两轮各自单独取;现在基线全程只取一次(keysBaseCounts),两次事件问的
+   是同一个基线,不用再合并,直接用。采集值仍然合并两次事件的计数,跟旧版一样。 */
+function keysFinalizeKey(key, obs1, obs2, binds, unmapped, ambiguous, inconsistent, alsoPush, alsoPushOnce){
+  const step=KEY_STEPS.find(s=>s.key===key);
+  const changed1=obs1.changed, changed2=obs2.changed;
+
+  // 表外推送:两次都出现的进 alsoPush,只出现一次的进 alsoPushOnce——判据跟旧版
+  // 一模一样,只是数据来源从"两轮各自的 pushSeen"换成"两次事件各自的 push"。
+  const tags1=new Set(Object.keys(obs1.push||{})), tags2=new Set(Object.keys(obs2.push||{}));
+  const pushBoth=[...tags1].filter(t=>tags2.has(t)).map(t=>obs1.push[t]);
+  const pushOnly=[...new Set([...tags1,...tags2])].filter(t=>!(tags1.has(t)&&tags2.has(t)))
+    .map(t=>obs1.push[t]||obs2.push[t]);
+  if(pushBoth.length){
+    alsoPush[key]=pushBoth;
+    /* 当场就要打出来。表外推送是这个向导最值钱的产出 —— 真机上 04/50、04/69 这两条
+       dissector 指令表里根本没有,只在按键事件里冒出来。只写进存档和报告的话,人命名完
+       九个控件、屏幕上一个字没提,根本不会想到去翻。抓到就说,这才叫"记录"。 */
+    pushBoth.forEach(p=>log(
+      `    事件期间两次都触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
+      `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}`,'l-ack'));
+  }
+  if(pushOnly.length){
+    alsoPushOnce[key]=pushOnly;
+    pushOnly.forEach(p=>log(
+      `    事件期间只有一次触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
+      `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}（只见一次，可能是巧合）`));
+  }
+
+  if(!sameByteSet(changed1, changed2)){
+    // 两次不一致就是这次改动要堵的那个洞:真机上同一个控件连测四次给出四个矛盾答案,
+    // 根因就是原来只测一轮就下结论。这里宁可不绑定,也不能拿一次的结果当数。
+    inconsistent[key]={r1:changed1, r2:changed2};
+    const fmtBytes=a=>a.length?'byte'+a.join('、byte'):'无变化';
+    log(`  ${step.name}：⚠ 两次结果不一致（第1次 ${fmtBytes(changed1)}，第2次 ${fmtBytes(changed2)}），`+
+      `不绑定 —— 测不出重复的就不算数`,'l-err');
+  }else{
+    // 两次是同一组字节(含两次都是空集这个"一致的阴性"),值集合用两次合并后的结果;
+    // 基线不用合并,全程只取过一次(keysBaseCounts),两次事件问的是同一个基线。
+    const changed=changed1;
+    const baseCounts=keysBaseCounts;
+    const collCounts=mergeByteCounts(obs1.counts, obs2.counts);
+
+    if(changed.length===0){
+      unmapped.push(key);
+      log(`  ${step.name}：⚠ 两次都没检测到变化，不绑定（可能这个控件不在 04/57 里，或者按的时候没按到）`,'l-err');
+    }else if(changed.length===1){
+      const byte=changed[0], collMap=collCounts[byte], baseMap=baseCounts[byte]||new Map();
+      const vals=[...collMap.keys()].sort((a,b)=>a-b);
+      const base = pickMode(baseMap);
+      // 位掩码判据,要在 analog/switch 之前判——真机 M 键基线=1(0x01),按下分别变成
+      // 17/33(0x11/0x21):基线的 bit0 全程都在,每次只多点亮一个 bit,旧的"≥3 个不同值
+      // =analog"粗判把它错判成了模拟量。位掩码的指纹是"基线的位全都还在、且每次改动只
+      // 多点亮一两个位",真的模拟量(大幅度跳变)一般凑不出这个形状。
+      /* Kernighan:n &= n-1 每次清掉最低的那个 1,清了几次就有几个 1 —— 所以是 c++,
+         不是 c += n&1。混着写的话只有 bit0 会被数到:popcount(30) 会返回 0 而不是 4,
+         于是「只多点亮一两个位」这个条件几乎恒成立,任何基线为 0 的字节都被判成位掩码。 */
+      const popcount = n => { let c=0; while(n){ n&=n-1; c++; } return c; };
+      const nonBase = vals.filter(v=>v!==base);
+      const isBitmask = base!==null && nonBase.length>0 &&
+        nonBase.every(v => (v & base)===base && popcount(v ^ base)<=2);
+      let type, bind;
+      if(isBitmask){
+        // 位掩码是"按住的稳态占窗口大头"的形状,继续用 pickMode/现有判据,不改成 pickExtreme——
+        // 位掩码本来就要看"哪些位被稳定点亮",不是看"离基线最远走到哪",跟摇杆那种回中的
+        // 控件不是一回事。
+        type='bitmask';
+        const bits=[...new Set(nonBase.map(v=>v ^ base))].sort((a,b)=>a-b);
+        bind={byte, base, vals, type, bits};
+        log(`  ${step.name}：✅ byte${byte}，类型=位掩码，基线=0x${base.toString(16).padStart(2,'0')}，`+
+          `按下点亮 ${bits.map(bt=>'0x'+bt.toString(16).padStart(2,'0')).join(' / ')}（两次一致）`,'l-ack');
+      }else{
+        // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
+        type = vals.length>=3 ? 'analog' : 'switch';
+        bind={byte, base, vals, type};
+        if(type==='switch'){
+          // down 只在 switch 时有意义:继续用 pickMode——按住的时长通常占采集窗口的大头,
+          // 频次最高的新值最可能就是"按下"稳态,而不是按下/松开瞬间那一两帧的过渡值,
+          // 这跟位掩码同理,都是"稳态占大头"的控件,不该套 pickExtreme。
+          bind.down = pickMode(collMap, new Set(baseMap.keys()));
+        }else{
+          // analog 反过来:vals 保留两次合并后的完整集合供人核对,另存 peak(离基线最远的
+          // 采集值)当代表值——见 pickExtreme 声明处的注释,这才是"到底测到没测到"该看的数。
+          bind.peak = pickExtreme(collMap, base);
+        }
+        log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}`+
+          `${type==='analog'?`，peak=${bind.peak}`:''}，基线=${base}，采集值=[${vals.join(',')}]（两次一致）`,'l-ack');
+      }
+      const conflictWith=Object.keys(binds).filter(k=>binds[k].byte===byte);
+      if(conflictWith.length) log(`  ⚠ byte${byte} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
+        `「${step.name}」也让它变化 —— 两者可能共用一个字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
+      binds[key]=bind;
+    }else if(changed.length===2 && changed[1]===changed[0]+1){
+      // 相邻两字节同时变,是一个 int16 小端量的高低字节,不是歧义——真机摇杆上/下报
+      // byte2、byte3 同时变,左/右报 byte0、byte1 同时变,都是这个形状(摇杆有正负,故转
+      // 有符号)。不相邻或≥3 个字节仍然落下面的歧义分支——真机"扳机→byte0,1,2,3"就是
+      // 两个摇杆轴同时被碰到,不是扳机自己的字节,判歧义才是对的。
+      const off=changed[0];
+      const toI16 = u => u>=0x8000 ? u-0x10000 : u;
+      const baseLo=pickMode(baseCounts[off]||new Map())||0, baseHi=pickMode(baseCounts[off+1]||new Map())||0;
+      // 代表值改用 pickExtreme(见函数声明处注释):摇杆推一下就自动回中,窗口里绝大多数
+      // 帧都是中位,pickMode 选出来的代表值几乎总等于基线——真机摇杆左就是这样被记成
+      // "基线=0,采集值=0"却打了勾,这里换成"离基线最远"才对得上"到底测没测到行程"这问题。
+      const collLo=pickExtreme(collCounts[off], baseLo), collHi=pickExtreme(collCounts[off+1], baseHi);
+      const base=toI16((baseLo | (baseHi<<8)) & 0xffff);
+      const val=toI16(((collLo??0) | ((collHi??0)<<8)) & 0xffff);
+      if(val===base){
+        // 两个字节各自确实"变过"(不然进不了这个分支),但离基线最远的组合拼出来还是
+        // 基线本身——说明抓到的都是过渡噪声,没抓到真正的行程,不能算测到,不绑定。
+        unmapped.push(key);
+        log(`  ${step.name}：⚠ 采集到的值和基线相同，等于没测到，不绑定`,'l-err');
+      }else{
+        const bind={off, span:2, type:'axis16', base, vals:[val]};
+        const conflictWith=Object.keys(binds).filter(k=>{
+          const bb=binds[k], used=bb.type==='axis16'?[bb.off,bb.off+1]:[bb.byte];
+          return used.includes(off) || used.includes(off+1);
+        });
+        if(conflictWith.length) log(`  ⚠ byte${off}~${off+1} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
+          `「${step.name}」也让它变化 —— 两者可能共用字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
+        binds[key]=bind;
+        log(`  ${step.name}：✅ byte${off}~${off+1} 合成 int16（摇杆是 16 位量，两个字节一起变`+
+          `是正常的，不是歧义），基线=${base}，采集值=${val}（两次一致）`,'l-ack');
+      }
+    }else{
+      ambiguous[key]=changed;
+      log(`  ${step.name}：⚠ ${changed.length} 个字节同时变了（byte ${changed.join('、byte ')}），`+
+        `分不清是哪个，不绑定`,'l-err');
+    }
+  }
+  saveKeys({binds, unmapped, ambiguous, alsoPush, inconsistent, alsoPushOnce});
+  renderKeysNote(); renderKeysTable();
+  if(last0457) paint0457(last0457);   // 立刻用刚学到的映射重画一次"已识别"那行
+  keysSetProgress(
+    binds[key] ? `已绑定：${nameOfKeyStep(key)}` :
+    inconsistent[key] ? `未绑定：${nameOfKeyStep(key)} 两次结果不一致` :
+    ambiguous[key] ? `未绑定：${nameOfKeyStep(key)} 有歧义` :
+    `未绑定：${nameOfKeyStep(key)} 两次都没检测到变化`
+  );
+}
+
+// 开始监听:先静置取基线,这是全程唯一一次强制等待,不能省(见文件顶部这一节注释)。
+async function keysStartWatch(){
+  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
+  featRunning=true;
+  $('btnKeysWatch').textContent='正在取基线…'; $('btnKeysWatch').disabled=true;
+  $('keys-event').textContent='先别碰，正在取基线…';
+  keysBaseCounts=await keysTakeBaseline();
+  if(!linkOn){   // 取基线这 1.5 秒里设备断了,不要继续往下进入监听态
+    featRunning=false;
+    $('btnKeysWatch').textContent='开始监听'; $('btnKeysWatch').disabled=true;
+    return;
+  }
+  if(!keysBaseCounts.length){
+    featRunning=false;
+    $('btnKeysWatch').textContent='开始监听'; $('btnKeysWatch').disabled=!linkOn;
+    $('keys-event').textContent='没收到 04/57，取不到基线 —— 这台机器可能不推这条';
+    log('按键学习：没收到 04/57，取不到基线','l-err');
+    return;
+  }
+  keysWatching=true;
+  $('btnKeysWatch').textContent='停止监听'; $('btnKeysWatch').disabled=!linkOn;
+  $('btnKeysRebase').hidden=false; $('btnKeysRebase').disabled=!linkOn;
+  keysRenderLabelRow(); keysRenderEvent();
+  keysCollectHook=keysOnFrame;   // 唯一入口:此后每一帧 04/57 都走 keysOnFrame 判事件
+  log('按键学习：开始监听（只监听，不发送任何帧）——随便按一个控件试试');
+}
+// 停止监听:不管是人点的还是断线自动触发的,都走这一条收尾,状态和界面复位到同一处。
+function keysStopWatching(msg){
+  keysWatching=false;
+  keysCollectHook=null; keysPushHook=null; featRunning=false;
+  if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
+  keysEventCounts=null; keysEventPush=null; keysPendingEvent=null; keysFirstObs={};
+  $('btnKeysWatch').textContent='开始监听'; $('btnKeysWatch').disabled=!linkOn;
+  $('btnKeysRebase').hidden=true;
+  keysRenderLabelRow(); keysRenderEvent();
+  keysSetProgress('');
+  log('按键学习：'+(msg||'已停止监听'));
+}
+// 重新取基线:不停止监听,只换掉参照系。之前"第一次观测"里的 changed 是拿旧基线比的,
+// 换了基线就不能再跟新基线下的第二次观测比"是否一致",所以要一并清掉重新算。
+async function keysRebase(){
+  if(!keysWatching) return;
+  if(keysPendingEvent) log('按键学习：重新取基线，之前未命名的那次变化已丢弃','l-err');
+  keysCollectHook=null; keysPushHook=null;
+  if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
+  keysEventCounts=null; keysEventPush=null; keysPendingEvent=null; keysFirstObs={};
+  $('btnKeysRebase').disabled=true;
+  $('keys-event').textContent='先别碰，正在重新取基线…';
+  keysBaseCounts=await keysTakeBaseline();
+  if(!keysWatching) return;   // 取基线这 1.5 秒里被停止监听或断线了,不要再把钩子挂回去
+  $('btnKeysRebase').disabled=!linkOn;
+  if(!keysBaseCounts.length){
+    keysStopWatching('没收到 04/57，取不到基线 —— 这台机器可能不推这条');
+    return;
+  }
+  keysCollectHook=keysOnFrame;
+  keysRenderEvent();
+  log('按键学习：已重新取基线');
+}
+
+$('btnKeysWatch').onclick=()=>{ keysWatching ? keysStopWatching('已停止监听') : keysStartWatch(); };
+$('btnKeysRebase').onclick=keysRebase;
 // 纯本地操作,不需要连着设备也能点(不进 setState 的启用数组)——学歪了要能重来。
 $('btnClearKeys').onclick=()=>{
   try{
@@ -1895,11 +2026,14 @@ $('btnClearKeys').onclick=()=>{
     delete all[(dev&&dev.id)||'?'];
     localStorage.setItem(KEYS_KEY, JSON.stringify(all));
   }catch{}
+  keysFirstObs={};   // 存档清空了,内存里还没配对成功的"第一次观测"也失去意义,一并清掉
   renderKeysNote(); renderKeysTable();
   if(last0457) paint0457(last0457);   // last0457 本身没变,直接重画:上面"已识别"那行要跟着清空
+  keysSetProgress('');
   log('已清空按键映射');
 };
 renderKeysNote(); renderKeysTable();   // 页面刚加载时,把上次会话存下的结果先摆出来
+keysRenderLabelRow(); keysRenderEvent();   // 初始态:未监听,标签行整排置灰
 /* 主面板给倾斜角,原始欧拉角挪去高级 —— Roll ≈ -89 对调试有用,
    但摆在最显眼的地方只会让人以为云台歪了 89 度。 */
 function renderLevel(){
