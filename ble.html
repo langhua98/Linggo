@@ -468,23 +468,7 @@ details:not([open]) > *:not(summary){ display:none }
     量到了才算数；标着「未确认」的就是还没在这台机器上验证过。</p>
   </details>
 
-  <!-- 设备信息:11 条零风险读,但只是拿来交叉印证、不是日常要按的功能,跟 PWM/用户参数/危险区
-       同一个「次级功能分组折叠」待遇,一并折进 .grp——也是把可见区按钮数按下来的必要一步。 -->
-  <details class="grp" style="margin-top:16px"><summary>设备信息（11 条零风险读）</summary>
-  <div class="grp-body">
-  <p class="note" style="margin-top:0">11 条只读，帧间隔 150ms，全部机械换算、不编字段名。</p>
-  <details class="why"><summary>这 11 条分别读什么</summary>
-  <p class="note">全部是 flags=0x40、空载荷的读指令，一帧写的都没有，一个按钮按顺序问完、帧间隔 150ms。
-    dissector 对这 11 条全都没有字段定义（都是注释掉的），下表「可能的解读」只给机械换算
-    （u8/u16/i16/u32/i32，长度够再额外给 ASCII），<b>不编字段名、不带单位</b>。</p>
-  </details>
-  <div class="row">
-    <button id="btnReadInfo" disabled>读设备信息（11 条零风险读）</button>
-  </div>
-  <div id="devinfo-table"></div>
-  <div id="devinfo-note" class="note"></div>
-  </div>
-  </details>
+  <!-- 「读设备信息」11 条已删——真机两次实测全部无应答,见「云台功能」报告节末尾的阴性结论。 -->
 
   <p class="eyebrow" style="margin-top:12px">跟随模式（04/4C）</p>
   <div class="seg">
@@ -1112,7 +1096,7 @@ function setState(s,txt){
    'btnTryAgain','btnMotorCheck','btnTryCi','btnNarrow',
    'btnModeLock','btnModeFollow','btnModeFpv','btnSuspend','btnResume',
    'btnRollMinus','btnRollPlus','pwm0','pwm1','pwm2','btnSaveFlash','btnRestoreDefaults',
-   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnReadInfo','btnLearnKeys',
+   'btnParamScan','pwIdx','pwSize','pwVal','btnParamWrite','btnLearnKeys',
    'btnMoveSend','mv0','mv1','mv2','mv3','mv4','mv5','mv6','mv7','mv8',
    'tryPlSel','tryPlCs','tryPlCi','tryPlHex']
     .forEach(i=>$(i).disabled=!on);
@@ -1451,9 +1435,26 @@ function describeKeyState(bytes){
   const binds=(loadKeys().binds)||{};
   const parts=[];
   for(const key of Object.keys(binds)){
-    const b=binds[key], v=bytes[b.byte];
+    const b=binds[key];
+    if(b.type==='axis16'){
+      // 横跨两个字节的 16 位量,要按 off/off+1 现拼,不能像其它类型那样直接按 b.byte 取——
+      // 这个字段布局(off+span)跟单字节的 byte 字段不是一回事。
+      const lo=bytes[b.off], hi=bytes[b.off+1];
+      if(lo===undefined || hi===undefined) continue;
+      const u=(lo | (hi<<8)) & 0xffff;
+      const v=u>=0x8000 ? u-0x10000 : u;
+      if(v!==b.base) parts.push(`${nameOfKeyStep(key)} 值 ${v>=0?'+':''}${v}`);
+      continue;
+    }
+    const v=bytes[b.byte];
     if(v===undefined) continue;
     if(b.type==='switch'){ if(v===b.down) parts.push(`${nameOfKeyStep(key)} 按下`); }
+    else if(b.type==='bitmask'){
+      // b.bits 里存的本来就是"相对基线新点亮的位"(见 learnKeys 里的位掩码判据),
+      // 基线自带的位不在这个列表里,所以这里只要看当前值有没有点亮它就够了。
+      const lit=b.bits.filter(bit=>(v & bit)===bit);
+      if(lit.length) parts.push(`${nameOfKeyStep(key)} ${lit.map(bit=>'0x'+bit.toString(16).padStart(2,'0')).join('/')}`);
+    }
     else if(v!==b.base) parts.push(`${nameOfKeyStep(key)} 值 ${v}`);
   }
   return parts.join(' · ');
@@ -1463,6 +1464,25 @@ function describeKeyState(bytes){
    转发到这里(见 decode() 的改动)。不用 last0457 轮询,是因为 render0457 在字节没变时会
    提前 return、轮询会在两帧之间漏采样——短暂的一两帧过渡态正是判定要看的东西。 */
 let keysCollectHook=null;
+/* KEYS_NOISE_PUSH:学习窗口里"顺带记录还触发了什么推送"时要排除的常态噪声——这几条云台
+   不管按不按键都在推,混进来会把 alsoPush 淹没成流水账,起不到"按键事件走了别的通道"这个
+   信号该有的作用。格式跟下面 keysPushHook 拼 tag 的写法一致:两位小写十六进制,不带 0x。 */
+const KEYS_NOISE_PUSH = new Set([
+  '04/05',  // 姿态,20~50ms 一帧的常驻遥测,跟按键无关
+  '04/57',  // 手柄状态本身——向导本来就在盯这条,不算"顺带发现"
+  '04/27',  // 异常状态位,常驻推送
+  '04/38',  // 延时状态,常驻推送
+  '04/1c',  // 云台型号,连上就推,不是按键触发
+  '04/6f',  // 常驻推送(真机观察,含义未知,dissector 无定义)
+  '00/f1',  // 常驻推送(真机观察,含义未知,dissector 无定义)
+  '00/00',  // 常驻推送(真机观察,含义未知,dissector 无定义)
+  '05/06',  // 电池状态,周期推送
+]);
+/* keysPushHook:跟 keysCollectHook 是两个独立的挂钩,互不干扰——04/57 之外真机在按键窗口内
+   还抓到过 dissector 表里根本没有的推送(04/50、04/69),说明按键事件不止走 04/57 一条通道,
+   只盯 04/57 会漏。这里不解析载荷,只记 cs/ci 和原始 hex——dissector 连这些 cmdId 都没有,
+   编字段名就是造假。只在 learnKeys 的采集窗口期间挂上,窗口结束就置 null,平时零开销。 */
+let keysPushHook=null;
 let keysRunning=false, keysSkip=false, keysStop=false;
 const KEYS_BASELINE_MS=1500, KEYS_COLLECT_MS=3000, KEYS_GAP_MS=1000;
 
@@ -1503,8 +1523,9 @@ function pickMode(map, exclude){
 }
 // 从存档里摘掉某个 key 之前的结果(不管上次是绑定成功、没检测到变化还是有歧义)——
 // 重新学一遍时不能让旧结论跟新结论并存,不然"已学会 N/9"会数错、界面上还留着自相矛盾的两条。
-function keysDropPrior(binds, unmapped, ambiguous, key){
+function keysDropPrior(binds, unmapped, ambiguous, key, alsoPush){
   delete binds[key]; delete ambiguous[key];
+  if(alsoPush) delete alsoPush[key];   // 重学这一步时,上一轮"顺带记到的推送"也跟着作废,不能新旧并存
   const i=unmapped.indexOf(key); if(i>=0) unmapped.splice(i,1);
 }
 function renderKeysNote(){
@@ -1524,21 +1545,39 @@ function renderKeysNote(){
 }
 function renderKeysTable(){
   const el=$('keys-table'); if(!el) return;
-  const {binds={}} = loadKeys();
+  const {binds={}, alsoPush={}} = loadKeys();
   const keys=Object.keys(binds);
-  if(!keys.length){ el.innerHTML=''; return; }
   // 冲突只在展示时算,不额外存档——存档允许一个字节挂多个 key,冲突就是"同一 byte 出现≥2 次"。
+  // axis16 占两个字节(off、off+1),跟单字节类型的 byte 字段不是一回事,按类型分别取用到的字节表。
+  const bytesOf = b => b.type==='axis16' ? [b.off, b.off+1] : [b.byte];
   const byByte={};
-  keys.forEach(k=>{ const b=binds[k].byte; (byByte[b]=byByte[b]||[]).push(k); });
-  el.innerHTML = '<table class="ptbl"><thead><tr><th>控件</th><th>byte</th><th>类型</th>'+
-    '<th>基线</th><th>按下值 / 采集值</th><th></th></tr></thead><tbody>'+
-    keys.map(k=>{
-      const b=binds[k], conflict=byByte[b.byte].length>1;
-      const valTxt = b.type==='switch' ? `按下=${b.down}` : `采集=[${b.vals.join(',')}]`;
-      return `<tr><td>${nameOfKeyStep(k)}</td><td>${b.byte}${conflict?' ⚠':''}</td><td>${b.type}</td>`+
-        `<td>${b.base}</td><td>${valTxt}</td>`+
-        `<td>${conflict?`⚠ 与「${byByte[b.byte].filter(x=>x!==k).map(nameOfKeyStep).join('、')}」共用同一字节`:''}</td></tr>`;
-    }).join('')+'</tbody></table>';
+  keys.forEach(k=>{ bytesOf(binds[k]).forEach(byte=>(byByte[byte]=byByte[byte]||[]).push(k)); });
+  let html='';
+  if(keys.length){
+    html += '<table class="ptbl"><thead><tr><th>控件</th><th>byte</th><th>类型</th>'+
+      '<th>基线</th><th>按下值 / 采集值</th><th></th></tr></thead><tbody>'+
+      keys.map(k=>{
+        const b=binds[k], used=bytesOf(b);
+        const conflictKeys=[...new Set(used.flatMap(byte=>byByte[byte]))].filter(x=>x!==k);
+        const byteTxt = b.type==='axis16' ? `${b.off}~${b.off+1}` : `${b.byte}`;
+        const valTxt = b.type==='switch' ? `按下=${b.down}`
+          : b.type==='bitmask' ? `点亮位=[${b.bits.map(bit=>'0x'+bit.toString(16).padStart(2,'0')).join(',')}]`
+          : `采集=[${b.vals.join(',')}]`;
+        return `<tr><td>${nameOfKeyStep(k)}</td><td>${byteTxt}${conflictKeys.length?' ⚠':''}</td><td>${b.type}</td>`+
+          `<td>${b.base}</td><td>${valTxt}</td>`+
+          `<td>${conflictKeys.length?`⚠ 与「${conflictKeys.map(nameOfKeyStep).join('、')}」共用同一字节`:''}</td></tr>`;
+      }).join('')+'</tbody></table>';
+  }
+  // 表外推送:窗口期间抓到的、dissector 表里根本没有的推送——只给 cs/ci 和原始 hex,
+  // 不解析、不猜含义(KEYS_NOISE_PUSH 已经把常态噪声排除掉了,剩下的才值得看)。
+  const pushSteps=Object.keys(alsoPush).filter(k=>alsoPush[k] && alsoPush[k].length);
+  if(pushSteps.length){
+    html += '<p class="note">'+pushSteps.map(k=>
+      `${nameOfKeyStep(k)} 窗口内还触发了推送：`+alsoPush[k].map(p=>
+        `0x${p.cs.toString(16).padStart(2,'0')}/0x${p.ci.toString(16).padStart(2,'0')} 载荷 ${p.hex}`).join('，')
+    ).join('<br>')+'</p>';
+  }
+  el.innerHTML = html;
 }
 
 async function learnKeys(){
@@ -1549,6 +1588,9 @@ async function learnKeys(){
   $('btnKeysStop').hidden=false; $('keys-head').hidden=false;
   const saved=loadKeys();
   const binds={...(saved.binds||{})}, unmapped=[...(saved.unmapped||[])], ambiguous={...(saved.ambiguous||{})};
+  // alsoPush:每一步"顺带记到的表外推送",跟 binds/unmapped/ambiguous 一样存档、一样在重学
+  // 这一步时被 keysDropPrior 清掉——见该函数声明处的注释。
+  const alsoPush={...(saved.alsoPush||{})};
   log('—— 学习手柄按键:全程只监听,一帧都不发(独占 04/57 观测窗,别的任务同时动云台会把'+
       '"按键引起的变化"和"运动引起的变化"搅在一起)——');
   try{
@@ -1560,12 +1602,34 @@ async function learnKeys(){
         `第 ${i+1}/${KEY_STEPS.length} 步：取「${step.name}」空闲基线…`);
       if(keysStop) break;
       if(keysSkip){ log(`  ${step.name}：已跳过（基线阶段，未测）`); continue; }
-      const collCounts=await keysCollectWindow(KEYS_COLLECT_MS,
-        `第 ${i+1}/${KEY_STEPS.length} 步：请按住「${step.name}」约 2 秒，然后松开`);
+      // 表外推送只在"按住"这段采集窗口记,基线阶段没人在按键,不该混进这段判定里——
+      // keysPushHook 跟 keysCollectHook 是两个独立的钩子,分别用自己的 finally 清空,互不干扰。
+      const pushSeen=new Map();   // tag('cs/ci',两位十六进制) → {cs, ci, hex}(只留第一帧)
+      keysPushHook = (cs, ci, pl)=>{
+        const tag = cs.toString(16).padStart(2,'0')+'/'+ci.toString(16).padStart(2,'0');
+        if(KEYS_NOISE_PUSH.has(tag) || pushSeen.has(tag)) return;
+        pushSeen.set(tag, {cs, ci, hex: hex(pl)});
+      };
+      let collCounts;
+      try{
+        collCounts=await keysCollectWindow(KEYS_COLLECT_MS,
+          `第 ${i+1}/${KEY_STEPS.length} 步：请按住「${step.name}」约 2 秒，然后松开`);
+      } finally { keysPushHook=null; }
       if(keysStop) break;
       if(keysSkip){ log(`  ${step.name}：已跳过（采集阶段，未测）`); continue; }
 
-      keysDropPrior(binds, unmapped, ambiguous, step.key);
+      // keysDropPrior 要先于下面这行执行——它会把上一轮的 alsoPush[step.key] 一并清掉,
+      // 顺序反了就会把刚采到的新结果自己删掉。
+      keysDropPrior(binds, unmapped, ambiguous, step.key, alsoPush);
+      if(pushSeen.size){
+        alsoPush[step.key]=[...pushSeen.values()];
+        /* 当场就要打出来。表外推送是这个向导最值钱的产出 —— 真机上 04/50、04/69 这两条
+           dissector 指令表里根本没有,只在按键窗口里冒出来。只写进存档和报告的话,人做完
+           九步、屏幕上一个字没提,根本不会想到去翻。抓到就说,这才叫"记录"。 */
+        alsoPush[step.key].forEach(p=>log(
+          `    窗口内还触发了推送 0x${p.cs.toString(16).padStart(2,'0')}/`+
+          `0x${p.ci.toString(16).padStart(2,'0')}  载荷 ${p.hex}`,'l-ack'));
+      }
       // 判定:采集期任意一字节出现过"基线集合里没有"的值,就算这个字节变了。
       const changed=[];
       const len=Math.max(baseCounts.length, collCounts.length);
@@ -1582,26 +1646,67 @@ async function learnKeys(){
       }else if(changed.length===1){
         const byte=changed[0], collMap=collCounts[byte], baseMap=baseCounts[byte]||new Map();
         const vals=[...collMap.keys()].sort((a,b)=>a-b);
-        // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
-        const type = vals.length>=3 ? 'analog' : 'switch';
         const base = pickMode(baseMap);
-        const bind={byte, base, vals, type};
-        // down 只在 switch 时有意义:采集期里"不属于基线集合"的新值中,次数最多的那个——
-        // 按住的时长通常占采集窗口的大头,频次最高的新值最可能就是"按下"稳态,
-        // 而不是按下/松开瞬间那一两帧的过渡值。
-        if(type==='switch') bind.down = pickMode(collMap, new Set(baseMap.keys()));
+        // 位掩码判据,要在 analog/switch 之前判——真机 M 键基线=1(0x01),按下分别变成
+        // 17/33(0x11/0x21):基线的 bit0 全程都在,每次只多点亮一个 bit,旧的"≥3 个不同值
+        // =analog"粗判把它错判成了模拟量。位掩码的指纹是"基线的位全都还在、且每次改动只
+        // 多点亮一两个位",真的模拟量(大幅度跳变)一般凑不出这个形状。
+        const popcount = n => { let c=0; while(n){ c+=n&1; n&=n-1; } return c; };
+        const nonBase = vals.filter(v=>v!==base);
+        const isBitmask = base!==null && nonBase.length>0 &&
+          nonBase.every(v => (v & base)===base && popcount(v ^ base)<=2);
+        let type, bind;
+        if(isBitmask){
+          type='bitmask';
+          const bits=[...new Set(nonBase.map(v=>v ^ base))].sort((a,b)=>a-b);
+          bind={byte, base, vals, type, bits};
+          log(`  ${step.name}：✅ byte${byte}，类型=位掩码，基线=0x${base.toString(16).padStart(2,'0')}，`+
+            `按下点亮 ${bits.map(bt=>'0x'+bt.toString(16).padStart(2,'0')).join(' / ')}`,'l-ack');
+        }else{
+          // 类型按实测取值个数判,不硬套步骤表的"模拟/开关"标注——见文件顶部这一节的注释。
+          type = vals.length>=3 ? 'analog' : 'switch';
+          bind={byte, base, vals, type};
+          // down 只在 switch 时有意义:采集期里"不属于基线集合"的新值中,次数最多的那个——
+          // 按住的时长通常占采集窗口的大头,频次最高的新值最可能就是"按下"稳态,
+          // 而不是按下/松开瞬间那一两帧的过渡值。
+          if(type==='switch') bind.down = pickMode(collMap, new Set(baseMap.keys()));
+          log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}，`+
+            `基线=${base}，采集值=[${vals.join(',')}]`,'l-ack');
+        }
         const conflictWith=Object.keys(binds).filter(k=>binds[k].byte===byte);
         if(conflictWith.length) log(`  ⚠ byte${byte} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
           `「${step.name}」也让它变化 —— 两者可能共用一个字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
         binds[step.key]=bind;
-        log(`  ${step.name}：✅ byte${byte}，类型=${type}${type==='switch'?`，按下=${bind.down}`:''}，`+
-          `基线=${base}，采集值=[${vals.join(',')}]`,'l-ack');
+      }else if(changed.length===2 && changed[1]===changed[0]+1){
+        // 相邻两字节同时变,是一个 int16 小端量的高低字节,不是歧义——真机摇杆上/下报
+        // byte2、byte3 同时变,左/右报 byte0、byte1 同时变,都是这个形状(摇杆有正负,故转
+        // 有符号)。不相邻或≥3 个字节仍然落下面的歧义分支——真机"扳机→byte0,1,2,3"就是
+        // 两个摇杆轴同时被碰到,不是扳机自己的字节,判歧义才是对的。
+        const off=changed[0];
+        const toI16 = u => u>=0x8000 ? u-0x10000 : u;
+        // 采集窗口只按字节各自记了"值→次数",没留逐帧的高低字节配对——用每个字节里
+        // 出现次数最多的值(pickMode)拼成代表值,跟单字节判定里 down 的取法同一个道理:
+        // 按住稳态占窗口大头,频次最高的组合最可能代表"按下这个方向"的状态。
+        const baseLo=pickMode(baseCounts[off]||new Map())||0, baseHi=pickMode(baseCounts[off+1]||new Map())||0;
+        const collLo=pickMode(collCounts[off])||0, collHi=pickMode(collCounts[off+1])||0;
+        const base=toI16((baseLo | (baseHi<<8)) & 0xffff);
+        const val=toI16((collLo | (collHi<<8)) & 0xffff);
+        const bind={off, span:2, type:'axis16', base, vals:[val]};
+        const conflictWith=Object.keys(binds).filter(k=>{
+          const bb=binds[k], used=bb.type==='axis16'?[bb.off,bb.off+1]:[bb.byte];
+          return used.includes(off) || used.includes(off+1);
+        });
+        if(conflictWith.length) log(`  ⚠ byte${off}~${off+1} 已经绑给「${conflictWith.map(nameOfKeyStep).join('、')}」了，`+
+          `「${step.name}」也让它变化 —— 两者可能共用字节，或者刚才按错了键。两条都记下来，不覆盖。`,'l-err');
+        binds[step.key]=bind;
+        log(`  ${step.name}：✅ byte${off}~${off+1} 合成 int16（摇杆是 16 位量，两个字节一起变`+
+          `是正常的，不是歧义），基线=${base}，采集值=${val}`,'l-ack');
       }else{
         ambiguous[step.key]=changed;
         log(`  ${step.name}：⚠ ${changed.length} 个字节同时变了（byte ${changed.join('、byte ')}），`+
           `分不清是哪个，不绑定`,'l-err');
       }
-      saveKeys({binds, unmapped, ambiguous});
+      saveKeys({binds, unmapped, ambiguous, alsoPush});
       renderKeysNote(); renderKeysTable();
       if(last0457) paint0457(last0457);   // 立刻用刚学到的映射重画一次"已识别"那行
 
@@ -1611,7 +1716,7 @@ async function learnKeys(){
       }
     }
   } finally {
-    keysCollectHook=null; featRunning=false; keysRunning=false; keysSkip=false;
+    keysCollectHook=null; keysPushHook=null; featRunning=false; keysRunning=false; keysSkip=false;
     $('btnLearnKeys').textContent='学习手柄按键'; $('btnLearnKeys').disabled=!linkOn;
     $('btnKeysStop').hidden=true; $('keys-head').hidden=true;
     $('keys-step').textContent='空闲'; $('keys-eta').textContent='';
@@ -1780,7 +1885,12 @@ function decode(m, hide){
 
   // 主动推送与应答要分开数:应答是我们自己问出来的,拿它判「机器还活着」等于自问自答。
   // flags 的最高位是「这是应答」,真机抓包里推送帧一律 0x00/0x20/0x40,应答一律 0x80。
-  if((m[8]&0x80)===0){ rxPushT=Date.now(); rxPushN++; }
+  if((m[8]&0x80)===0){
+    rxPushT=Date.now(); rxPushN++;
+    // 按键学习向导的"表外推送"记录钩子:只在采集窗口期间非空,喂给它 cs/ci/原始载荷,
+    // 排除噪声和去重都在 keysPushHook 自己那边做(见其声明处的注释),这里只管无条件转发。
+    if(keysPushHook) keysPushHook(cmdSet, cmdId, pl);
+  }
 
   // 应答命中是整个诊断的关键结论,无论该帧是否被「隐藏高频帧」过滤都要打印
   if(bulkSend){
@@ -4177,6 +4287,12 @@ function buildReport(){
     L.push('这台机器上实测无效、已从界面移除：04/1E（量过，提不高姿态推送频率）、'+
       '04/24（完全无应答）、04/3A（应答 0x00 但竖屏位不变，试过两次）、'+
       '04/39（应答 0x00 但锁定位不变）、04/0B / 00/0C（应答但全是常量，读不出信息）。');
+    // 「读设备信息」原本是独立的报告节,删掉功能后阴性结论并到这里——跟上一行同一个待遇:
+    // 不写死会让人过几个月又照着 dissector 把这 11 条重问一遍,重新踩一遍已经踩过的坑。
+    L.push('这台机器上「读设备信息」11 条零风险读全部无应答（两次实测）：04/45 温度、04/02 位置、'+
+      '04/1C 型号、04/36 手柄参数、04/32 Robin 参数、04/2B 教程状态、00/54 温度信息、'+
+      '00/55 累计时长、00/51 序列号、00/4B 设备时间、00/47 电源状态，功能已移除。'+
+      '注意 04/1C 的区别：云台会主动推送型号（0x47），但主动去读它无应答 —— 收得到 ≠ 问得到。');
   }
 
   L.push('', '===== 带载荷试指令 =====');
@@ -4193,19 +4309,6 @@ function buildReport(){
           `${r.status}  04/27:${r.flags027}  04/57:${r.b057}  姿态:${r.att}  遥测:${r.tele}  ${r.verdict}  `+
           `（${new Date(r.at).toISOString()}）`);
       }
-    }
-  }
-
-  L.push('', '===== 设备信息（零风险读）=====');
-  {
-    const f=loadFeat();
-    if(!f.devInfo) L.push('尚未读取');
-    else{
-      L.push(`读取时间：${new Date(f.devInfo.at).toISOString()}`);
-      for(const r of f.devInfo.rows){
-        L.push(`0x${r.cs.toString(16).padStart(2,'0')}/0x${r.ci.toString(16).padStart(2,'0')}  ${r.name}  应答=${r.hex||'—'}  ${r.read}`);
-      }
-      L.push('dissector 对这 11 条全都没有字段定义（都是注释掉的），「可能的解读」只是机械换算，不是字段含义。');
     }
   }
 
@@ -4250,15 +4353,20 @@ function buildReport(){
   L.push('', '===== 手柄按键映射（04/57）=====');
   {
     // 跟其它节一样从 localStorage 读,不依赖内存变量——换个会话也要读得出结果。
-    const {binds={}, unmapped=[], ambiguous={}} = loadKeys();
+    const {binds={}, unmapped=[], ambiguous={}, alsoPush={}} = loadKeys();
     if(!Object.keys(binds).length && !unmapped.length && !Object.keys(ambiguous).length){
       L.push('尚未学习（点「学习手柄按键」走一遍向导——dissector 对这条一个字段都没定义，只能靠人按、页面记）');
     }else{
+      // axis16 占两个字节(off、off+1),跟单字节类型的 byte 字段不是一回事,取用到的字节要分类型算。
+      const bytesOf = b => b.type==='axis16' ? [b.off, b.off+1] : [b.byte];
       for(const s of KEY_STEPS){
         const b=binds[s.key];
         if(b){
-          L.push(`${s.name}(${s.key})  → byte${b.byte}  类型=${b.type}  `+
-            `${b.type==='switch'?`按下=${b.down}`:`基线=${b.base}，采集值=[${b.vals.join(',')}]`}`);
+          const byteTxt = b.type==='axis16' ? `byte${b.off}~${b.off+1}` : `byte${b.byte}`;
+          const valTxt = b.type==='switch' ? `按下=${b.down}`
+            : b.type==='bitmask' ? `基线=0x${b.base.toString(16).padStart(2,'0')}，点亮位=[${b.bits.map(bit=>'0x'+bit.toString(16).padStart(2,'0')).join(',')}]`
+            : `基线=${b.base}，采集值=[${b.vals.join(',')}]`;
+          L.push(`${s.name}(${s.key})  → ${byteTxt}  类型=${b.type}  ${valTxt}`);
         }else if(ambiguous[s.key]){
           L.push(`${s.name}(${s.key})  ⚠ 有歧义，byte ${ambiguous[s.key].join('、byte ')} 同时变了，未绑定`);
         }else if(unmapped.includes(s.key)){
@@ -4266,11 +4374,17 @@ function buildReport(){
         }else{
           L.push(`${s.name}(${s.key})  尚未学习`);
         }
+        // 表外推送:不管这一步最终绑没绑成,窗口内抓到的表外推送都要报——按键事件走没走
+        // 04/57 以外的通道，跟这个键最后有没有学成是两件事。
+        if(alsoPush[s.key] && alsoPush[s.key].length){
+          L.push('  窗口内还触发了推送：'+alsoPush[s.key].map(p=>
+            `0x${p.cs.toString(16).padStart(2,'0')}/0x${p.ci.toString(16).padStart(2,'0')} 载荷 ${p.hex}`).join('，'));
+        }
       }
       // 冲突展示跟界面上 renderKeysTable 用同一份判据:同一 byte 出现在多个 binds 里就是冲突,
       // 不额外存一份"冲突表"——存档允许一个字节挂多个 key,冲突只在展示时算出来。
       const byByte={};
-      Object.keys(binds).forEach(k=>{ const byte=binds[k].byte; (byByte[byte]=byByte[byte]||[]).push(k); });
+      Object.keys(binds).forEach(k=>bytesOf(binds[k]).forEach(byte=>(byByte[byte]=byByte[byte]||[]).push(k)));
       Object.entries(byByte).filter(([,ks])=>ks.length>1).forEach(([byte,ks])=>
         L.push(`⚠ byte${byte} 同时绑了：${ks.map(nameOfKeyStep).join('、')}（不覆盖，两条并列）`));
     }
@@ -4662,15 +4776,7 @@ function refreshFeatNotes(){
   if(pwriteEl) pwriteEl.textContent = f.paramWrite
     ? `上次写索引 ${f.paramWrite.idx}（长度${f.paramWrite.size}）：${f.paramWrite.note}（${new Date(f.paramWrite.at).toISOString()}）`
     : '（尚未做过）';
-  // 第三轮新增:设备信息表(11 条零风险读)。跟参数扫描表一个待遇——表格从存档重画,
-  // 不是只画一行 note 文字,换个会话回来也看得见结果。
-  const devInfoEl=$('devinfo-note');
-  if(devInfoEl){
-    devInfoEl.textContent = f.devInfo
-      ? `上次读取：${new Date(f.devInfo.at).toISOString()}`
-      : '尚未读取';
-    renderDevInfoTable(f.devInfo ? f.devInfo.rows : []);
-  }
+  // 「读设备信息」已删(真机两次实测全部无应答),原来这里画 devinfo-note/table 的分支一并去掉。
   renderPwmMapNote();
   renderGrpSummaries();   // .grp 折叠标题里的状态摘要,顺带跟着这里一起重画
   // 第四轮新增:04/15 Gimbal Movement + 带载荷试指令,跟其它块一样只从 saveFeat 存档重画。
@@ -5408,86 +5514,11 @@ async function paramWrite(){
 }
 $('btnParamWrite').onclick=()=>paramWrite();
 
-/* ════════════ 6·云台功能 · 第三轮新增(设备信息:11 条零风险读,一个按钮问完) ════════════
-   来源同上:cmdSet 0x04 六条(dji-dumlv1-gimbal.lua) + cmdSet 0x00 五条(dji-dumlv1-general.lua)。
-   这 11 条 dissector 全都没有字段定义(都是注释掉的),用户明确要求一个按钮问完、不要做
-   十一个按钮——结果只做机械换算,不编字段名、不带单位,编一个字段名出来就是造假。 */
-const DEV_INFO_CMDS=[
-  {cs:0x04, ci:0x45, name:'云台温度（Gimbal Get Temp）'},
-  {cs:0x04, ci:0x02, name:'云台位置（Gimbal Get Position）'},
-  {cs:0x04, ci:0x1c, name:'云台型号（Gimbal Type Get）'},
-  {cs:0x04, ci:0x36, name:'手柄参数（Gimbal Handle Params Get）'},
-  {cs:0x04, ci:0x32, name:'Robin 参数（Robin Params Get）'},
-  {cs:0x04, ci:0x2b, name:'教程状态（Gimbal Tutorial Status Get）'},
-  {cs:0x00, ci:0x54, name:'温度信息（Get Temperature Info）'},
-  {cs:0x00, ci:0x55, name:'累计使用时长（Get Alive Time）'},
-  {cs:0x00, ci:0x51, name:'序列号（Get Serial Number）'},
-  {cs:0x00, ci:0x4b, name:'设备时间（Get Date/Time）'},
-  {cs:0x00, ci:0x47, name:'电源状态（Power State）'},
-];
-/* 只给无歧义的机械换算,ASCII 是"额外给出"、不是取代数值换算——长度对上 1/2/4 该给的
-   u/i 照给,凑巧同时也是可打印 ASCII 就多加一行,两者不冲突、不用二选一。 */
-function devInfoReadGuess(pl){
-  if(!pl || !pl.length) return '⚠ 有应答但载荷为空';
-  const bytes=[...pl], parts=[];
-  if(bytes.length>=2 && bytes.every(b=>b>=0x20 && b<=0x7e)) parts.push(`ASCII="${String.fromCharCode(...bytes)}"`);
-  if(bytes.length===1){
-    parts.push(`u8=${bytes[0]}`);
-  }else if(bytes.length===2){
-    const u=bytes[0]|(bytes[1]<<8);
-    parts.push(`u16=${u}（小端）`, `i16=${u>=0x8000?u-0x10000:u}`);
-  }else if(bytes.length===4){
-    const u=(bytes[0]|(bytes[1]<<8)|(bytes[2]<<16)|(bytes[3]<<24))>>>0;
-    parts.push(`u32=${u}（小端）`, `i32=${u>=0x80000000?u-0x100000000:u}`);
-  }else{
-    /* 长度不是 1/2/4 就没有无歧义的数值读法,这句话必须出现——哪怕上面已经给了 ASCII。
-       只看到一行 ASCII 的人分不清是「换算不出来」还是「我们没算」,而这两件事差很远。 */
-    parts.push('（长度不是 1/2/4，没有无歧义的数值读法，只给 hex，不换算）');
-  }
-  return parts.join('  ');
-}
-function renderDevInfoTable(rows){
-  const el=$('devinfo-table'); if(!el) return;
-  if(!rows || !rows.length){ el.innerHTML=''; return; }
-  el.innerHTML = '<table class="ptbl"><thead><tr><th>指令</th><th>名称</th>'+
-    '<th>应答 hex</th><th>可能的解读</th></tr></thead><tbody>'+
-    rows.map(r=>`<tr><td>0x${r.cs.toString(16).padStart(2,'0')}/0x${r.ci.toString(16).padStart(2,'0')}</td>`+
-      `<td>${r.name}</td><td>${r.hex||'—'}</td><td>${r.read}</td></tr>`).join('')+
-    '</tbody></table>';
-}
-async function readDeviceInfo(){
-  if(!activeWrite){ log('没有选定可写特征','l-err'); return; }
-  if(featBusy()){ log('有别的任务在跑,等它结束','l-err'); return; }
-  featRunning=true;
-  $('btnReadInfo').disabled=true;
-  try{
-    log('—— 读设备信息(11 条零风险读,flags=0x40,空载荷,帧间隔 150ms)——');
-    const rows=[];
-    for(const cmd of DEV_INFO_CMDS){
-      const seq=0xE000|(seqNo++ & 0xff);
-      const tag=`0x${cmd.cs.toString(16).padStart(2,'0')}/0x${cmd.ci.toString(16).padStart(2,'0')}`;
-      const ok=await sendAndWaitAck(buildDuml({seq, flags:0x40, cmdSet:cmd.cs, cmdId:cmd.ci, payload:[]}), seq);
-      if(!ok){
-        rows.push({cs:cmd.cs, ci:cmd.ci, name:cmd.name, hex:null, read:'❌ 无应答'});
-        log(`❌ ${tag} ${cmd.name} 无应答`,'l-err');
-      }else{
-        const hx=hex(featAckPayload||[]);
-        const read=devInfoReadGuess(featAckPayload);
-        rows.push({cs:cmd.cs, ci:cmd.ci, name:cmd.name, hex:hx, read});
-        log(`${tag} ${cmd.name}  ${hx||'(空)'}  ${read}`,'l-ack');
-      }
-      await sleep(150);
-    }
-    renderDevInfoTable(rows);
-    saveFeat('devInfo', {at:Date.now(), rows});
-    log('✅ 设备信息读取完成。','l-ack');
-  } finally {
-    featRunning=false;
-    $('btnReadInfo').disabled=!linkOn;
-    refreshFeatNotes();
-  }
-}
-$('btnReadInfo').onclick=()=>readDeviceInfo();
+/* ════════════ 6·云台功能 · 第三轮新增(设备信息:11 条零风险读)已删 ════════════
+   真机两次实测这 11 条(cmdSet 0x04 六条 + cmdSet 0x00 五条)全部无应答,按项目一贯标准
+   (实测无效就删、报告留档)整段移除——阴性结论并进上面「云台功能」报告节末尾那句,
+   不能因为按钮删了阴性结论也一起没了,否则过几个月又会有人照着 dissector 把这 11 条
+   重问一遍,重新踩一遍已经踩过的坑。 */
 
 /* ════════════ 6·云台功能 · 第四轮新增(04/15 Gimbal Movement + 带载荷试指令) ════════════
    来源:dji-dumlv1-gimbal.lua dissector cmdId 0x15(字段布局完整,20 字节)+ cmdSet 0x00/0x04
