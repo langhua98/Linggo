@@ -278,6 +278,9 @@ select:focus,input:focus{outline:none;border-color:var(--tx)}
 
 /* ── 次级按钮(.minor)── 「扫描全部设备」「清空按键映射」这类不该跟主按钮平起平坐 */
 button.minor{font-size:11px;padding:5px 10px;color:var(--dim);border-color:var(--line)}
+/* 按键学习的控件选择按钮选中态——复用 .seg button.on 同一套配色,让"选中了哪个"
+   跟别处的"当前是哪一档"看起来是同一种视觉语言,不用另造一套。 */
+button.minor.on{background:var(--tx);color:#0b1013;font-weight:600}
 
 /* ── 分段选择器(.seg)── 跟随模式三选一,连体样式能看出"当前是哪个",平铺三个按钮做不到 */
 .seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden}
@@ -370,10 +373,13 @@ details:not([open]) > *:not(summary){ display:none }
     <button id="btnKeysRebase" class="minor" hidden>重新取基线</button>
     <button id="btnClearKeys" class="minor">清空按键映射</button>
   </div>
-  <!-- 不再由页面报固定步骤,改成人按什么、这里报刚才哪个字节变了(keys-event),
-       人点下面这排按钮说是哪个控件(keys-label-row);keys-progress 实时报"已记几次". -->
+  <!-- 交互是"先选后按":人先点下面这排按钮选中要测的控件(keys-label-row,选中态高亮),
+       再去按那个实体键——只有选中之后捕捉到的变化才会被认(keys-event 报刚才哪个字节
+       变了并归给谁),没选中时的一切变化直接丢,不进任何状态。keys-progress 实时报
+       "已记几次/这一轮完没完". -->
   <p class="note" id="keys-event">未开始监听</p>
   <div class="row" id="keys-label-row"></div>
+  <div class="row"><button id="btnKeysNoResp" class="minor" disabled>这个按了没反应</button></div>
   <p class="note" id="keys-progress"></p>
   <p class="note" id="keys-note">已学会 0/9 个控件</p>
   <div id="keys-table"></div>
@@ -1500,14 +1506,16 @@ const KEYS_NOISE_PUSH = new Set([
    编字段名就是造假。只在一次事件进行期间挂上,事件一冻结就置 null,平时零开销。 */
 let keysPushHook=null;
 
-/* 新交互的状态机:不再有"第几步第几轮"这种进度,只剩"在不在监听""有没有一份事件
-   正攒着""有没有一份事件冻结了等人命名""每个控件攒到第几次观测"这几件事。 */
+/* 新交互的状态机:不再有"第几步第几轮"这种进度,也不再有"事件冻结了等人命名"这个
+   中间态——选控件必须先于按键发生,只剩"在不在监听""选没选中控件""有没有一份事件
+   正攒着""刚才那次捕捉归给了谁(仅供展示)""每个控件攒到第几次观测"这几件事。 */
 let keysWatching=false;      // 是否处于监听中——只有这时才挂 keysCollectHook,平时零开销
 let keysBaseCounts=null;     // 基线:开局静置期间逐字节"值→出现次数"(pickMode 要用次数选代表值)
 let keysEventCounts=null;    // 当前事件(从检测到偏离,到 600ms 静默)累计的逐字节计数;不在事件中为 null
 let keysEventPush=null;      // 当前事件期间 keysPushHook 收到的表外推送:tag('cs/ci')→{cs,ci,hex}
 let keysEventTimer=null;     // 600ms"没有新偏离就判定事件结束"的看门狗,每来一帧偏离就重置
-let keysPendingEvent=null;   // 冻结后、等待人命名的事件:{changed,counts,push,at}
+let keysSelected=null;       // 当前选中要测的控件 key(null=未选中)——捕捉到的变化只归给它,没选中一律丢弃
+let keysLastCapture=null;    // 最近一次归属成功的观测,仅供 keysRenderEvent 展示用:{key,changed,counts}
 let keysFirstObs={};         // key → 该控件已经攒到的第一次观测,等第二次核对:{changed,counts,push}
 const KEYS_BASE_MS=1500;     // 全程唯一一次强制等待:开局静置取基线
 const KEYS_EVENT_GAP_MS=600; // 事件判定用的静默门槛——见文件顶部这一节的注释
@@ -1629,16 +1637,20 @@ function keysOnFrame(bytes){
     keysEventTimer=setTimeout(keysFreezeEvent, KEYS_EVENT_GAP_MS);
   }
 }
-// 事件结束:冻结当前累计,交给人命名。changed 复用下面的 computeChangedBytes——
-// 判据跟事后统计"这段窗口有没有变过"完全一样,不能因为这里是实时流就换一套标准。
+// 事件结束:冻结当前累计,直接归给当前选中的控件(没选中就丢)。changed 复用下面的
+// computeChangedBytes——判据跟事后统计"这段窗口有没有变过"完全一样,不能因为这里是
+// 实时流就换一套标准。
 function keysFreezeEvent(){
   keysEventTimer=null;
   const counts=keysEventCounts, push=keysEventPush;
   keysEventCounts=null; keysEventPush=null; keysPushHook=null;
   const changed=computeChangedBytes(keysBaseCounts, counts);
   if(!changed.length) return;   // 触发过偏离但事后一算没有真变化(理论上不该发生,防御一下)
-  if(keysPendingEvent) log('按键学习：上一次变化还没命名就来了新的，已用新的替换','l-err');
-  keysPendingEvent={changed, counts, push, at:Date.now()};
+  // 没选中控件的变化一律丢——这是这次改动要堵的洞本身:旧交互"先按后命名"会在人伸手
+  // 点名字的这段时间里被下一次变化顶掉、或者压根命名错行,新交互反过来靠"没选中就
+  // 不认"从根上断掉这条出错路径,不写 keysFirstObs、不动界面主区。
+  if(!keysSelected){ log('按键学习：未选中控件，忽略这次变化（先点一个控件名再按）'); return; }
+  keysCommitObservation(keysSelected, {changed, counts, push});
   keysRenderEvent();
 }
 // 冲突展示、共用字节警告、报告里的按键节都要拿"哪个字节被哪些控件绑了"当基础数据,
@@ -1740,63 +1752,92 @@ function renderKeysTable(){
   el.innerHTML = html;
 }
 
-// 展示刚捕捉到的事件——没有事件时按"在不在监听"分两种话术,监听中说"等待按键…"
-// 好让人知道页面在盯着,没监听就直说"未开始监听"。
+// 展示当前状态——四种互斥的情况,按优先级判:没监听/刚有一次捕捉可展示/选中了等按/
+// 没选中。keysLastCapture 只用于展示,不参与判定,选中态一变(切换、取消选中、重新
+// 取基线、停止监听)就清掉,不会跟下一次选中之后的观测混在一起看起来像是同一件事。
 function keysRenderEvent(){
   const el=$('keys-event'); if(!el) return;
   if(!keysWatching){ el.textContent='未开始监听'; return; }
-  if(!keysPendingEvent){ el.textContent='等待按键…'; return; }
-  const {changed, counts}=keysPendingEvent;
-  const fmtHex=v=>'0x'+v.toString(16).padStart(2,'0');
-  const lines=changed.map(b=>{
-    const baseV=pickMode(keysBaseCounts[b]||new Map());
-    const vals=[...(counts[b]||new Map()).keys()].sort((x,y)=>x-y);
-    return `byte${b}　${baseV!==null?fmtHex(baseV):'?'} → ${vals.map(fmtHex).join('/')}`;
-  });
-  el.innerHTML='刚捕捉到一次变化：<br>'+lines.join('<br>')+'<br>这是哪个？';
+  if(keysLastCapture){
+    const {key, changed, counts}=keysLastCapture;
+    const fmtHex=v=>'0x'+v.toString(16).padStart(2,'0');
+    const lines=changed.length ? changed.map(b=>{
+      const baseV=pickMode(keysBaseCounts[b]||new Map());
+      const vals=[...(counts[b]||new Map()).keys()].sort((x,y)=>x-y);
+      return `byte${b}　${baseV!==null?fmtHex(baseV):'?'} → ${vals.map(fmtHex).join('/')}`;
+    }) : ['（没有检测到变化）'];
+    el.innerHTML=`${nameOfKeyStep(key)}：<br>`+lines.join('<br>');
+    return;
+  }
+  if(!keysSelected){ el.textContent='先点一个控件名，再按那个控件'; return; }
+  el.textContent=`正在测：${nameOfKeyStep(keysSelected)} —— 现在按一下 ${nameOfKeyStep(keysSelected)}`;
 }
 function keysSetProgress(text){ const el=$('keys-progress'); if(el) el.textContent=text; }
 
-// 9 个控件名按钮 + 忽略,只需要建一次;是否可点只看在不在监听——见 keysLabelEvent
-// 关于"没有事件时点名字也算一次观测"的处理。
+// 9 个控件名按钮,只需要建一次;是否可点只看在不在监听,选中态另外每次渲染都要刷新
+// (点别的按钮、完成一轮、切基线都会改 keysSelected,不能只在建按钮那一次判)。
 function keysRenderLabelRow(){
   const row=$('keys-label-row'); if(!row) return;
   if(!row.children.length){
-    row.innerHTML=KEY_STEPS.map(s=>`<button id="kl-${s.key}" class="minor">${s.name}</button>`).join('')
-      +'<button id="kl-ignore" class="minor">忽略</button>';
-    KEY_STEPS.forEach(s=>{ $('kl-'+s.key).onclick=()=>keysLabelEvent(s.key); });
-    $('kl-ignore').onclick=keysIgnoreEvent;
+    row.innerHTML=KEY_STEPS.map(s=>`<button id="kl-${s.key}" class="minor">${s.name}</button>`).join('');
+    KEY_STEPS.forEach(s=>{ $('kl-'+s.key).onclick=()=>keysSelectKey(s.key); });
   }
   row.querySelectorAll('button').forEach(b=>b.disabled=!keysWatching);
+  KEY_STEPS.forEach(s=>{ $('kl-'+s.key).classList.toggle('on', keysSelected===s.key); });
+  // "这个按了没反应"只在选中了某个控件时才有意义(没选中的话它该记给谁都不知道)。
+  const noResp=$('btnKeysNoResp');
+  if(noResp) noResp.disabled = !keysWatching || !keysSelected;
 }
-// 人点一个控件名。如果还有一份事件正在攒(没到 600ms 静默),人已经在用这一下点击
-// 告诉我们"就是刚才这下",没必要死等门槛,直接收尾用当前已攒到的数据。
-function keysLabelEvent(key){
-  if(!keysWatching) return;
-  if(keysEventCounts!==null){
-    if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
-    keysFreezeEvent();
-  }
-  const ev=keysPendingEvent;
-  keysPendingEvent=null;
-  // 没有事件就是"按了没反应"——changed=[] 是"这控件不在 04/57 里"这个阴性结论
-  // 必须的另一半证据,不能只让人点个名字却什么都不记。
-  keysCommitObservation(key, {changed: ev?ev.changed:[], counts: ev?ev.counts:[], push: ev?ev.push:{}});
-  keysRenderEvent();
-}
-// 忽略:不管是已经冻结等命名的事件,还是还在攒的事件,一律清空不记。
-function keysIgnoreEvent(){
+// 换选中(或取消选中)之前,先处理旧控件遗留的痕迹:①还没冻结的采集窗口是在旧选中态下
+// 开始偏离的,继续让它冻结后归到新选中的控件头上,正是这次改动要堵的洞本身,必须丢;
+// ②还没攒够两次的半截观测(keysFirstObs)留着只会在下次选回这个控件时跟一次全新的
+// 按键凑成"两次",而这两次中间隔了别的操作,不该被当成连续两次,所以清掉并提示。
+function keysSwitchAway(){
   if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
   keysEventCounts=null; keysEventPush=null; keysPushHook=null;
-  keysPendingEvent=null;
+  if(keysSelected && keysFirstObs[keysSelected]){
+    log(`按键学习：「${nameOfKeyStep(keysSelected)}」只测了 1 次就切走了，这一次作废——两次一致才算数`,'l-err');
+    delete keysFirstObs[keysSelected];
+  }
+}
+// 点一个控件名 = 选中它开始测,不再是"给刚才那次变化命名"——捕捉必须发生在选中之后,
+// 归属才不会跟"这次变化算谁的"这种时序赛跑绑在一起。再点一次已选中的 = 取消选中。
+function keysSelectKey(key){
+  if(!keysWatching) return;
+  if(keysSelected===key){ keysDeselect(); return; }
+  keysSwitchAway();
+  keysSelected=key;
+  keysLastCapture=null;
+  keysRenderLabelRow(); keysRenderEvent();
+  keysSetProgress('');
+  log(`按键学习：选中「${nameOfKeyStep(key)}」，现在按一下它`);
+}
+function keysDeselect(){
+  keysSwitchAway();
+  keysSelected=null;
+  keysLastCapture=null;
+  keysRenderLabelRow(); keysRenderEvent();
+  keysSetProgress('');
+}
+// "这个按了没反应"是阴性结论必须的另一半证据(changed=[] 是"这控件不在 04/57 里"这个
+// 结论要成立必须的另一半观测)——原来靠"没有事件时点名字"实现,现在名字按钮改成了
+// 选择器,得单独开一个入口。只在选中了控件时可点,见 keysRenderLabelRow 的 disabled 判断。
+function keysNoResp(){
+  if(!keysWatching || !keysSelected) return;
+  if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
+  keysEventCounts=null; keysEventPush=null; keysPushHook=null;
+  keysCommitObservation(keysSelected, {changed:[], counts:[], push:{}});
   keysRenderEvent();
 }
 
 /* keysCommitObservation:同一个控件要连着攒两次观测才下结论——这是"测完一个再测
-   下一个"的底线,只是现在这两次是人连着按的,不用等两轮定时窗口。已经有结论的
-   控件再点一次,视为重新学习:先用 keysDropPrior 清掉旧结论,这次观测从"第一次"
-   算起,不能让新观测跟旧结论的残留混着判"两次是否一致"。 */
+   下一个"的底线不变,只是现在这两次都发生在同一个已选中的控件上,不会再被别的操作
+   插进来。已经有结论的控件被重新选中再按一次,视为重新学习:先用 keysDropPrior 清掉
+   旧结论,这次观测从"第一次"算起,不能让新观测跟旧结论的残留混着判"两次是否一致"。
+   两次攒够、下了结论之后自动摘掉选中态,逼人回到"先选控件"这一步测下一个,不让上一个
+   控件的选中态继续吃下一次按键事件。 */
 function keysCommitObservation(key, obs){
+  keysLastCapture={key, changed:obs.changed, counts:obs.counts};   // 只供 keysRenderEvent 展示,不参与判定
   const saved=loadKeys();
   const binds={...(saved.binds||{})}, unmapped=[...(saved.unmapped||[])], ambiguous={...(saved.ambiguous||{})};
   const alsoPush={...(saved.alsoPush||{})}, alsoPushOnce={...(saved.alsoPushOnce||{})};
@@ -1814,12 +1855,18 @@ function keysCommitObservation(key, obs){
   const first=keysFirstObs[key];
   if(!first){
     keysFirstObs[key]=obs;
-    log(`${nameOfKeyStep(key)}：已记 1 次（再按一次确认）`);
-    keysSetProgress(`已记：${nameOfKeyStep(key)} 1 次（再按一次确认）`);
+    log(`${nameOfKeyStep(key)}：已记 1 次，再按一次确认`);
+    keysSetProgress(`${nameOfKeyStep(key)} 已记 1 次，再按一次确认`);
     return;
   }
   delete keysFirstObs[key];
   keysFinalizeKey(key, first, obs, binds, unmapped, ambiguous, inconsistent, alsoPush, alsoPushOnce);
+  // keysFinalizeKey 内部已经按结论(绑定/歧义/不一致/无变化)各自 keysSetProgress 过一次——
+  // 这里紧接着覆盖成统一的"已完成,选下一个",是因为这一步要做的是状态机跳转(摘掉选中态、
+  // 回到"先选控件"),具体判定结果留给日志、表格和 keys-note 说,不重复摆在这行字里。
+  keysSelected=null;
+  keysRenderLabelRow();
+  keysSetProgress(`✅ ${nameOfKeyStep(key)} 已完成，选下一个控件`);
 }
 
 /* keysFinalizeKey:两次观测比对——判定分档逻辑照抄自旧版(单字节/相邻两字节合成
@@ -1987,14 +2034,14 @@ async function keysStartWatch(){
   $('btnKeysRebase').hidden=false; $('btnKeysRebase').disabled=!linkOn;
   keysRenderLabelRow(); keysRenderEvent();
   keysCollectHook=keysOnFrame;   // 唯一入口:此后每一帧 04/57 都走 keysOnFrame 判事件
-  log('按键学习：开始监听（只监听，不发送任何帧）——随便按一个控件试试');
+  log('按键学习：开始监听（只监听，不发送任何帧）——先点一个控件名选中它，再按那个控件');
 }
 // 停止监听:不管是人点的还是断线自动触发的,都走这一条收尾,状态和界面复位到同一处。
 function keysStopWatching(msg){
   keysWatching=false;
   keysCollectHook=null; keysPushHook=null; featRunning=false;
   if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
-  keysEventCounts=null; keysEventPush=null; keysPendingEvent=null; keysFirstObs={};
+  keysEventCounts=null; keysEventPush=null; keysSelected=null; keysLastCapture=null; keysFirstObs={};
   $('btnKeysWatch').textContent='开始监听'; $('btnKeysWatch').disabled=!linkOn;
   $('btnKeysRebase').hidden=true;
   keysRenderLabelRow(); keysRenderEvent();
@@ -2002,13 +2049,16 @@ function keysStopWatching(msg){
   log('按键学习：'+(msg||'已停止监听'));
 }
 // 重新取基线:不停止监听,只换掉参照系。之前"第一次观测"里的 changed 是拿旧基线比的,
-// 换了基线就不能再跟新基线下的第二次观测比"是否一致",所以要一并清掉重新算。
+// 换了基线就不能再跟新基线下的第二次观测比"是否一致",所以要连同选中态一并清掉重新
+// 来过——旧选中态留着,人会以为"还在测刚才那个",但参照系已经变了,测出来的东西对不上。
 async function keysRebase(){
   if(!keysWatching) return;
-  if(keysPendingEvent) log('按键学习：重新取基线，之前未命名的那次变化已丢弃','l-err');
+  if(keysSelected && keysFirstObs[keysSelected]){
+    log(`按键学习：重新取基线，「${nameOfKeyStep(keysSelected)}」只测了 1 次的那次已丢弃`,'l-err');
+  }
   keysCollectHook=null; keysPushHook=null;
   if(keysEventTimer){ clearTimeout(keysEventTimer); keysEventTimer=null; }
-  keysEventCounts=null; keysEventPush=null; keysPendingEvent=null; keysFirstObs={};
+  keysEventCounts=null; keysEventPush=null; keysSelected=null; keysLastCapture=null; keysFirstObs={};
   $('btnKeysRebase').disabled=true;
   $('keys-event').textContent='先别碰，正在重新取基线…';
   keysBaseCounts=await keysTakeBaseline();
@@ -2019,12 +2069,13 @@ async function keysRebase(){
     return;
   }
   keysCollectHook=keysOnFrame;
-  keysRenderEvent();
-  log('按键学习：已重新取基线');
+  keysRenderLabelRow(); keysRenderEvent();
+  log('按键学习：已重新取基线，请重新选一个控件开始测');
 }
 
 $('btnKeysWatch').onclick=()=>{ keysWatching ? keysStopWatching('已停止监听') : keysStartWatch(); };
 $('btnKeysRebase').onclick=keysRebase;
+$('btnKeysNoResp').onclick=keysNoResp;
 // 纯本地操作,不需要连着设备也能点(不进 setState 的启用数组)——学歪了要能重来。
 $('btnClearKeys').onclick=()=>{
   try{
