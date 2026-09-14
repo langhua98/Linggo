@@ -232,7 +232,13 @@ async function pushFcSRSWord(word){
 }
 window._syncFcSRS = syncFcSRSFromSupabase;
 
-function openFlashcard(origin){
+async function openFlashcard(origin){
+  // FSRS 调度 + 词库统计要用的 CET4/6/Ogden850/ts-fsrs 平时不在首屏关键路径里，
+  // 这里先等它们到位——否则评分会悄悄退回固定间隔，还把这次评分写进存档（见 _sched）。
+  if(typeof ensureDecks === 'function'){
+    try{ await ensureDecks(); }
+    catch(e){ toast('词库加载失败，请检查网络'); return; }
+  }
   fcOrigin = origin || 'voc';
   if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
   loadSRS();
@@ -1264,7 +1270,25 @@ document.addEventListener('keydown', e=>{
 // ═══════════════════════════════════════════
 //  VOCAB DECK PANEL
 // ═══════════════════════════════════════════
-function openVocabPanel(){
+async function openVocabPanel(){
+  // updateVpStats() 下面同步调 getDeckWordList()，必须在词库真正到位之后才能跑，
+  // 否则统计会把「还没加载」误算成「共 0 词」。加载期间锁住开始按钮，别让用户点了没反应。
+  // 复原文案写死成字面量，不要去「记住进来之前是什么」——连点两下的话，
+  // 第二次会把第一次设的「加载词库中…」当成原始文案记下来，然后永久复原成那个。
+  // 这个按钮的文案全项目只有 index.html 一处来源，写死是安全的。
+  const startBtn = document.getElementById('vp-start');
+  const setStart = (loading) => {
+    if(!startBtn) return;
+    startBtn.disabled = loading;
+    startBtn.textContent = loading ? '加载词库中…' : '开始背单词';
+  };
+  setStart(true);
+  if(typeof ensureDecks === 'function'){
+    try{ await ensureDecks(); }
+    catch(e){ toast('词库加载失败，请检查网络'); setStart(false); return; }
+  }
+  setStart(false);
+
   loadVpProgress(vpDeck);
   loadRootSRS(vpDeck);
   loadSRS();          // 「我的生词」那一行的统计要读最新的 fcSRS

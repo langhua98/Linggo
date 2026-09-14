@@ -17,7 +17,7 @@
 <link rel="stylesheet" href="style.css">
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
-<link rel="icon" href="icon.png?v=2" type="image/png">
+<link rel="icon" href="icon-192.png?v=3" type="image/png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png?v=2">
 <meta name="theme-color" content="#2563EB">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -373,7 +373,7 @@
 
 <!-- LANDING -->
 <div id="landing">
-  <img src="icon.png" class="landing-logo" alt="Linggo">
+  <img src="icon-192.png" class="landing-logo" alt="Linggo">
   <h1>Linggo</h1>
   <p class="landing-tagline">Read · Learn · Grow</p>
   <p class="sub">经典英文原著，边读边学</p>
@@ -889,17 +889,12 @@
   <button class="vp-start-btn" id="vp-start">开始背单词</button>
 </div>
 
-<script src="cet4.js"></script>
-<script src="cet6.js"></script>
-<script src="ogden850.js"></script>
+<!-- 词库/词典/音节/FSRS 调度这几个大文件（合计 1MB+）挪出关键路径，
+     由 script.js 顶部的 ensureDecks/ensureLexicon/ensureHyphen 按需懒加载；
+     仍留在 sw.js 的 SHELL 里预缓存，离线时闪卡和词对齐照样能用。 -->
 <script src="userdeck.js"></script>
-<script src="ecdict.js"></script>
-<script src="vendor/lottie.min.js"></script>
 <script src="licon.js"></script>
 <script src="sb.js"></script>
-<script src="vendor/hyphenation.en-us.js"></script>
-<script src="vendor/hypher.js"></script>
-<script src="vendor/ts-fsrs.umd.js"></script>
 <script src="script.js"></script>
 <script src="srs.js"></script>
 </body>

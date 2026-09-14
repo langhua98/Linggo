@@ -1,22 +1,76 @@
 // ═══════════════════════════════════════════
+//  LAZY SCRIPT LOADING  按需加载大文件
+//  ecdict/cet4/cet6/ogden850/ts-fsrs/hyphenation 挪出首屏关键路径（合计 1MB+）。
+//  谁真正用到谁负责先 await 对应的 ensureXxx；加载器只保证「同一个文件只下一次」。
+// ═══════════════════════════════════════════
+const _SCRIPT_ONCE = new Map();   // src → Promise<void>
+function loadScriptOnce(src){
+  let p = _SCRIPT_ONCE.get(src);
+  if(p) return p;
+  p = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = () => res();
+    s.onerror = () => rej(new Error('加载失败：' + src));
+    document.head.appendChild(s);
+  });
+  // 失败要从表里摘掉，否则一次网络抖动会让这个文件本次会话永远加载不回来
+  p.catch(() => _SCRIPT_ONCE.delete(src));
+  _SCRIPT_ONCE.set(src, p);
+  return p;
+}
+// 词表：闪卡和词库面板要用（getDeckWordList 是同步函数，必须先到齐再进去）
+function ensureDecks(){
+  return Promise.all([
+    loadScriptOnce('cet4.js'),
+    loadScriptOnce('cet6.js'),
+    loadScriptOnce('ogden850.js'),
+    loadScriptOnce('vendor/ts-fsrs.umd.js'),
+  ]);
+}
+// 词典：词对齐要用。ECDICT 最大，单独一档，中英对照才需要
+function ensureLexicon(){
+  return Promise.all([ensureDecks(), loadScriptOnce('ecdict.js')]);
+}
+// 音节：只有单词卡的音节行要用
+function ensureHyphen(){
+  return Promise.all([
+    loadScriptOnce('vendor/hyphenation.en-us.js'),
+    loadScriptOnce('vendor/hypher.js'),
+  ]);
+}
+// srs.js 是另一个文件，要跨文件调用这三道闸门
+window.ensureDecks = ensureDecks;
+window.ensureLexicon = ensureLexicon;
+window.ensureHyphen = ensureHyphen;
+
+// ═══════════════════════════════════════════
 //  INDEXED DB — book cache
 // ═══════════════════════════════════════════
 const IDB_NAME = 'ReadEN', IDB_VER = 1, IDB_STORE = 'books';
+// 连接复用：每次筛选分类都重建全部卡片，之前每张卡都各开一次 indexedDB.open()
+// （57 本内置书 = 57 个连接），且从不关闭。同一个 Promise 缓存起来，全会话共用一个连接。
+let _idbPromise = null;
 function openIDB(){
-  return new Promise((res,rej)=>{
+  if(_idbPromise) return _idbPromise;
+  _idbPromise = new Promise((res,rej)=>{
     const r = indexedDB.open(IDB_NAME, IDB_VER);
     r.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE,{keyPath:'url'});
     r.onsuccess = e => res(e.target.result);
     r.onerror   = ()=> rej(r.error);
   });
+  // 失败要清掉，否则一次失败之后整个会话都读不到缓存书
+  _idbPromise.catch(() => { _idbPromise = null; });
+  return _idbPromise;
 }
 async function idbSave(url, text){
   const db = await openIDB();
-  return new Promise((res,rej)=>{
+  await new Promise((res,rej)=>{
     const tx = db.transaction(IDB_STORE,'readwrite');
     tx.objectStore(IDB_STORE).put({url, text, ts:Date.now()});
     tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
   });
+  _idbKeysCache = null; // 缓存的全量 key 集合过期了，下次 idbAllKeys() 重新查
 }
 async function idbGet(url){
   const db = await openIDB();
@@ -38,11 +92,26 @@ async function idbHas(url){
 }
 async function idbDelete(url){
   const db = await openIDB();
-  return new Promise((res,rej)=>{
+  await new Promise((res,rej)=>{
     const tx = db.transaction(IDB_STORE,'readwrite');
     tx.objectStore(IDB_STORE).delete(url);
     tx.oncomplete = res; tx.onerror = ()=>rej(tx.error);
   });
+  _idbKeysCache = null; // 同 idbSave：全量 key 缓存过期
+}
+// 一次取全部 key 代替逐张卡片的 idbHas() —— renderLib 重建 57 张卡时
+// 原来是 57 次独立的 IDB 查询，改成一次 getAllKeys() 后结果缓存到失效为止。
+let _idbKeysCache = null; // Promise<Set<string>> | null
+function idbAllKeys(){
+  if(_idbKeysCache) return _idbKeysCache;
+  _idbKeysCache = openIDB().then(db => new Promise((res, rej) => {
+    const tx  = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).getAllKeys();
+    req.onsuccess = () => res(new Set(req.result));
+    req.onerror   = () => rej(req.error);
+  }));
+  _idbKeysCache.catch(() => { _idbKeysCache = null; });
+  return _idbKeysCache;
 }
 
 // ═══════════════════════════════════════════
@@ -716,7 +785,9 @@ function setCardAction(cardEl, state, pct){
 }
 
 // ── Build single book card
-function buildCard(book){
+// cachedKeys 可选：renderLib 一次性 idbAllKeys() 取好整批传进来，避免每张卡各查一次 IDB；
+// 不传（如 renderUserBooks）时退回原来的逐张异步 idbHas() 路径。
+function buildCard(book, cachedKeys){
   const div = document.createElement('div');
   div.className = 'bk';
   div._book = book;
@@ -752,7 +823,8 @@ function buildCard(book){
 
   // check local cache, set initial button state
   setCardAction(div, 'init');
-  idbHas(book.url).then(has => setCardAction(div, has ? 'cached' : 'ready'));
+  if(cachedKeys) setCardAction(div, cachedKeys.has(book.url) ? 'cached' : 'ready');
+  else idbHas(book.url).then(has => setCardAction(div, has ? 'cached' : 'ready'));
 
   return div;
 }
@@ -1155,7 +1227,10 @@ function openBook(book, text){
 }
 
 // ── Render library rows
-function renderLib(){
+async function renderLib(){
+  // 一次取全部已缓存的书 url，代替每张卡各自查一次 IDB（点一次分类标签曾开 57 个连接）；
+  // 取失败就传 undefined，buildCard 退回逐张异步 idbHas() 的老路径，不影响可用性。
+  let cached; try{ cached = await idbAllKeys(); }catch(e){ cached = undefined; }
   BOOKS.forEach((level, li) => {
     const row = document.getElementById(`lib-row-${li}`);
     if(!row) return;
@@ -1172,7 +1247,7 @@ function renderLib(){
       const qOk   = !q || b.t.toLowerCase().includes(q) || b.a.toLowerCase().includes(q);
       return catOk && qOk;
     });
-    filtered.forEach(b => row.appendChild(buildCard(b)));
+    filtered.forEach(b => row.appendChild(buildCard(b, cached)));
     document.getElementById(`lib-level-${li}`).style.display = filtered.length ? '' : 'none';
   });
   const any = [0,1,2].some(i => document.getElementById(`lib-level-${i}`).style.display !== 'none');
@@ -1906,17 +1981,28 @@ function showTL(sp, txt){
   const tl = document.createElement('span');
   tl.className = 'tl-line'; tl.textContent = txt; sp.after(tl);
 }
-// Translation cache: avoid re-fetching same sentences within session
+// Translation cache: avoid re-fetching same sentences within session.
+// 落盘改成尾延迟合并——双语模式快速翻页时每句都 JSON.stringify 整个缓存（上限 300 条）
+// 是主要卡顿源；内存读写（get/set 的即时生效）完全不变，只有写 sessionStorage 的时机延后。
 const TRANS_CACHE = (() => {
   let mem = {};
   try { mem = JSON.parse(sessionStorage.getItem('tl_cache') || '{}'); } catch(e) {}
+  let flushTimer = null;
+  const flush = () => {
+    flushTimer = null;
+    try { sessionStorage.setItem('tl_cache', JSON.stringify(mem)); } catch(e) {}
+  };
+  // 关标签页/切后台前必须补写一次，否则尾延迟合并期间的最后几条译文会丢
+  const flushNow = () => { if(flushTimer){ clearTimeout(flushTimer); flush(); } };
+  document.addEventListener('visibilitychange', () => { if(document.hidden) flushNow(); });
+  window.addEventListener('pagehide', flushNow);
   return {
     get: k => mem[k],
     set: (k, v) => {
       const keys = Object.keys(mem);
       if(keys.length >= 300) delete mem[keys[0]]; // FIFO 上限 300 条
       mem[k] = v;
-      try { sessionStorage.setItem('tl_cache', JSON.stringify(mem)); } catch(e) {}
+      if(!flushTimer) flushTimer = setTimeout(flush, 1000);
     }
   };
 })();
@@ -1927,37 +2013,52 @@ function fetchTimed(url, ms = 6000) {
   return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(tid));
 }
 
+// 三个源抽成数组，配合 translate() 里的「记住上次成功的源排最前」——
+// Google 在国内不通，原顺序下主力用户每翻一句都要先干等满 6s 超时才轮到 MyMemory。
+const _TL_SOURCES = [
+  { name: 'google', fn: async (txt) => {
+      const q = encodeURIComponent(txt.slice(0, 500));
+      const r = await fetchTimed(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${q}`);
+      const d = await r.json();
+      return d[0]?.map(s => s?.[0] || '').join('').trim() || null;
+    } },
+  { name: 'mymemory', fn: async (txt) => {
+      const q = encodeURIComponent(txt.slice(0, 500));
+      const r = await fetchTimed(`https://api.mymemory.translated.net/get?q=${q}&langpair=en|zh`);
+      const d = await r.json();
+      return (d.responseStatus === 200 && d.responseData?.translatedText) ? d.responseData.translatedText : null;
+    } },
+  { name: 'lingva', fn: async (txt) => {
+      const r = await fetchTimed(`https://lingva.lunar.icu/api/v1/en/zh/${encodeURIComponent(txt.slice(0, 300))}`);
+      const d = await r.json();
+      return d.translation || null;
+    } },
+];
+
 async function translate(txt) {
-  const cacheKey = txt.slice(0, 120);
+  // 用完整原文做 key——之前用 slice(0,120) 而译文按 slice(0,500) 翻，
+  // 前 120 字符相同的两句会撞在同一条缓存里；300 条上限已经够限制内存了，不用再截断。
+  const cacheKey = txt;
   const hit = TRANS_CACHE.get(cacheKey);
   if (hit) return hit;
 
-  const q = encodeURIComponent(txt.slice(0, 500));
+  // 记住上次翻译成功的源，排到最前尝试；源后来失效了会自然落到后面的源并重新记住，
+  // 不需要按 IP/时区猜地区——那既不准又会在 VPN 下判错。
+  const remembered = localStorage.getItem('tl_src');
+  const order = remembered
+    ? [..._TL_SOURCES.filter(s => s.name === remembered), ..._TL_SOURCES.filter(s => s.name !== remembered)]
+    : _TL_SOURCES;
 
-  // Source 1: Google Translate (unofficial, most reliable)
-  try {
-    const r = await fetchTimed(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${q}`);
-    const d = await r.json();
-    const result = d[0]?.map(s => s?.[0] || '').join('').trim();
-    if (result) { TRANS_CACHE.set(cacheKey, result); return result; }
-  } catch(e) {}
-
-  // Source 2: MyMemory
-  try {
-    const r = await fetchTimed(`https://api.mymemory.translated.net/get?q=${q}&langpair=en|zh`);
-    const d = await r.json();
-    if (d.responseStatus === 200 && d.responseData?.translatedText) {
-      const result = d.responseData.translatedText;
-      TRANS_CACHE.set(cacheKey, result); return result;
-    }
-  } catch(e) {}
-
-  // Source 3: Lingva (open-source Google Translate frontend)
-  try {
-    const r = await fetchTimed(`https://lingva.lunar.icu/api/v1/en/zh/${encodeURIComponent(txt.slice(0, 300))}`);
-    const d = await r.json();
-    if (d.translation) { TRANS_CACHE.set(cacheKey, d.translation); return d.translation; }
-  } catch(e) {}
+  for (const src of order) {
+    try {
+      const result = await src.fn(txt);
+      if (result) {
+        TRANS_CACHE.set(cacheKey, result);
+        try { localStorage.setItem('tl_src', src.name); } catch(e) {}
+        return result;
+      }
+    } catch(e) {}
+  }
 
   return '[翻译失败，请检查网络]';
 }
@@ -1988,13 +2089,24 @@ function _bilinTranslateSent(sp){
   }
 }
 
-function applyBilin(){
+// 打开中英对照才需要词典法词对齐用的 CET4/6+Ogden850+ECDICT（合计 800KB+），
+// 单调递增的调用号防止「快速连点开关」时后到的 await 用旧状态覆盖新状态。
+let _bilinCallId = 0;
+async function applyBilin(){
+  const myId = ++_bilinCallId;
   const content = document.getElementById('content');
   // Always disconnect first to avoid observing stale/removed elements
   if(_bilinObs){ _bilinObs.disconnect(); _bilinObs = null; }
   const btn = document.getElementById('bilin-toggle');
   if(btn) btn.classList.toggle('on', S.bilin);
   if(S.bilin){
+    // 在「用户打开中英对照」这个动作上 await，比在每句对齐时 await 更合适——
+    // 不阻塞朗读，加载失败就退回 _LEX_BASE 内置小表（现有行为），控制台留痕方便定位。
+    if(typeof ensureLexicon === 'function'){
+      try{ await ensureLexicon(); }
+      catch(e){ console.warn('词典（ECDICT/CET4/CET6/Ogden850）加载失败，词对齐将使用内置基础词表：', e); }
+      if(myId !== _bilinCallId) return; // 加载期间又被调用过，以最新那次为准
+    }
     content.classList.add('bilin');
     _bilinObs = new IntersectionObserver(entries => {
       for(const e of entries){
@@ -2459,8 +2571,15 @@ async function onWordClick(el){
   const sylCountEl = document.getElementById('wp-syl-count');
   sylEl.textContent = ''; sylEl.style.display = 'none';
   sylCountEl.textContent = ''; sylCountEl.style.display = 'none';
-  { const syls = _syllabify(word);
-    if(syls){
+  // Hypher + 音节数据平时不在首屏关键路径里，点词才拉；纯锦上添花，加载失败就照旧隐藏音节行。
+  // **这里绝不能 await**：弹窗是先出框、再异步填内容的（下面 wpop.classList.add('vis')
+  // 在本段之后），await 会把整个弹窗的出现挡在这 33KB 后面 —— 冷缓存时点词像是没反应。
+  // 音节到得晚没关系，但那时用户可能已经点了下一个词，所以补写之前先认一下词还是不是它。
+  Promise.resolve(typeof ensureHyphen === 'function' ? ensureHyphen() : null)
+    .then(() => {
+      if(document.getElementById('wp-word').textContent !== word) return;   // 已经换词了
+      const syls = _syllabify(word);
+      if(!syls) return;
       sylEl.textContent = '';
       syls.forEach((s, i) => {
         if(i) sylEl.append(Object.assign(document.createElement('span'), {className:'syl-dot', textContent:'·'}));
@@ -2470,8 +2589,8 @@ async function onWordClick(el){
       // 音节数：绿框徽章，跟在音标后面
       sylCountEl.textContent = `${syls.length} 音节`;
       sylCountEl.style.display = '';
-    }
-  }
+    })
+    .catch(()=>{});
   document.getElementById('wp-ph').textContent   = '';
   const posEl = document.getElementById('wp-pos');
   posEl.style.display = 'none';
@@ -3241,7 +3360,13 @@ async function _initLicons(){
   // Word popup: heart fill↔empty 由 _wpSetLearnState 按加入/取消方向驱动
   _licons.learn = await Licon.mount($('wp-learn-ico'), 'heart');
 }
-_initLicons();
+// 237KB 的 lottie 只为几个图标动效，等首屏画完再拉，缺席就保持静态 SVG（渐进增强）。
+// 裸标识符 requestIdleCallback 在没有它的引擎（Safari/iOS 旧版本）里直接引用会抛
+// ReferenceError，把这条语句之后本文件剩下的顶层代码全部中断——必须用 typeof 守卫。
+typeof requestIdleCallback === 'function' ? requestIdleCallback(() => _lazyLicons()) : setTimeout(_lazyLicons, 1500);
+function _lazyLicons(){
+  loadScriptOnce('vendor/lottie.min.js').then(_initLicons).catch(()=>{});
+}
 
 document.getElementById('play-btn').addEventListener('click', togglePlay);
 

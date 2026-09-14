@@ -1,4 +1,4 @@
-const CACHE = 'linggo-v205';
+const CACHE = 'linggo-v206';
 const SHELL = [
   '/Linggo/',
   '/Linggo/index.html',
@@ -30,7 +30,6 @@ const SHELL = [
   '/Linggo/lottie/settings2.json',
   '/Linggo/lottie/menu.json',
   '/Linggo/lottie/loading.json',
-  '/Linggo/icon.png',
   '/Linggo/icon-192.png',
   '/Linggo/icon-512.png',
   '/Linggo/apple-touch-icon.png',
