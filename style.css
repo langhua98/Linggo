@@ -905,7 +905,9 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   padding:4px 10px;
   margin:0 -10px 0.5em;       /* uniform box (so .playing adds no shift) + gap between sentences */
   border-radius:9px;
-  transition:background .25s ease, box-shadow .25s ease;
+  /* 句高亮的「交接」时长。90ms 是**离开**的一侧（以及 hover 的淡出）。
+     进入的一侧在下面的 .sent.playing 里设成更长，形成不对称交接 —— 原因见那里。 */
+  transition:background 90ms linear, box-shadow 90ms linear;
 }
 @media (hover: hover){
   .sent:hover{ background:rgba(0,0,0,0.04); }
@@ -916,24 +918,25 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
      base .sent so becoming active causes no layout shift) */
   background:rgba(255,206,74,0.46);
   box-shadow:0 2px 12px rgba(240,168,38,0.22);
+  /* 进入 170ms、离开 90ms（基础 .sent 那条）—— 故意不对称。两个极端都实测过：
+     · 原来的 250ms 对等淡入淡出：前后两句同时亮满约 150ms，朗读时页面正在移动，
+       看上去就是一个残影跟着飘过去。
+     · 一度改成 transition:none 硬切：句高亮是整块底色，相邻句高度能差 72px
+       （实测 116px↔44px，3 行 vs 1 行），一帧之内换掉就是"咣"的一下。
+     不对称交接让重叠窗口只有 90ms，且那期间旧的在退、新的在进，都不在满亮度上。
+     **注意不要再把这套时长收进某个状态类里**（曾经用过 #content.following）：
+     jump() 是先改 .playing、后挂状态类的，中间还夹着一次强制 layout，
+     浏览器那时看到的还是旧时长，淡出已经按旧值起跑了，改也追不回来。 */
+  transition:background 170ms ease-out, box-shadow 170ms ease-out;
 }
 .night .sent.playing{
   background:rgba(255,190,55,0.24);
   box-shadow:0 2px 14px rgba(255,175,40,0.16);
 }
-/* Brief "ink settle" pulse when a sentence becomes active (works in both
-   themes via brightness, so it never fights the resting background color) */
-@media (prefers-reduced-motion: no-preference){
-  .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1); }
-}
-/* 跟读滚动进行时（JS 给 #content 挂 .following）高亮必须瞬切。
-   上面那条 .sent 的 250ms 淡入淡出，会让前后两句同时亮着约 150ms（实测 30 帧里 10 帧
-   是双高亮），而页面正在移动 —— 看上去就是一个残影跟着飘过去。
-   sentSettle 一并关掉：它动的是 filter，会把整个句块提成合成层，在滚动中容易拖影。
-   静止时这两个效果都是好东西，所以只在跟读期间关，不是删掉。 */
-#content.following .sent{ transition:none; }
-#content.following .sent.playing{ animation:none; }
-@keyframes sentSettle{ from{ filter:brightness(1.18); } to{ filter:brightness(1); } }
+/* 原先这里还有一个 sentSettle 的 filter:brightness 脉冲动画，已删除：
+   它每次换句都在正文块上跑 0.4s 的 filter 动画，而 filter 会把整个句块提成独立合成层，
+   恰好和跟读滚动同时发生，是滚动中拖影的一个来源。上面那条 170ms 的 ease-out 淡入
+   已经承担了"落笔"的观感，不需要再叠一层。 */
 .word{
   display:inline; cursor:pointer;
   border-radius:4px;

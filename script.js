@@ -3037,14 +3037,6 @@ function _followYield(){ _followPausedUntil = Date.now() + 4000; }
 window.addEventListener('wheel', _followYield, {passive:true});
 window.addEventListener('touchmove', _followYield, {passive:true});
 
-// 跟读期间给正文挂 .following，CSS 靠它把句高亮的淡入淡出和 sentSettle 关掉。
-// 250ms 的淡入淡出会让前后两句同时亮着约 150ms（实测 30 帧里有 10 帧是双高亮），
-// 而页面此时正在移动 —— 看上去就是一个残影跟着飘过去，也就是用户说的"重影"。
-// 静止时的淡入淡出是好东西，保留，所以只在循环跑着的时候关。
-function _followMark(on){
-  document.getElementById('content')?.classList.toggle('following', on);
-}
-
 // 选真正要对准的元素。传进来的是整句时，对准它的**第一个词**而不是整句。
 // 原因：句子的几何中心不是声音开始的地方。实测段首长句（5 行 / 188px）的中心比首词
 // 低 72px，于是每次换句都先往下漂 72px、等第一个词边界事件到了又被拽回来——
@@ -3070,7 +3062,7 @@ function _followSet(el){
     window.scrollTo({ top: Math.max(0, Math.min(target, maxScroll)), behavior: 'auto' });
     return;
   }
-  if(!_followRAF){ _followLastTs = 0; _followMark(true); _followRAF = requestAnimationFrame(_followTick); }
+  if(!_followRAF){ _followLastTs = 0; _followRAF = requestAnimationFrame(_followTick); }
 }
 
 function _followTick(ts){
@@ -3081,7 +3073,7 @@ function _followTick(ts){
   // 非朗读状态改成"缓动到位之后再停"，见下面的收尾分支——这样滚动始终只有这一个
   // 所有者，也就不会在按下播放的瞬间和 scrollIntoView 打架。
   if(!_followEl || !_followEl.isConnected){
-    _followRAF = null; _followMark(false);
+    _followRAF = null;
     return;
   }
   let dt = _followLastTs ? (ts - _followLastTs) : 16.67;
@@ -3110,7 +3102,7 @@ function _followTick(ts){
   } else if(!S.playing){
     // 到位了、又没在朗读（一次性导航：恢复进度 / 上下句 / 长按）→ 收工，别空转。
     // 朗读中即使到位也继续跑：下一个词随时会把目标挪走，停了就得重启。
-    _followRAF = null; _followMark(false);
+    _followRAF = null;
     return;
   }
   _followRAF = requestAnimationFrame(_followTick);
