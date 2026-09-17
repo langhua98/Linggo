@@ -1394,6 +1394,7 @@ document.getElementById('logo-btn').addEventListener('click', () => {
   synth.cancel(); stopResumeTimer();
   if(kokActive) kokStop();
   S.playing = false; S.paused = false; setIcon(false);
+  if(typeof _hlHide === 'function') _hlHide(); // 退出阅读器：下次进书要当"重新出现"，不能带着旧坐标滑入
   withVT(() => {
     reader.style.display = 'none';
     player.style.display = 'none';
@@ -3108,6 +3109,90 @@ function _followTick(ts){
   _followRAF = requestAnimationFrame(_followTick);
 }
 
+// ═══════════════════════════════════════════
+//  SENTENCE HIGHLIGHT — 一个会移动/变形的高亮层（FLIP 思路）
+//  前两次修"换句抖动"都在调交叉淡化的时长，方向错了：淡化只能改透明度，
+//  改不了形状和位置，而相邻句高度差最多 116px↔44px（3 行 vs 1 行），位置和
+//  尺寸终究是瞬间切换的。这里改成只有一个元素带黄底/阴影，换句时让它本身
+//  从上一句的坐标平移+变形到下一句的坐标，见 style.css 的 #sent-hl。
+// ═══════════════════════════════════════════
+let _hlEl = null;
+
+// buildReader() 每次都会 area.innerHTML='' 清空 #content，把上一次的 #sent-hl
+// 一起清掉，所以每次用之前都要确认它还在当前的 #content 里，不在就重建。
+function _hlEnsure(){
+  const content = document.getElementById('content');
+  if(!content) return null;
+  if(_hlEl && _hlEl.parentNode === content) return _hlEl;
+  _hlEl = document.createElement('div');
+  _hlEl.id = 'sent-hl';
+  content.appendChild(_hlEl);
+  return _hlEl;
+}
+
+// opts.instant=true 时不做"移动"动画，只瞬间摆正（重排校正专用）。
+// 没显式要求 instant 时也会自动判一次：只要当前 opacity 还不是 '1'
+// （从未出现过 / 刚被 _hlHide() 隐藏），说明这是"重新出现"而不是"移动"，
+// 同样要瞬间摆正，否则会从上一次留下的坐标（或换书前的旧坐标）滑过来。
+function _hlSync(sentEl, opts){
+  const hl = _hlEnsure();
+  if(!hl || !sentEl) return;
+  const instant = !!(opts && opts.instant) || hl.style.opacity !== '1';
+  const top = sentEl.offsetTop, left = sentEl.offsetLeft,
+        w = sentEl.offsetWidth, h = sentEl.offsetHeight;
+  if(instant){
+    hl.classList.add('no-anim');
+    hl.style.top = top + 'px'; hl.style.left = left + 'px';
+    hl.style.width = w + 'px'; hl.style.height = h + 'px';
+    void hl.offsetWidth;           // 强制 reflow：让浏览器先"认下"这个无动画的姿态
+    hl.classList.remove('no-anim');
+    hl.style.opacity = '1';        // 唯一允许有动画的只剩淡入
+  } else {
+    hl.style.top = top + 'px'; hl.style.left = left + 'px';
+    hl.style.width = w + 'px'; hl.style.height = h + 'px';
+    hl.style.opacity = '1';
+  }
+}
+
+function _hlHide(){
+  if(_hlEl) _hlEl.style.opacity = '0';
+}
+
+// 重排校正：字号/行距/对齐/双语插译文行都会让 #content 里的内容挪位置，
+// 而 #sent-hl 是按"当时量到的"绝对坐标定死的，不会跟着重新流动的文字自动跟上。
+// 只在当前句还挂着 .playing（说明真的在显示高亮）时才补一次，且必须 instant——
+// 这是一次"修正"，不是一次"移动"，带动画反而会像是又跳转了一次。
+function _hlResync(){
+  const cur = document.querySelector('.sent.playing');
+  if(!cur) return;
+  // 实测踩到的坑：jump() 里 injectWords() 第一次把某句的裸文本换成 <span
+  // class="word"> 时，spans 的 padding 会让该句自身高度多出一两像素，
+  // #content 跟着触发一次 ResizeObserver——但这时 _hlSync(el) 早就已经用
+  // injectWords 之后的最终高度算好目标值了，目标根本没变，只是"凑巧同一帧
+  // 又抖了一下"。如果这里照样无条件 instant 摆一次，会把刚起跑几毫秒的移动
+  // 动画锁死成瞬变，等于自己把 FLIP 效果废了。所以先比一下 #sent-hl 当前
+  // 的目标（style.top/left/width/height，移动动画的"终点"，不是渲染中的
+  // 瞬时值）跟句子现在的 offsetTop 等是否已经一致——一致就什么都不做，
+  // 只有真的对不上（字号/行距/对齐/双语插行这类事后重排）才需要瞬间摆正。
+  if(_hlEl){
+    const same = Math.abs(parseFloat(_hlEl.style.top)    - cur.offsetTop)    < 0.5 &&
+                 Math.abs(parseFloat(_hlEl.style.left)   - cur.offsetLeft)   < 0.5 &&
+                 Math.abs(parseFloat(_hlEl.style.width)  - cur.offsetWidth)  < 0.5 &&
+                 Math.abs(parseFloat(_hlEl.style.height) - cur.offsetHeight) < 0.5;
+    if(same) return;
+  }
+  _hlSync(cur, { instant: true });
+}
+// ResizeObserver 覆盖"高度变化"（双语插 .tl-line、换行数变化等）；
+// 用 rAF 合并，避免双语滚动时每插一行译文都触发一次重排校正。
+let _hlResizeRaf = null;
+if(typeof ResizeObserver !== 'undefined'){
+  new ResizeObserver(() => {
+    if(_hlResizeRaf) return;
+    _hlResizeRaf = requestAnimationFrame(() => { _hlResizeRaf = null; _hlResync(); });
+  }).observe(area);
+}
+
 function jump(i){
   document.querySelectorAll('.sent.playing').forEach(el=>el.classList.remove('playing'));
   clearTtsWord();
@@ -3122,6 +3207,9 @@ function jump(i){
     // 真正的滚动由 _followTick 的单一所有者循环写，这里只报告目标，不再自己
     // scrollIntoView——避免和 highlightWordAt() 的词级滚动打架。
     _followSet(el);
+    _hlSync(el);
+  } else {
+    _hlHide();
   }
   updateProg(); saveProg();
   // While idle, warm the sentence the user just navigated to so pressing play
@@ -3623,6 +3711,9 @@ document.getElementById('sb-font-range').addEventListener('input', e => {
 function applyFont(){
   document.getElementById('sb-font-range').value = S.fontSize;
   document.querySelectorAll('.sent').forEach(el => el.style.fontSize = S.fontSize + 'px');
+  // 字号变了但整体高度未必变（比如换行数没变），ResizeObserver 未必触发，
+  // 这里显式补一次重排校正（见 _hlResync 注释）。
+  if(typeof _hlResync === 'function') _hlResync();
 }
 
 // Line height
@@ -3637,6 +3728,7 @@ function applyLineHeight(){
   const lh = S.lineHeight || 2.05;
   document.querySelectorAll('.sent').forEach(el => el.style.lineHeight = lh);
   document.querySelectorAll('.sb-pill').forEach(b => b.classList.toggle('on', +b.dataset.lh === lh));
+  if(typeof _hlResync === 'function') _hlResync();
 }
 
 // Text align
@@ -3651,6 +3743,8 @@ function applyTextAlign(){
   const ta = S.textAlign || 'left';
   document.getElementById('content').style.textAlign = ta;
   document.querySelectorAll('.sb-align-btn').forEach(b => b.classList.toggle('on', b.dataset.align === ta));
+  // 对齐方式一变，换行位置可能变而整体高度不变——这种情况 ResizeObserver 不会触发。
+  if(typeof _hlResync === 'function') _hlResync();
 }
 
 // Night mode
