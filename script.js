@@ -3092,17 +3092,29 @@ function _followTick(ts){
   const target = Math.max(0, Math.min(rawTarget, maxScroll)); // clamp，否则开头/结尾对着到不了的目标空转
   const diff = target - window.scrollY;
 
+  // 帧率无关的指数逼近：120Hz 设备上不能按 dt*EASE 线性算，否则速度翻倍。
+  // 这行提到 if 外面，因为高亮（_hlStep）也要用同一个 k——滚动已经到位、
+  // 高亮还没追上是常态（比如原地长按同一句），高亮的推进不能只在滚动
+  // 还需要挪动时才发生。
+  const k = 1 - Math.pow(1 - FOLLOW_EASE, dt / 16.67);
+
   if(Math.abs(diff) >= FOLLOW_DEAD){
-    // 帧率无关的指数逼近：120Hz 设备上不能按 dt*EASE 线性算，否则速度翻倍
-    const k = 1 - Math.pow(1 - FOLLOW_EASE, dt / 16.67);
     // 每帧至少挪 1px。scrollY 是整数量化的，0.48px 这种步长会被浏览器直接吞掉：
     // 差值就永远停在 4px 上下不来 → 死区进不去 → rAF 永远停不了（实测到过这个死循环）。
     // 再用 |diff| 封顶，防止最后一帧冲过头来回抖。
     const step = Math.sign(diff) * Math.min(Math.max(Math.abs(diff) * k, 1), Math.abs(diff));
     window.scrollTo(0, window.scrollY + step);
-  } else if(!S.playing){
+  }
+
+  // 高亮必须和滚动用同一个 k 推进。用 CSS transition 的话曲线形状不同，
+  // 两者相减会让高亮在屏幕上来回摆（实测摆幅 50.6px，方向反转）。
+  const hlSettled = _hlStep(k);
+
+  if(Math.abs(diff) < FOLLOW_DEAD && !S.playing && hlSettled){
     // 到位了、又没在朗读（一次性导航：恢复进度 / 上下句 / 长按）→ 收工，别空转。
-    // 朗读中即使到位也继续跑：下一个词随时会把目标挪走，停了就得重启。
+    // 滚动和高亮都要到位才能停——只看滚动的话，滚动先到位就会把循环关掉，
+    // 留高亮停在半路（这正是"停止状态下按下一句"最容易踩的坑）。
+    // 朗读中即使都到位也继续跑：下一个词随时会把目标挪走，停了就得重启。
     _followRAF = null;
     return;
   }
@@ -3117,6 +3129,11 @@ function _followTick(ts){
 //  从上一句的坐标平移+变形到下一句的坐标，见 style.css 的 #sent-hl。
 // ═══════════════════════════════════════════
 let _hlEl = null;
+// 高亮的目标/当前几何（文档坐标，{top,left,w,h}）。geometry 不再靠 CSS transition
+// 驱动——它和滚动是同一个视觉量的两个分量（屏幕位置=文档坐标−scrollY），曲线形状
+// 必须一致，两者才会在屏幕上同步收敛，见 style.css 里 #sent-hl 的注释和下面 _hlStep。
+let _hlTarget = null;
+let _hlCur    = null;
 
 // buildReader() 每次都会 area.innerHTML='' 清空 #content，把上一次的 #sent-hl
 // 一起清掉，所以每次用之前都要确认它还在当前的 #content 里，不在就重建。
@@ -3131,16 +3148,23 @@ function _hlEnsure(){
 }
 
 // opts.instant=true 时不做"移动"动画，只瞬间摆正（重排校正专用）。
-// 没显式要求 instant 时也会自动判一次：只要当前 opacity 还不是 '1'
-// （从未出现过 / 刚被 _hlHide() 隐藏），说明这是"重新出现"而不是"移动"，
-// 同样要瞬间摆正，否则会从上一次留下的坐标（或换书前的旧坐标）滑过来。
+// 没显式要求 instant 时也会自动判几种情况：当前 opacity 还不是 '1'
+// （从未出现过 / 刚被 _hlHide() 隐藏，说明这是"重新出现"而不是"移动"）、
+// 还没有 _hlCur（同理，没什么可以"移动"）、或用户开了 reduced-motion——
+// 这几种都要瞬间摆正，否则会从上一次留下的坐标（或换书前的旧坐标）滑过来。
 function _hlSync(sentEl, opts){
   const hl = _hlEnsure();
   if(!hl || !sentEl) return;
-  const instant = !!(opts && opts.instant) || hl.style.opacity !== '1';
+  // reduced-motion 现在也要在这里判：geometry 的 transition 已经从 CSS 里挪走了，
+  // 不再有"CSS 媒体查询自动把 top/left/width/height 变成瞬间切换"这回事，
+  // 想要"没有移动动画"就得在这儿主动挑 instant。
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const instant = !!(opts && opts.instant) || hl.style.opacity !== '1' || !_hlCur || reduced;
   const top = sentEl.offsetTop, left = sentEl.offsetLeft,
         w = sentEl.offsetWidth, h = sentEl.offsetHeight;
+  _hlTarget = { top, left, w, h };
   if(instant){
+    _hlCur = { top, left, w, h };
     hl.classList.add('no-anim');
     hl.style.top = top + 'px'; hl.style.left = left + 'px';
     hl.style.width = w + 'px'; hl.style.height = h + 'px';
@@ -3148,10 +3172,43 @@ function _hlSync(sentEl, opts){
     hl.classList.remove('no-anim');
     hl.style.opacity = '1';        // 唯一允许有动画的只剩淡入
   } else {
-    hl.style.top = top + 'px'; hl.style.left = left + 'px';
-    hl.style.width = w + 'px'; hl.style.height = h + 'px';
+    // 不在这里直接写 top/left/width/height——geometry 交给 _followTick 里的
+    // _hlStep 用和滚动相同的 k 逐帧推进（原因见 #sent-hl 的 CSS 注释），这里
+    // 只更新目标值，并确保那个循环在跑（复用 _followSet 同款的启动判断）。
     hl.style.opacity = '1';
+    if(!_followRAF){ _followLastTs = 0; _followRAF = requestAnimationFrame(_followTick); }
   }
+}
+
+// 高亮几何的逐帧推进，k 由 _followTick 算好传进来（必须和滚动共用同一个 k，
+// 见 style.css #sent-hl 的注释）。返回是否已经贴合目标，供 _followTick 判断
+// 能不能连同滚动一起停下 rAF 循环。
+function _hlStep(k){
+  if(!_hlTarget) return true;
+  if(!_hlCur) _hlCur = { ..._hlTarget }; // 正常不会走到这——_hlSync 没有 _hlCur 时会走 instant
+  const step = (c, t) => {
+    const d = t - c;
+    if(Math.abs(d) < 0.5) return t;      // 够近就吸附，别无限逼近（这里不受 scrollY 那种
+                                          // 整数量化限制，但仍要有收敛判据，否则永远差
+                                          // 一点点停不下来）
+    return c + Math.sign(d) * Math.max(Math.abs(d) * k, 0.5);
+  };
+  _hlCur = {
+    top:  step(_hlCur.top,  _hlTarget.top),
+    left: step(_hlCur.left, _hlTarget.left),
+    w:    step(_hlCur.w,    _hlTarget.w),
+    h:    step(_hlCur.h,    _hlTarget.h),
+  };
+  if(_hlEl){
+    _hlEl.style.top    = _hlCur.top.toFixed(1)  + 'px';
+    _hlEl.style.left   = _hlCur.left.toFixed(1) + 'px';
+    _hlEl.style.width  = _hlCur.w.toFixed(1)    + 'px';
+    _hlEl.style.height = _hlCur.h.toFixed(1)    + 'px';
+  }
+  return Math.abs(_hlCur.top  - _hlTarget.top)  < 0.5 &&
+         Math.abs(_hlCur.left - _hlTarget.left) < 0.5 &&
+         Math.abs(_hlCur.w    - _hlTarget.w)    < 0.5 &&
+         Math.abs(_hlCur.h    - _hlTarget.h)    < 0.5;
 }
 
 function _hlHide(){
@@ -3170,15 +3227,18 @@ function _hlResync(){
   // #content 跟着触发一次 ResizeObserver——但这时 _hlSync(el) 早就已经用
   // injectWords 之后的最终高度算好目标值了，目标根本没变，只是"凑巧同一帧
   // 又抖了一下"。如果这里照样无条件 instant 摆一次，会把刚起跑几毫秒的移动
-  // 动画锁死成瞬变，等于自己把 FLIP 效果废了。所以先比一下 #sent-hl 当前
-  // 的目标（style.top/left/width/height，移动动画的"终点"，不是渲染中的
-  // 瞬时值）跟句子现在的 offsetTop 等是否已经一致——一致就什么都不做，
-  // 只有真的对不上（字号/行距/对齐/双语插行这类事后重排）才需要瞬间摆正。
-  if(_hlEl){
-    const same = Math.abs(parseFloat(_hlEl.style.top)    - cur.offsetTop)    < 0.5 &&
-                 Math.abs(parseFloat(_hlEl.style.left)   - cur.offsetLeft)   < 0.5 &&
-                 Math.abs(parseFloat(_hlEl.style.width)  - cur.offsetWidth)  < 0.5 &&
-                 Math.abs(parseFloat(_hlEl.style.height) - cur.offsetHeight) < 0.5;
+  // 动画锁死成瞬变，等于自己把 FLIP 效果废了。所以先比一下 _hlTarget（移动
+  // 动画的"终点"，不是渲染中的瞬时值）跟句子现在的 offsetTop 等是否已经
+  // 一致——一致就什么都不做，只有真的对不上（字号/行距/对齐/双语插行这类
+  // 事后重排）才需要瞬间摆正。
+  if(_hlTarget){
+    // 比较对象是 _hlTarget（移动动画的"终点"），不是 _hlEl.style.*——geometry
+    // 现在由 _hlStep 逐帧写，渲染中的瞬时值本来就还没到终点，拿它来比较会把
+    // 每一帧都判成"不一致"，刚起跑的动画又被这里摁成瞬变。
+    const same = Math.abs(_hlTarget.top    - cur.offsetTop)    < 0.5 &&
+                 Math.abs(_hlTarget.left   - cur.offsetLeft)   < 0.5 &&
+                 Math.abs(_hlTarget.w      - cur.offsetWidth)  < 0.5 &&
+                 Math.abs(_hlTarget.h      - cur.offsetHeight) < 0.5;
     if(same) return;
   }
   _hlSync(cur, { instant: true });

@@ -939,15 +939,16 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:rgba(255,206,74,0.46);
   box-shadow:0 2px 12px rgba(240,168,38,0.22);
   opacity:0;                           /* 书刚打开/还没换过句时没有目标，不可见 */
-  transition:top 220ms cubic-bezier(.4,0,.2,1),
-             left 220ms cubic-bezier(.4,0,.2,1),
-             width 220ms cubic-bezier(.4,0,.2,1),
-             height 220ms cubic-bezier(.4,0,.2,1),
-             opacity 160ms linear;
-  /* 动 top/height 而不是 transform:scaleY()——缩放会把圆角和阴影一起拉变形，
-     44px→116px 这么大的比例肉眼就能看出"橡皮筋"感。全程只有这一个绝对定位
-     元素在动，不影响任何兄弟节点的布局、不触发文字回流，用 top/height 没有
-     性能问题，不要"优化"成 transform。 */
+  /* top/left/width/height 不再放 CSS transition，改由 script.js 的 _followTick
+     逐帧写（见 _hlStep）：用户看到的其实是"高亮屏幕位置" = 高亮文档坐标 − scrollY，
+     滚动那侧走的是 _followTick 里帧率无关的指数缓动，如果这四个几何量各自走
+     CSS 的 cubic-bezier 曲线，两条形状不同的曲线相减必然不单调——实测换句时
+     高亮在屏幕上来回摆动达 50.6px（方向反转），肉眼看就是"黄底在文字上晃"。
+     现在两边在 script.js 的 _followTick 里用同一个 k 逐帧推进（见 _hlStep），
+     只有 opacity 留给 CSS 过渡，它不参与位置计算。
+     动 top/height 而不是 transform:scaleY()——缩放会把圆角和阴影一起拉变形，
+     44px→116px 这么大的比例肉眼就能看出"橡皮筋"感。 */
+  transition:opacity 160ms linear;
 }
 /* 首次出现 / 重排校正专用：只许瞬间摆正到正确位置，不许"移动"过去——
    一次修正不该看起来像一次朗读跳转。见 script.js 的 _hlSync。 */
