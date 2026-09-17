@@ -3037,19 +3037,40 @@ function _followYield(){ _followPausedUntil = Date.now() + 4000; }
 window.addEventListener('wheel', _followYield, {passive:true});
 window.addEventListener('touchmove', _followYield, {passive:true});
 
+// 跟读期间给正文挂 .following，CSS 靠它把句高亮的淡入淡出和 sentSettle 关掉。
+// 250ms 的淡入淡出会让前后两句同时亮着约 150ms（实测 30 帧里有 10 帧是双高亮），
+// 而页面此时正在移动 —— 看上去就是一个残影跟着飘过去，也就是用户说的"重影"。
+// 静止时的淡入淡出是好东西，保留，所以只在循环跑着的时候关。
+function _followMark(on){
+  document.getElementById('content')?.classList.toggle('following', on);
+}
+
+// 选真正要对准的元素。传进来的是整句时，对准它的**第一个词**而不是整句。
+// 原因：句子的几何中心不是声音开始的地方。实测段首长句（5 行 / 188px）的中心比首词
+// 低 72px，于是每次换句都先往下漂 72px、等第一个词边界事件到了又被拽回来——
+// 一次下去又上来，正是"段与段之间跳动"。段中的短句只差 0~18px，所以只在段界看得出。
+function _followTargetEl(el){
+  const w = el.querySelector?.('.word');
+  if(w && w.getBoundingClientRect().height > 0) return w;
+  if(el.getBoundingClientRect().height > 0) return el;
+  // 章节标题那一句是藏起来的 <span class="sent" style="display:none">（见 buildPara），
+  // rect 全是 0，照着算会把页面甩到顶上。退到它可见的父节点。
+  return el.parentElement || el;
+}
+
 // 把某元素设为跟读目标。reduced-motion 用户要的是"没有过渡动画"，不是"没有居中"，
 // 所以这里直接算好目标瞬间定位，不进入缓动循环。
 function _followSet(el){
   if(!el) return;
-  _followEl = el;
+  _followEl = _followTargetEl(el);
   if(matchMedia('(prefers-reduced-motion: reduce)').matches){
-    const rect = el.getBoundingClientRect();
+    const rect = _followEl.getBoundingClientRect();
     const target = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
     const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
     window.scrollTo({ top: Math.max(0, Math.min(target, maxScroll)), behavior: 'auto' });
     return;
   }
-  if(!_followRAF){ _followLastTs = 0; _followRAF = requestAnimationFrame(_followTick); }
+  if(!_followRAF){ _followLastTs = 0; _followMark(true); _followRAF = requestAnimationFrame(_followTick); }
 }
 
 function _followTick(ts){
@@ -3060,7 +3081,7 @@ function _followTick(ts){
   // 非朗读状态改成"缓动到位之后再停"，见下面的收尾分支——这样滚动始终只有这一个
   // 所有者，也就不会在按下播放的瞬间和 scrollIntoView 打架。
   if(!_followEl || !_followEl.isConnected){
-    _followRAF = null;
+    _followRAF = null; _followMark(false);
     return;
   }
   let dt = _followLastTs ? (ts - _followLastTs) : 16.67;
@@ -3089,7 +3110,7 @@ function _followTick(ts){
   } else if(!S.playing){
     // 到位了、又没在朗读（一次性导航：恢复进度 / 上下句 / 长按）→ 收工，别空转。
     // 朗读中即使到位也继续跑：下一个词随时会把目标挪走，停了就得重启。
-    _followRAF = null;
+    _followRAF = null; _followMark(false);
     return;
   }
   _followRAF = requestAnimationFrame(_followTick);

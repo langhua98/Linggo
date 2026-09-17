@@ -926,6 +926,13 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 @media (prefers-reduced-motion: no-preference){
   .sent.playing{ animation: sentSettle .4s cubic-bezier(.4,0,.2,1); }
 }
+/* 跟读滚动进行时（JS 给 #content 挂 .following）高亮必须瞬切。
+   上面那条 .sent 的 250ms 淡入淡出，会让前后两句同时亮着约 150ms（实测 30 帧里 10 帧
+   是双高亮），而页面正在移动 —— 看上去就是一个残影跟着飘过去。
+   sentSettle 一并关掉：它动的是 filter，会把整个句块提成合成层，在滚动中容易拖影。
+   静止时这两个效果都是好东西，所以只在跟读期间关，不是删掉。 */
+#content.following .sent{ transition:none; }
+#content.following .sent.playing{ animation:none; }
 @keyframes sentSettle{ from{ filter:brightness(1.18); } to{ filter:brightness(1); } }
 .word{
   display:inline; cursor:pointer;
