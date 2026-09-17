@@ -2996,6 +2996,105 @@ function dl(name,content,type){
 // ═══════════════════════════════════════════
 //  TTS  —  paragraph chunks, no gaps
 // ═══════════════════════════════════════════
+
+// ── 跟读滚动：朗读时让正在读的位置持续待在可读区中央。
+// 关键是"单一所有者"——以前 jump() 按句、highlightWordAt() 按词各自发起
+// scrollIntoView，两个浏览器管理的平滑动画会叠在一起打架，表现为一跳一跳。
+// 现在 jump()/highlightWordAt() 只报告"目标元素"，真正写 scrollY 的只有这一个
+// rAF 循环，句子边界被连续缓动抹平，用户也就看不出切换。
+let _followEl = null;        // 当前要跟的元素：词优先（同一行内不变，只在换行时挪一点），
+                              // 没有词级目标（iOS onboundary 常年不触发）才退回句元素
+let _followRAF = null;
+let _followLastTs = 0;
+let _followPausedUntil = 0;  // 用户自己滚动后的让位期（到这个时间戳为止不写 scrollY）
+const FOLLOW_EASE = 0.12;    // 每帧向目标逼近的比例（帧率无关，见 _followTick）
+const FOLLOW_DEAD = 1.5;     // 死区：差值小于这个就不再写 scrollY，避免 iOS 上
+                              // 「每帧写一个几乎相同的值」打断用户的惯性滚动。
+                              // 不能取 0.5：scrollY 是整数量化的，亚像素的差值根本
+                              // 落不到实处，死区比量化精度还小就永远进不去（实测过）。
+// 这里刻意**没有** px/s 速度上限。指数逼近的自限是「时间」不是「速度」——不论距离多远
+// 都在约 40 帧（0.66s）内收敛，这正是我们要的：朗读时位移本来就只有一两行（每帧约
+// 10px），上限压根用不上；而重开书跳回 45% 进度这种几万像素的一次性导航，加了上限就会
+// 被压成匀速直线爬行。实测 2400px/s 的上限让 36000px 的跳转要走满 15 秒。
+
+// 可读区 = topbar 下沿到播放器上沿。写死的 60/120/180 三个像素数跟真实布局
+// （#topbar 64px、--player-h 116px）对不上，这里直接从真实 DOM/CSS 变量读。
+function _readableCenterY(){
+  const top = document.getElementById('topbar')?.offsetHeight || 64;
+  const ph  = parseInt(getComputedStyle(document.documentElement)
+                .getPropertyValue('--player-h')) || 116;
+  const player = document.getElementById('player');
+  // 播放器隐藏时不占地方，不然正文会被推得偏上
+  const bottom = (player && player.style.display === 'none') ? 0 : ph;
+  return top + (window.innerHeight - top - bottom) / 2;
+}
+
+// 用户一动手就让位，让位期内循环照跑但不写 scrollY（这是原先阈值写法的初衷，
+// 见下面 jump() 里的旧注释，不能因为这次改动丢掉）。不比较写入值和实际 scrollY 来
+// 判断"是不是用户滚的"——iOS 惯性滚动和我们的写入会互相污染，判不准；直接听输入
+// 事件更可靠。
+function _followYield(){ _followPausedUntil = Date.now() + 4000; }
+window.addEventListener('wheel', _followYield, {passive:true});
+window.addEventListener('touchmove', _followYield, {passive:true});
+
+// 把某元素设为跟读目标。reduced-motion 用户要的是"没有过渡动画"，不是"没有居中"，
+// 所以这里直接算好目标瞬间定位，不进入缓动循环。
+function _followSet(el){
+  if(!el) return;
+  _followEl = el;
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches){
+    const rect = el.getBoundingClientRect();
+    const target = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    window.scrollTo({ top: Math.max(0, Math.min(target, maxScroll)), behavior: 'auto' });
+    return;
+  }
+  if(!_followRAF){ _followLastTs = 0; _followRAF = requestAnimationFrame(_followTick); }
+}
+
+function _followTick(ts){
+  // 目标没了就停。**不要在这里判 !S.playing 就停** —— jump() 不只在朗读时被调用，
+  // 它同时是停止状态下的导航机制：restoreProg 重开书跳回进度、上一句/下一句按钮、
+  // 长按某句，都是 S.playing 还是 false 的时候调 jump()。在这里直接停会让"重开一本书
+  // 回到上次位置"彻底失效（toast 照常说已恢复到 N%，页面却停在开头）。
+  // 非朗读状态改成"缓动到位之后再停"，见下面的收尾分支——这样滚动始终只有这一个
+  // 所有者，也就不会在按下播放的瞬间和 scrollIntoView 打架。
+  if(!_followEl || !_followEl.isConnected){
+    _followRAF = null;
+    return;
+  }
+  let dt = _followLastTs ? (ts - _followLastTs) : 16.67;
+  dt = Math.min(dt, 50); // clamp：切后台回来 dt 可能是几秒，不 clamp 会瞬移
+  _followLastTs = ts;
+
+  if(Date.now() < _followPausedUntil){
+    _followRAF = requestAnimationFrame(_followTick);
+    return; // 让位期：循环活着但不写 scrollY
+  }
+
+  const rect = _followEl.getBoundingClientRect();
+  const rawTarget = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  const target = Math.max(0, Math.min(rawTarget, maxScroll)); // clamp，否则开头/结尾对着到不了的目标空转
+  const diff = target - window.scrollY;
+
+  if(Math.abs(diff) >= FOLLOW_DEAD){
+    // 帧率无关的指数逼近：120Hz 设备上不能按 dt*EASE 线性算，否则速度翻倍
+    const k = 1 - Math.pow(1 - FOLLOW_EASE, dt / 16.67);
+    // 每帧至少挪 1px。scrollY 是整数量化的，0.48px 这种步长会被浏览器直接吞掉：
+    // 差值就永远停在 4px 上下不来 → 死区进不去 → rAF 永远停不了（实测到过这个死循环）。
+    // 再用 |diff| 封顶，防止最后一帧冲过头来回抖。
+    const step = Math.sign(diff) * Math.min(Math.max(Math.abs(diff) * k, 1), Math.abs(diff));
+    window.scrollTo(0, window.scrollY + step);
+  } else if(!S.playing){
+    // 到位了、又没在朗读（一次性导航：恢复进度 / 上下句 / 长按）→ 收工，别空转。
+    // 朗读中即使到位也继续跑：下一个词随时会把目标挪走，停了就得重启。
+    _followRAF = null;
+    return;
+  }
+  _followRAF = requestAnimationFrame(_followTick);
+}
+
 function jump(i){
   document.querySelectorAll('.sent.playing').forEach(el=>el.classList.remove('playing'));
   clearTtsWord();
@@ -3006,13 +3105,10 @@ function jump(i){
     el.classList.add('playing');
     // Inject words so highlighting works
     injectWords(el);
-    // Only recenter when the sentence is off-screen (behind the top bar or the
-    // player) — otherwise the smooth scroll fires every sentence and fights the
-    // user's own scrolling during playback.
-    const r = el.getBoundingClientRect();
-    if(r.top < 60 || r.bottom > window.innerHeight - 120){
-      el.scrollIntoView({behavior:'smooth', block:'center'});
-    }
+    // 句元素是兜底目标（换句瞬间先有个目标；iOS onboundary 不触发时全程靠它）。
+    // 真正的滚动由 _followTick 的单一所有者循环写，这里只报告目标，不再自己
+    // scrollIntoView——避免和 highlightWordAt() 的词级滚动打架。
+    _followSet(el);
   }
   updateProg(); saveProg();
   // While idle, warm the sentence the user just navigated to so pressing play
@@ -3213,11 +3309,10 @@ function highlightWordAt(sentEl, charIdx){
     S.wordCs = +best.dataset.charStart;   // 记录当前词位置，供逐词前进/后退
     // 词对齐：朗读到的英文词 → 中文译文里对应字同步高亮
     if(S.bilin) _cnAlignHighlight(+sentEl.dataset.i, +best.dataset.charStart);
-    // Subtle scroll — only if word is outside viewport
-    const rect = best.getBoundingClientRect();
-    if(rect.bottom > window.innerHeight - 180 || rect.top < 60){
-      best.scrollIntoView({ behavior:'smooth', block:'center' });
-    }
+    // 词级目标优先级高于 jump() 设的句级目标（本函数总在 jump() 之后调用）。
+    // 同一行内词不变、换行时只挪一个行高，配合 _followTick 的缓动就是持续的
+    // 缓慢漂移——这是"看不出句子切换"的关键，不能退回 scrollIntoView。
+    _followSet(best);
   }
 }
 
@@ -3488,7 +3583,7 @@ function doSearch(q){
   S.srchIdx=0; if(S.srchHits.length) goMatch(0); updSrchCt();
 }
 function navSrch(d){ if(!S.srchHits.length) return; S.srchIdx=(S.srchIdx+d+S.srchHits.length)%S.srchHits.length; goMatch(S.srchIdx); updSrchCt(); }
-function goMatch(i){ S.srchHits.forEach(m=>m.classList.remove('cur')); const el=S.srchHits[i]; if(el){ el.classList.add('cur'); el.scrollIntoView({behavior:'smooth',block:'center'}); } }
+function goMatch(i){ S.srchHits.forEach(m=>m.classList.remove('cur')); const el=S.srchHits[i]; if(el){ el.classList.add('cur'); if(S.playing) _followYield(); /* 朗读中跳去看一眼搜索结果，别马上被跟读循环拽回去 */ el.scrollIntoView({behavior:'smooth',block:'center'}); } }
 function clearSrch(ri=true){ document.querySelectorAll('.sh').forEach(el=>el.classList.remove('sh','cur')); S.srchHits=[]; if(ri) document.getElementById('search-in').value=''; updSrchCt(); }
 function updSrchCt(){ document.getElementById('search-ct').textContent=S.srchHits.length?`${S.srchIdx+1}/${S.srchHits.length}`:'0/0'; }
 function esc(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
