@@ -2998,25 +2998,14 @@ function dl(name,content,type){
 //  TTS  —  paragraph chunks, no gaps
 // ═══════════════════════════════════════════
 
-// ── 跟读滚动：朗读时让正在读的位置持续待在可读区中央。
-// 关键是"单一所有者"——以前 jump() 按句、highlightWordAt() 按词各自发起
-// scrollIntoView，两个浏览器管理的平滑动画会叠在一起打架，表现为一跳一跳。
-// 现在 jump()/highlightWordAt() 只报告"目标元素"，真正写 scrollY 的只有这一个
-// rAF 循环，句子边界被连续缓动抹平，用户也就看不出切换。
-let _followEl = null;        // 当前要跟的元素：词优先（同一行内不变，只在换行时挪一点），
-                              // 没有词级目标（iOS onboundary 常年不触发）才退回句元素
-let _followRAF = null;
-let _followLastTs = 0;
-let _followPausedUntil = 0;  // 用户自己滚动后的让位期（到这个时间戳为止不写 scrollY）
-const FOLLOW_EASE = 0.12;    // 每帧向目标逼近的比例（帧率无关，见 _followTick）
-const FOLLOW_DEAD = 1.5;     // 死区：差值小于这个就不再写 scrollY，避免 iOS 上
-                              // 「每帧写一个几乎相同的值」打断用户的惯性滚动。
-                              // 不能取 0.5：scrollY 是整数量化的，亚像素的差值根本
-                              // 落不到实处，死区比量化精度还小就永远进不去（实测过）。
-// 这里刻意**没有** px/s 速度上限。指数逼近的自限是「时间」不是「速度」——不论距离多远
-// 都在约 40 帧（0.66s）内收敛，这正是我们要的：朗读时位移本来就只有一两行（每帧约
-// 10px），上限压根用不上；而重开书跳回 45% 进度这种几万像素的一次性导航，加了上限就会
-// 被压成匀速直线爬行。实测 2400px/s 的上限让 36000px 的跳转要走满 15 秒。
+// ── 跟读滚动：换句时把正在读的句子滚到可读区中央。
+// 这里只用浏览器原生 window.scrollTo({behavior:'smooth'})，不再自己实现滚动动画。
+// 之前四轮"抖动"修复全部栽在自研的 rAF 缓动上：每帧 scrollTo 完再回读 window.scrollY
+// 当下一帧的基准，而 scrollY 是整数量化的，小数部分逐帧丢失（nprompter#53 的结论）；
+// iOS Safari 快速滚动时 scrollY 还会直接停止更新，那个闭环的输入本来就是坏的；逐帧写
+// 又是主线程操作，移动端的滚动本来是合成器线程的事。原生实现这些问题从根上不存在，
+// 不需要我们自己解决——这个领域的事实标准就是"用浏览器自带的平滑滚动"。
+let _followPausedUntil = 0;  // 用户自己滚动后的让位期（到这个时间戳为止不发起滚动）
 
 // 可读区 = topbar 下沿到播放器上沿。写死的 60/120/180 三个像素数跟真实布局
 // （#topbar 64px、--player-h 116px）对不上，这里直接从真实 DOM/CSS 变量读。
@@ -3030,110 +3019,47 @@ function _readableCenterY(){
   return top + (window.innerHeight - top - bottom) / 2;
 }
 
-// 用户一动手就让位，让位期内循环照跑但不写 scrollY（这是原先阈值写法的初衷，
-// 见下面 jump() 里的旧注释，不能因为这次改动丢掉）。不比较写入值和实际 scrollY 来
-// 判断"是不是用户滚的"——iOS 惯性滚动和我们的写入会互相污染，判不准；直接听输入
-// 事件更可靠。
+// 用户一动手就让位 4 秒，不发起滚动。不比较写入值和实际 scrollY 来判断"是不是
+// 用户滚的"——iOS 惯性滚动和我们的写入会互相污染，判不准；直接听输入事件更可靠。
+// 这条和"滚动是自研还是原生"无关，换成原生之后原样保留。
 function _followYield(){ _followPausedUntil = Date.now() + 4000; }
 window.addEventListener('wheel', _followYield, {passive:true});
 window.addEventListener('touchmove', _followYield, {passive:true});
 
-// 选真正要对准的元素。传进来的是整句时，对准它的**第一个词**而不是整句。
-// 原因：句子的几何中心不是声音开始的地方。实测段首长句（5 行 / 188px）的中心比首词
-// 低 72px，于是每次换句都先往下漂 72px、等第一个词边界事件到了又被拽回来——
-// 一次下去又上来，正是"段与段之间跳动"。段中的短句只差 0~18px，所以只在段界看得出。
-function _followTargetEl(el){
-  const w = el.querySelector?.('.word');
-  if(w && w.getBoundingClientRect().height > 0) return w;
-  if(el.getBoundingClientRect().height > 0) return el;
-  // 章节标题那一句是藏起来的 <span class="sent" style="display:none">（见 buildPara），
-  // rect 全是 0，照着算会把页面甩到顶上。退到它可见的父节点。
-  return el.parentElement || el;
-}
-
-// 把某元素设为跟读目标。reduced-motion 用户要的是"没有过渡动画"，不是"没有居中"，
-// 所以这里直接算好目标瞬间定位，不进入缓动循环。
-function _followSet(el){
+// 把某个句子元素滚到可读区中央。只在换句时调用一次——原生平滑滚动是"一次性
+// 位移"，不是持续跟随，连续对同一目标发起新的 scrollTo 会取消上一次动画
+// （详见 highlightWordAt 里为什么不再按词调用这个函数）。
+function _scrollToSent(el){
   if(!el) return;
-  _followEl = _followTargetEl(el);
-  if(matchMedia('(prefers-reduced-motion: reduce)').matches){
-    const rect = _followEl.getBoundingClientRect();
-    const target = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
-    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-    window.scrollTo({ top: Math.max(0, Math.min(target, maxScroll)), behavior: 'auto' });
-    return;
-  }
-  if(!_followRAF){ _followLastTs = 0; _followRAF = requestAnimationFrame(_followTick); }
-}
-
-function _followTick(ts){
-  // 目标没了就停。**不要在这里判 !S.playing 就停** —— jump() 不只在朗读时被调用，
-  // 它同时是停止状态下的导航机制：restoreProg 重开书跳回进度、上一句/下一句按钮、
-  // 长按某句，都是 S.playing 还是 false 的时候调 jump()。在这里直接停会让"重开一本书
-  // 回到上次位置"彻底失效（toast 照常说已恢复到 N%，页面却停在开头）。
-  // 非朗读状态改成"缓动到位之后再停"，见下面的收尾分支——这样滚动始终只有这一个
-  // 所有者，也就不会在按下播放的瞬间和 scrollIntoView 打架。
-  if(!_followEl || !_followEl.isConnected){
-    _followRAF = null;
-    return;
-  }
-  let dt = _followLastTs ? (ts - _followLastTs) : 16.67;
-  dt = Math.min(dt, 50); // clamp：切后台回来 dt 可能是几秒，不 clamp 会瞬移
-  _followLastTs = ts;
-
-  if(Date.now() < _followPausedUntil){
-    _followRAF = requestAnimationFrame(_followTick);
-    return; // 让位期：循环活着但不写 scrollY
-  }
-
-  const rect = _followEl.getBoundingClientRect();
-  const rawTarget = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
+  if(Date.now() < _followPausedUntil) return;      // 用户刚自己滚过，让位
+  const rect = el.getBoundingClientRect();
+  if(!rect.height) return;                          // 章节标题那句是 display:none 的占位 span
+                                                      // （见 buildPara），rect 全是 0，照着算
+                                                      // 会把页面甩到顶上
+  // 不用 scrollIntoView({block:'center'})：它按**视口**中心算，而可读区是顶栏下沿到
+  // 播放器上沿之间那一段，两者差二十几像素。自己算目标位置，滚动本身仍然交给原生。
+  const target = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
   const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-  const target = Math.max(0, Math.min(rawTarget, maxScroll)); // clamp，否则开头/结尾对着到不了的目标空转
-  const diff = target - window.scrollY;
-
-  // 帧率无关的指数逼近：120Hz 设备上不能按 dt*EASE 线性算，否则速度翻倍。
-  // 这行提到 if 外面，因为高亮（_hlStep）也要用同一个 k——滚动已经到位、
-  // 高亮还没追上是常态（比如原地长按同一句），高亮的推进不能只在滚动
-  // 还需要挪动时才发生。
-  const k = 1 - Math.pow(1 - FOLLOW_EASE, dt / 16.67);
-
-  if(Math.abs(diff) >= FOLLOW_DEAD){
-    // 每帧至少挪 1px。scrollY 是整数量化的，0.48px 这种步长会被浏览器直接吞掉：
-    // 差值就永远停在 4px 上下不来 → 死区进不去 → rAF 永远停不了（实测到过这个死循环）。
-    // 再用 |diff| 封顶，防止最后一帧冲过头来回抖。
-    const step = Math.sign(diff) * Math.min(Math.max(Math.abs(diff) * k, 1), Math.abs(diff));
-    window.scrollTo(0, window.scrollY + step);
-  }
-
-  // 高亮必须和滚动用同一个 k 推进。用 CSS transition 的话曲线形状不同，
-  // 两者相减会让高亮在屏幕上来回摆（实测摆幅 50.6px，方向反转）。
-  const hlSettled = _hlStep(k);
-
-  if(Math.abs(diff) < FOLLOW_DEAD && !S.playing && hlSettled){
-    // 到位了、又没在朗读（一次性导航：恢复进度 / 上下句 / 长按）→ 收工，别空转。
-    // 滚动和高亮都要到位才能停——只看滚动的话，滚动先到位就会把循环关掉，
-    // 留高亮停在半路（这正是"停止状态下按下一句"最容易踩的坑）。
-    // 朗读中即使都到位也继续跑：下一个词随时会把目标挪走，停了就得重启。
-    _followRAF = null;
-    return;
-  }
-  _followRAF = requestAnimationFrame(_followTick);
+  window.scrollTo({
+    top: Math.max(0, Math.min(target, maxScroll)),
+    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  });
 }
 
 // ═══════════════════════════════════════════
-//  SENTENCE HIGHLIGHT — 一个会移动/变形的高亮层（FLIP 思路）
-//  前两次修"换句抖动"都在调交叉淡化的时长，方向错了：淡化只能改透明度，
-//  改不了形状和位置，而相邻句高度差最多 116px↔44px（3 行 vs 1 行），位置和
-//  尺寸终究是瞬间切换的。这里改成只有一个元素带黄底/阴影，换句时让它本身
-//  从上一句的坐标平移+变形到下一句的坐标，见 style.css 的 #sent-hl。
+//  SENTENCE HIGHLIGHT — 单元素高亮层，瞬间贴住当前句
+//  前几轮"修抖动"依次试过：交叉淡化（只能改透明度，改不了位置/尺寸，相邻句
+//  高度差最多 116px↔44px，位置终究是瞬间切换的）；再后来是让这层自己也用
+//  跟滚动相同的 k 逐帧插值几何（两条独立驱动的曲线相减必然不单调，实测摆幅
+//  50.6px、方向还会反转）。现在明白了：高亮层是**文档里的一个普通元素**，
+//  页面滚动时它跟着文字一起被浏览器移动，相对位移天然恒为零——只要不让它
+//  自己再做一份动画，这个问题从根上就不存在。所以换句时直接瞬间摆到目标
+//  几何，不再有"移动中"这个状态。见 style.css 的 #sent-hl。
 // ═══════════════════════════════════════════
 let _hlEl = null;
-// 高亮的目标/当前几何（文档坐标，{top,left,w,h}）。geometry 不再靠 CSS transition
-// 驱动——它和滚动是同一个视觉量的两个分量（屏幕位置=文档坐标−scrollY），曲线形状
-// 必须一致，两者才会在屏幕上同步收敛，见 style.css 里 #sent-hl 的注释和下面 _hlStep。
+// 高亮的目标几何（文档坐标，{top,left,w,h}）。只用来在 _hlResync 里判断重排
+// 有没有真的挪动目标，不再有对应的"当前几何"要逐帧追——没有动画就没有中间态。
 let _hlTarget = null;
-let _hlCur    = null;
 
 // buildReader() 每次都会 area.innerHTML='' 清空 #content，把上一次的 #sent-hl
 // 一起清掉，所以每次用之前都要确认它还在当前的 #content 里，不在就重建。
@@ -3147,68 +3073,20 @@ function _hlEnsure(){
   return _hlEl;
 }
 
-// opts.instant=true 时不做"移动"动画，只瞬间摆正（重排校正专用）。
-// 没显式要求 instant 时也会自动判几种情况：当前 opacity 还不是 '1'
-// （从未出现过 / 刚被 _hlHide() 隐藏，说明这是"重新出现"而不是"移动"）、
-// 还没有 _hlCur（同理，没什么可以"移动"）、或用户开了 reduced-motion——
-// 这几种都要瞬间摆正，否则会从上一次留下的坐标（或换书前的旧坐标）滑过来。
-function _hlSync(sentEl, opts){
+// 永远瞬间摆正，不再区分"移动"和"重排校正"——高亮层跟着文档滚动走，相对
+// 位移恒为零，自己做动画才是抖动的来源（见模块头部注释）。
+function _hlSync(sentEl){
   const hl = _hlEnsure();
   if(!hl || !sentEl) return;
-  // reduced-motion 现在也要在这里判：geometry 的 transition 已经从 CSS 里挪走了，
-  // 不再有"CSS 媒体查询自动把 top/left/width/height 变成瞬间切换"这回事，
-  // 想要"没有移动动画"就得在这儿主动挑 instant。
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const instant = !!(opts && opts.instant) || hl.style.opacity !== '1' || !_hlCur || reduced;
   const top = sentEl.offsetTop, left = sentEl.offsetLeft,
         w = sentEl.offsetWidth, h = sentEl.offsetHeight;
   _hlTarget = { top, left, w, h };
-  if(instant){
-    _hlCur = { top, left, w, h };
-    hl.classList.add('no-anim');
-    hl.style.top = top + 'px'; hl.style.left = left + 'px';
-    hl.style.width = w + 'px'; hl.style.height = h + 'px';
-    void hl.offsetWidth;           // 强制 reflow：让浏览器先"认下"这个无动画的姿态
-    hl.classList.remove('no-anim');
-    hl.style.opacity = '1';        // 唯一允许有动画的只剩淡入
-  } else {
-    // 不在这里直接写 top/left/width/height——geometry 交给 _followTick 里的
-    // _hlStep 用和滚动相同的 k 逐帧推进（原因见 #sent-hl 的 CSS 注释），这里
-    // 只更新目标值，并确保那个循环在跑（复用 _followSet 同款的启动判断）。
-    hl.style.opacity = '1';
-    if(!_followRAF){ _followLastTs = 0; _followRAF = requestAnimationFrame(_followTick); }
-  }
-}
-
-// 高亮几何的逐帧推进，k 由 _followTick 算好传进来（必须和滚动共用同一个 k，
-// 见 style.css #sent-hl 的注释）。返回是否已经贴合目标，供 _followTick 判断
-// 能不能连同滚动一起停下 rAF 循环。
-function _hlStep(k){
-  if(!_hlTarget) return true;
-  if(!_hlCur) _hlCur = { ..._hlTarget }; // 正常不会走到这——_hlSync 没有 _hlCur 时会走 instant
-  const step = (c, t) => {
-    const d = t - c;
-    if(Math.abs(d) < 0.5) return t;      // 够近就吸附，别无限逼近（这里不受 scrollY 那种
-                                          // 整数量化限制，但仍要有收敛判据，否则永远差
-                                          // 一点点停不下来）
-    return c + Math.sign(d) * Math.max(Math.abs(d) * k, 0.5);
-  };
-  _hlCur = {
-    top:  step(_hlCur.top,  _hlTarget.top),
-    left: step(_hlCur.left, _hlTarget.left),
-    w:    step(_hlCur.w,    _hlTarget.w),
-    h:    step(_hlCur.h,    _hlTarget.h),
-  };
-  if(_hlEl){
-    _hlEl.style.top    = _hlCur.top.toFixed(1)  + 'px';
-    _hlEl.style.left   = _hlCur.left.toFixed(1) + 'px';
-    _hlEl.style.width  = _hlCur.w.toFixed(1)    + 'px';
-    _hlEl.style.height = _hlCur.h.toFixed(1)    + 'px';
-  }
-  return Math.abs(_hlCur.top  - _hlTarget.top)  < 0.5 &&
-         Math.abs(_hlCur.left - _hlTarget.left) < 0.5 &&
-         Math.abs(_hlCur.w    - _hlTarget.w)    < 0.5 &&
-         Math.abs(_hlCur.h    - _hlTarget.h)    < 0.5;
+  // 直接写，没有 .no-anim / 强制 reflow 那套仪式了：几何量已经没有 transition，
+  // 本来就是瞬间生效的。那套是"高亮自己也做动画"时代的残留，留着只会在每次换句
+  // 白白触发一次强制布局——正文是整本书全渲染的，这个代价不小。
+  hl.style.top = top + 'px'; hl.style.left = left + 'px';
+  hl.style.width = w + 'px'; hl.style.height = h + 'px';
+  hl.style.opacity = '1';        // 唯一还带动画的只剩淡入（见 #sent-hl 的 transition）
 }
 
 function _hlHide(){
@@ -3217,8 +3095,7 @@ function _hlHide(){
 
 // 重排校正：字号/行距/对齐/双语插译文行都会让 #content 里的内容挪位置，
 // 而 #sent-hl 是按"当时量到的"绝对坐标定死的，不会跟着重新流动的文字自动跟上。
-// 只在当前句还挂着 .playing（说明真的在显示高亮）时才补一次，且必须 instant——
-// 这是一次"修正"，不是一次"移动"，带动画反而会像是又跳转了一次。
+// 只在当前句还挂着 .playing（说明真的在显示高亮）时才补一次。
 function _hlResync(){
   const cur = document.querySelector('.sent.playing');
   if(!cur) return;
@@ -3226,22 +3103,17 @@ function _hlResync(){
   // class="word"> 时，spans 的 padding 会让该句自身高度多出一两像素，
   // #content 跟着触发一次 ResizeObserver——但这时 _hlSync(el) 早就已经用
   // injectWords 之后的最终高度算好目标值了，目标根本没变，只是"凑巧同一帧
-  // 又抖了一下"。如果这里照样无条件 instant 摆一次，会把刚起跑几毫秒的移动
-  // 动画锁死成瞬变，等于自己把 FLIP 效果废了。所以先比一下 _hlTarget（移动
-  // 动画的"终点"，不是渲染中的瞬时值）跟句子现在的 offsetTop 等是否已经
-  // 一致——一致就什么都不做，只有真的对不上（字号/行距/对齐/双语插行这类
-  // 事后重排）才需要瞬间摆正。
+  // 又抖了一下"。先比一下 _hlTarget 跟句子现在的 offsetTop 等是否已经一致——
+  // 一致就什么都不做，省一次没必要的强制 reflow；只有真的对不上（字号/行距/
+  // 对齐/双语插行这类事后重排）才需要重新摆正。
   if(_hlTarget){
-    // 比较对象是 _hlTarget（移动动画的"终点"），不是 _hlEl.style.*——geometry
-    // 现在由 _hlStep 逐帧写，渲染中的瞬时值本来就还没到终点，拿它来比较会把
-    // 每一帧都判成"不一致"，刚起跑的动画又被这里摁成瞬变。
     const same = Math.abs(_hlTarget.top    - cur.offsetTop)    < 0.5 &&
                  Math.abs(_hlTarget.left   - cur.offsetLeft)   < 0.5 &&
                  Math.abs(_hlTarget.w      - cur.offsetWidth)  < 0.5 &&
                  Math.abs(_hlTarget.h      - cur.offsetHeight) < 0.5;
     if(same) return;
   }
-  _hlSync(cur, { instant: true });
+  _hlSync(cur);
 }
 // ResizeObserver 覆盖"高度变化"（双语插 .tl-line、换行数变化等）；
 // 用 rAF 合并，避免双语滚动时每插一行译文都触发一次重排校正。
@@ -3263,10 +3135,9 @@ function jump(i){
     el.classList.add('playing');
     // Inject words so highlighting works
     injectWords(el);
-    // 句元素是兜底目标（换句瞬间先有个目标；iOS onboundary 不触发时全程靠它）。
-    // 真正的滚动由 _followTick 的单一所有者循环写，这里只报告目标，不再自己
-    // scrollIntoView——避免和 highlightWordAt() 的词级滚动打架。
-    _followSet(el);
+    // 一次原生平滑滚动，按句居中。不再按词跟随——见 highlightWordAt() 里
+    // 对应位置的说明。
+    _scrollToSent(el);
     _hlSync(el);
   } else {
     _hlHide();
@@ -3470,10 +3341,11 @@ function highlightWordAt(sentEl, charIdx){
     S.wordCs = +best.dataset.charStart;   // 记录当前词位置，供逐词前进/后退
     // 词对齐：朗读到的英文词 → 中文译文里对应字同步高亮
     if(S.bilin) _cnAlignHighlight(+sentEl.dataset.i, +best.dataset.charStart);
-    // 词级目标优先级高于 jump() 设的句级目标（本函数总在 jump() 之后调用）。
-    // 同一行内词不变、换行时只挪一个行高，配合 _followTick 的缓动就是持续的
-    // 缓慢漂移——这是"看不出句子切换"的关键，不能退回 scrollIntoView。
-    _followSet(best);
+    // 这里故意不再滚动。按词跟随是自研 rAF 缓动时代的产物——那套逼近循环需要
+    // 不断给新目标才"看得出在动"。换成原生平滑滚动之后，每个词都发一次会
+    // 互相打断上一次动画（浏览器收到新的 scrollTo 请求就会取消旧的），效果
+    // 比不跟还抖。换句时 jump() 已经用 _scrollToSent() 居中过一次，按句居中
+    // 就是最初要的效果，词级不需要再单独滚动。
   }
 }
 

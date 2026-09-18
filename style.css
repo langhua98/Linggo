@@ -922,15 +922,15 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
      170ms 进/90ms 出的不对称交接），但不管怎么调时长都只能淡"透明度"，改不了
      形状和位置——相邻句高度能差到 116px↔44px（3 行 vs 1 行），淡得再柔和，
      位置和尺寸也是瞬间切换的，这就是"抖动/不平滑"的根源。
-     现在视觉全部交给 #sent-hl——一个跟着当前句移动+变形的绝对定位层
-     （见下方 CSS + script.js 的 _hlSync）。这个 class 本身不再带任何可见样式，
-     只保留两个用途，删了会连带坏：
+     现在视觉全部交给 #sent-hl——唯一带黄底/阴影的绝对定位层，换句时瞬间
+     摆到当前句的坐标（见下方 CSS + script.js 的 _hlSync）。这个 class 本身
+     不再带任何可见样式，只保留两个用途，删了会连带坏：
      1. jump() 里 querySelectorAll('.sent.playing') 用它找"上一句"
      2. #content.bilin .sent.playing + .tl-line 用它给对照译文行同步变色 */
 }
-/* 句高亮层（FLIP）：唯一带黄底/阴影的元素，靠 script.js 的 _hlSync 把它的
+/* 句高亮层：唯一带黄底/阴影的元素，靠 script.js 的 _hlSync 把它的
    top/left/width/height 写成当前句的 offsetTop/offsetLeft/offsetWidth/
-   offsetHeight，换句时同一个块平移+变形过去，而不是"旧的消失、新的出现"。 */
+   offsetHeight。 */
 #sent-hl{
   position:absolute; z-index:-1;      /* 负层级只在 #content 建立的层叠上下文里生效，
                                           画在 .sent 文字下面，不会逃到更外层盖住别的 UI */
@@ -939,20 +939,17 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   background:rgba(255,206,74,0.46);
   box-shadow:0 2px 12px rgba(240,168,38,0.22);
   opacity:0;                           /* 书刚打开/还没换过句时没有目标，不可见 */
-  /* top/left/width/height 不再放 CSS transition，改由 script.js 的 _followTick
-     逐帧写（见 _hlStep）：用户看到的其实是"高亮屏幕位置" = 高亮文档坐标 − scrollY，
-     滚动那侧走的是 _followTick 里帧率无关的指数缓动，如果这四个几何量各自走
-     CSS 的 cubic-bezier 曲线，两条形状不同的曲线相减必然不单调——实测换句时
-     高亮在屏幕上来回摆动达 50.6px（方向反转），肉眼看就是"黄底在文字上晃"。
-     现在两边在 script.js 的 _followTick 里用同一个 k 逐帧推进（见 _hlStep），
-     只有 opacity 留给 CSS 过渡，它不参与位置计算。
+  /* top/left/width/height 不放 CSS transition，由 script.js 的 _hlSync 直接
+     瞬间写死：这一层是文档里的普通元素，页面滚动
+     时它跟着文字一起被浏览器移动，屏幕上的相对位移天然恒为零，不需要、也
+     不应该自己再做一份位移/尺寸动画去追一个不断变化的目标——之前让它带
+     CSS 过渡自己动，换句时会在屏幕上来回摆动（实测摆幅 50.6px，方向反转），
+     根源就是"滚动"和"高亮几何"这两条曲线各走各的、相减不单调。
+     只有 opacity 留给 CSS 过渡，它不参与位置计算，跟滚动没有耦合关系。
      动 top/height 而不是 transform:scaleY()——缩放会把圆角和阴影一起拉变形，
      44px→116px 这么大的比例肉眼就能看出"橡皮筋"感。 */
   transition:opacity 160ms linear;
 }
-/* 首次出现 / 重排校正专用：只许瞬间摆正到正确位置，不许"移动"过去——
-   一次修正不该看起来像一次朗读跳转。见 script.js 的 _hlSync。 */
-#sent-hl.no-anim{ transition:none; }
 .night #sent-hl{
   background:rgba(255,190,55,0.24);
   box-shadow:0 2px 14px rgba(255,175,40,0.16);
