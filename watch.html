@@ -54,6 +54,11 @@
 
 <button id="tapbtn">① 点我一下</button>
 <button id="crownbtn" style="background:#374151">② 然后转一下表冠</button>
+<!-- 表冠不发 wheel 事件，和表冠根本滚不动页面，是两件完全不同的事：
+     很多环境里表冠由系统直接滚原生滚动容器，页面会动但 DOM 收不到 wheel。
+     这个测试就是把这两者分开——它决定长列表能不能用。 -->
+<button id="crowntest" style="background:#7c2d12">③ 表冠专项测试（6 秒）</button>
+<div id="crownres" class="hint" style="color:#ffd24a">点 ③ 之后：<b>手指离开屏幕，只转表冠</b></div>
 
 <div id="sum">等待 JS…</div>
 <div class="hint">把这一行念给我 / 或者截图（侧边按钮+表冠同时按）</div>
@@ -146,6 +151,43 @@
     MOVE = '✓'; moveRow.textContent = '✓ touchmove'; moveRow.className = 'v ok'; render();
   }, { passive: true });
 
+  // ── 表冠专项：6 秒窗口内只转表冠、不碰屏幕，看到底有没有东西动
+  // 判据分三档，对应三种完全不同的适配结论：
+  //   wheel 到了      → 表冠是标准滚轮，可以拿来做自定义交互（翻卡片等）
+  //   只有 scroll 动  → 系统在滚，页面能滚但 DOM 收不到输入；长列表可用，但表冠不能自定义
+  //   什么都没有      → 表冠对网页完全无效，只能靠手指划，长列表要避免
+  var CT = '未测';
+  document.getElementById('crowntest').addEventListener('click', function(){
+    var btn = this, res = document.getElementById('crownres');
+    var w = 0, s = 0, tm = 0, y0 = window.pageYOffset, yMax = y0, yMin = y0;
+    function onW(){ w++; } function onS(){ s++;
+      var y = window.pageYOffset; if(y > yMax) yMax = y; if(y < yMin) yMin = y; }
+    function onT(){ tm++; }
+    window.addEventListener('wheel', onW, { passive: true });
+    window.addEventListener('scroll', onS, { passive: true });
+    window.addEventListener('touchmove', onT, { passive: true });
+    var left = 6;
+    btn.textContent = '③ 转表冠… ' + left;
+    var iv = setInterval(function(){
+      left--;
+      btn.textContent = left > 0 ? ('③ 转表冠… ' + left) : '③ 测完了';
+      if(left > 0) return;
+      clearInterval(iv);
+      window.removeEventListener('wheel', onW);
+      window.removeEventListener('scroll', onS);
+      window.removeEventListener('touchmove', onT);
+      var moved = Math.round(yMax - yMin);
+      CT = 'wheel' + w + '/scroll' + s + '/touch' + tm + '/移动' + moved + 'px';
+      var say;
+      if (tm > 0)      say = '⚠ 期间碰到屏幕了（touchmove ' + tm + ' 次），结果不算数，请重测';
+      else if (w > 0)  say = '✅ 表冠发 wheel 事件（' + w + ' 次）——可以拿来做自定义交互';
+      else if (moved > 4) say = '◐ 表冠能滚页面（移动 ' + moved + 'px）但不发 wheel——长列表可用，不能自定义';
+      else             say = '❌ 表冠对网页完全无效——只能靠手指划';
+      res.innerHTML = say + '<br><span style="color:#9ca3af">' + CT + '</span>';
+      render();
+    }, 1000);
+  });
+
   // ── 一行汇总，方便你念给我或者截图
   function render(){
     sum.textContent = 'W' + W + ' H' + H + ' DPR' + DPR +
@@ -155,7 +197,8 @@
                       ' NET' + (NET === '✓' ? 1 : NET === '?' ? '?' : 0) +
                       ' TAP' + (TAP === '✓' ? 1 : 0) +
                       ' CROWN' + (CROWN === '✓' ? 1 : 0) +
-                      ' MOVE' + (MOVE === '✓' ? 1 : 0);
+                      ' MOVE' + (MOVE === '✓' ? 1 : 0) +
+                      '  [表冠 ' + CT + ']';
   }
   render();
 
