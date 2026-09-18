@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Linggo 手表能力探针</title>
+<!-- 刻意不引任何外部资源。Google Fonts 那个 <link> 在本项目里出过事故：
+     它会把 HTML 解析器卡在 <script> 之前，整段脚本一行都不执行。
+     手表浏览器多半走代理/受限网络，更不能赌外部请求。 -->
+<style>
+  :root{ color-scheme:dark; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body{
+    margin:0; padding:10px 8px 24px;
+    background:#000; color:#fff;
+    font:15px/1.35 -apple-system,system-ui,sans-serif;
+  }
+  h1{ font-size:15px; margin:0 0 8px; color:#ffd24a; font-weight:600; }
+  /* 默认就把"JS 没跑"写在页面里。如果表上看到的是这句，答案就已经出来了：
+     那个浏览器没有 JS 运行时，Linggo 不可能在上面跑。 */
+  #verdict{
+    font-size:17px; font-weight:700; line-height:1.3;
+    padding:8px; border-radius:8px;
+    background:#7f1d1d; color:#fff; margin-bottom:10px;
+  }
+  .row{ display:flex; gap:6px; padding:5px 0; border-bottom:1px solid #222; align-items:baseline; }
+  .k{ color:#9ca3af; flex:0 0 auto; }
+  .v{ color:#fff; word-break:break-all; flex:1 1 auto; }
+  .ok{ color:#4ade80; font-weight:700; }
+  .no{ color:#f87171; font-weight:700; }
+  button{
+    display:block; width:100%; margin:10px 0 0;
+    padding:14px 8px; font:600 16px/1 -apple-system,system-ui,sans-serif;
+    background:#1d4ed8; color:#fff; border:0; border-radius:10px;
+  }
+  #sum{
+    margin-top:12px; padding:8px; border-radius:8px;
+    background:#111827; color:#ffd24a;
+    font:700 14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+    word-break:break-all;
+  }
+  .hint{ color:#9ca3af; font-size:13px; margin-top:10px; line-height:1.4; }
+</style>
+</head>
+<body>
+
+<h1>Linggo · 手表能力探针</h1>
+
+<!-- 这段文字只有在 JS 没有执行时才会留在屏幕上 -->
+<div id="verdict">JS 没有运行<br><span style="font-weight:400;font-size:14px">
+这个浏览器只是把页面画出来，不执行脚本 —— 这就是结论，Linggo 跑不了。</span></div>
+
+<div id="out"></div>
+
+<button id="tapbtn">① 点我一下</button>
+<button id="crownbtn" style="background:#374151">② 然后转一下表冠</button>
+
+<div id="sum">等待 JS…</div>
+<div class="hint">把这一行念给我 / 或者截图（侧边按钮+表冠同时按）</div>
+
+<script>
+(function(){
+  var out = document.getElementById('out');
+  var sum = document.getElementById('sum');
+
+  function row(k, v, cls){
+    var d = document.createElement('div'); d.className = 'row';
+    var a = document.createElement('span'); a.className = 'k'; a.textContent = k;
+    var b = document.createElement('span'); b.className = 'v' + (cls ? ' ' + cls : '');
+    b.textContent = v;
+    d.appendChild(a); d.appendChild(b); out.appendChild(d);
+    return b;
+  }
+
+  // JS 跑起来了 —— 先把那条红色结论换掉
+  var verdict = document.getElementById('verdict');
+  verdict.style.background = '#14532d';
+  verdict.innerHTML = 'JS 在运行 ✓<br><span style="font-weight:400;font-size:14px">' +
+                      '说明这不是截图代理。下面几项决定能做成什么样。</span>';
+
+  // ── 屏幕：适配的第一手依据。S12 46mm 到底给网页多少逻辑像素，只有真机知道
+  var W = window.innerWidth, H = window.innerHeight, DPR = window.devicePixelRatio || 1;
+  row('视口', W + ' × ' + H + '  (DPR ' + DPR + ')');
+  row('屏幕', (screen.width || '?') + ' × ' + (screen.height || '?'));
+
+  // ── 是谁在渲染
+  row('UA', (navigator.userAgent || '?').slice(0, 90));
+
+  // ── 存储：生词本和 FSRS 进度全靠它。不能持久化就只能做"只读展示"
+  var ls = '✗';
+  try { localStorage.setItem('_p', '1'); ls = localStorage.getItem('_p') === '1' ? '✓' : '✗';
+        localStorage.removeItem('_p'); } catch(e) { ls = '✗ ' + (e.name || 'err'); }
+  row('localStorage', ls, ls.charAt(0) === '✓' ? 'ok' : 'no');
+
+  var idbRow = row('IndexedDB', '测试中…');
+  var IDB = '?';
+  try {
+    var rq = indexedDB.open('_probe', 1);
+    rq.onsuccess = function(){ IDB = '✓'; idbRow.textContent = '✓'; idbRow.className = 'v ok';
+                               try { rq.result.close(); indexedDB.deleteDatabase('_probe'); } catch(e){} render(); };
+    rq.onerror   = function(){ IDB = '✗'; idbRow.textContent = '✗'; idbRow.className = 'v no'; render(); };
+  } catch(e) { IDB = '✗'; idbRow.textContent = '✗ ' + (e.name || 'err'); idbRow.className = 'v no'; }
+
+  // ── 朗读：查词发音要用
+  var voices = 0;
+  try { voices = (window.speechSynthesis && speechSynthesis.getVoices().length) || 0; } catch(e){}
+  row('语音合成', window.speechSynthesis ? ('有 · ' + voices + ' 个音源') : '✗ 没有',
+      window.speechSynthesis ? 'ok' : 'no');
+
+  // ── 网络：能不能取数据
+  var netRow = row('fetch 同源', '测试中…');
+  var NET = '?';
+  try {
+    fetch('manifest.json', { cache: 'no-store' })
+      .then(function(r){ NET = r.ok ? '✓' : ('✗ HTTP' + r.status);
+                         netRow.textContent = NET; netRow.className = 'v ' + (r.ok ? 'ok' : 'no'); render(); })
+      .catch(function(e){ NET = '✗ ' + (e.name || 'fail');
+                          netRow.textContent = NET; netRow.className = 'v no'; render(); });
+  } catch(e) { NET = '✗'; netRow.textContent = '✗'; netRow.className = 'v no'; }
+
+  // ── 交互：能不能点、表冠能不能当滚轮用（决定闪卡怎么操作）
+  var TAP = '✗', CROWN = '✗', MOVE = '✗';
+  var tapRow   = row('点击事件', '还没点');
+  var crownRow = row('表冠/滚轮', '还没转');
+  var moveRow  = row('滑动事件', '还没滑');
+
+  function markTap(kind){
+    TAP = '✓'; tapRow.textContent = '✓ ' + kind; tapRow.className = 'v ok';
+    document.getElementById('tapbtn').textContent = '① 收到了 ✓';
+    render();
+  }
+  var btn = document.getElementById('tapbtn');
+  btn.addEventListener('click', function(){ markTap('click'); });
+  btn.addEventListener('touchstart', function(){ markTap('touch'); }, { passive: true });
+  btn.addEventListener('pointerdown', function(){ markTap('pointer'); });
+
+  window.addEventListener('wheel', function(e){
+    CROWN = '✓';
+    crownRow.textContent = '✓ wheel Δ' + Math.round(e.deltaY);
+    crownRow.className = 'v ok';
+    document.getElementById('crownbtn').textContent = '② 收到了 ✓';
+    render();
+  }, { passive: true });
+
+  window.addEventListener('touchmove', function(){
+    MOVE = '✓'; moveRow.textContent = '✓ touchmove'; moveRow.className = 'v ok'; render();
+  }, { passive: true });
+
+  // ── 一行汇总，方便你念给我或者截图
+  function render(){
+    sum.textContent = 'W' + W + ' H' + H + ' DPR' + DPR +
+                      ' LS' + (ls.charAt(0) === '✓' ? 1 : 0) +
+                      ' IDB' + (IDB === '✓' ? 1 : IDB === '?' ? '?' : 0) +
+                      ' TTS' + (window.speechSynthesis ? voices : 0) +
+                      ' NET' + (NET === '✓' ? 1 : NET === '?' ? '?' : 0) +
+                      ' TAP' + (TAP === '✓' ? 1 : 0) +
+                      ' CROWN' + (CROWN === '✓' ? 1 : 0) +
+                      ' MOVE' + (MOVE === '✓' ? 1 : 0);
+  }
+  render();
+
+  // 有些 WebKit 要等一拍才填得上音源列表
+  if (window.speechSynthesis) {
+    speechSynthesis.onvoiceschanged = function(){
+      try { voices = speechSynthesis.getVoices().length; } catch(e){}
+      render();
+    };
+  }
+})();
+</script>
+</body>
+</html>
