@@ -71,6 +71,20 @@ let fcSize      = parseInt(localStorage.getItem('fcSize') ?? '12', 10);
 if(isNaN(fcSize)) fcSize = 12;
 let fcFlipShadeTimer = null; // 翻转光影动效的清除计时器，防止快速连翻时动画卡住
 
+// 手表判据：CSS 和 JS 必须共用同一个开关，否则会撕裂——
+// CSS 以为是手表把释义显示出来了，JS 以为不是、点一下还去翻面，就成了「卡片正反面都是答案」。
+// 所以这里只认 html 上的 .watch 类，类由本文件唯一负责写；下面 _isWatch() 是唯一的读法。
+// 用 orientation:portrait 排除横屏手机：横屏手机高度也 <420，但它不该变成黑底不翻页。
+const _WATCH_MQ = matchMedia('(max-height: 420px) and (orientation: portrait)');
+function _syncWatchClass(){
+  document.documentElement.classList.toggle('watch', _WATCH_MQ.matches);
+}
+function _isWatch(){ return document.documentElement.classList.contains('watch'); }
+_syncWatchClass();
+// addEventListener 在老 Safari 的 MediaQueryList 上可能没有，退回 addListener
+if(_WATCH_MQ.addEventListener) _WATCH_MQ.addEventListener('change', _syncWatchClass);
+else if(_WATCH_MQ.addListener) _WATCH_MQ.addListener(_syncWatchClass);
+
 // ── FSRS 调度（ts-fsrs，见 vendor/）──
 // 记录里额外存一份 fsrs 卡片状态（含 stability/difficulty），
 // nextReview/interval 两个旧字段保留不动 —— 组卡、云同步、按钮预览都还在用它们。
@@ -505,6 +519,11 @@ async function showFcCard(instant){
   // Fill back
   document.getElementById('fc-back-word-txt').textContent = v.word;
   document.getElementById('fc-meaning').textContent = v.meaning || '—';
+  // 手表版正面也要有释义（同一份文字，两个位置）。这里无条件写，不看是不是手表：
+  // 元素本身默认 display:none，写了不显示没有代价；而如果改成「只在手表时写」，
+  // 一旦用户中途旋转屏幕或改变窗口高度，卡片不重新发牌，释义就会是空的。
+  const _mf = document.getElementById('fc-meaning-front');
+  if(_mf) _mf.textContent = v.meaning || '—';
   document.getElementById('fc-ph-back').textContent  = v.ph || '';
   document.getElementById('fc-en-def').textContent   = '';
   document.getElementById('fc-sent').textContent     = v.sent ? v.sent.trim().slice(0,150) : '';
@@ -1053,6 +1072,10 @@ function closeFcAll(){
       if(movedAny) return;
       // 用按下时的原始落点判断，而不是 e.target：结束事件的 target 可能已被指针捕获改写
       if(downTarget && downTarget.closest('button')) return;
+      // 手表上不翻页（正反面都在一屏），点一下的语义由用户定为「认识」。
+      // 上面 downTarget.closest('button') 那道守卫已经把点在收藏/播放按钮上的情况排除了，
+      // 所以这里不会出现「想点播放结果跳下一个词」。
+      if(_isWatch()){ rateFcCard('good'); return; }
       flipFcCard(); return;
     }
     // axis 锁定为纵向、但最终落点在起点下方（dy>0）：无效手势，等同下滑，只回弹不评分

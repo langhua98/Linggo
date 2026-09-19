@@ -3108,3 +3108,66 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
     -webkit-line-clamp:2;
   }
 }
+
+/* ══════════════════════════════════════════
+   手表版闪卡：黑底白字 · 不翻页 · 点一下下一个（参考扇贝单词的手表界面）
+   判据是 html.watch 而不是媒体查询本身：同一个类 srs.js 也在读（_isWatch），
+   两边共用一个开关才不会出现「CSS 显示了释义、JS 还在翻面」的撕裂——
+   CSS 单独用媒体查询判断的话，横竖屏切换等中间态会让两边判断不同步。
+   ══════════════════════════════════════════ */
+.fc-meaning-front{ display:none; }   /* 默认不存在；手机端正面绝不给答案 */
+
+/* 纯黑底、去掉一切"卡片感"：圆角/阴影/边框在黑底上只会显出一圈脏边 */
+html.watch #flashcard,
+html.watch .fc-head,
+html.watch .fc-face{
+  background:#000;
+}
+html.watch .fc-head{
+  border-bottom:none;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+html.watch .fc-face{
+  border:none;
+  box-shadow:none;
+  border-radius:0;
+}
+html.watch .fc-stack{ display:none; }   /* 那两张虚影本来是营造"卡片感"的，黑底不需要 */
+
+html.watch .fc-word{ color:#fff; }
+html.watch .fc-ph-front{ color:#8E8E93; }
+
+/* 释义是外部词典数据，长的能有几十个字（.fc-back-body 实测 scrollHeight 396
+   vs clientHeight 216 就是同一类问题），不截断会把单词顶出这块 382px 高的屏幕。
+   -webkit-box 会覆盖 display:block，两条别互相打脸，直接写 -webkit-box 即可。 */
+html.watch #fc-meaning-front{
+  display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; -webkit-line-clamp:3;
+  color:#E5E5EA;
+  font-size:20px; line-height:1.35; text-align:center;
+  margin-top:14px;
+}
+
+/* 词性徽章、同族对照条、词根链：用户只要"单词+音标+释义"这三样，
+   这些次要信息在 320px 宽上只会挤掉释义的空间 */
+html.watch #fc-badge-row,
+html.watch #fc-sibs,
+html.watch #fc-root-front{
+  display:none;
+}
+
+/* 两个大按钮在黑底上要看得见。特意不碰 svg 本身，
+   .fc-icon-btn.starred svg{fill:#F59E0B} 那条规则特异性更高（多一个类），
+   星标变金色的状态反馈原样保留，不需要在这里重复声明 */
+html.watch .fc-front-actions .fc-icon-btn{
+  background:#1C1C1E;
+  color:#fff;
+  box-shadow:none;
+}
+
+/* #fc-exit 沿用上一批的透明热区，这里不用再提；#fc-undo 本来只在有得撤销时才显示，
+   黑底上要重新给一套看得清的配色，不然深灰字在纯黑上等于消失 */
+html.watch #fc-undo{
+  background:#1C1C1E;
+  color:#fff;
+}
