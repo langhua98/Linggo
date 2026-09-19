@@ -3026,6 +3026,20 @@ function _followYield(){ _followPausedUntil = Date.now() + 4000; }
 window.addEventListener('wheel', _followYield, {passive:true});
 window.addEventListener('touchmove', _followYield, {passive:true});
 
+// 我们自己发起的那次平滑滚动预计结束的时间戳。下面那条 scroll 监听要靠它
+// 把"自己滚的"和"用户滚的"分开，否则我们一滚就把自己让位掉，永远不再跟读。
+let _autoScrollUntil = 0;
+
+// Apple Watch 实测（S12 46mm，watch.html 探针）：表冠转 6 秒滚了 860px，
+// 但 wheel 0 次、touchmove 0 次，只有 scroll 226 次 —— 系统直接滚原生滚动容器，
+// DOM 根本看不到那个输入。所以只听 wheel/touchmove 的话，表上用表冠往回翻看一句，
+// 朗读会立刻把人拽回去，让位形同虚设。补这一条之后表冠也能让位。
+// 手机上它同样有用：手指松开后的惯性滚动期间 scroll 还在发，让位会跟着顺延。
+window.addEventListener('scroll', () => {
+  if(Date.now() < _autoScrollUntil) return;   // 这是我们刚发起的那次，不是用户
+  _followYield();
+}, {passive:true});
+
 // 把某个句子元素滚到可读区中央。只在换句时调用一次——原生平滑滚动是"一次性
 // 位移"，不是持续跟随，连续对同一目标发起新的 scrollTo 会取消上一次动画
 // （详见 highlightWordAt 里为什么不再按词调用这个函数）。
@@ -3040,6 +3054,10 @@ function _scrollToSent(el){
   // 播放器上沿之间那一段，两者差二十几像素。自己算目标位置，滚动本身仍然交给原生。
   const target = window.scrollY + rect.top + rect.height / 2 - _readableCenterY();
   const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  // 先开窗再滚：这次滚动自己会发一串 scroll 事件，上面那条监听要靠这个窗口认出
+  // "这是我们自己滚的"而不是用户。换句时的位移只有一两行，原生平滑滚动几百毫秒就到，
+  // 1 秒是留足余量的上限。
+  _autoScrollUntil = Date.now() + 1000;
   window.scrollTo({
     top: Math.max(0, Math.min(target, maxScroll)),
     behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
