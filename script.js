@@ -2632,7 +2632,8 @@ async function onWordClick(el){
   wpop.classList.add('vis');
   // Pre-warm Kokoro for this word so tapping play uses the neural voice
   // instantly (cache hit) instead of timing out and falling back to MP3.
-  if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+  // 表上不预热：<audio> 放不出任何格式，89KB/词 白下（见 _audioDead() 注释）。
+  if(!_audioDead() && kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     _kokServerSynth(word).catch(()=>{});
   }
   _wpSetLearnState(S.savedWords.has(word), false);   // 按当前是否已收藏初始化按钮状态
@@ -2780,6 +2781,19 @@ function _stopWordAudio(){
   if(_wordAudioCur) _emitWordAudio('ended', _wordAudioCur);
 }
 
+// 表上 <audio> 元素放不了任何东西——真机实测：AAC / MP3 / 8位WAV / 16位44.1kHz WAV
+// × data: 与 blob: × 开过光与没开光 × 手势内与手势外，全部 err4
+// (MEDIA_ERR_SRC_NOT_SUPPORTED)，连 loadedmetadata 都不触发。而 speechSynthesis
+// 可用（70 个音源，用户实听确认）。所以那台机器上所有基于 <audio> 的引擎
+// （Kokoro / Edge / Google TTS）都是必然失败的，试了只是白下、白等、白耗电。
+//
+// 名字叫 _audioDead 而不是 _isWatch：这里关心的是"能不能放音频"这个事实，
+// 不是"是不是手表"这个身份。将来别的设备也这样，语义仍然成立。
+//
+// 类由 srs.js 唯一负责写（同步 <script>，用户能操作之前一定已执行），这里只读不写，
+// 避免两个文件各跑一遍媒体查询、判断不一致。
+function _audioDead(){ return document.documentElement.classList.contains('watch'); }
+
 async function playWordAudio(word, mp3, rate = 1){
   const mySeq = ++_wordSeq;
   _wordAudioCur = word;
@@ -2790,7 +2804,9 @@ async function playWordAudio(word, mp3, rate = 1){
     _wordAudioEl = new Audio();
     _wordAudioEl.setAttribute('playsinline','');
   }
-  if(!_wordUnlocked){
+  // 表上开光也是白费——_audioDead() 的注释里那组实测已经排掉了「没开光」这个变量，
+  // 开过光的元素一样 err4，所以表上连这个手势内的 play() 都不必打
+  if(!_audioDead() && !_wordUnlocked){
     // Bless playback inside the click gesture (iOS). Use a THROWAWAY element:
     // priming _wordAudioEl itself would race the real playback below and leave
     // the silent clip as the winning src (killing both audio and playbackRate).
@@ -2824,8 +2840,8 @@ async function playWordAudio(word, mp3, rate = 1){
       return true;
     }catch(e){ return false; }
   };
-  // 1) Kokoro neural — priority when enabled
-  if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+  // 1) Kokoro neural — priority when enabled（表上直接跳过，见 _audioDead() 注释）
+  if(!_audioDead() && kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     const url = await Promise.race([
       _kokServerSynth(word).catch(()=>null),
       new Promise(r => setTimeout(()=>r(null), 3500)),   // don't wait on a cold server
@@ -2833,8 +2849,8 @@ async function playWordAudio(word, mp3, rate = 1){
     if(_wordSeq !== mySeq) return;                       // a newer word was clicked → abandon
     if(url && await playUrl(url, rate)) return;
   }
-  // 2) Dictionary MP3
-  if(mp3 && _wordSeq === mySeq && await playUrl(mp3, rate)) return;
+  // 2) Dictionary MP3（同样是 <audio>，表上必然 err4，跳过）
+  if(!_audioDead() && mp3 && _wordSeq === mySeq && await playUrl(mp3, rate)) return;
   // 3) System voice fallback
   if(_wordSeq !== mySeq) return;
   const u = new SpeechSynthesisUtterance(word);
@@ -4740,6 +4756,11 @@ function _kokPrefetch(n = 4){
 function _kokWarm(idx = S.idx){
   if(!kokActive) return;
   if(KOK_SERVER_URL === 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space') return;
+  // 表上：这一步是"提前合成、等点播放秒开"的优化，落地仍要经 _edgePlayOne 里
+  // 已跳过的 <audio> 播放，实测（见 _audioDead()）连播放都不会走到——白合成。
+  // 三处调用（进书预热 / 打开高音质开关 / 拖动句子空闲后预热）共用这一个 return，
+  // 不必逐个调用点分别加判断。
+  if(_audioDead()) return;
   for(let i = idx; i < Math.min(idx + 2, S.sents.length); i++){
     if(S.sents[i]) _kokServerSynth(S.sents[i]).catch(()=>{});
   }
@@ -5040,7 +5061,9 @@ async function _edgePlayOne(text, mySession, startChar = 0){
   // in KOK_CACHE (prefetched), wait 30 s — server will finish soon.
   // If starting fresh, race with 8 s timeout so a sleeping HF Space falls
   // through to the online engines instead of hanging the reader.
-  if(kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
+  // 表上跳过：这一档播放最终仍要经 _edgePlayUrl 的 <audio>，必然 err4，
+  // 白下 89KB/句还耽误进 P2（见 _audioDead() 注释的实测）。
+  if(!_audioDead() && kokTTSReady && KOK_SERVER_URL !== 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space'){
     try {
       let url = KOK_DONE.get(_kokKey(text));
       if(S.paused) return 'paused';   // paused between function entry and cache check
@@ -5087,7 +5110,9 @@ async function _edgePlayOne(text, mySession, startChar = 0){
     // On iOS every browser is WebKit; Apple's own neural Siri voices via
     // speechSynthesis are higher quality than Edge and need zero network.
     if(S.paused) return 'paused';
-    if(!IS_IOS && _edgeFails < 2){
+    // 表上连 WebSocket 都不建——就算合成成功，播放仍要经同一个 <audio>，
+    // 照样 err4（见 _audioDead() 注释），建了也是白连白等。
+    if(!_audioDead() && !IS_IOS && _edgeFails < 2){
       try {
         url = await _edgeSynth(text);
         isBlobUrl = true;
@@ -5127,7 +5152,8 @@ async function _edgePlayOne(text, mySession, startChar = 0){
 
     // ── P3: Google Translate TTS — non-iOS, <2 failures ──────────────────
     if(S.paused) return 'paused';
-    if(!IS_IOS && _gtFails < 2){
+    // 同样落在 <audio>（_edgePlayUrl）上，表上必然 err4，见 _audioDead() 注释
+    if(!_audioDead() && !IS_IOS && _gtFails < 2){
       if(kokSession !== mySession) return false;
       _kokAnnounce('Google 在线语音');
       const gtOk = await _edgePlayUrl(_gtUrl(text));

@@ -246,7 +246,27 @@ async function pushFcSRSWord(word){
 }
 window._syncFcSRS = syncFcSRSFromSupabase;
 
+// iOS 会门禁 speechSynthesis：**第一次** speak() 必须发生在用户手势里，
+// 否则之后所有 speak() 都被静默忽略（见 script.js 里 _unlockAudio() 的注释）。
+// script.js 的 _unlockAudio() 正好做了这件事，但它那 6 个调用点全在阅读器一侧
+// （播放键 / 逐词键 / 高音质开关）——闪卡这条路一次都没调过。
+//
+// 平时这个坑被 <audio> 掩盖着：那条链路排在系统语音前面，轮到 speak() 时用户
+// 早已点过别的东西了。但表上 <audio> 整条放不出声（见 script.js 的 _audioDead()），
+// 现在直奔系统朗读，坑就露出来了：用户直接进闪卡背单词、从没开过书的话，
+// 全程第一次 speak() 会是闪卡的自动播放——那是 setTimeout 发起的、不在手势内，
+// 于是整轮都哑。
+//
+// 所以在闪卡的两个入口（本函数 和 #vp-start 的点击处理）最前面各解锁一次，
+// **必须在任何 await 之前**——await 一旦发生，手势就过期了，解锁也就失效了。
+function _unlockSpeechInGesture(){
+  // script.js 一定先于 srs.js 加载（index.html 里是硬顺序），这道 typeof 只是兜底；
+  // 万一真缺了，退化成"不解锁"，也就是这次改动之前的现状，不会更糟。
+  if(typeof _unlockAudio === 'function'){ try{ _unlockAudio(); }catch(e){} }
+}
+
 async function openFlashcard(origin){
+  _unlockSpeechInGesture();   // 必须在下面 await ensureDecks() 之前
   // FSRS 调度 + 词库统计要用的 CET4/6/Ogden850/ts-fsrs 平时不在首屏关键路径里，
   // 这里先等它们到位——否则评分会悄悄退回固定间隔，还把这次评分写进存档（见 _sched）。
   if(typeof ensureDecks === 'function'){
@@ -293,6 +313,9 @@ function _fcPrefetchAudio(from, n = 3){
   if(typeof _kokServerSynth !== 'function') return;
   if(typeof KOK_SERVER_URL === 'undefined'
      || KOK_SERVER_URL === 'https://YOUR_HF_USERNAME-kokoro-tts.hf.space') return;
+  // 表上 <audio> 放不出任何格式，预取下来的 89KB/词 一个字节都用不上。
+  // 闪卡每出一张卡预取 3 个词 ≈ 270KB，纯耗流量和电，手表流量还要走蓝牙中继。
+  if(_isWatch()) return;
   const stop = Math.min(from + n, fcDeck.length);
   for(let i = from; i < stop; i++){
     const w = fcDeck[i] && fcDeck[i].word;
@@ -1874,6 +1897,7 @@ document.getElementById('deck-open-btn').addEventListener('click', openVocabPane
 document.getElementById('feat-flash')?.addEventListener('click', openVocabPanel);
 document.getElementById('vp-close').addEventListener('click', closeVocabPanel);
 document.getElementById('vp-start').addEventListener('click', async ()=>{
+  _unlockSpeechInGesture();   // 必须在本函数任何 await 之前，理由见该函数注释
   if(vpDeck === 'mine'){
     // 我的生词走生词本闪卡那条路（FSRS + fcSize），不是词库题库
     if(!S.vocab.length){ toast('生词本是空的，先去收藏一些单词！'); return; }
