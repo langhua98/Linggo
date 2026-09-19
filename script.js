@@ -4582,7 +4582,12 @@ function _unlockAudio(){
       _kokAudioCtx.resume().catch(()=>{});
     if(_audioUnlocked) return;
     _audioUnlocked = true;
-    // Minimal valid WAV: 1 channel, 44100 Hz, 16-bit, 1 silent sample
+    // 解码这串 base64 的字节头实测得到的是：1 声道 44100Hz、**8 位**，
+    // 且 blockAlign=4 / byteRate=88200 与 8 位单声道自相矛盾——是个畸形头，
+    // 不是这行原本写的"16-bit"。之所以照样管用：开光靠的是 play() 在用户手势里
+    // 被**调用**过这件事本身，下面那个 .catch(()=>{}) 把成败一并吞了，
+    // 所以这段字节到底能不能解码从来没被验证过。
+    // 别拿它当"某某格式能放"的证据（本会话中就据此误判过一次）。
     _kokAudioEl.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA';
     _kokAudioEl.play().catch(()=>{});
     // iOS also gates speechSynthesis: the first speak() must happen inside

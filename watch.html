@@ -73,6 +73,13 @@
 <button id="kokbtn" style="background:#7c2d12">⑥ 测 Kokoro 服务器（要等）</button>
 <div id="kokres" class="hint">点 ⑥ 才会发出本页唯一一次外部请求</div>
 
+<!-- ⑧：上一轮从④⑥推出"表上 <audio> 整条管线放不出声"被真机实测推翻——
+     阅读器里点播放键 Kokoro 是有声音的，说明④⑥没测出问题所在，而是把三个
+     互相独立的变量（WAV 格式本身 / 元素有没有被手势"开光" / play() 调用时
+     手势是否还有效）混在一起测了。这里一次点击把三者分开单独测。 -->
+<button id="w16btn" style="background:#831843">⑧ 测 16 位 WAV × 开光 × 手势</button>
+<div id="w16res" class="hint">点 ⑧ 本地生成 16 位 WAV，不发任何请求</div>
+
 <div id="sum">等待 JS…</div>
 <div class="hint">把这一行念给我 / 或者截图（侧边按钮+表冠同时按）</div>
 
@@ -211,11 +218,15 @@
   // 三者互不替代，任何一条通了，闪卡就有救。
   // ══════════════════════════════════════════════════════════════════
   var WAVd = '?', WAVb = '?', SPK = '?', KOK = '?';
+  // ⑧ 的三个子测试结果，独立于④⑤⑥那组，见下方「⑧」小节
+  var W16a = '?', W16b = '?', W16c = '?';
 
   // 三个新按钮共用的"是否真的出声了"判定逻辑，别复制三遍。
   // cb(str, ok)：str 是给人看的完整结果行文字，ok 是 1/0，供汇总行用。
-  function probeAudio(url, cb){
-    var a = new Audio();
+  // 第三个可选参数 el：⑧b/⑧c 要在"同一个已经开过光的元素"上复测，
+  // 不能像④⑥那样每次 new Audio()——不传时行为和原来完全一样。
+  function probeAudio(url, cb, el){
+    var a = el || new Audio();
     var md = 0, dur = 'NaN', playOk = 0, playErr = '', ct = 0, done = false;
     function finish(){
       if(done) return; done = true;
@@ -281,6 +292,36 @@
     var bin = '';
     for(var i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
     return btoa(bin);
+  }
+
+  // 16 位有符号小端、单声道、44100Hz——这是通用基线格式。④ 用的 8 位 8kHz 是
+  // 最冷门的一种 PCM，"体积最小所以兼容性最高"当时那个判断是反的，
+  // 很多解码器只实现 16 位，④ 那个 err4 很可能字面上就是对的。
+  //
+  // 注意：别拿阅读器那段开光静音 WAV 当"16 位能放"的佐证——实际解码它的字节头
+  // 得到的是 bitsPerSample=8（而且 blockAlign=4 / byteRate=88200 与 8 位单声道
+  // 自相矛盾，是个畸形头）。它能"生效"很可能只是因为 play() 在手势里被**调用**过，
+  // 成没成功都被 .catch() 吞了。所以格式这个变量只能靠 ④ 和 ⑧a 的实测差异来判，
+  // 不能靠推理。
+  // 不改 makeWavBytes()（8 位那个）本身——④ 的结果要留着当对照组，
+  // ④ 和 ⑧a 的差异本身就是"格式"这一个变量单独变化后的证据。
+  function makeWavBytes16(){
+    var sr = 44100, sec = 0.5, n = Math.round(sr * sec);
+    var buf = new Uint8Array(44 + n*2);
+    function w32(off, v){ buf[off]=v&255; buf[off+1]=(v>>8)&255; buf[off+2]=(v>>16)&255; buf[off+3]=(v>>24)&255; }
+    function w16(off, v){ buf[off]=v&255; buf[off+1]=(v>>8)&255; }
+    function wstr(off, s){ for(var i=0;i<s.length;i++) buf[off+i]=s.charCodeAt(i); }
+    wstr(0,'RIFF'); w32(4, 36+n*2); wstr(8,'WAVE');
+    // blockAlign=2、byteRate=44100*2、bitsPerSample=16——16 位单声道的三个
+    // 必须对上的字段，写错任何一个都会变成一份"看着像 WAV、实际解不出来"的
+    // 坏文件，验收专门要抄这几个偏移量的实测值就是防这个。
+    wstr(12,'fmt '); w32(16,16); w16(20,1); w16(22,1); w32(24,sr); w32(28,sr*2); w16(32,2); w16(34,16);
+    wstr(36,'data'); w32(40, n*2);
+    for(var i=0;i<n;i++){
+      var s = Math.sin(2*Math.PI*440*(i/sr));
+      w16(44 + i*2, Math.round(s * 32767)); // 16 位有符号，w16 的按位运算对负数一样成立
+    }
+    return buf;
   }
 
   document.getElementById('wavbtn').addEventListener('click', function(){
@@ -443,6 +484,74 @@
     });
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // ⑧ 一次点击分离三个互相独立的变量：
+  //   a) 格式本身——16 位而不是④那个 8 位，能不能放
+  //   b) 元素有没有被"开光"——先在手势内播一段静音 WAV，再换成测试 WAV
+  //   c) play() 调用时手势是否还有效——复用 b 开过光的元素，但延迟到手势
+  //      过期之后再放，精确复刻闪卡里"await 合成结果之后才 play()"的处境
+  // 三者必须分开报，混在一起会像上一轮那样把假阴性当成结论。
+  // ══════════════════════════════════════════════════════════════════
+  document.getElementById('w16btn').addEventListener('click', function(){
+    var btn = this, res = document.getElementById('w16res');
+    btn.disabled = true; btn.textContent = '⑧ 测试中…';
+    var strA = '', strB = '', strC = '2 秒后播放（等手势过期）…';
+    function paint(){
+      res.innerHTML = 'a: ' + (strA || '测试中…') + '<br>' +
+                       'b: ' + (strB || '测试中…') + '<br>' +
+                       'c: ' + strC;
+    }
+    paint();
+
+    var dataUrl16 = 'data:audio/wav;base64,' + bytesToBase64(makeWavBytes16());
+
+    // a) 全新元素 + 16 位 WAV，在 click 处理函数里同步发起——回答
+    // "是不是只要换成 16 位就能放"，其它变量（开光/手势时机）都不引入。
+    probeAudio(dataUrl16, function(str, ok){
+      W16a = ok; strA = str; paint(); render(); conclude();
+    });
+
+    // b) 完全照抄 script.js:4570-4596 的 _unlockAudio() 的做法：同一个元素
+    // 先在手势内播一遍那段静音 WAV"开光"，再（仍在同一个手势、同一个调用栈里，
+    // 不经过任何 await/setTimeout）把 .src 换成测试 WAV 复用同一元素再放一次。
+    // 阅读器就是这么做的，而它在这块表上确认能出声——照抄才能判断"开光"
+    // 这一步本身是不是关键，而不是又混进"手势过没过期"这个变量。
+    var elB = new Audio();
+    elB.setAttribute('playsinline', '');
+    elB.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQAEAAgAZGF0YQIAAAAA';
+    try { elB.play().catch(function(){}); } catch(e){}
+    probeAudio(dataUrl16, function(str, ok){
+      W16b = ok; strB = str; paint(); render(); conclude();
+    }, elB);
+
+    // c) 复用 b 那个已经开过光的元素，但等 2 秒——让手势彻底过期——再放。
+    // 这条最重要：它精确复刻闪卡的处境（先 await 合成结果，再 play()，
+    // play() 落在手势之外），回答"修法要不要把合成挪到点击之前预缓存"。
+    setTimeout(function(){
+      probeAudio(dataUrl16, function(str, ok){
+        W16c = ok; strC = str; paint(); render(); conclude();
+        btn.disabled = false; btn.textContent = '⑧ 测 16 位 WAV × 开光 × 手势';
+      }, elB);
+    }, 2000);
+
+    // 三个子测试异步完成的先后顺序不固定（c 延迟 2 秒起步，但 a/b 万一撞上
+    // 6 秒兜底也可能比 c 晚），所以每次回调都尝试一次，等三个都拿到 0/1
+    // 才真正下结论、只下一次。
+    var concluded = false;
+    function conclude(){
+      if(concluded) return;
+      if(W16a === '?' || W16b === '?' || W16c === '?') return;
+      concluded = true;
+      var lines = [];
+      if(W16a) lines.push('✅ 换成 16 位就能放——④ 的 err4 是我的探针格式选错了，不是表的问题');
+      else if(W16b) lines.push('◐ 关键是"开光"：元素必须在手势里先播一段静音 WAV');
+      if(W16b && !W16c) lines.push('⚠ 手势过期就放不了——合成必须挪到点击之前（预缓存）');
+      else if(W16b && W16c) lines.push('✅ 开光后手势过期也能放——只要复用开过光的元素就够了');
+      if(!W16a && !W16b) lines.push('❌ 三种都不行，另想办法');
+      res.innerHTML = res.innerHTML + '<br>' + lines.join('<br>');
+    }
+  });
+
   // ── 一行汇总，方便你念给我或者截图
   function render(){
     sum.textContent = 'W' + W + ' H' + H + ' DPR' + DPR +
@@ -454,7 +563,8 @@
                       ' CROWN' + (CROWN === '✓' ? 1 : 0) +
                       ' MOVE' + (MOVE === '✓' ? 1 : 0) +
                       '  [表冠 ' + CT + ']' +
-                      '  WAVd' + WAVd + ' WAVb' + WAVb + ' SPK' + SPK + ' KOK' + KOK;
+                      '  WAVd' + WAVd + ' WAVb' + WAVb + ' SPK' + SPK + ' KOK' + KOK +
+                      ' W16a' + W16a + ' W16b' + W16b + ' W16c' + W16c;
   }
   render();
 
