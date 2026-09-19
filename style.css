@@ -3021,3 +3021,63 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
 .bprev-add-btn:hover{opacity:.9;}
 .bprev-add-btn:disabled{opacity:.7;cursor:default;}
 .bk-cover{cursor:pointer;}
+
+/* ══════════════════════════════════════════
+   超短屏（Apple Watch 等）
+   用 watch.html 探针在 Apple Watch S12 46mm 上实测出真机视口是 320×382（DPR2），
+   这是本节唯一的设计依据。手表窄但主要矛盾是「矮」——横向反而没有溢出，所以按
+   max-height 而不是 max-width 判：按宽度判会连普通竖屏小手机（宽度也可能 <380）
+   一起误伤，但那些机型高度都在 600px 以上，压根不缺竖直空间。
+   只压缩外壳（留白、徽章、标题、按钮），不动内容字号——单词/音标/释义/例句的
+   字号是这个界面存在的理由，压了就等于没做这个功能。
+   ══════════════════════════════════════════ */
+@media (max-height: 420px){
+  /* 面板自带返回键（#vp-close），全局顶栏在这里纯属重复占位；
+     把面板抬到顶栏（z-index:100）之上盖住它，再收回本来给顶栏让出的 54px 顶部内边距 */
+  #vocab-panel{ padding-top:0; z-index:110; }
+  .vp-head{ padding:8px 10px; }
+  .vp-title{ font-size:16px; }
+  .vp-decks{ padding:0 10px; gap:6px; margin-bottom:10px; }
+  /* 52px 的方形徽章是原来每行最大的单一开销，压到 32px 让「信息列」（书名+副标题+进度条）
+     反过来成为行高的决定因素，而不是徽章 */
+  .vp-deck{ padding:8px 10px; gap:8px; border-width:1px; }
+  .vp-dk-badge{ width:32px; height:32px; }
+  .vp-dk-name{ font-size:13px; margin-bottom:2px; }
+  .vp-dk-sub{ font-size:11px; }
+  .vp-dk-bar{ height:4px; margin-top:5px; }
+  .vp-session{ padding:0 10px 8px; }
+  .vp-start-btn{ padding:12px; margin:0 10px 12px; width:calc(100% - 20px); }
+  #vp-import-btn{ padding:10px; margin:0 10px 12px; width:calc(100% - 20px); }
+
+  /* 闪卡：外壳收紧，内容区（单词/释义/例句字号）一律不动 */
+  .fc-head{ padding:max(8px,env(safe-area-inset-top)) 12px 8px; }
+  .fc-title{ font-size:12px; margin-bottom:3px; }
+  .fc-count{ font-size:11px; }
+  /* .fc-area 的下内边距顶到 .fc-ratings 的下沿，是「评分按钮离底边多远」的直接控制点，
+     不能一起跟着头部压到最小——量出来发现头部越压card 越高，.fc-ratings 是贴底最后一个
+     flex 子项，跟着一起顶到屏幕边缘反而更容易出屏，所以这里保留比头部更宽松的余量 */
+  .fc-area{ padding:8px 10px max(10px,env(safe-area-inset-bottom)); }
+  .fc-front-body{ padding:14px 16px 8px; }
+  .fc-back-body{ padding:8px 20px 4px; }
+  .fc-meaning{ padding:6px 0 2px; }
+  .fc-ratings{ padding:4px 10px 6px; gap:6px; }
+  /* 84px 高的评分按钮是背面内容区最大的单一开销，评分区收到接近手机的一半，
+     腾出的高度留给上面的词义/例句，评分按钮本身仍然是三个并排的大点击目标 */
+  .fc-rbtn{ height:56px; }
+  .fc-rbtn-icon{ width:22px; height:22px; }
+  .fc-rbtn-icon svg{ width:20px; height:20px; }
+
+  /* 内容在这个高度上会真的溢出（实测 .fc-back-body 的 scrollHeight 396 vs
+     clientHeight 216），而它的 touch-action 是 none —— 那是为了保住"横滑评分"
+     故意设的（见 .fc-back-body 的注释：改成 pan-y 会让竖滑被浏览器当滚动抢走，
+     紧接着的横滑就废了）。于是溢出的那部分既看不见也够不着。
+     所以不动 touch-action，改成按行数截断：看得见开头，滑动评分也保住。
+     只截英文释义。中文释义（.fc-meaning）是这张卡的答案本身，宁可溢出也不能截；
+     例句 .fc-sent 的基础规则里本来就有 -webkit-line-clamp:3，不用在这儿重复一遍。
+     评分按钮不受影响——它是 flex-shrink:0，内容再多也顶不动它（压测过：内容塞爆
+     且字号放大到 160%，评分区位置一像素没变）。 */
+  .fc-en-def{
+    display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden;
+    -webkit-line-clamp:2;
+  }
+}
