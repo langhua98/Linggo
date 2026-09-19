@@ -3050,14 +3050,41 @@ html.nt-reveal::view-transition-group(root){ animation-duration:.48s; }
   #vp-import-btn{ padding:10px; margin:0 10px 12px; width:calc(100% - 20px); }
 
   /* 闪卡：外壳收紧，内容区（单词/释义/例句字号）一律不动 */
-  .fc-head{ padding:max(8px,env(safe-area-inset-top)) 12px 8px; }
+  /* 表上那条信息带（书名 + 进度条 + 5/12）占掉近 40px，而屏幕总共才 382px。
+     用户明确说了只要单词和音标，所以整条信息隐藏。
+     但 #fc-exit 必须留着——浏览器的左滑返回是退出整个页面，不是退出闪卡，
+     没有它人就困在卡片里出不去了。#fc-undo 同理留着（它本来就只在有得撤销时才显示）。 */
+  .fc-head{ padding:max(4px,env(safe-area-inset-top)) 8px 4px; gap:6px; }
+  .fc-head-mid{ display:none; }
   .fc-title{ font-size:12px; margin-bottom:3px; }
-  .fc-count{ font-size:11px; }
+  .fc-count{ font-size:11px; display:none; }
   /* .fc-area 的下内边距顶到 .fc-ratings 的下沿，是「评分按钮离底边多远」的直接控制点，
      不能一起跟着头部压到最小——量出来发现头部越压card 越高，.fc-ratings 是贴底最后一个
      flex 子项，跟着一起顶到屏幕边缘反而更容易出屏，所以这里保留比头部更宽松的余量 */
   .fc-area{ padding:8px 10px max(10px,env(safe-area-inset-bottom)); }
   .fc-front-body{ padding:14px 16px 8px; }
+  /* 两个大按钮平分宽度。原来是 52px 的圆 + 中间一行提示文字，
+     手表上提示文字既看不清也没必要（划两下就知道了），让位给点击面积。 */
+  .fc-front-actions{ padding:0 12px 12px; gap:10px; }
+  .fc-front-actions .fc-flip-tip{ display:none; }
+  /* 用后代选择器而不是直接改 .fc-icon-btn：背面的 #fc-spk-back 也是这个类，
+     且带行内 width:40px;height:40px 样式，背面不在这次需求里，不能被牵连改大 */
+  .fc-front-actions .fc-icon-btn{
+    flex:1; width:auto; height:56px; border-radius:16px;
+  }
+  .fc-front-actions .fc-icon-btn svg{ width:26px; height:26px; }
+
+  /* 退出键做成「看不见但能点」的左上角热区。用户要的是顶部这条在视觉上彻底消失，
+     但退出口不能一起没了——浏览器的左滑返回是退出**整个页面**，不是退出闪卡，
+     真去掉的话人就困在卡片里了。
+     必须用 opacity:0：visibility:hidden 和 display:none 会连点击一起干掉。
+     热区给到 56×40（基础样式是 38×38 的圆），不然在表上戳不中一个看不见的小点。 */
+  #fc-exit{ opacity:0; width:56px; height:40px; border-radius:12px; }
+  /* 撤销推到右上角。左上角那个是隐形的、右上角这个是看得见的，分居两端，
+     就不会出现「想退出结果点成撤销」——两个挨着的隐形按钮才是真的坑。
+     .fc-head 是 flex，中间的 .fc-head-mid / .fc-count 都已隐藏，auto 外边距
+     会把它一路推到最右。 */
+  #fc-undo{ margin-left:auto; }
   .fc-back-body{ padding:8px 20px 4px; }
   .fc-meaning{ padding:6px 0 2px; }
   .fc-ratings{ padding:4px 10px 6px; gap:6px; }
