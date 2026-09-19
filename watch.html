@@ -60,6 +60,19 @@
 <button id="crowntest" style="background:#7c2d12">③ 表冠专项测试（6 秒）</button>
 <div id="crownres" class="hint" style="color:#ffd24a">点 ③ 之后：<b>手指离开屏幕，只转表冠</b></div>
 
+<!-- 以下三个按钮回答"手表上闪卡为什么没声音"——已知网络是通的（clip.bin 200 且
+     字节数对得上），死在播放这一步；这三个按钮把播放这一步拆成三条独立的链路分别测,
+     互不替代：WAV 不需要解码器、speechSynthesis 是另一套完全独立的 API、
+     Kokoro 服务端是线上实际在用的引擎，三者只要有一条通，闪卡就有救。 -->
+<button id="wavbtn" style="background:#065f46">④ 测 WAV（本地，不联网）</button>
+<div id="wavres" class="hint">点 ④ 现场生成一段正弦波，不发任何请求</div>
+
+<button id="spkbtn" style="background:#1e40af">⑤ 测系统朗读（会出声）</button>
+<div id="spkres" class="hint">点 ⑤ 会真的说一句话</div>
+
+<button id="kokbtn" style="background:#7c2d12">⑥ 测 Kokoro 服务器（要等）</button>
+<div id="kokres" class="hint">点 ⑥ 才会发出本页唯一一次外部请求</div>
+
 <div id="sum">等待 JS…</div>
 <div class="hint">把这一行念给我 / 或者截图（侧边按钮+表冠同时按）</div>
 
@@ -188,6 +201,248 @@
     }, 1000);
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // 音频探针：④⑤⑥ 三个按钮回答"手表上闪卡为什么没声音"。
+  // 已知网络是通的（clip.bin 200 且字节数对得上），死在播放这一步——
+  // 但"死在播放"背后可能是三种完全不同的原因，所以拆成三条独立链路：
+  //   ④ 只测裸 PCM（WAV）能不能放，不牵涉任何解码器
+  //   ⑤ 只测 speechSynthesis 这一套完全独立于 <audio> 的 API
+  //   ⑥ 只测线上实际在用的 Kokoro 引擎端到端能不能通
+  // 三者互不替代，任何一条通了，闪卡就有救。
+  // ══════════════════════════════════════════════════════════════════
+  var WAVd = '?', WAVb = '?', SPK = '?', KOK = '?';
+
+  // 三个新按钮共用的"是否真的出声了"判定逻辑，别复制三遍。
+  // cb(str, ok)：str 是给人看的完整结果行文字，ok 是 1/0，供汇总行用。
+  function probeAudio(url, cb){
+    var a = new Audio();
+    var md = 0, dur = 'NaN', playOk = 0, playErr = '', ct = 0, done = false;
+    function finish(){
+      if(done) return; done = true;
+      try{ a.pause(); }catch(e){}
+      var errCode = a.error ? a.error.code : '-';
+      var playStr = playOk ? '1' : ('0' + (playErr ? '(' + playErr + ')' : ''));
+      var str = 'md' + md + ' dur' + dur + ' play' + playStr + ' ct' + ct + ' err' + errCode;
+      cb(str, playOk && ct ? 1 : 0);
+    }
+    a.addEventListener('loadedmetadata', function(){
+      md = 1;
+      dur = isFinite(a.duration) ? a.duration.toFixed(2) : String(a.duration);
+    });
+    a.addEventListener('error', function(){ finish(); });
+    a.setAttribute('playsinline', '');   // 与 script.js:2791 的真实播放元素保持一致
+    a.src = url;
+    // 兜底计时器。这次要测的恰恰是一个媒体栈可能整个坏掉的浏览器——万一 play() 的
+    // promise 既不 resolve 也不 reject、error 事件也始终不来，没有这道兜底，结果行
+    // 就永远停在"测试中…"、按钮永远禁用，用户在表上点了半天什么数都拿不到。
+    // 「没有任何反应」本身就是一条重要结论，必须能报出来，不能表现为卡死。
+    setTimeout(function(){
+      if(!done){ playErr = playErr || '无响应'; finish(); }
+    }, 6000);
+    var p;
+    try { p = a.play(); } catch(e){ playErr = e.name || 'throw'; finish(); return; }
+    if(p && typeof p.then === 'function'){
+      p.then(function(){
+        playOk = 1;
+        // play() 的 promise resolve 只说明浏览器"受理"了这次调用，不说明真的在出声——
+        // 受限/静音策略下常见 resolve 了但完全没往前播的假成功，只看 play() 会被骗，
+        // 延迟 900ms 再读一次 currentTime，>0 才是管线真的跑起来的证据。
+        setTimeout(function(){ ct = a.currentTime > 0 ? 1 : 0; finish(); }, 900);
+      }, function(e){
+        // reject 时的错误名必须原样带出去：NotSupportedError（放不了，编解码/格式问题）
+        // 和 NotAllowedError（手势策略挡的，跟格式无关）含义完全不同，混在一起就白测了。
+        playErr = (e && e.name) || 'err'; finish();
+      });
+    } else {
+      // 极老 WebKit 的 play() 不返回 promise，退化成只看延迟后的 currentTime。
+      setTimeout(function(){ ct = a.currentTime > 0 ? 1 : 0; finish(); }, 900);
+    }
+  }
+
+  // ── ④ WAV 本地播放：现场生成 PCM，不嵌一大坨 base64 常量进 HTML
+  // 8 位无符号单声道 8000Hz——体积最小、兼容性最高，只是用来问"能不能放裸 PCM"，
+  // 不追求音质。
+  function makeWavBytes(){
+    var sr = 8000, sec = 0.6, n = Math.round(sr * sec);
+    var buf = new Uint8Array(44 + n);
+    function w32(off, v){ buf[off]=v&255; buf[off+1]=(v>>8)&255; buf[off+2]=(v>>16)&255; buf[off+3]=(v>>24)&255; }
+    function w16(off, v){ buf[off]=v&255; buf[off+1]=(v>>8)&255; }
+    function wstr(off, s){ for(var i=0;i<s.length;i++) buf[off+i]=s.charCodeAt(i); }
+    wstr(0,'RIFF'); w32(4, 36+n); wstr(8,'WAVE');
+    wstr(12,'fmt '); w32(16,16); w16(20,1); w16(22,1); w32(24,sr); w32(28,sr); w16(32,1); w16(34,8);
+    wstr(36,'data'); w32(40, n);
+    for(var i=0;i<n;i++){
+      var s = Math.sin(2*Math.PI*440*(i/sr));
+      buf[44+i] = Math.round((s*0.5+0.5)*255); // 8 位无符号，128 是静音中点
+    }
+    return buf;
+  }
+  function bytesToBase64(bytes){
+    var bin = '';
+    for(var i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  document.getElementById('wavbtn').addEventListener('click', function(){
+    var btn = this, res = document.getElementById('wavres');
+    btn.disabled = true; btn.textContent = '④ 测试中…';
+    var bytes = makeWavBytes();
+    var dataUrl = 'data:audio/wav;base64,' + bytesToBase64(bytes);
+    // 同一段 PCM 分别包成 data: 和 blob: 两种 URL 单独测——blob: 和 Kokoro
+    // （script.js:4690）用的是完全同一种形式，万一是"blob 对象 URL 被限制"而不是
+    // "PCM 解码不了"，这两种失败原因对应的修复方案完全不同，混在一起测不出来。
+    var blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+    res.textContent = 'data: 测试中…';
+    probeAudio(dataUrl, function(strD, okD){
+      WAVd = okD;
+      res.innerHTML = 'data: ' + strD + '<br>blob: 测试中…';
+      probeAudio(blobUrl, function(strB, okB){
+        WAVb = okB;
+        try { URL.revokeObjectURL(blobUrl); } catch(e){}
+        var concl;
+        if(okD && okB) concl = '✅ WAV 能放，Kokoro 有戏';
+        else if(okD && !okB) concl = '◐ PCM 能放但 blob: 被限制——Kokoro 得改成 data: URI';
+        else concl = '❌ 连 WAV 都放不了，音频这条路整个断了';
+        res.innerHTML = 'data: ' + strD + '<br>blob: ' + strB + '<br>' + concl;
+        btn.disabled = false; btn.textContent = '④ 测 WAV（本地，不联网）';
+        render();
+      });
+    });
+  });
+
+  // ── ⑤ speechSynthesis 真说一句话
+  document.getElementById('spkbtn').addEventListener('click', function(){
+    var res = document.getElementById('spkres');
+    if(!window.speechSynthesis){
+      res.textContent = '✗ 这个浏览器没有 speechSynthesis';
+      SPK = 0; render();
+      return;
+    }
+    var btn = this;
+    btn.disabled = true; btn.textContent = '⑤ 测试中…';
+    var vCount = 0;
+    try { vCount = speechSynthesis.getVoices().length; } catch(e){}
+    var t0 = Date.now();
+    var st = { start:'-', end:'-', err:'-', errName:'', c100:'', c3000:'', concl:'' };
+    function paint(){
+      // 三个数字都是"第几毫秒触发的"，带上 ms 单位——否则 err14(synthesis-failed)
+      // 看起来像"错误码 14"，而用户是要把这行念给我 / 截图给我的，歧义要在源头消掉。
+      var ms = function(v){ return v === '-' ? '-' : (v + 'ms'); };
+      var lines = ['音源' + vCount + ' start' + ms(st.start) + ' end' + ms(st.end) +
+        ' err' + ms(st.err) + (st.errName ? '(' + st.errName + ')' : '')];
+      if(st.c100) lines.push(st.c100);
+      if(st.c3000) lines.push(st.c3000);
+      if(st.concl) lines.push(st.concl);
+      res.innerHTML = lines.join('<br>');
+    }
+    paint();
+    // iOS 上不先 cancel() 经常第二次朗读直接哑掉——残留的旧 utterance 会卡住队列。
+    try { speechSynthesis.cancel(); } catch(e){}
+    var started = false;
+    var u = new SpeechSynthesisUtterance('hello, this is a test');
+    u.onstart = function(){ started = true; st.start = Date.now() - t0; paint(); };
+    u.onend   = function(){ st.end = Date.now() - t0; paint(); };
+    u.onerror = function(e){ st.err = Date.now() - t0; st.errName = (e && e.error) || '?'; paint(); };
+    // 必须在 click 处理函数内部同步调用 speak()——"允许发声"这件事在很多浏览器里
+    // 是绑在用户手势当次调用栈上的，哪怕只隔一个 setTimeout/Promise.then 再调用，
+    // 都可能被当成"不是用户直接触发"而静默拒绝，所以这里绝不能包一层异步。
+    try { speechSynthesis.speak(u); } catch(e){}
+    setTimeout(function(){
+      st.c100 = '+100ms speaking' + (speechSynthesis.speaking?1:0) + ' pending' + (speechSynthesis.pending?1:0);
+      paint();
+    }, 100);
+    setTimeout(function(){
+      st.c3000 = '+3000ms speaking' + (speechSynthesis.speaking?1:0) + ' pending' + (speechSynthesis.pending?1:0);
+      paint();
+    }, 3000);
+    setTimeout(function(){
+      btn.disabled = false; btn.textContent = '⑤ 测系统朗读（会出声）';
+      if(st.errName){ st.concl = '⚠ onerror: ' + st.errName; SPK = 0; }
+      else if(started){ st.concl = '✅ 系统朗读可用（听到声音了吗？）'; SPK = 1; }
+      else { st.concl = '❌ 调用了但没有任何事件——多半是空壳 API'; SPK = 0; }
+      paint();
+      render();
+    }, 4000);
+  });
+
+  // ── ⑥ 直接打 Kokoro 接口 + 端到端播放
+  // 这是本页唯一允许发外部请求的地方——它本身就是测试目标，
+  // 「除第⑥个按钮外零外部资源」这条铁律不适用于这一处，是刻意的例外。
+  document.getElementById('kokbtn').addEventListener('click', function(){
+    var btn = this, res = document.getElementById('kokres');
+    btn.disabled = true;
+    var t0 = Date.now();
+    btn.textContent = '⑥ 请求中… 0s';
+    var iv = setInterval(function(){
+      btn.textContent = '⑥ 请求中… ' + Math.floor((Date.now() - t0) / 1000) + 's';
+    }, 500);
+    // 屏幕只有 320px 宽，这里只留一句话。放宽到 60 秒的理由写在下面 setTimeout 那儿，
+    // 那是给读代码的人看的，不该占掉手表上本来就不够用的可视高度。
+    res.textContent = '请求中…（冷启动可能要几十秒，最多等 60 秒）';
+    function finishKok(msg, ok){
+      clearInterval(iv);
+      KOK = ok ? 1 : 0;
+      res.innerHTML = msg;
+      btn.disabled = false; btn.textContent = '⑥ 测 Kokoro 服务器（要等）';
+      render();
+    }
+    var ac = new AbortController();
+    // 60 秒而不是线上那档的 3.5 秒（script.js:2829 的 Promise.race）：那个短超时是为了
+    // 不卡住阅读体验而设的，但它本身就是"手表上没声音"的怀疑对象之一。卡着 3.5 秒量，
+    // 只会量出"被自己的超时掐死了"，量不出 HF Space 冷启动真实要多久。
+    var timer = setTimeout(function(){ ac.abort(); }, 60000);
+    var url = 'https://langhua1998-kokoro.hf.space/tts-timed?text=hello&voice=af_heart&speed=1';
+    fetch(url, { signal: ac.signal }).then(function(r){
+      if(!r.ok){
+        clearTimeout(timer);
+        finishKok('❌ HTTP ' + r.status + '，耗时 ' + (Date.now()-t0) + 'ms<br>❌ 服务器这一步就没过去', 0);
+        return;
+      }
+      r.json().then(function(data){
+        clearTimeout(timer);
+        var elapsed = Date.now() - t0;
+        var b64 = (data && data.audio) || '';
+        var wlen = (data && Array.isArray(data.words)) ? data.words.length : 0;
+        var head = 'HTTP ' + r.status + ' 耗时' + elapsed + 'ms base64长度' + b64.length + ' words' + wlen;
+        if(!b64){
+          finishKok(head + '<br>❌ 服务器这一步就没过去（没有 audio 字段）', 0);
+          return;
+        }
+        res.innerHTML = head + '<br>解码播放中…';
+        // 和 script.js:4686-4690 一模一样的 base64 → Uint8Array → Blob 解码方式，
+        // 这样测出来的才是真实播放链路的答案，不是探针自己另写一套逻辑测出来的假结果。
+        var bytes;
+        try {
+          var bin = atob(b64);
+          bytes = new Uint8Array(bin.length);
+          for(var i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+        } catch(e){
+          // 这不是规格三类失败之一（那三类是 fetch reject / HTTP 非 2xx / JSON 解析失败），
+          // 是拿到合法 JSON 之后 base64 本身解不开——单独标出来，别混进"JSON 解析失败"，
+          // 不然会误导成"响应体不是合法 JSON"，其实响应体是合法的，是 audio 字段的内容坏了。
+          finishKok(head + '<br>❌ base64 解码失败: ' + (e.name || e), 0);
+          return;
+        }
+        var blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+        probeAudio(blobUrl, function(str, ok){
+          try { URL.revokeObjectURL(blobUrl); } catch(e){}
+          var concl = ok ? ('✅ Kokoro 端到端可用，耗时 ' + elapsed + ' ms')
+                         : ('◐ 音频下下来了（' + elapsed + ' ms）但放不出——问题在播放不在服务器');
+          finishKok(head + '<br>' + str + '<br>' + concl, ok);
+        });
+      }).catch(function(e){
+        clearTimeout(timer);
+        finishKok('❌ JSON 解析失败: ' + (e.name || e) + '，耗时 ' + (Date.now()-t0) + 'ms', 0);
+      });
+    }).catch(function(e){
+      clearTimeout(timer);
+      // fetch 的 reject 既覆盖真正的网络/CORS 失败，也覆盖 AbortController 超时——
+      // 超时后 e.name 是 'AbortError'，和真正的网络失败用同一个错误名字段带出去即可，
+      // 报告里能一眼看出是等够 60 秒被自己掐的还是根本连不上。
+      finishKok('❌ 网络/CORS 失败: ' + ((e && e.name) || 'fail') + '，耗时 ' + (Date.now()-t0) + 'ms', 0);
+    });
+  });
+
   // ── 一行汇总，方便你念给我或者截图
   function render(){
     sum.textContent = 'W' + W + ' H' + H + ' DPR' + DPR +
@@ -198,7 +453,8 @@
                       ' TAP' + (TAP === '✓' ? 1 : 0) +
                       ' CROWN' + (CROWN === '✓' ? 1 : 0) +
                       ' MOVE' + (MOVE === '✓' ? 1 : 0) +
-                      '  [表冠 ' + CT + ']';
+                      '  [表冠 ' + CT + ']' +
+                      '  WAVd' + WAVd + ' WAVb' + WAVb + ' SPK' + SPK + ' KOK' + KOK;
   }
   render();
 
