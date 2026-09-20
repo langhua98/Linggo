@@ -3165,9 +3165,38 @@ html.watch .fc-front-actions .fc-icon-btn{
   box-shadow:none;
 }
 
-/* #fc-exit 沿用上一批的透明热区，这里不用再提；#fc-undo 本来只在有得撤销时才显示，
-   黑底上要重新给一套看得清的配色，不然深灰字在纯黑上等于消失 */
-html.watch #fc-undo{
-  background:#1C1C1E;
-  color:#fff;
+/* 用户要它看得见。之前做成隐形热区是为了让顶部那条在视觉上彻底消失，
+   现在撤销键去掉了、顶部只剩这一个东西，露出来反而更清楚："能退出"这件事
+   不该靠记忆。黑底上用深灰圆底 + 浅色箭头，别用 --bg / --text-2 那套变量，
+   那是浅色主题的值，在纯黑上会糊成一片。 */
+html.watch #fc-exit{
+  opacity:1;
+  width:34px; height:34px; border-radius:50%;
+  background:#1C1C1E; color:#E5E5EA;
+  font-size:18px;
 }
+
+/* 撤销在表上是个伪需求：屏幕就这么大，评错了下一轮还会再遇到，
+   为它常占一个角不划算。它由 updateFcUndoBtn() 把 display 设成 ''（撤掉行内样式），
+   所以这条普通规则就能盖住，不用 !important。 */
+html.watch #fc-undo{ display:none; }
+
+/* nowrap 是自适应的前提：允许换行的话长单词会折成两行，scrollWidth 永远
+   不大于 clientWidth，JS 就量不出"超了"，缩放逻辑直接失效。
+   align-self:stretch 同样是前提，容易漏掉：.fc-front-body 是
+   flex-direction:column + align-items:center，横轴（宽度）默认按内容
+   shrink-to-fit——不撑满容器的话，.fc-word 自己的盒子会跟着长单词一起
+   变宽，scrollWidth 和 clientWidth 永远相等（真实测过：320px 屏上 responsibilities
+   量出 scrollWidth===clientWidth===398，字号却不会跟着缩），JS 那头的比较
+   等于白量。stretch 让盒子宽度锁定在容器可用宽度上，nowrap 的文字才会真的
+   撑出这个盒子，scrollWidth 才会大于 clientWidth。max-width:100% 防止
+   stretch 把盒子撑到超过父容器本身（理论上 stretch 不会超，这里是双保险）。 */
+html.watch .fc-word{
+  font-size:64px;          /* 起始值；实际由 srs.js 的 _fitFcWord() 量着往下缩 */
+  white-space:nowrap;
+  line-height:1.1;
+  align-self:stretch;
+  max-width:100%;
+}
+html.watch .fc-ph-front{ font-size:18px; }
+html.watch #fc-meaning-front{ font-size:22px; }

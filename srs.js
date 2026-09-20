@@ -81,9 +81,47 @@ function _syncWatchClass(){
 }
 function _isWatch(){ return document.documentElement.classList.contains('watch'); }
 _syncWatchClass();
-// addEventListener 在老 Safari 的 MediaQueryList 上可能没有，退回 addListener
-if(_WATCH_MQ.addEventListener) _WATCH_MQ.addEventListener('change', _syncWatchClass);
-else if(_WATCH_MQ.addListener) _WATCH_MQ.addListener(_syncWatchClass);
+
+// 单词是外部词表数据，长度差得很远（as ↔ responsibility）。CSS 的 clamp() 只
+// 看视口宽度、不看单词多长，320px 的表上两者会拿到同一个字号，长的那个必然顶出去。
+// 所以只能量着缩：先给最大字号，超了就往下调，直到一行放得下。
+// 手机上不跑——手机宽度足够，基础样式的 clamp() 本来就够用，跑它只是白白强制回流；
+// 但如果用户是从手表尺寸旋转/缩放回大屏的，上一次量出来的行内 fontSize 会残留在
+// 元素上盖掉基础样式的 clamp()，所以非手表时不能直接 return，得先把行内值清掉。
+let _fitRetries = 0;   // 见下方"还没布局"那段：限制 rAF 重试次数，避免空转
+function _fitFcWord(){
+  const el = document.getElementById('fc-word');
+  if(!el) return;
+  if(!_isWatch()){ el.style.fontSize = ''; return; }
+  if(!el.textContent) return;
+  // 还没布局（此刻元素或某个祖先不可见）时 clientWidth 是 0，下面的循环判据
+  // 0 > 0 永远为假 —— 字号会卡死在 MAX 不缩，而且不报任何错。当前调用顺序是
+  // 安全的（卡片先可见、再渲染单词），但那是隐含依赖，谁动一下 showFcCard 就会
+  // 悄悄失效。所以宁可下一帧重来，也不要量一个 0 出来当答案。
+  // 重试有次数上限：元素要是一直不可见（比如这轮根本没进闪卡），
+  // 无上限的 rAF 会空转到天荒地老。
+  if(!el.clientWidth){
+    if(_fitRetries < 10){ _fitRetries++; requestAnimationFrame(_fitFcWord); }
+    return;
+  }
+  _fitRetries = 0;
+  const MAX = 64, MIN = 26;
+  let size = MAX;
+  el.style.fontSize = size + 'px';
+  // 逐级下调而不是一次算出来：字体不是等宽的，按字符数估会估歪，
+  // 量一次回流换一个准确答案更划算（一张卡只跑一次，最多 19 轮）。
+  while(size > MIN && el.scrollWidth > el.clientWidth){
+    size -= 2;
+    el.style.fontSize = size + 'px';
+  }
+}
+
+// addEventListener 在老 Safari 的 MediaQueryList 上可能没有，退回 addListener。
+// 横竖屏切换 / 视口变化都可能让手表判定翻转，_fitFcWord 必须排在 _syncWatchClass
+// 之后调用——类先更新，_isWatch() 才是对的，否则量的时候用的还是切换前的状态。
+function _onWatchMQChange(){ _syncWatchClass(); _fitFcWord(); }
+if(_WATCH_MQ.addEventListener) _WATCH_MQ.addEventListener('change', _onWatchMQChange);
+else if(_WATCH_MQ.addListener) _WATCH_MQ.addListener(_onWatchMQChange);
 
 // ── FSRS 调度（ts-fsrs，见 vendor/）──
 // 记录里额外存一份 fsrs 卡片状态（含 stability/difficulty），
@@ -492,6 +530,7 @@ async function showFcCard(instant){
   // 同样不碰 textContent。
   const _sp = v.root ? splitRoot(v.word, v.root) : null;
   _fcRenderWord(document.getElementById('fc-word'), v.word, _sp ? {at:_sp.at, len:_sp.len} : null);
+  _fitFcWord();   // 手表上按新单词的实际宽度重新量字号；手机上会清掉上一张卡残留的行内 fontSize
   document.getElementById('fc-ph-front').textContent = v.ph || '';
   document.getElementById('fc-badge-row').innerHTML  = '';
 
