@@ -3140,9 +3140,13 @@ html.watch .fc-ph-front{ color:#8E8E93; }
 
 /* 释义是外部词典数据，长的能有几十个字（.fc-back-body 实测 scrollHeight 396
    vs clientHeight 216 就是同一类问题），不截断会把单词顶出这块 382px 高的屏幕。
-   -webkit-box 会覆盖 display:block，两条别互相打脸，直接写 -webkit-box 即可。 */
+   -webkit-box 会覆盖 display:block，两条别互相打脸，直接写 -webkit-box 即可。
+   行数从 3 收到 2：底部留白加厚（.fc-area 的 padding-bottom）多吃掉的高度得从
+   这里还——3 行 22px 释义约占 89px，2 行约省 30px，绝大多数 CET4/6 词条两行
+   够用；超长的那几条截得更狠，但截断只是看不全，还能点开发音听、下一轮再遇到，
+   按钮点不到这张卡才是真卡死。 */
 html.watch #fc-meaning-front{
-  display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; -webkit-line-clamp:3;
+  display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden; -webkit-line-clamp:2;
   color:#E5E5EA;
   font-size:20px; line-height:1.35; text-align:center;
   margin-top:14px;
@@ -3165,15 +3169,46 @@ html.watch .fc-front-actions .fc-icon-btn{
   box-shadow:none;
 }
 
+/* 空间不够时必须有确定的让步顺序，否则被牺牲的是最不该牺牲的东西。
+   .fc-front-actions 基础样式 flex-basis 是 auto、flex-shrink 是默认的 1，
+   而同层的 .fc-front-body 是 flex:1（flex-basis:0）——负空间按 flex-basis 分摊，
+   basis:0 的一份恒分不到负空间，短板全部压到 .fc-front-actions 头上；
+   它自己又是 align-items:flex-end 的行内 flex，一旦被压小，超出的那截会顺着
+   .fc-face 的 overflow:hidden 从下沿直接被裁掉——真机上看到的按钮缺角就是这个。
+   按钮是唯一的操作入口，必须完整；文字少看一行还能认，按钮点不到就废了。
+   下面这行 padding-bottom 顺带把 3.3 要求的留白也并进同一条规则，避免同一个
+   选择器写两条互相覆盖。 */
+html.watch .fc-front-actions{ flex-shrink:0; padding-bottom:14px; }
+/* flex 子项的自动最小高度（min-height:auto）默认取内容尺寸，会让它"不肯缩到
+   内容以下"；上面既然把让步的责任全压给了 .fc-front-body，这里就必须配合
+   min-height:0 把这道地板拆掉，它才真的让得出空间。overflow:hidden 是必需的
+   搭档：min-height:auto 只在 overflow:visible 时才生效，改成 hidden 本身就会让
+   自动最小高度按规范退化为 0；同时它保证让不出足够空间时是自己内部裁切
+   （看不全没关系，能点到按钮更重要），而不是把 .fc-face 撑破。 */
+html.watch .fc-front-body{ min-height:0; overflow:hidden; }
+/* 真机上 env(safe-area-inset-bottom) 在这块表上量出来是 0（圆角屏的实际可见
+   高度比 layout viewport 报告的矮，但这个差额不体现在 safe-area inset 里），
+   所以兜底值必须自己够用，不能指望 env() 把它顶起来——调大这一个数字本身
+   解决不了根因（可见高度到底矮多少我们并不知道，猜一个数只是换个地方再赌
+   一次），真正兜底的是上面两条让步规则；这里的数值只是在那之上再加一层
+   保险。max() 留着是因为别的手表/系统如果 inset 确实非 0，应该取更大的那个。
+
+   为什么是 34 而不是 24：用户报"按钮被隐藏了一点"时，按钮下沿量出来在 360
+   （离报告的 382 还差 22px），所以真机实际可见底边落在 344~360 之间。取 24 时
+   下沿到 344，万一真值是 350 就只剩 6px 余量，等于贴着边过；取 34 下沿提到
+   约 334，留出十几像素的冗余。正面文字区在 382 下本来有约 37px 富余，
+   多吃这 10px 还剩 27px，不会把释义压得更狠。 */
+html.watch .fc-area{ padding-bottom:max(34px, env(safe-area-inset-bottom)); }
+
 /* 用户要它看得见。之前做成隐形热区是为了让顶部那条在视觉上彻底消失，
    现在撤销键去掉了、顶部只剩这一个东西，露出来反而更清楚："能退出"这件事
    不该靠记忆。黑底上用深灰圆底 + 浅色箭头，别用 --bg / --text-2 那套变量，
    那是浅色主题的值，在纯黑上会糊成一片。 */
 html.watch #fc-exit{
   opacity:1;
-  width:34px; height:34px; border-radius:50%;
+  width:44px; height:44px; border-radius:50%;   /* 44px 是 HIG 的最小可点尺寸，戴着表晃动时更需要 */
   background:#1C1C1E; color:#E5E5EA;
-  font-size:18px;
+  font-size:20px;
 }
 
 /* 撤销在表上是个伪需求：屏幕就这么大，评错了下一轮还会再遇到，
