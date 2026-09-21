@@ -3135,6 +3135,19 @@ html.watch .fc-face{
 }
 html.watch .fc-stack{ display:none; }   /* 那两张虚影本来是营造"卡片感"的，黑底不需要 */
 
+/* 那块表把 env(safe-area-inset-top) 报成约 60px，可这 60px 并不对应任何被
+   遮挡的东西——更早的 watch.html 探针页顶部内边距只有 10px，标题在真机上
+   清清楚楚可见，说明视口顶部本来就是可见区。照单全收等于白丢 60px 高度，
+   而这块屏总共才 382px，代价是下面的释义被裁掉半行。
+   所以给 inset 封一个顶：真有遮挡时最多让 10px，没有就按 6px 走。
+   不直接写死 6px 是因为别的设备可能真有遮挡，留一点余地。
+   写在这里（html.watch 一节，文件更靠后）能盖住 @media (max-height:420px)
+   块里那条简写 padding 的 top 分量；那条是简写会一次设四个方向，这里只设
+   padding-top，左右下沿用简写的值不受影响。 */
+html.watch .fc-head{
+  padding-top: max(6px, min(env(safe-area-inset-top), 10px));
+}
+
 html.watch .fc-word{ color:#fff; }
 html.watch .fc-ph-front{ color:#8E8E93; }
 
@@ -3150,6 +3163,16 @@ html.watch #fc-meaning-front{
   color:#E5E5EA;
   font-size:20px; line-height:1.35; text-align:center;
   margin-top:14px;
+  /* .fc-front-body 是 flex 列容器，本元素又是 overflow:hidden（上面的截断
+     写法本身就需要）——这两条一叠加，flex 规范里"自动最小高度"对
+     overflow 非 visible 的项目会退化成 0，于是空间不够时 flex 算法会先悄悄把
+     这个盒子压扁到剩余空间为止，而不是让 .fc-front-body 真正溢出。真机上这就是
+     "释义只剩上半截"——不是内容按 2 行裁的，是盒子本身先被压矮了一截。
+     flex-shrink:0 让它不参与这种压缩：宁可让 .fc-front-body 真的溢出（那正是
+     srs.js 的 _fitFcWord() 第二道循环用来判断"该给单词让步了"的信号），
+     也不要在这里悄悄吃掉那截差值——没了这条，那个判据会因为找不到溢出而永远
+     不触发，等于白写。 */
+  flex-shrink:0;
 }
 
 /* 词性徽章、同族对照条、词根链：用户只要"单词+音标+释义"这三样，
@@ -3206,7 +3229,10 @@ html.watch .fc-area{ padding-bottom:max(34px, env(safe-area-inset-bottom)); }
    那是浅色主题的值，在纯黑上会糊成一片。 */
 html.watch #fc-exit{
   opacity:1;
-  width:44px; height:44px; border-radius:50%;   /* 44px 是 HIG 的最小可点尺寸，戴着表晃动时更需要 */
+  /* 改圆为长方形：横着比竖着划算——点击面积从 44×44=1936px² 变成
+     60×36=2160px²，反而更好点中；矮下去的 8px 还给下面的正文，
+     圆角 10px 与底部两个大按钮（border-radius:16px）呼应，不做成直角。 */
+  width:60px; height:36px; border-radius:10px;
   background:#1C1C1E; color:#E5E5EA;
   font-size:20px;
 }

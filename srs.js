@@ -114,6 +114,28 @@ function _fitFcWord(){
     size -= 2;
     el.style.fontSize = size + 'px';
   }
+  // 第二道：竖着也要放得下。上面那道只解决"一行排不开"，解决不了"整列太高"——
+  // 单词一大，下面的释义能分到的高度就变少，真机上表现为中文释义只剩上半截。
+  // 释义是这张卡的答案，不能为了单词大而牺牲。
+  // 判据必须用父容器 .fc-front-body 的 scrollHeight/clientHeight，不能用单词
+  // 自己的——单词的盒子高度恒等于它的行高（line-height 撑出来的），永远量不出
+  // "整列超了"。
+  // 这道判据能生效，前提是 style.css 里 html.watch #fc-meaning-front 加了
+  // flex-shrink:0——.fc-front-body 是 flex 列容器，#fc-meaning-front 自己又是
+  // overflow:hidden（配合 -webkit-line-clamp 截断），这让它在 flex 的"自动最小
+  // 高度"规则下被算成 0：默认情况下负空间不够分时，flex 算法会先在布局阶段悄悄把
+  // 它的盒子压缩到腾出的那点高度为止，.fc-front-body 自己的 scrollHeight 因此
+  // 恒等于 clientHeight（真实测过：不加这条 flex-shrink:0，80 字假释义压测下
+  // 两者无论多挤都相等，下面这个循环判据永远为假，是量不出结果的死代码）。
+  // 加上 flex-shrink:0 后，压缩就不再由 #fc-meaning-front 的盒子自己悄悄吃掉，
+  // 而是真的表现为 .fc-front-body 的溢出——判据才有意义。
+  const body = el.closest('.fc-front-body');
+  if(body){
+    while(size > MIN && body.scrollHeight > body.clientHeight){
+      size -= 2;
+      el.style.fontSize = size + 'px';
+    }
+  }
 }
 
 // addEventListener 在老 Safari 的 MediaQueryList 上可能没有，退回 addListener。
