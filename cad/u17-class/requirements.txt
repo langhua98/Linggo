@@ -2,3 +2,4 @@ ezdxf
 matplotlib
 shapely
 pymupdf
+cadquery
