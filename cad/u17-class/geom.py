@@ -163,7 +163,7 @@ def flatten_bulge_ring(verts, chord=0.1):
                 continue
             r = chordlen / 2 / math.sin(sweep / 2)
             mx, my = (x + x2) / 2, (y + y2) / 2
-            h = math.sqrt(max(r * r - (chordlen / 2) ** 2, 0.0))
+            h = r * math.cos(sweep / 2)   # < 0 for arcs over 180 deg: centre on the bulge side
             ux, uy = (x2 - x) / chordlen, (y2 - y) / chordlen
             nx, ny = -uy, ux
             sign = 1 if b > 0 else -1
@@ -283,3 +283,121 @@ BOOM_CB = vsub(BOOM_K, vscale(BOOM_KNEE_U, 115.0 + 24.0))   # belly knee circle 
 BOOM_BEND_INNER_R = 24.0
 BOOM_BEND_ANGLE_DEG = 50.0
 BOOM_K_FACTOR = 0.4
+
+
+# ===========================================================================
+# bulge-path utilities (sub-paths of outlines, analytic lug outlines)
+# ===========================================================================
+
+def arc_of(a, b, bulge):
+    """Centre, radius, start angle and signed sweep of the arc a->b with bulge."""
+    sweep = 4 * math.atan(bulge)
+    c = vlen(vsub(b, a))
+    r = c / 2 / math.sin(abs(sweep) / 2)
+    m = vmid(a, b)
+    u = vunit(vsub(b, a))
+    n = (-u[1], u[0])
+    h = r * math.cos(abs(sweep) / 2) * (1 if bulge > 0 else -1)
+    cen = vadd(m, vscale(n, h))
+    a0 = math.atan2(a[1] - cen[1], a[0] - cen[0])
+    return cen, r, a0, sweep
+
+
+def _locate(verts, p, tol=1e-4):
+    n = len(verts)
+    for i in range(n):
+        a = verts[i][:2]
+        b = verts[(i + 1) % n][:2]
+        bl = verts[i][2]
+        if abs(bl) < 1e-12:
+            L = vlen(vsub(b, a))
+            if L < 1e-12:
+                continue
+            t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / L ** 2
+            q = vadd(a, vscale(vsub(b, a), t))
+            if -1e-9 <= t <= 1 + 1e-9 and vlen(vsub(q, p)) < tol:
+                return i, t
+        else:
+            cen, r, a0, sw = arc_of(a, b, bl)
+            if abs(vlen(vsub(p, cen)) - r) > tol:
+                continue
+            ap = math.atan2(p[1] - cen[1], p[0] - cen[0])
+            d = (ap - a0) % (2 * math.pi) if sw > 0 else (a0 - ap) % (2 * math.pi)
+            if d <= abs(sw) + 1e-9:
+                return i, d / abs(sw)
+    raise ValueError(f"point {p} not on outline")
+
+
+def sub_path(verts, P, Q):
+    """Open bulge path along a closed outline from P to Q (traversal order).
+    Returns [(x, y, bulge), ...] ending with (Q, 0)."""
+    n = len(verts)
+    iP, tP = _locate(verts, P)
+    iQ, tQ = _locate(verts, Q)
+
+    def part_bulge(i, t0, t1):
+        bl = verts[i][2]
+        if abs(bl) < 1e-12:
+            return 0.0
+        sw = 4 * math.atan(bl)
+        return math.tan(sw * (t1 - t0) / 4)
+
+    out = []
+    if iP == iQ and tP <= tQ:
+        out.append((P[0], P[1], part_bulge(iP, tP, tQ)))
+    else:
+        out.append((P[0], P[1], part_bulge(iP, tP, 1.0)))
+        i = (iP + 1) % n
+        while i != iQ:
+            out.append(verts[i])
+            i = (i + 1) % n
+        out.append((verts[iQ][0], verts[iQ][1], part_bulge(iQ, 0.0, tQ)))
+    out.append((Q[0], Q[1], 0.0))
+    return [v for k, v in enumerate(out) if k == 0 or vlen(vsub(v[:2], out[k - 1][:2])) > 1e-6]
+
+
+def path_length(path):
+    L = 0.0
+    for k in range(len(path) - 1):
+        a, b, bl = path[k][:2], path[k + 1][:2], path[k][2]
+        if abs(bl) < 1e-12:
+            L += vlen(vsub(b, a))
+        else:
+            _, r, _, sw = arc_of(a, b, bl)
+            L += r * abs(sw)
+    return L
+
+
+def reverse_path(path):
+    pts = [v[:2] for v in path][::-1]
+    bl = [v[2] for v in path[:-1]][::-1]
+    return [(p[0], p[1], -b) for p, b in zip(pts, bl)] + [(pts[-1][0], pts[-1][1], 0.0)]
+
+
+def _tangent_pts(p, c, r):
+    d = vlen(vsub(p, c))
+    phi = math.atan2(p[1] - c[1], p[0] - c[0])
+    al = math.acos(r / d)
+    return [vadd(c, (r * math.cos(phi + s * al), r * math.sin(phi + s * al))) for s in (1, -1)]
+
+
+def _cross(u, v):
+    return u[0] * v[1] - u[1] * v[0]
+
+
+def lug_outline(parent_verts, c, r, P, Q):
+    """Exact (line+arc) outline of a lug standing on the parent plate edge:
+    convex hull of circle (c, r) and base points P, Q, whose base follows the
+    parent outline between P and Q.  CCW bulge ring."""
+    s1, s2 = sub_path(parent_verts, P, Q), sub_path(parent_verts, Q, P)
+    sub = s1 if path_length(s1) < path_length(s2) else s2
+    first, second = sub[0][:2], sub[-1][:2]
+    base = reverse_path(sub)            # second -> first, lug on the left
+    t1 = [t for t in _tangent_pts(first, c, r) if _cross(vsub(t, first), vsub(c, first)) > 0][0]
+    t2 = [t for t in _tangent_pts(second, c, r) if _cross(vsub(second, t), vsub(c, t)) > 0][0]
+    a1 = math.atan2(t1[1] - c[1], t1[0] - c[0])
+    a2 = math.atan2(t2[1] - c[1], t2[0] - c[0])
+    sweep = (a2 - a1) % (2 * math.pi)
+    ring = base[:-1] + [(first[0], first[1], 0.0), (t1[0], t1[1], math.tan(sweep / 4)),
+                        (t2[0], t2[1], 0.0)]
+    return ring, dict(t1=t1, t2=t2, first=first, second=second)

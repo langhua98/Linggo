@@ -149,19 +149,14 @@ def build_arm_parts():
               placement=(ang_BA, seg_BA[0][0], seg_BA[0][1]))
     parts.append(a4)
 
-    # ---- A5 bucket-cylinder lug: hull(circle C R40, pts on D-B top edge at x=90,220) minus arm --
+    # ---- A5 bucket-cylinder lug: hull(circle C R40, pts on D-B top edge at x=90,220),
+    #      base following the arm top edge -- exact lines + arc
     p90 = point_at_x_on_segments([seg_DB], 90.0)
     p220 = point_at_x_on_segments([seg_DB], 220.0)
-    hull5 = unary_union([Point(C).buffer(40, resolution=256),
-                          Point(p90).buffer(0.01), Point(p220).buffer(0.01)]).convex_hull
-    lug_poly = hull5.difference(poly_a1)
-    if lug_poly.geom_type == "MultiPolygon":
-        lug_poly = max(lug_poly.geoms, key=lambda g: g.area)
-    ring = list(lug_poly.exterior.coords)[:-1]
-    verts_a5 = [(x, y, 0.0) for (x, y) in ring]
+    verts_a5, _ = G.lug_outline(verts_a1, C, 40.0, p90, p220)
     a5 = Part("A5", "斗缸耳板", "cyl_lug", 12, 2, verts_a5,
               holes=[(C[0], C[1], 28)],
-              bom_note="焊后线镗至Ø30H9；轮廓弧线部分按≤0.05mm弦高折线逼近；两耳内间距62",
+              bom_note="焊后线镗至Ø30H9；两耳内间距62",
               group="arm")
     parts.append(a5)
 
@@ -172,7 +167,7 @@ def build_arm_parts():
               bom_note="贴焊于两侧侧板外侧，随侧板一起镗孔", group="arm")
     parts.append(a6)
 
-    kin_info = dict(seg_AD=seg_AD, seg_DB=seg_DB, seg_BA=seg_BA, poly_a1=poly_a1,
+    kin_info = dict(verts_a1=verts_a1, seg_AD=seg_AD, seg_DB=seg_DB, seg_BA=seg_BA, poly_a1=poly_a1,
                      p90=p90, p220=p220, p_cut=p_cut, len_A3=len_A3)
     return parts, kin_info
 
@@ -313,17 +308,25 @@ def build_boom_parts():
     len_top1 = _seg_len(seg_A_Ct)   # A tangent point -> Ct tangent point (near A)
     len_top2 = _seg_len(seg_Ct_O)   # Ct tangent point -> O tangent point (near O)
     neutral_r = G.BOOM_BEND_INNER_R + G.BOOM_K_FACTOR * 12.0
-    arc_top = math.radians(G.BOOM_BEND_ANGLE_DEG) * neutral_r
+
+    def _dir(seg):
+        return math.degrees(math.atan2(seg[1][1] - seg[0][1], seg[1][0] - seg[0][0]))
+
+    # Actual bend angles follow from the tangent lines (the section tapers toward
+    # both ends, so they differ from the 50 deg centreline knee angle).
+    bend_top_deg = (_dir(seg_Ct_O) - _dir(seg_A_Ct)) % 360.0
+    bend_bot_deg = (_dir(seg_O_Cb) - _dir(seg_Cb_A)) % 360.0
+    arc_top = math.radians(bend_top_deg) * neutral_r
     Ldev_top = len_top1 + arc_top + len_top2
     bend_top_x1 = len_top1
     bend_top_x2 = len_top1 + arc_top
     G.log(f"B2 top plate developed length: {len_top1:.2f}(A->Ct) + {arc_top:.2f}(bend,R{neutral_r:.2f} @"
-          f"{G.BOOM_BEND_ANGLE_DEG}deg) + {len_top2:.2f}(Ct->O) = {Ldev_top:.2f} mm")
+          f"{bend_top_deg:.1f}deg) + {len_top2:.2f}(Ct->O) = {Ldev_top:.2f} mm")
     b2 = Part("B2", "动臂顶板", "boom_top_plate", 12, 1, rect_verts(Ldev_top, 97),
               mark_lines=[((bend_top_x1, 0.0), (bend_top_x1, 97.0)),
                           ((bend_top_x2, 0.0), (bend_top_x2, 97.0))],
               mark_notes=[(Ldev_top / 2.0, 105.0,
-                            f"折弯 {G.BOOM_BEND_ANGLE_DEG:.0f}°, 内R{G.BOOM_BEND_INNER_R:.0f}, K=0.4")],
+                            f"折弯 {bend_top_deg:.1f}°, 内R{G.BOOM_BEND_INNER_R:.0f}, K=0.4")],
               bom_note=f"整板一次折弯成型于膝部；展开长度 {Ldev_top:.1f}；一件覆盖动臂全长顶面",
               group="boom")
     parts.append(b2)
@@ -331,18 +334,18 @@ def build_boom_parts():
     # ---- B3 bottom (belly) plate: developed blank, bend at Cb knee ---------
     len_bot1 = _seg_len(seg_O_Cb)    # O tangent point -> Cb tangent point (near O)
     len_bot2 = _seg_len(seg_Cb_A)    # Cb tangent point -> A tangent point (near A)
-    arc_bot = arc_top  # same t=12, same inner R24, same K-factor, same bend angle
+    arc_bot = math.radians(bend_bot_deg) * neutral_r
     Ldev_bot = len_bot1 + arc_bot + len_bot2
     bend_bot_x1 = len_bot1
     bend_bot_x2 = len_bot1 + arc_bot
     G.log(f"B3 bottom plate developed length: {len_bot1:.2f}(O->Cb) + {arc_bot:.2f}(bend,R{neutral_r:.2f} @"
-          f"{G.BOOM_BEND_ANGLE_DEG}deg) + {len_bot2:.2f}(Cb->A) = {Ldev_bot:.2f} mm")
+          f"{bend_bot_deg:.1f}deg) + {len_bot2:.2f}(Cb->A) = {Ldev_bot:.2f} mm")
     b3 = Part("B3", "动臂底板(腹板)", "boom_bottom_plate", 12, 1, rect_verts(Ldev_bot, 97),
               mark_lines=[((bend_bot_x1, 0.0), (bend_bot_x1, 97.0)),
                           ((bend_bot_x2, 0.0), (bend_bot_x2, 97.0))],
               mark_notes=[(Ldev_bot / 2.0, 105.0,
-                            f"折弯 {G.BOOM_BEND_ANGLE_DEG:.0f}°, 内R{G.BOOM_BEND_INNER_R:.0f}, K=0.4"
-                            "（凹面为板材内侧/弯曲内圆角面）")],
+                            f"折弯 {bend_bot_deg:.1f}°, 内R{G.BOOM_BEND_INNER_R:.0f}, K=0.4"
+                            "（外表面为弯曲内侧）")],
               bom_note=f"整板一次折弯成型于膝部；展开长度 {Ldev_bot:.1f}；一件覆盖动臂全长底面(腹板)",
               group="boom")
     parts.append(b3)
@@ -351,16 +354,10 @@ def build_boom_parts():
     belly_segments = [seg_O_Cb, seg_Cb_A]
     pM1 = point_at_x_on_segments(belly_segments, M[0] - 80.0)
     pM2 = point_at_x_on_segments(belly_segments, M[0] + 80.0)
-    hullM = unary_union([Point(M).buffer(45, resolution=256),
-                          Point(pM1).buffer(0.01), Point(pM2).buffer(0.01)]).convex_hull
-    lugM_poly = hullM.difference(poly_b1)
-    if lugM_poly.geom_type == "MultiPolygon":
-        lugM_poly = max(lugM_poly.geoms, key=lambda g: g.area)
-    ringM = list(lugM_poly.exterior.coords)[:-1]
-    verts_b4 = [(x, y, 0.0) for (x, y) in ringM]
+    verts_b4, _ = G.lug_outline(verts_b1, M, 45.0, pM1, pM2)
     b4 = Part("B4", "动臂缸耳板", "boom_cyl_lug", 16, 2, verts_b4,
               holes=[(M[0], M[1], 33)],
-              bom_note="焊后与孔一起线镗至Ø35H9；两耳内间距72(外104<117)；轮廓弧线按≤0.05mm弦高折线逼近",
+              bom_note="焊后与孔一起线镗至Ø35H9；两耳内间距72(外104<117)",
               group="boom")
     parts.append(b4)
 
@@ -368,16 +365,10 @@ def build_boom_parts():
     top_segments = [seg_Ct_O, seg_A_Ct]
     pN1 = point_at_x_on_segments(top_segments, N[0] - 80.0)
     pN2 = point_at_x_on_segments(top_segments, N[0] + 80.0)
-    hullN = unary_union([Point(N).buffer(45, resolution=256),
-                          Point(pN1).buffer(0.01), Point(pN2).buffer(0.01)]).convex_hull
-    lugN_poly = hullN.difference(poly_b1)
-    if lugN_poly.geom_type == "MultiPolygon":
-        lugN_poly = max(lugN_poly.geoms, key=lambda g: g.area)
-    ringN = list(lugN_poly.exterior.coords)[:-1]
-    verts_b5 = [(x, y, 0.0) for (x, y) in ringN]
+    verts_b5, _ = G.lug_outline(verts_b1, N, 45.0, pN1, pN2)
     b5 = Part("B5", "臂缸耳板", "arm_cyl_lug", 16, 2, verts_b5,
               holes=[(N[0], N[1], 33)],
-              bom_note="焊后与孔一起线镗至Ø35H9；两耳内间距72；轮廓弧线按≤0.05mm弦高折线逼近",
+              bom_note="焊后与孔一起线镗至Ø35H9；两耳内间距72",
               group="boom")
     parts.append(b5)
 
@@ -389,6 +380,6 @@ def build_boom_parts():
               group="boom")
     parts.append(b6)
 
-    kin_info = dict(seg_O_Cb=seg_O_Cb, seg_Cb_A=seg_Cb_A, seg_A_Ct=seg_A_Ct, seg_Ct_O=seg_Ct_O,
-                     poly_b1=poly_b1, pM1=pM1, pM2=pM2, pN1=pN1, pN2=pN2)
+    kin_info = dict(verts_b1=verts_b1, seg_O_Cb=seg_O_Cb, seg_Cb_A=seg_Cb_A, seg_A_Ct=seg_A_Ct, seg_Ct_O=seg_Ct_O,
+                     poly_b1=poly_b1, bend_top_deg=bend_top_deg, bend_bot_deg=bend_bot_deg, pM1=pM1, pM2=pM2, pN1=pN1, pN2=pN2)
     return parts, kin_info

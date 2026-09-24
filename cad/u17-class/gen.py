@@ -22,7 +22,7 @@ import geom as G
 import parts as P
 import kinematics as K
 import model3d as M3
-import sheets as S
+import sheet_specs as SS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DXFDIR = os.path.join(HERE, "dxf")
@@ -338,6 +338,7 @@ def write_bom(all_parts, arm_report, machine_report, env_report, a3check, struck
     lines.append("- 斗缸行程由 v1 的 320 改为 v2 §2 明确写的 300（560~860mm窗口不变），已按 v2 实现并在此说明。\n")
 
     lines.append("## 明细文件\n")
+    lines.append("- `drawings/01_bucket.pdf`、`02_arm.pdf`、`03_boom.pdf`：三张焊接件图纸（左侧三视图 + 右侧按代号排版的钣金展开料，含全部尺寸、坐标表、明细栏），同名 .dxf 为可编辑版")
     lines.append("- `dxf/*.dxf`：各零件1:1激光切割图")
     lines.append("- `step/*.step`：三个总成的3D实体模型")
     lines.append("- `drawings/0{1,2,3}_*.dxf/.pdf`：三张GB格式装配图纸（三视图+展开件+明细栏+技术要求）")
@@ -432,30 +433,11 @@ def main():
     # ---- drawing sheets -----------------------------------------------------
     G.log("\n--- drawing sheets ---")
 
-    bucket_pins = {"D": G.BKT_D, "G": G.BKT_G, "T": G.BKT_T, "P1": G.BKT_P1, "P2": G.BKT_P2,
-                   "B1": G.BKT_B1, "B2": G.BKT_B2}
-    bucket_pairs = [("D", "G", None), ("D", "P2", None), ("D", "B1", None), ("D", "T", None)]
-    r1 = S.build_sheet(os.path.join(DRAWDIR, "01_bucket"), 1, 3, "U17C-01", "铲斗总成 (K1-K6)",
-                        bkt_solid, bucket_parts, bucket_pins, bucket_pairs,
-                        extra_notes=["刃板前缘按30°坡口开设；底弧板卷弧至中性层R177/内R174。"])
-
-    arm_pins = {"A": G.ARM_A, "D": G.ARM_D, "B": G.ARM_B, "C": G.ARM_C, "E": G.ARM_E}
-    arm_pairs = [("A", "D", None), ("A", "E", None), ("A", "B", None), ("A", "C", None), ("D", "E", None)]
-    link_parts_for_sheet = link_parts
-    r2 = S.build_sheet(os.path.join(DRAWDIR, "02_arm"), 2, 3, "U17C-02", "斗杆总成 + 连杆 (A1-A6,L1,L2)",
-                        arm_solid, arm_parts + link_parts_for_sheet, arm_pins, arm_pairs,
-                        extra_notes=[f"D-G(斗杆-铲斗界面)140mm由铲斗图给出；"
-                                     f"臂缸杆窗口(D->B切线x<-120)核查见BOM运动学章节。"])
-
-    boom_pins = {"O": G.BOOM_O, "K": G.BOOM_K, "A": G.BOOM_A, "M": G.BOOM_M, "N": G.BOOM_N}
-    boom_pairs = [("O", "K", None), ("K", "A", None), ("O", "A", None), ("O", "M", None), ("O", "N", None)]
-    r3 = S.build_sheet(os.path.join(DRAWDIR, "03_boom"), 3, 3, "U17C-03", "动臂总成 (B1-B6)",
-                        boom_solid, boom_parts, boom_pins, boom_pairs,
-                        boss_notes=[f"膝部折弯: 内R{G.BOOM_BEND_INNER_R:.0f}, 角度{G.BOOM_BEND_ANGLE_DEG:.0f}°, K=0.4",
-                                    f"knee bisector u = {G.BOOM_KNEE_U_DEG:.2f} deg"])
-
+    r1 = SS.bucket_sheet(os.path.join(DRAWDIR, "01_bucket"), bkt_solid, bucket_parts, 3)
+    r2 = SS.arm_sheet(os.path.join(DRAWDIR, "02_arm"), arm_solid, arm_parts, link_parts, arm_kin, 3)
+    r3 = SS.boom_sheet(os.path.join(DRAWDIR, "03_boom"), boom_solid, boom_parts, boom_kin, 3)
     for r, name in ((r1, "01_bucket"), (r2, "02_arm"), (r3, "03_boom")):
-        G.log(f"  {name}: scale=1:{r['scale']:g} total_mass={r['total_mass']:.1f}kg overflow={r['overflow']}")
+        G.log(f"  {name}: {r['paper']} 1:{r['scale']:g}")
 
     # ---- BOM.md ---------------------------------------------------------------
     G.log("\n--- writing BOM.md ---")

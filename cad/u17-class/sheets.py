@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-sheets.py -- GB-style A1 drawing sheets: left block = assembly 3-views (OCC
-HLR from the model3d.py solids, visible/hidden/centre lines), right block =
-that weldment's flat laser parts in part-number order with labels, plus a
-title block, 明细栏 (BOM table) and 技术要求 (tech-requirement) note block.
+sheets.py -- GB-style drawing sheets, one per weldment, in build order:
+  01 铲斗 (bucket)   02 斗杆 + 连杆 (arm + links)   03 动臂 (boom)
 
-Exports <name>.dxf (audit clean), <name>.pdf and preview/<name>.png.
+Sheet layout (as requested): LEFT = assembly three views (主视图 / 俯视图 below /
+左视图 to the right, first-angle projection, hidden-line removal from the
+CadQuery solids), RIGHT = that weldment's flat laser parts in part-number order,
+every part fully dimensioned (chain dims, hole Ø, arc R, bend lines) and, for
+irregular outlines, a coordinate table.  Bottom band: 技术要求, 明细栏, 标题栏.
+
+Model space is 1:1 mm.  A sheet at scale 1:S draws its frame S times paper
+size; text heights are paper-mm × S and dimensions use DIMSCALE = S, so the
+printed result is standard size.  Paper (A1/A0) and S are chosen automatically
+as the largest drawing that fits.
 """
 
 import math
@@ -14,18 +21,9 @@ import os
 
 import ezdxf
 import ezdxf.fonts.fonts as ezfonts
-from ezdxf.addons.drawing import RenderContext, Frontend
-from ezdxf.addons.drawing import matplotlib as ezmpl
-from ezdxf.addons.drawing.config import Configuration, LineweightPolicy, BackgroundPolicy
-
-from shapely.geometry import Point
-
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-import geom as G
-from geom import vsub, vadd, vscale, vlen, vunit, flatten_bulge_ring, translate_verts, translate_holes
+from ezdxf import bbox as ezbbox
+from ezdxf.enums import TextEntityAlignment as TA
+from ezdxf.addons.drawing import Frontend, RenderContext, pymupdf, layout, config
 
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCP.HLRAlgo import HLRAlgo_Projector
@@ -34,575 +32,661 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopAbs import TopAbs_EDGE
 from OCP.TopoDS import TopoDS
 from OCP.BRepAdaptor import BRepAdaptor_Curve
-from OCP.GCPnts import GCPnts_UniformDeflection
+from OCP.GCPnts import GCPnts_TangentialDeflection
 
-WQY_DIR = "/usr/share/fonts/truetype/wqy"
-_FONT_READY = False
+import geom as G
+
+FONT = "wqy-zenhei.ttc"
+PAPERS = {"A1": (841.0, 594.0), "A0": (1189.0, 841.0)}
+SCALES = (2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 10.0)  # GB/T 14690 series
+DATE = "2026-09-24"
+
+_font_ready = False
 
 
-def ensure_font():
-    global _FONT_READY
-    if not _FONT_READY:
-        ezfonts.font_manager.build(folders=[WQY_DIR])
-        _FONT_READY = True
+def _ensure_font():
+    global _font_ready
+    if not _font_ready:
+        ezfonts.font_manager.build(folders=["/usr/share/fonts/truetype/wqy"])
+        _font_ready = True
 
 
-FRAME_W_A1, FRAME_H_A1 = 841.0, 594.0
-SCALES = (2.0, 2.5, 4.0, 5.0)
+# ===========================================================================
+# document / primitives
+# ===========================================================================
 
-LAYER_DEFS = [
-    ("FRAME", 7, "Continuous"), ("TITLE", 7, "Continuous"),
-    ("VIEW", 7, "Continuous"), ("HIDDEN", 1, "DASHED"), ("CENTER", 5, "CENTER"),
-    ("DIM", 4, "Continuous"), ("BOM", 7, "Continuous"), ("NOTE", 7, "Continuous"),
-    ("CUT", 7, "Continuous"), ("MARK", 3, "Continuous"),
+LAYERS = [  # name, linetype, lineweight (1/100 mm)
+    ("OUTLINE", "Continuous", 50),
+    ("HIDDEN", "GB_HIDDEN", 25),
+    ("CENTER", "GB_CENTER", 18),
+    ("DIM", "Continuous", 18),
+    ("TEXT", "Continuous", 25),
+    ("MARK", "GB_PHANTOM", 25),
+    ("THIN", "Continuous", 18),
+    ("FRAME", "Continuous", 70),
 ]
 
 
-def new_sheet_doc():
-    ensure_font()
+def new_doc(S):
+    _ensure_font()
     doc = ezdxf.new("R2010", setup=True)
     doc.header["$INSUNITS"] = 4
     doc.header["$MEASUREMENT"] = 1
-    if "CJK" not in doc.styles:
-        doc.styles.add("CJK", font="wqy-zenhei.ttc")
-    doc.styles.get("Standard").dxf.font = "wqy-zenhei.ttc"
-    for name, color, lt in LAYER_DEFS:
-        if name not in doc.layers:
-            doc.layers.add(name, color=color, linetype=lt)
+    doc.header["$LTSCALE"] = S
+    # GB/T 4457.4 style patterns in paper mm (scaled by LTSCALE = S)
+    doc.linetypes.add("GB_HIDDEN", pattern=[5.0, 4.0, -1.0], description="虚线 __ __")
+    doc.linetypes.add("GB_CENTER", pattern=[20.0, 15.0, -2.0, 1.0, -2.0], description="点划线 ___ . ___")
+    doc.linetypes.add("GB_PHANTOM", pattern=[23.0, 15.0, -2.0, 1.0, -2.0, 1.0, -2.0],
+                      description="双点划线 ___ . . ___")
+    doc.header["$LWDISPLAY"] = 1
+    doc.styles.add("CJK", font=FONT)
+    for name, lt, lw in LAYERS:
+        doc.layers.add(name, linetype=lt, lineweight=lw, color=7)
+    doc.dimstyles.new("GB", dxfattribs={
+        # paper-mm values; DIMSCALE blows them up to model size
+        "dimtxt": 2.5, "dimasz": 2.5, "dimexo": 1.0, "dimexe": 1.5, "dimgap": 0.8,
+        "dimtad": 1, "dimtih": 0, "dimtoh": 0, "dimdec": 1, "dimzin": 8,
+        "dimdsep": ord("."), "dimscale": S, "dimtxsty": "CJK",
+        "dimlwd": 18, "dimlwe": 18, "dimtmove": 0,
+    })
     return doc
 
 
-def setup_dimstyle(doc, name, scale):
-    if name not in doc.dimstyles:
-        doc.dimstyles.new(name, dxfattribs={
-            "dimtxt": 2.5 * scale, "dimasz": 1.8 * scale, "dimexo": 1.2 * scale,
-            "dimexe": 1.2 * scale, "dimtad": 1, "dimclrt": 4, "dimclrd": 4,
-            "dimclre": 4, "dimdec": 1, "dimscale": scale, "dimtxsty": "CJK",
-        })
-    return name
+class Pen:
+    """Drawing helper bound to a sheet (msp, scale S) and a local offset."""
+
+    def __init__(self, msp, S, dx=0.0, dy=0.0):
+        self.msp, self.S, self.dx, self.dy = msp, S, dx, dy
+
+    def p(self, pt):
+        return (pt[0] + self.dx, pt[1] + self.dy)
+
+    # ---- geometry ------------------------------------------------------
+    def poly(self, pts, layer="OUTLINE", close=False):
+        if len(pts) < 2:
+            return
+        self.msp.add_lwpolyline([self.p(q) for q in pts], close=close, dxfattribs={"layer": layer})
+
+    def bulge_poly(self, verts, layer="OUTLINE"):
+        self.msp.add_lwpolyline([(x + self.dx, y + self.dy, 0, 0, b) for (x, y, b) in verts],
+                                format="xyseb", close=True, dxfattribs={"layer": layer})
+
+    def line(self, a, b, layer="OUTLINE"):
+        self.msp.add_line(self.p(a), self.p(b), dxfattribs={"layer": layer})
+
+    def circle(self, c, r, layer="OUTLINE"):
+        self.msp.add_circle(self.p(c), r, dxfattribs={"layer": layer})
+
+    def center_cross(self, c, r):
+        e = r + 3 * self.S
+        self.line((c[0] - e, c[1]), (c[0] + e, c[1]), "CENTER")
+        self.line((c[0], c[1] - e), (c[0], c[1] + e), "CENTER")
+
+    # ---- text ------------------------------------------------------------
+    def text(self, s, pos, h=3.5, align="L", layer="TEXT", rot=0.0):
+        amap = {"L": TA.BOTTOM_LEFT, "C": TA.BOTTOM_CENTER, "R": TA.BOTTOM_RIGHT,
+                "MC": TA.MIDDLE_CENTER, "ML": TA.MIDDLE_LEFT, "MR": TA.MIDDLE_RIGHT,
+                "TL": TA.TOP_LEFT}
+        t = self.msp.add_text(s, dxfattribs={"height": h * self.S, "style": "CJK", "layer": layer,
+                                              "rotation": rot})
+        t.set_placement(self.p(pos), align=amap[align])
+        return t
+
+    # ---- dimensions (all points local) -----------------------------------
+    def hdim(self, a, b, y, text="<>"):
+        if abs(a[0] - b[0]) < 0.05:
+            return
+        self.msp.add_linear_dim(base=self.p((a[0], y)), p1=self.p(a), p2=self.p(b), angle=0,
+                                dimstyle="GB", text=text, dxfattribs={"layer": "DIM"}).render()
+
+    def vdim(self, a, b, x, text="<>"):
+        if abs(a[1] - b[1]) < 0.05:
+            return
+        self.msp.add_linear_dim(base=self.p((x, a[1])), p1=self.p(a), p2=self.p(b), angle=90,
+                                dimstyle="GB", text=text, dxfattribs={"layer": "DIM"}).render()
+
+    def adim(self, a, b, dist, text="<>"):
+        if (b[0], b[1]) < (a[0], a[1]):
+            a, b, dist = b, a, -dist
+        self.msp.add_aligned_dim(p1=self.p(a), p2=self.p(b), distance=dist * self.S, dimstyle="GB",
+                                 text=text, dxfattribs={"layer": "DIM"}).render()
+
+    def dia(self, c, r, ang, text="<>"):
+        self.msp.add_diameter_dim(center=self.p(c), radius=r, angle=ang, dimstyle="GB", text=text,
+                                  override={"dimtofl": 1}, dxfattribs={"layer": "DIM"}).render()
+
+    def rad(self, c, r, ang, text="<>"):
+        loc = (c[0] + (r + 12 * self.S) * math.cos(math.radians(ang)),
+               c[1] + (r + 12 * self.S) * math.sin(math.radians(ang)))
+        self.msp.add_radius_dim(center=self.p(c), radius=r, location=self.p(loc), dimstyle="GB",
+                                text=text, dxfattribs={"layer": "DIM"}).render()
+
+    def ang(self, center, p1, p2, r, text="<>"):
+        a1 = math.atan2(p1[1] - center[1], p1[0] - center[0])
+        a2 = math.atan2(p2[1] - center[1], p2[0] - center[0])
+        am = (a1 + a2) / 2.0
+        if abs(a2 - a1) > math.pi:
+            am += math.pi
+        base = (center[0] + r * math.cos(am), center[1] + r * math.sin(am))
+        self.msp.add_angular_dim_3p(base=self.p(base), center=self.p(center), p1=self.p(p1),
+                                    p2=self.p(p2), dimstyle="GB", text=text,
+                                    dxfattribs={"layer": "DIM"}).render()
+
+    def leader(self, tip, knee, s, h=2.5):
+        """Straight leader with a horizontal shoulder and text on it."""
+        d = 1 if knee[0] >= tip[0] else -1
+        end = (knee[0] + d * (len(s) * 0.9 + 1) * h * self.S, knee[1])
+        self.msp.add_lwpolyline([self.p(tip), self.p(knee), self.p(end)], dxfattribs={"layer": "DIM"})
+        # arrow dot at the tip
+        self.msp.add_circle(self.p(tip), 0.6 * self.S, dxfattribs={"layer": "DIM"})
+        self.text(s, (knee[0] + d * 1 * self.S, knee[1] + 0.8 * self.S), h, "L" if d > 0 else "R", "DIM")
+
+    # ---- chains ------------------------------------------------------------
+    def hchain(self, xs, y_feat, y, text_fmt=None):
+        """Continuous horizontal dims through sorted x positions (dedup <0.5 mm).
+        y_feat: function x -> feature y (extension-line origin)."""
+        xs = _dedup(sorted(xs))
+        for a, b in zip(xs, xs[1:]):
+            self.hdim((a, y_feat(a)), (b, y_feat(b)), y)
+
+    def vchain(self, ys, x_feat, x):
+        ys = _dedup(sorted(ys))
+        for a, b in zip(ys, ys[1:]):
+            self.vdim((x_feat(a), a), (x_feat(b), b), x)
 
 
-def txt(msp, s, pos, h, layer="NOTE", style="CJK", align="LEFT", rotation=0.0, color=None):
-    attribs = {"layer": layer, "height": h, "style": style, "rotation": rotation}
-    if color is not None:
-        attribs["color"] = color
-    e = msp.add_text(s, dxfattribs=attribs)
-    from ezdxf.enums import TextEntityAlignment
-    amap = {"LEFT": TextEntityAlignment.LEFT, "CENTER": TextEntityAlignment.MIDDLE_CENTER,
-            "RIGHT": TextEntityAlignment.RIGHT, "MC": TextEntityAlignment.MIDDLE_CENTER}
-    e.set_placement(pos, align=amap.get(align, TextEntityAlignment.LEFT))
-    return e
-
-
-# ===========================================================================
-# HLR three-view extraction
-# ===========================================================================
-
-VIEW_DEFS = {
-    # name: (normal(look direction), x_direction)  -- local (x,y) of the HLR
-    # output is exactly the 2D projection in this Ax2 frame.
-    "front": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),    # local: (X,Y)
-    "top":   ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0)),   # local: (X,Z)
-    "left":  ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),   # local: (-Z,Y)
-}
-
-
-def _edges_to_polylines(comp, deflection=0.5):
+def _dedup(vals, tol=0.5):
     out = []
-    if comp.IsNull():
-        return out
-    exp = TopExp_Explorer(comp, TopAbs_EDGE)
-    while exp.More():
-        e = TopoDS.Edge_s(exp.Current())
-        try:
-            curve = BRepAdaptor_Curve(e)
-            gc = GCPnts_UniformDeflection(curve, deflection)
-            n = gc.NbPoints()
-            if n >= 2:
-                pts = [(gc.Value(i).X(), gc.Value(i).Y()) for i in range(1, n + 1)]
-                out.append(pts)
-        except Exception:
-            pass
-        exp.Next()
+    for v in vals:
+        if not out or abs(v - out[-1]) > tol:
+            out.append(v)
     return out
 
 
-def hlr_view(shape_wrapped, view_name):
-    normal, xdir = VIEW_DEFS[view_name]
-    ax2 = gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(*normal), gp_Dir(*xdir))
-    projector = HLRAlgo_Projector(ax2)
+def fmt(v):
+    s = f"{v:.1f}"
+    return s[:-2] if s.endswith(".0") else s
+
+
+# ===========================================================================
+# hidden-line views
+# ===========================================================================
+
+VIEWS = {  # viewer on the +normal side; (normal, local x-direction)
+    "front": ((0, 0, 1), (1, 0, 0)),    # local (X, Y)
+    "top": ((0, 1, 0), (1, 0, 0)),      # local (X, -Z): +Z (front) at the bottom (first angle)
+    "left": ((-1, 0, 0), (0, 0, 1)),    # local (Z, Y): seen from the left, placed right
+}
+
+
+def _edges(comp, defl):
+    out = []
+    if comp.IsNull():
+        return out
+    ex = TopExp_Explorer(comp, TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        try:
+            cur = BRepAdaptor_Curve(e)
+            g = GCPnts_TangentialDeflection(cur, math.radians(4.0), defl)
+            if g.NbPoints() >= 2:
+                pts = [(g.Value(i).X(), g.Value(i).Y()) for i in range(1, g.NbPoints() + 1)]
+                if math.dist(pts[0], pts[-1]) > 0.2 or len(pts) > 2:
+                    out.append(pts)
+        except Exception:
+            pass
+        ex.Next()
+    return out
+
+
+def hlr(solid, view, defl=0.05):
+    n, xd = VIEWS[view]
     algo = HLRBRep_Algo()
-    algo.Add(shape_wrapped)
-    algo.Projector(projector)
+    algo.Add(solid.val().wrapped)
+    algo.Projector(HLRAlgo_Projector(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(*n), gp_Dir(*xd))))
     algo.Update()
     algo.Hide()
-    h2s = HLRBRep_HLRToShape(algo)
-    visible = _edges_to_polylines(h2s.VCompound()) + _edges_to_polylines(h2s.OutLineVCompound()) \
-        + _edges_to_polylines(h2s.Rg1LineVCompound())
-    hidden = _edges_to_polylines(h2s.HCompound()) + _edges_to_polylines(h2s.OutLineHCompound())
-    return visible, hidden
+    h = HLRBRep_HLRToShape(algo)
+    vis = _edges(h.VCompound(), defl) + _edges(h.OutLineVCompound(), defl)
+    hid = _edges(h.HCompound(), defl) + _edges(h.OutLineHCompound(), defl) if view == "front" else []
+    return vis, hid
 
 
-def polylines_bbox(*polyline_lists):
-    xs, ys = [], []
-    for pls in polyline_lists:
-        for pl in pls:
-            for (x, y) in pl:
-                xs.append(x)
-                ys.append(y)
-    if not xs:
-        return (0, 0, 0, 0)
-    return (min(xs), min(ys), max(xs), max(ys))
+def pl_bbox(pls):
+    xs = [x for pl in pls for (x, _) in pl]
+    ys = [y for pl in pls for (_, y) in pl]
+    return min(xs), min(ys), max(xs), max(ys)
 
 
-def draw_polylines(msp, pls, dx, dy, layer):
-    for pl in pls:
-        if len(pl) < 2:
+# ===========================================================================
+# cells: something drawn at a local origin, measured before placement
+# ===========================================================================
+
+class Cell:
+    def __init__(self, draw, title=None):
+        self.draw = draw          # draw(pen)
+        self.title = title
+        self.bb = None            # (xmin, ymin, xmax, ymax) local, incl. dims/text
+
+    def measure(self, S):
+        doc = new_doc(S)
+        msp = doc.modelspace()
+        self.draw(Pen(msp, S))
+        ext = ezbbox.extents(msp, fast=True)
+        self.bb = (ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y)
+        return self.bb
+
+    @property
+    def w(self):
+        return self.bb[2] - self.bb[0]
+
+    @property
+    def h(self):
+        return self.bb[3] - self.bb[1]
+
+
+# ===========================================================================
+# view cells (geometry + centre lines + dims supplied by a spec function)
+# ===========================================================================
+
+def view_cell(polys, title, dims_fn, centers=()):
+    vis, hid = polys
+
+    def draw(pen):
+        for pl in hid:
+            pen.poly(pl, "HIDDEN")
+        for pl in vis:
+            pen.poly(pl, "OUTLINE")
+        for kind, a, b in centers:
+            if kind == "cross":
+                pen.center_cross(a, b)
+            else:
+                pen.line(a, b, "CENTER")
+        bb = pl_bbox(vis)
+        dims_fn(pen, bb)
+        pen.text(title, ((bb[0] + bb[2]) / 2, bb[3] + 12 * pen.S), 5, "C")
+    return Cell(draw, title)
+
+
+# ===========================================================================
+# flat-part cells
+# ===========================================================================
+
+def _label(part):
+    return (f"{part.pid} {part.name_cn}  t{part.thickness} ×{part.qty}  {part.material}  "
+            f"{part.mass_kg_each():.2f}kg/件")
+
+
+def _circles_of_outline(verts):
+    """Arc centres/radii of a bulge polyline: [(centre, r, mid_angle_deg)]."""
+    out = []
+    n = len(verts)
+    for i in range(n):
+        x, y, b = verts[i]
+        x2, y2, _ = verts[(i + 1) % n]
+        if abs(b) < 1e-9:
             continue
-        pts = [(x + dx, y + dy) for (x, y) in pl]
-        msp.add_lwpolyline(pts, dxfattribs={"layer": layer})
+        sweep = 4 * math.atan(abs(b))
+        c = math.hypot(x2 - x, y2 - y)
+        r = c / 2 / math.sin(sweep / 2)
+        mx, my = (x + x2) / 2, (y + y2) / 2
+        h = math.sqrt(max(r * r - (c / 2) ** 2, 0))
+        ux, uy = (x2 - x) / c, (y2 - y) / c
+        sgn = 1 if b > 0 else -1
+        # centre lies to the left of the chord for b>0 when sweep<180, mirrored otherwise
+        k = 1 if sweep <= math.pi else -1
+        cx, cy = mx - sgn * k * h * uy, my + sgn * k * h * ux
+        # arc midpoint direction: from centre through the bulge apex
+        apex = (mx + sgn * uy * (c / 2) * abs(b), my - sgn * ux * (c / 2) * abs(b))
+        am = math.degrees(math.atan2(apex[1] - cy, apex[0] - cx))
+        out.append(((cx, cy), r, am, b))
+    return out
 
 
-def add_centerline(msp, p1, p2, ext, layer="CENTER"):
-    u = vunit(vsub(p2, p1))
-    a = vsub(p1, vscale(u, ext))
-    b = vadd(p2, vscale(u, ext))
-    msp.add_line(a, b, dxfattribs={"layer": layer})
+def part_cell(part, datum=None, key_pts=(), table=False, pairs=(), extra=None,
+              arcs=True, note=None, hole_notes=None, chain_pts=None, ring=False, ychain=True):
+    """Flat part with chain dims (x below, y left), overall dims, hole Ø, arc R,
+    optional coordinate table (relative to `datum`), and a label on top.
+
+    key_pts: [(label, (x, y), description)] -- vertices / tangent points to locate.
+    pairs:   [(p1, p2, offset_paper_mm)] aligned hole-to-hole reference dims.
+    extra:   extra(pen, bb) for part-specific annotations.
+    """
+    def draw(pen):
+        S = pen.S
+        pen.bulge_poly(part.outer, "OUTLINE")
+        for (cx, cy, d) in part.holes:
+            pen.circle((cx, cy), d / 2)
+            pen.center_cross((cx, cy), d / 2)
+        for (a, b) in part.mark_lines:
+            pen.line(a, b, "MARK")
+        xmin, ymin, xmax, ymax = part.bbox
+
+        feats = list(chain_pts or []) + [(cx, cy) for (cx, cy, _) in part.holes]
+        xs = [xmin, xmax] + [f[0] for f in feats]
+        ys = [ymin, ymax] + [f[1] for f in (feats if ychain else [(cx, cy) for (cx, cy, _) in part.holes])]
+
+        def y_of(x):  # extension origin: nearest feature with that x, else bottom edge
+            c = [f for f in feats if abs(f[0] - x) < 0.5]
+            return c[0][1] if c else ymin
+
+        def x_of(y):
+            c = [f for f in feats if abs(f[1] - y) < 0.5]
+            return c[0][0] if c else xmin
+
+        if ring:
+            (cx, cy, d) = part.holes[0]
+            od = xmax - xmin
+            pen.dia((cx, cy), od / 2, 30)
+            pen.hdim((cx - d / 2, cy), (cx + d / 2, cy), ymin - 9 * S,
+                     text=f"Ø{fmt(d)}" + (hole_notes or {}).get(d, ""))
+            pen.text(_label(part), (xmin, ymax + 12 * S), 3.5, "L")
+            return
+        tier = 7 * S
+        yb = ymin - 9 * S
+        pen.hchain(xs, y_of, yb)
+        if len(_dedup(sorted(xs))) > 2:
+            pen.hdim((xmin, y_of(xmin)), (xmax, y_of(xmax)), yb - tier)
+        xl = xmin - 9 * S
+        pen.vchain(ys, x_of, xl)
+        if len(_dedup(sorted(ys))) > 2:
+            pen.vdim((x_of(ymin), ymin), (x_of(ymax), ymax), xl - tier)
+
+        # hole diameters: one callout per distinct size, written on the plate
+        # next to the hole when it fits, otherwise with a leader
+        seen = {}
+        for (cx, cy, d) in part.holes:
+            seen.setdefault(round(d, 2), []).append((cx, cy))
+        poly = part.polygon
+        for d, cs in seen.items():
+            n = len(cs)
+            txt = (f"{n}×Ø{fmt(d)}" if n > 1 else f"Ø{fmt(d)}") + (hole_notes or {}).get(d, "")
+            if not _callout_inside(pen, poly, cs[0], d / 2, txt):
+                cx, cy = cs[0]
+                pen.leader((cx + d / 2 * 0.7071, cy + d / 2 * 0.7071),
+                           (cx + d / 2 + 8 * S, cy + d / 2 + 8 * S), txt)
+
+        if arcs:
+            done = set()
+            for (c, r, am, b) in _circles_of_outline(part.outer):
+                key = (round(c[0], 1), round(c[1], 1), round(r, 1))
+                if key in done or r > 5000:
+                    continue
+                done.add(key)
+                if math.cos(math.radians(am)) < -0.7:      # keep R off the left-hand dims
+                    am = 125.0
+                pen.rad(c, r, am)
+
+        for (a, b, off) in pairs:
+            pen.adim(a, b, off)
+
+        cen = part.polygon.centroid
+        for (lab, (x, y), _) in key_pts:
+            pen.circle((x, y), 0.8 * S, "THIN")
+            dx, dy = x - cen.x, y - cen.y
+            L = math.hypot(dx, dy) or 1.0
+            pen.text(lab, (x + dx / L * 4 * S, y + dy / L * 4 * S), 2.2, "MC", "DIM")
+
+        if extra:
+            extra(pen, part.bbox)
+
+        top = ymax + (14 if part.holes else 5) * S
+        if note:
+            for i, line in enumerate(reversed(note if isinstance(note, list) else [note])):
+                pen.text(line, (xmin, top + i * 4.2 * S), 2.5, "L")
+            top += len(note if isinstance(note, list) else [note]) * 4.2 * S
+        pen.text(_label(part), (xmin, top + 1 * S), 3.5, "L")
+
+        if table:
+            ox, oy = datum if datum else (xmin, ymin)
+            rows = [("点", "X", "Y", "说明")]
+            for (lab, (x, y), desc) in key_pts:
+                rows.append((lab, fmt(x - ox), fmt(y - oy), desc))
+            _table(pen, rows, (xmax + 48 * S, ymax), [9, 17, 17, 44],
+                   title=f"坐标表（原点 {datum_name(part, datum)}，单位mm）")
+    return Cell(draw, part.pid)
 
 
-def add_center_cross(msp, c, r, layer="CENTER"):
-    ext = r + 4.0
-    msp.add_line((c[0] - ext, c[1]), (c[0] + ext, c[1]), dxfattribs={"layer": layer})
-    msp.add_line((c[0], c[1] - ext), (c[0], c[1] + ext), dxfattribs={"layer": layer})
+def _text_w(s, h):
+    return sum(1.0 if ord(ch) > 255 else 0.62 for ch in s) * h
+
+
+def _callout_inside(pen, poly, c, r, txt, h=2.5):
+    from shapely.geometry import box
+    S = pen.S
+    w, hh = _text_w(txt, h) * S, h * S
+    g = 2.5 * S
+    cx, cy = c
+    cands = [(cx + r + g, cy - hh / 2, "ML", (cx + r + g, cy)),
+             (cx - r - g - w, cy - hh / 2, "MR", (cx - r - g, cy)),
+             (cx - w / 2, cy - r - g - hh, "C", (cx, cy - r - g - hh)),
+             (cx - w / 2, cy + r + g, "C", (cx, cy + r + g))]
+    for (x0, y0, al, pos) in cands:
+        if poly.buffer(-1.0 * S).contains(box(x0, y0, x0 + w, y0 + hh)):
+            pen.text(txt, pos, h, al, "DIM")
+            return True
+    return False
+
+
+def datum_name(part, datum):
+    if datum is None or (abs(datum[0] - part.bbox[0]) < 0.01 and abs(datum[1] - part.bbox[1]) < 0.01):
+        return "外形左下角"
+    for (cx, cy, d) in part.holes:
+        if abs(cx - datum[0]) < 0.01 and abs(cy - datum[1]) < 0.01:
+            return f"Ø{fmt(d)}孔中心"
+    return "见图"
+
+
+def _table(pen, rows, top_left, widths, title=None, rh=5.5, th=2.5):
+    S = pen.S
+    x0, y0 = top_left
+    if title:
+        pen.text(title, (x0, y0 + 1.5 * S), th, "L")
+    W = sum(widths) * S
+    for i, row in enumerate(rows):
+        y = y0 - i * rh * S
+        pen.line((x0, y), (x0 + W, y), "THIN")
+        x = x0
+        for w, cell in zip(widths, row):
+            pen.text(str(cell), (x + 1.2 * S, y - rh * S / 2), th, "ML")
+            x += w * S
+    yb = y0 - len(rows) * rh * S
+    pen.line((x0, yb), (x0 + W, yb), "THIN")
+    x = x0
+    for w in widths + [0]:
+        pen.line((x, y0), (x, yb), "THIN")
+        x += w * S
 
 
 # ===========================================================================
-# BOM table + tech-requirement block (shared)
+# frame, title block, BOM, technical requirements
 # ===========================================================================
 
-TECH_NOTES = [
-    "1. 先点焊定位，复核外形及孔位无误后再满焊；焊缝按图示位置，未注明焊角尺寸均取板厚的0.7倍。",
-    "2. 标注\"焊后镗孔/线镗\"之处必须待相应零件整体组焊完成后一次性镗孔，保证同轴度。",
-    "3. 切割面（激光/火焰）去毛刺、去氧化皮，尖角倒钝R1~2。",
-    "4. 未注公差尺寸按 GB/T 1804-m 级执行；未注形位公差按 GB/T 1184-K 级执行。",
-    "5. 承力焊缝（箱形梁、耳板）为本设计推算所得，正式上机前须由结构工程师复核并做疲劳强度校核。",
-    "6. 涂装前应除锈至 Sa2.5 级，涂刷防锈底漆一道、面漆两道（本设计不含涂装工艺细节）。",
+TECH = [
+    "技术要求：",
+    "1. 材料 Q355B（刃板推荐 NM400）；激光切割，切割面去毛刺、锐边倒钝 C1。",
+    "2. 组焊前先点焊定位，检查销孔同轴、两侧板平行后再满焊；焊脚高 ≥ 0.7×较薄板厚，连续焊，无咬边气孔。",
+    "3. 所有销孔（标注“焊后镗”者）预留余量，整体焊接、消应力后一次线镗至图示精度，保证两侧同轴。",
+    "4. 未注线性尺寸公差按 GB/T 1804-m；未注形位公差按 GB/T 1184-K。",
+    "5. 本图为按公开参数推算的自主设计，非原厂图纸；承力件上机前须由结构工程师复核强度与焊缝。",
 ]
 
-DISCLAIMER = ("尺寸按公开参数推算的自主设计，非久保田原厂图纸；承力件上机前请结构工程师复核；"
-              "设计: Claude 自主设计·非原厂")
+
+def title_block(pen, x1, y0, info):
+    """Title block with its bottom-right corner at (x1, y0) (inner frame corner)."""
+    S = pen.S
+    w = [25, 55, 25, 75]
+    rh = 8
+    rows = [("图名", info["name"], "图号", info["no"]),
+            ("材料", "Q355B（刃板 NM400）", "比例", f"1:{fmt(info['S'])}"),
+            ("焊接件重", f"{info['mass']:.1f} kg（不含外购件）", "图幅", info["paper"]),
+            ("设计", "Claude 自主设计", "日期", DATE),
+            ("投影", "第一角画法", "张次", f"第 {info['sheet']} 张 共 {info['total']} 张")]
+    W = sum(w) * S
+    H = len(rows) * rh * S
+    x0 = x1 - W
+    top = y0 + H
+    for i, row in enumerate(rows):
+        y = top - i * rh * S
+        pen.line((x0, y), (x1, y), "THIN")
+        x = x0
+        for k, (ww, c) in enumerate(zip(w, row)):
+            pen.text(c, (x + 1.5 * S, y - rh * S / 2), 3.5 if k % 2 else 3.0, "ML")
+            x += ww * S
+    x = x0
+    for ww in w + [0]:
+        pen.line((x, top), (x, y0), "THIN")
+        x += ww * S
+    pen.poly([(x0, y0), (x1, y0), (x1, top), (x0, top)], "FRAME", close=True)
+    return x0, top
 
 
-def draw_bom_table(msp, parts, origin, scale, title="明细栏"):
-    """明细栏: 序号/代号/名称/数量/材料/厚度/单重kg/总重kg/备注"""
-    ox, oy = origin
-    row_h = 7.0 * scale
-    cols = [("序号", 10), ("代号", 14), ("名称", 26), ("数量", 10), ("材料", 22),
-            ("厚度", 10), ("单重kg", 14), ("总重kg", 14), ("备注", 46)]
-    col_w = [c[1] * scale for c in cols]
-    total_w = sum(col_w)
-    n_rows = len(parts) + 1
-    total_h = row_h * n_rows
-    # outer box
-    msp.add_lwpolyline([(ox, oy), (ox + total_w, oy), (ox + total_w, oy + total_h), (ox, oy + total_h)],
-                        close=True, dxfattribs={"layer": "BOM"})
-    # header row + rows separators
-    for r in range(n_rows + 1):
-        y = oy + total_h - r * row_h
-        msp.add_line((ox, y), (ox + total_w, y), dxfattribs={"layer": "BOM"})
-    xcur = ox
-    for w in col_w:
-        msp.add_line((xcur, oy), (xcur, oy + total_h), dxfattribs={"layer": "BOM"})
-        xcur += w
-    msp.add_line((xcur, oy), (xcur, oy + total_h), dxfattribs={"layer": "BOM"})
-
-    th = 2.2 * scale
-    xcur = ox
-    y_hdr = oy + total_h - row_h / 2.0
-    for (name, w) in cols:
-        txt(msp, name, (xcur + w * scale / 2.0, y_hdr), th, layer="BOM", align="MC")
-        xcur += w * scale
-    total_mass_all = 0.0
-    for i, p in enumerate(parts):
-        y = oy + total_h - row_h * (i + 1) - row_h / 2.0
-        each = p.mass_kg_each()
-        tot = each * p.qty
-        total_mass_all += tot
-        vals = [str(i + 1), p.pid, p.name_cn, f"x{p.qty}", p.material, f"{p.thickness}",
-                f"{each:.2f}", f"{tot:.2f}", p.bom_note[:26] + ("…" if len(p.bom_note) > 26 else "")]
-        xcur = ox
-        for (val, (_, w)) in zip(vals, cols):
-            txt(msp, val, (xcur + w * scale / 2.0, y), th * 0.85, layer="BOM", align="MC")
-            xcur += w * scale
-    txt(msp, title, (ox, oy + total_h + 3.0 * scale), 3.0 * scale, layer="BOM")
-    return total_w, total_h, total_mass_all
+def bom_table(pen, x1, y0, items):
+    """明细栏 above... placed with bottom-right at (x1, y0); items rows."""
+    S = pen.S
+    w = [9, 12, 36, 9, 26, 20, 15, 15, 36]
+    head = ("序号", "代号", "名称", "数量", "材料", "厚度", "单重kg", "总重kg", "备注")
+    rows = [head] + items
+    rh = 6.5
+    W = sum(w) * S
+    x0 = x1 - W
+    H = len(rows) * rh * S
+    top = y0 + H
+    # GB: header row at the bottom, items numbered upward
+    ordered = list(reversed(rows))
+    for i, row in enumerate(ordered):
+        y = top - i * rh * S
+        pen.line((x0, y), (x1, y), "THIN")
+        x = x0
+        for ww, c in zip(w, row):
+            pen.text(str(c), (x + 1 * S, y - rh * S / 2), 2.5, "ML")
+            x += ww * S
+    pen.line((x0, y0), (x1, y0), "THIN")
+    x = x0
+    for ww in w + [0]:
+        pen.line((x, top), (x, y0), "THIN")
+        x += ww * S
+    pen.text("明细栏", (x0, top + 1.5 * S), 3.5, "L")
+    return x0, top
 
 
-def draw_tech_block(msp, origin, scale, extra_notes=None):
-    ox, oy = origin
-    lines = ["技术要求："] + TECH_NOTES + (extra_notes or []) + ["", DISCLAIMER]
-    lh = 2.6 * scale
-    y = oy
-    for i, ln in enumerate(lines):
-        h = 2.4 * scale if i > 0 else 3.0 * scale
-        txt(msp, ln, (ox, y - i * lh), h, layer="NOTE")
-    return len(lines) * lh
+def tech_block(pen, x0, y_top, lines):
+    for i, s in enumerate(lines):
+        pen.text(s, (x0, y_top - (i + 1) * 5.2 * pen.S), 3.2 if i == 0 else 2.8, "L")
+    return len(lines) * 5.2 * pen.S
 
 
 # ===========================================================================
-# Title block
+# sheet assembly + layout search
 # ===========================================================================
 
-def draw_title_block(msp, frame_w, frame_h, scale, drawing_no, name_cn, sheet_no, sheet_total,
-                      total_mass_kg):
-    tb_w = 180.0 * scale
-    tb_h = 56.0 * scale
-    x0 = frame_w - 5.0 * scale - tb_w
-    y0 = 5.0 * scale
-    rows = [
-        ("图名", name_cn), ("图号", drawing_no), ("材料", G.MATERIAL),
-        ("比例", f"1:{scale:g}"), ("单件/总重", f"{total_mass_kg:.1f} kg"),
-        ("设计", "Claude 自主设计·非原厂"), ("日期", "2026-09-24"),
-        ("图幅", f"第 {sheet_no} 张 共 {sheet_total} 张"),
-    ]
-    n = len(rows)
-    row_h = tb_h / n
-    msp.add_lwpolyline([(x0, y0), (x0 + tb_w, y0), (x0 + tb_w, y0 + tb_h), (x0, y0 + tb_h)],
-                        close=True, dxfattribs={"layer": "TITLE"})
-    label_w = 34.0 * scale
-    for i, (k, v) in enumerate(rows):
-        y = y0 + tb_h - i * row_h
-        msp.add_line((x0, y - row_h), (x0 + tb_w, y - row_h), dxfattribs={"layer": "TITLE"})
-        msp.add_line((x0 + label_w, y), (x0 + label_w, y - row_h), dxfattribs={"layer": "TITLE"})
-        txt(msp, k, (x0 + 2.0 * scale, y - row_h * 0.65), 2.6 * scale, layer="TITLE")
-        txt(msp, str(v), (x0 + label_w + 2.0 * scale, y - row_h * 0.65), 2.6 * scale, layer="TITLE")
-    # first-angle projection symbol (simplified schematic) + label, left of title block
-    sym_cx = x0 - 22.0 * scale
-    sym_cy = y0 + tb_h * 0.35
-    r1, r2 = 5.0 * scale, 8.5 * scale
-    msp.add_circle((sym_cx - 9 * scale, sym_cy), r1 * 0.55, dxfattribs={"layer": "TITLE"})
-    msp.add_line((sym_cx - 9 * scale + r1 * 0.55, sym_cy), (sym_cx + 9 * scale - r2 * 0.55, sym_cy - 0),
-                  dxfattribs={"layer": "TITLE"})
-    msp.add_lwpolyline([(sym_cx + 3 * scale, sym_cy - r2 * 0.5), (sym_cx + 9 * scale, sym_cy - r2 * 0.75),
-                         (sym_cx + 9 * scale, sym_cy + r2 * 0.75), (sym_cx + 3 * scale, sym_cy + r2 * 0.5)],
-                        close=True, dxfattribs={"layer": "TITLE"})
-    txt(msp, "第一角画法 (GB/T 14692)", (sym_cx - 9 * scale, sym_cy - 8 * scale), 2.4 * scale, layer="TITLE")
-    return x0, y0, tb_w, tb_h
+def _pack(cells, regions, gap):
+    """Shelf-pack cells, in order, into a sequence of regions (x0, yb, x1, yt):
+    fill the first region row by row, then continue in the next one.
+    Returns [(cell, dx, dy)] or None if they do not all fit."""
+    out = []
+    ri = 0
+    x0, yb, x1, yt = regions[0]
+    cx, top, row_h = x0, yt, 0.0
+    for c in cells:
+        while True:
+            if cx + c.w > x1 and cx > x0:          # new shelf
+                cx, top, row_h = x0, top - row_h - gap, 0.0
+            if c.w <= x1 - x0 and top - c.h >= yb:
+                break
+            ri += 1                                 # next region
+            if ri >= len(regions):
+                return None
+            x0, yb, x1, yt = regions[ri]
+            cx, top, row_h = x0, yt, 0.0
+        out.append((c, cx - c.bb[0], top - c.bb[3]))
+        cx += c.w + gap
+        row_h = max(row_h, c.h)
+    return out
 
 
-def draw_frame(doc, scale):
+def build_sheet(path_stub, info, views, part_cells, bom_items, extra_tech=()):
+    """views: dict front/top/left -> Cell (geometry-aligned: shared local frames).
+    Tries A1 then A0 at increasing scale until everything fits."""
+    tried = []
+    cands = [("A1", S) for S in SCALES if S <= 6] + [("A0", S) for S in SCALES if S >= 3] + [("A1", 10.0)]
+    for paper, S in cands:
+        res = _try_layout(paper, S, views, part_cells, bom_items, extra_tech)
+        tried.append((paper, S, res is not None))
+        if res is not None:
+            return _render(path_stub, info, paper, S, res, views, part_cells, bom_items, extra_tech)
+    raise RuntimeError(f"sheet {path_stub}: nothing fits {tried}")
+
+
+def _band_height(S, n_bom):
+    return max(5 * 8 + 3, (n_bom + 1) * 6.5 + 6, len(TECH) * 5.2 + 26) * S
+
+
+def _try_layout(paper, S, views, part_cells, bom_items, extra_tech):
+    Wp, Hp = PAPERS[paper]
+    for c in list(views.values()) + part_cells:
+        c.measure(S)
+    gap = 14 * S
+    x_in0, y_in0, x_in1, y_in1 = 25 * S, 10 * S, (Wp - 10) * S, (Hp - 10) * S
+    cx0, cx1 = x_in0 + 8 * S, x_in1 - 8 * S
+    cy1 = y_in1 - 8 * S
+    band = _band_height(S, len(bom_items)) + y_in0 + 8 * S
+
+    F, T, L = views["front"], views["top"], views["left"]
+    fo = (cx0 - F.bb[0], cy1 - F.bb[3])
+    lo = (fo[0] + F.bb[2] + gap - L.bb[0], fo[1])
+    to = (fo[0], fo[1] + F.bb[1] - gap - T.bb[3])
+    right = max(fo[0] + F.bb[2], lo[0] + L.bb[2], to[0] + T.bb[2])
+    bottom = min(to[1] + T.bb[1], lo[1] + L.bb[1])
+    if right > cx1 or bottom < band:
+        return None
+    # parts: right of the views first, then the full width below the views
+    regions = [(right + gap * 1.5, max(band, bottom), cx1, cy1), (cx0, band, cx1, bottom - gap)]
+    placed = _pack(part_cells, regions, gap)
+    if placed is None:
+        return None
+    return dict(fo=fo, lo=lo, to=to, placed=placed, frame=(x_in0, y_in0, x_in1, y_in1), W=Wp * S, H=Hp * S)
+
+
+def _render(path_stub, info, paper, S, res, views, part_cells, bom_items, extra_tech):
+    doc = new_doc(S)
     msp = doc.modelspace()
-    W, H = FRAME_W_A1 * scale, FRAME_H_A1 * scale
-    # outer paper edge
-    msp.add_lwpolyline([(0, 0), (W, 0), (W, H), (0, H)], close=True, dxfattribs={"layer": "FRAME"})
-    # inner frame: 25mm*S left (binding), 10mm*S others, scaled by drawing scale
-    left, right, top, bot = 25.0 * scale, 10.0 * scale, 10.0 * scale, 10.0 * scale
-    msp.add_lwpolyline([(left, bot), (W - right, bot), (W - right, H - top), (left, H - top)],
-                        close=True, dxfattribs={"layer": "FRAME"})
-    return W, H, (left, bot, W - right, H - top)
+    pen = Pen(msp, S)
+    W, H = res["W"], res["H"]
+    pen.poly([(0, 0), (W, 0), (W, H), (0, H)], "THIN", close=True)
+    x0, y0, x1, y1 = res["frame"]
+    pen.poly([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], "FRAME", close=True)
 
+    views["front"].draw(Pen(msp, S, *res["fo"]))
+    views["left"].draw(Pen(msp, S, *res["lo"]))
+    views["top"].draw(Pen(msp, S, *res["to"]))
+    for c, dx, dy in res["placed"]:
+        c.draw(Pen(msp, S, dx, dy))
 
-# ===========================================================================
-# per-part flat layout (right block)
-# ===========================================================================
-
-def pack_layout(parts, max_row_width, gap):
-    cursor_x, cursor_y, row_h = 0.0, 0.0, 0.0
-    offsets = {}
-    for p in parts:
-        minx, miny, maxx, maxy = p.bbox
-        w, h = maxx - minx, maxy - miny
-        if cursor_x > 0 and cursor_x + w > max_row_width:
-            cursor_x = 0.0
-            cursor_y += row_h + gap
-            row_h = 0.0
-        offsets[p.pid] = (cursor_x - minx, cursor_y - miny)
-        cursor_x += w + gap
-        row_h = max(row_h, h)
-    total_h = cursor_y + row_h
-    return offsets, total_h
-
-
-def add_part_geometry(msp, part, dx, dy, scale, dimstyle):
-    outer = translate_verts(part.outer, dx, dy)
-    pl = msp.add_lwpolyline(outer, format="xyb", dxfattribs={"layer": "CUT"})
-    pl.closed = True
-    holes_t = translate_holes(part.holes, dx, dy)
-    for (cx, cy, d) in holes_t:
-        msp.add_circle((cx, cy), d / 2.0, dxfattribs={"layer": "CUT"})
-        add_center_cross(msp, (cx, cy), d / 2.0)
-
-    minx, miny, maxx, maxy = part.bbox
-    minx, miny, maxx, maxy = minx + dx, miny + dy, maxx + dx, maxy + dy
-    h = 2.5 * scale
-    mark_pt = part.polygon.representative_point()
-    mx, my = mark_pt.x + dx, mark_pt.y + dy
-    txt(msp, f"{part.pid} {part.name_cn}", (mx, my + h), h, layer="MARK", align="MC")
-    txt(msp, f"t{part.thickness} x{part.qty} {part.material}", (mx, my - h * 0.6), h * 0.85,
-        layer="MARK", align="MC")
-    for (x, y, note) in part.mark_notes:
-        txt(msp, note, (x + dx, y + dy), 1.8 * scale, layer="MARK")
-    for (p1, p2) in part.mark_lines:
-        msp.add_line((p1[0] + dx, p1[1] + dy), (p2[0] + dx, p2[1] + dy),
-                      dxfattribs={"layer": "MARK", "linetype": "DASHDOT"})
-
-    dimo = 8.0 * scale
-    try:
-        d = msp.add_aligned_dim(p1=(minx, miny), p2=(maxx, miny), distance=-dimo,
-                                 dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-        d.render()
-    except Exception:
-        pass
-    try:
-        d = msp.add_aligned_dim(p1=(minx, miny), p2=(minx, maxy), distance=-dimo,
-                                 dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-        d.render()
-    except Exception:
-        pass
-    for (cx, cy, dia) in holes_t:
-        try:
-            d = msp.add_diameter_dim(center=(cx, cy), radius=dia / 2.0, angle=45,
-                                      dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-            d.render()
-        except Exception:
-            pass
-    if len(holes_t) >= 2:
-        h1 = (holes_t[0][0], holes_t[0][1])
-        h2 = (holes_t[1][0], holes_t[1][1])
-        try:
-            d = msp.add_aligned_dim(p1=h1, p2=h2, distance=dimo * 0.8,
-                                     dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-            d.render()
-        except Exception:
-            pass
-    return (minx, miny, maxx, maxy)
-
-
-# ===========================================================================
-# Chinese view/part labels + PDF/PNG rendering
-# ===========================================================================
-
-def render_pdf_png(doc, base_path_noext, W, H, dpi=200):
-    ensure_font()
-    matplotlib.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei"]
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    msp = doc.modelspace()
-    cfg = Configuration(lineweight_policy=LineweightPolicy.RELATIVE, background_policy=BackgroundPolicy.WHITE)
-    ctx = RenderContext(doc)
-    aspect = H / W
-    fig_w = 34.0
-    fig, ax = plt.subplots(figsize=(fig_w, fig_w * aspect))
-    ax.set_xlim(-0.01 * W, 1.01 * W)
-    ax.set_ylim(-0.01 * H, 1.01 * H)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    out = ezmpl.MatplotlibBackend(ax)
-    Frontend(ctx, out, config=cfg).draw_layout(msp, finalize=True)
-    fig.tight_layout(pad=0.1)
-    fig.savefig(base_path_noext + ".pdf")
-    fig.savefig(base_path_noext + ".png", dpi=dpi)
-    plt.close(fig)
-
-
-# ===========================================================================
-# 3D vector helpers for pin projection
-# ===========================================================================
-
-def _v3sub(a, b):
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
-def _v3dot(a, b):
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _v3cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def _v3unit(a):
-    l = math.sqrt(_v3dot(a, a))
-    return (a[0] / l, a[1] / l, a[2] / l)
-
-
-def project_pt(p3, view_name):
-    normal, xdir = VIEW_DEFS[view_name]
-    xdir = _v3unit(xdir)
-    normal = _v3unit(normal)
-    ydir = _v3cross(normal, xdir)
-    return (_v3dot(p3, xdir), _v3dot(p3, ydir))
-
-
-# ===========================================================================
-# main per-sheet builder
-# ===========================================================================
-
-def build_sheet(out_stub, sheet_no, sheet_total, drawing_no, name_cn, solid, parts,
-                 pins_xy, pin_pairs, boss_notes=None, extra_notes=None, deflection=0.6):
-    """
-    out_stub: path (no ext) for the .dxf/.pdf, PNG goes to preview/
-    solid: cadquery solid (assembly) for HLR
-    parts: list of Part (this weldment's laser parts, in pid order)
-    pins_xy: dict name -> (x,y) in the assembly's own local frame (z=0 plane)
-    pin_pairs: list of (nameA, nameB, label_override or None) for chained dims
-    """
-    G.log(f"\n--- building sheet {drawing_no} {name_cn} ---")
-
-    front_v, front_h = hlr_view(solid.val().wrapped, "front")
-    top_v, top_h = hlr_view(solid.val().wrapped, "top")
-    left_v, left_h = hlr_view(solid.val().wrapped, "left")
-
-    fb = polylines_bbox(front_v, front_h)
-    tb = polylines_bbox(top_v, top_h)
-    lb = polylines_bbox(left_v, left_h)
-    fw, fh = fb[2] - fb[0], fb[3] - fb[1]
-    tw, th_ = tb[2] - tb[0], tb[3] - tb[1]
-    lw, lh = lb[2] - lb[0], lb[3] - lb[1]
-
-    view_gap = 40.0
-    views_block_w = max(fw, tw) + view_gap + lw
-    views_block_h = fh + view_gap + th_
-
-    # ---- flat parts panel sizing (multi-row shelf pack) ---------------------
-    max_part_dim = max((p.bbox[2] - p.bbox[0]) for p in parts)
-    parts_row_w = max(max_part_dim + 40.0, 1200.0)
-    offsets, parts_total_h = pack_layout(parts, parts_row_w, 120.0)
-
-    need_w = views_block_w + 220.0 + parts_row_w
-    need_h = max(views_block_h, parts_total_h) + 260.0  # + title/margins headroom
-
-    scale = SCALES[-1]
-    for s in SCALES:
-        if need_w <= (FRAME_W_A1 - 40.0) * s and need_h <= (FRAME_H_A1 - 90.0) * s:
-            scale = s
-            break
-    frame_w_model = FRAME_W_A1 * scale
-    frame_h_model = FRAME_H_A1 * scale
-    overflow = need_w > (FRAME_W_A1 - 40.0) * scale or need_h > (FRAME_H_A1 - 90.0) * scale
-    if overflow:
-        frame_w_model = max(frame_w_model, need_w + 60.0 * scale)
-        frame_h_model = max(frame_h_model, need_h + 120.0 * scale)
-        G.log(f"[note] {drawing_no}: content ({need_w:.0f}x{need_h:.0f}) exceeds nominal A1@1:{scale:g}; "
-              f"sheet enlarged to {frame_w_model/scale:.0f}x{frame_h_model/scale:.0f} (still labelled 1:{scale:g}).")
-
-    doc = new_sheet_doc()
-    msp = doc.modelspace()
-    dimstyle = setup_dimstyle(doc, f"PLATE_{drawing_no}", scale)
-
-    # explicit frame border at the (possibly enlarged) size
-    msp.add_lwpolyline([(0, 0), (frame_w_model, 0), (frame_w_model, frame_h_model), (0, frame_h_model)],
-                        close=True, dxfattribs={"layer": "FRAME"})
-    left_m, right_m, top_m, bot_m = 25.0 * scale, 10.0 * scale, 10.0 * scale, 10.0 * scale
-    msp.add_lwpolyline([(left_m, bot_m), (frame_w_model - right_m, bot_m),
-                         (frame_w_model - right_m, frame_h_model - top_m), (left_m, frame_h_model - top_m)],
-                        close=True, dxfattribs={"layer": "FRAME"})
-
-    # ---- place LEFT block: front / top / left views (first-angle) ----------
-    origin_x = left_m + 60.0 * scale
-    origin_y = frame_h_model - top_m - 60.0 * scale - fh
-    fx, fy = origin_x - fb[0], origin_y - fb[1]
-    draw_polylines(msp, front_v, fx, fy, "VIEW")
-    draw_polylines(msp, front_h, fx, fy, "HIDDEN")
-
-    tx, ty = origin_x - tb[0], origin_y - view_gap - th_ - tb[1]
-    draw_polylines(msp, top_v, tx, ty, "VIEW")
-    draw_polylines(msp, top_h, tx, ty, "HIDDEN")
-
-    lx, ly = origin_x + fw + view_gap - lb[0], origin_y - lb[1]
-    draw_polylines(msp, left_v, lx, ly, "VIEW")
-    draw_polylines(msp, left_v, lx, ly, "VIEW")
-    draw_polylines(msp, left_h, lx, ly, "HIDDEN")
-
-    txt(msp, "主视图 (前视)", (origin_x, origin_y + fh + 6.0 * scale), 3.2 * scale, layer="NOTE")
-    txt(msp, "俯视图", (tx + tb[0], ty + tb[1] - 6.0 * scale - 3.2 * scale), 3.2 * scale, layer="NOTE")
-    txt(msp, "左视图", (lx + lb[0], ly + lb[3] + 6.0 * scale), 3.2 * scale, layer="NOTE")
-
-    # ---- pin centre-crosses (front view) + symmetry-plane centrelines ------
-    for name, (x, y) in pins_xy.items():
-        add_center_cross(msp, (x + fx, y + fy), 10.0 * scale)
-        txt(msp, name, (x + fx + 4.0 * scale, y + fy + 4.0 * scale), 2.6 * scale, layer="NOTE")
-    msp.add_line((tx + fb[0], ty + project_pt((0, 0, 0), "top")[1]),
-                 (tx + fb[0] + fw, ty + project_pt((0, 0, 0), "top")[1]),
-                 dxfattribs={"layer": "CENTER"})
-    msp.add_line((lx + project_pt((0, 0, 0), "left")[0], ly + lb[1]),
-                 (lx + project_pt((0, 0, 0), "left")[0], ly + lb[1] + lh),
-                 dxfattribs={"layer": "CENTER"})
-
-    # ---- overall L/H/W dims --------------------------------------------------
-    do = 20.0 * scale
-    try:
-        d = msp.add_aligned_dim(p1=(fx + fb[0], fy + fb[1]), p2=(fx + fb[2], fy + fb[1]), distance=-do,
-                                 dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-        d.render()
-        d = msp.add_aligned_dim(p1=(fx + fb[0], fy + fb[1]), p2=(fx + fb[0], fy + fb[3]), distance=-do,
-                                 dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-        d.render()
-        d = msp.add_aligned_dim(p1=(tx + tb[0], ty + tb[1]), p2=(tx + tb[0], ty + tb[3]), distance=-do,
-                                 dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-        d.render()
-    except Exception as ex:
-        G.log(f"[warn] overall dim failed: {ex}")
-
-    # ---- pin-to-pin chained dims ---------------------------------------------
-    stack = 0
-    for (na, nb, lbl) in pin_pairs:
-        if na not in pins_xy or nb not in pins_xy:
-            continue
-        pa = pins_xy[na]
-        pb = pins_xy[nb]
-        stack += 1
-        try:
-            d = msp.add_aligned_dim(p1=(pa[0] + fx, pa[1] + fy), p2=(pb[0] + fx, pb[1] + fy),
-                                     distance=do + stack * 9.0 * scale,
-                                     dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-            d.render()
-        except Exception as ex:
-            G.log(f"[warn] pin dim {na}-{nb} failed: {ex}")
-
-    # ---- pin diameter callouts (from hole specs on the side-plate part) ----
-    side_part = parts[0]
-    for (cx, cy, dia) in side_part.holes:
-        try:
-            d = msp.add_diameter_dim(center=(cx + fx, cy + fy), radius=dia / 2.0, angle=45,
-                                      dimstyle=dimstyle, dxfattribs={"layer": "DIM"})
-            d.render()
-        except Exception:
-            pass
-
-    if boss_notes:
-        for i, note in enumerate(boss_notes):
-            txt(msp, note, (origin_x, origin_y - th_ - view_gap - 14.0 * scale - i * 6.0 * scale),
-                2.6 * scale, layer="NOTE")
-
-    # ---- RIGHT block: flat parts, in pid order -------------------------------
-    parts_x0 = origin_x + views_block_w + 100.0 * scale
-    parts_y0 = origin_y + fh - parts_total_h
-    if parts_y0 < bot_m + 40.0 * scale:
-        parts_y0 = bot_m + 40.0 * scale
-    txt(msp, "激光切割件展开图 (按代号顺序)", (parts_x0, parts_y0 + parts_total_h + 8.0 * scale), 3.2 * scale,
-        layer="NOTE")
-    for p in parts:
-        dx, dy = offsets[p.pid]
-        add_part_geometry(msp, p, parts_x0 + dx, parts_y0 + dy, scale, dimstyle)
-
-    # ---- BOM table + tech requirements, bottom area --------------------------
-    bom_x = left_m + 10.0 * scale
-    bom_y = bot_m + 65.0 * scale
-    tw_bom, th_bom, total_mass = draw_bom_table(msp, parts, (bom_x, bom_y), scale)
-    draw_tech_block(msp, (bom_x + tw_bom + 30.0 * scale, bom_y + th_bom - 4.0 * scale), scale,
-                     extra_notes=extra_notes)
-
-    draw_title_block(msp, frame_w_model, frame_h_model, scale, drawing_no, name_cn, sheet_no, sheet_total,
-                      total_mass)
+    info = dict(info, S=S, paper=paper)
+    tx0, ttop = title_block(pen, x1, y0, info)
+    bx0, btop = bom_table(pen, tx0 - 6 * S, y0, bom_items)
+    lines = TECH + [f"{i + 6}. {s}" for i, s in enumerate(extra_tech)]
+    tech_block(pen, x0 + 8 * S, y0 + _band_height(S, len(bom_items)), lines)
 
     auditor = doc.audit()
-    assert len(auditor.errors) == 0, f"{drawing_no}: DXF audit errors: {auditor.errors}"
-    for e in msp.query("LWPOLYLINE[layer=='CUT']"):
-        assert e.closed, f"{drawing_no}: CUT LWPOLYLINE not closed"
+    assert not auditor.has_errors, f"{path_stub}: DXF audit errors {auditor.errors}"
+    doc.saveas(path_stub + ".dxf")
+    _export(doc, path_stub, paper)
+    return dict(scale=S, paper=paper)
 
-    dxf_path = out_stub + ".dxf"
-    doc.saveas(dxf_path)
-    render_pdf_png(doc, out_stub, frame_w_model, frame_h_model)
-    G.log(f"  scale=1:{scale:g}  frame={frame_w_model/scale:.0f}x{frame_h_model/scale:.0f}mm(A1 units)  "
-          f"total_mass={total_mass:.1f}kg  -> {dxf_path}")
-    return dict(scale=scale, total_mass=total_mass, dxf_path=dxf_path, overflow=overflow)
+
+def _export(doc, path_stub, paper):
+    Wp, Hp = PAPERS[paper]
+    cfg = config.Configuration(background_policy=config.BackgroundPolicy.WHITE,
+                               color_policy=config.ColorPolicy.BLACK,
+                               lineweight_policy=config.LineweightPolicy.ABSOLUTE,
+                               lineweight_scaling=1.0, min_lineweight=0.12)
+    be = pymupdf.PyMuPdfBackend()
+    Frontend(RenderContext(doc), be, config=cfg).draw_layout(doc.modelspace())
+    page = layout.Page(Wp, Hp, layout.Units.mm, margins=layout.Margins.all(0))
+    st = layout.Settings(fit_page=True)
+    with open(path_stub + ".pdf", "wb") as f:
+        f.write(be.get_pdf_bytes(page, settings=st))
+    with open(path_stub + ".png", "wb") as f:
+        f.write(be.get_pixmap_bytes(page, fmt="png", dpi=110, settings=st))

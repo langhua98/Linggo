@@ -9,7 +9,7 @@ strip plates whose spec-v2 instruction is "outer face on the outline,
 thickness inward" are built by offsetting the relevant outline path inward
 by the plate thickness (shapely single-sided buffer) and extruding; bent
 plates (K4 wrap, B2/B3 press-brake plates) are modelled directly in their
-BENT (in-service) shape as a thickness-wide swept band along the actual
+BENT (in-service) shape as a rim just inside the side-plate outline along the actual
 bent centreline path, rather than as a flat blank -- this is the physically
 correct 3D shape for the assembly (the flat blank only matters for the 2D
 laser/press-brake drawing, produced separately in parts.py/sheets.py).
@@ -99,15 +99,39 @@ def offset_strip_from_path(path_pts, thickness, ref_poly, z0, z1, chord=1.0):
     return extrude_polygon_z(_simplify(band, 0.2), z0, z1)
 
 
-def swept_band_from_path(path_pts, thickness, z0, z1):
-    """Centreline-swept band of the given width, extruded over [z0,z1].
-    Used for BENT plates (K4 wrap, B2/B3) where we model the actual bent
-    3D shape rather than the flat blank (see module docstring)."""
-    ls = LineString(path_pts)
-    band = ls.buffer(thickness / 2.0, cap_style=2, join_style=2)
-    if band.geom_type == "MultiPolygon":
-        band = max(band.geoms, key=lambda gg: gg.area)
-    return extrude_polygon_z(_simplify(band, 0.2), z0, z1)
+def _sketch(verts, z0):
+    """CadQuery wire from a closed bulge ring (true arcs), on plane z=z0."""
+    wp = cq.Workplane("XY", origin=(0, 0, z0)).moveTo(verts[0][0], verts[0][1])
+    n = len(verts)
+    for i in range(n):
+        a = verts[i][:2]
+        b = verts[(i + 1) % n][:2]
+        bl = verts[i][2]
+        if abs(bl) < 1e-12:
+            if i < n - 1:
+                wp = wp.lineTo(b[0], b[1])
+        else:
+            cen, r, a0, sw = G.arc_of(a, b, bl)
+            am = a0 + sw / 2
+            wp = wp.threePointArc((cen[0] + r * math.cos(am), cen[1] + r * math.sin(am)), (b[0], b[1]))
+    return wp.close()
+
+
+def extrude_bulge(verts, holes, z0, z1):
+    """Plate solid from a bulge outline with true arcs + round holes."""
+    solid = _sketch(verts, z0).extrude(z1 - z0)
+    for (cx, cy, d) in holes:
+        solid = solid.cut(cylinder_z(cx, cy, d, z0 - 1, z1 + 1))
+    return solid
+
+
+def rim_band(verts, t, keep_pts, z0, z1):
+    """Plate of thickness t lying just inside the outline `verts` (exact arcs:
+    outline minus its inward offset), trimmed to the polygon `keep_pts`."""
+    outer = _sketch(verts, z0).extrude(z1 - z0)
+    inner = _sketch(verts, z0).offset2D(-t, kind="arc").extrude(z1 - z0)
+    keep = cq.Workplane("XY", origin=(0, 0, z0)).polyline(keep_pts).close().extrude(z1 - z0)
+    return outer.cut(inner).intersect(keep)
 
 
 def union_all(solids):
@@ -136,7 +160,7 @@ def build_bucket_solid(bkt_parts_by_id, poly_k1):
     for sgn in (+1, -1):
         z0, z1 = sgn * 192.0, sgn * 200.0
         z0, z1 = min(z0, z1), max(z0, z1)
-        solids.append(extrude_polygon_z(poly_k1, z0, z1))
+        solids.append(extrude_bulge(bkt_parts_by_id["K1"].outer, [], z0, z1))
 
     # K2 top plate: literal box x in[-200,80], y in[-103,-95], z in ±192
     k2poly = Polygon([(-200, -103), (80, -103), (80, -95), (-200, -95)])
@@ -155,34 +179,32 @@ def build_bucket_solid(bkt_parts_by_id, poly_k1):
         k3band = max(k3band.geoms, key=lambda gg: gg.area)
     solids.append(extrude_polygon_z(k3band, -192.0, 192.0))
 
-    # K4 wrap plate: 6mm band along blade-end -> B1 -> arc -> B2 -> P1, z ±192
-    arc_pts = []
-    a1 = math.atan2(B1[1] - ARC_C[1], B1[0] - ARC_C[0])
-    a2 = math.atan2(B2[1] - ARC_C[1], B2[0] - ARC_C[0])
-    da = -((a1 - a2) % (2 * math.pi))  # CW sweep matching bulge convention
-    nseg = 48
-    for k in range(nseg + 1):
-        a = a1 + da * k / nseg
-        arc_pts.append((ARC_C[0] + ARC_R * math.cos(a), ARC_C[1] + ARC_R * math.sin(a)))
-    k4_path = [p_end, B1] + arc_pts[1:] + [P1]
-    solids.append(swept_band_from_path(k4_path, 6.0, -192.0, 192.0))
+    # K4 wrap plate: 6 mm rim just inside the side profile, from the blade end
+    # round the bottom arc and up the back wall to P1 (exact arcs)
+    n_out = (-left_n[0], -left_n[1]) if inward > 0 else left_n
+    keep = [vadd(p_end, vscale(n_out, 30)), vadd(p_end, vscale(n_out, -80)), ARC_C,
+            (P1[0] + 80, P1[1]), (P1[0] - 40, P1[1]), (P1[0] - 60, B1[1] - 60),
+            (p_end[0], B1[1] - 60)]
+    solids.append(rim_band(bkt_parts_by_id["K1"].outer, 6.0, keep, -192.0, 192.0))
 
     # K5 ear plates x2, t12, z in ±[48.5,60.5]
-    ear_poly = bkt_parts_by_id["K5"].polygon
+    k5 = bkt_parts_by_id["K5"]
     for sgn in (+1, -1):
         z0, z1 = sorted((sgn * 48.5, sgn * 60.5))
-        solids.append(extrude_polygon_z(ear_poly, z0, z1))
+        solids.append(extrude_bulge(k5.outer, k5.holes, z0, z1))
     # ear bosses OD50/ID30 z ±[48.5,73.5]
     for sgn in (+1, -1):
         z0, z1 = sorted((sgn * 48.5, sgn * 73.5))
         solids.append(tube_z(D0[0], D0[1], 50.0, 30.0, z0, z1))
         solids.append(tube_z(G0[0], G0[1], 50.0, 30.0, z0, z1))
 
-    # K6 gussets: triangle legs 60 in YZ plane, t8 centred at x=-80,+20, sitting on top plate (y=-95)
+    # K6 gussets (t8, legs 60): stand on the top plate (y=-95) against the OUTER
+    # face of each ear (z=+-60.5), one pair at x=-80 and one at x=+20.
     for xc in (-80.0, 20.0):
-        for zc in (-192.0 + 30.0, 192.0 - 30.0):
+        for sgn in (+1, -1):
+            zf = sgn * 60.5
             tri = (cq.Workplane("YZ", origin=(xc - 4.0, 0, 0))
-                   .polyline([(-95.0, zc - 30.0), (-95.0, zc + 30.0), (-95.0 + 60.0, zc - 30.0)])
+                   .polyline([(-95.0, zf), (-95.0, zf + sgn * 60.0), (-35.0, zf)])
                    .close().extrude(8.0))
             solids.append(tri)
 
@@ -206,7 +228,7 @@ def build_arm_solid(arm_parts_by_id, arm_kin):
     # A1 sides x2, z ±[37.5,47.5]
     for sgn in (+1, -1):
         z0, z1 = sorted((sgn * 37.5, sgn * 47.5))
-        solids.append(extrude_polygon_z(poly_a1, z0, z1))
+        solids.append(extrude_bulge(arm_parts_by_id["A1"].outer, arm_parts_by_id["A1"].holes, z0, z1))
 
     # A2 bottom plate t12, along A->D, outer face on outline, inward, z ±37.5
     seg_AD = arm_kin["seg_AD"]
@@ -232,10 +254,10 @@ def build_arm_solid(arm_parts_by_id, arm_kin):
         solids.append(tube_z(B[0], B[1], 70.0, 28.0, z0, z1))
 
     # A5 lugs x2, t12, z ±[31,43], on top
-    lug_poly = arm_parts_by_id["A5"].polygon
+    a5 = arm_parts_by_id["A5"]
     for sgn in (+1, -1):
         z0, z1 = sorted((sgn * 31.0, sgn * 43.0))
-        solids.append(extrude_polygon_z(lug_poly, z0, z1))
+        solids.append(extrude_bulge(a5.outer, a5.holes, z0, z1))
 
     solid = union_all(solids)
     return solid
@@ -250,20 +272,33 @@ def build_boom_solid(boom_parts_by_id, boom_kin):
     poly_b1 = boom_kin["poly_b1"]
     solids = []
 
-    # B1 sides x2, z ±[48.5,58.5]
+    b1 = boom_parts_by_id["B1"]
     for sgn in (+1, -1):
         z0, z1 = sorted((sgn * 48.5, sgn * 58.5))
-        solids.append(extrude_polygon_z(poly_b1, z0, z1))
+        solids.append(extrude_bulge(b1.outer, b1.holes, z0, z1))
 
-    # B2 top plate t12: bent band along A->Ct(arc)->O top path, z ±48.5
-    top_path = [boom_kin["seg_A_Ct"][0]] + _arc_pts_between(boom_kin["seg_A_Ct"][1], boom_kin["seg_Ct_O"][0],
-                                                              G.BOOM_CT) + [boom_kin["seg_Ct_O"][1]]
-    solids.append(swept_band_from_path(top_path, 12.0, -48.5, 48.5))
+    # B2 top / B3 belly: 12 mm rims just inside the side outline (exact bend radii),
+    # trimmed at the tangent points next to the O and A end circles
+    K, Ct, Cb, u = G.BOOM_K, G.BOOM_CT, G.BOOM_CB, G.BOOM_KNEE_U
 
-    # B3 bottom (belly) plate t12: bent band along O->Cb(arc)->A path, z ±48.5
-    bot_path = [boom_kin["seg_O_Cb"][0]] + _arc_pts_between(boom_kin["seg_O_Cb"][1], boom_kin["seg_Cb_A"][0],
-                                                              G.BOOM_CB) + [boom_kin["seg_Cb_A"][1]]
-    solids.append(swept_band_from_path(bot_path, 12.0, -48.5, 48.5))
+    def _normal_pts(p, q, inward_ref):
+        d = vunit(vsub(q, p))
+        n = (-d[1], d[0])
+        if (n[0] * (inward_ref[0] - p[0]) + n[1] * (inward_ref[1] - p[1])) < 0:
+            n = (-n[0], -n[1])
+        return vadd(p, vscale(n, 60)), vadd(p, vscale(n, -30))  # (inside, outside)
+
+    tA, tO = boom_kin["seg_A_Ct"][0], boom_kin["seg_Ct_O"][1]
+    a_in, a_out = _normal_pts(tA, boom_kin["seg_A_Ct"][1], K)
+    o_in, o_out = _normal_pts(tO, boom_kin["seg_Ct_O"][0], K)
+    keep_top = [a_in, a_out, vadd(Ct, vscale(u, 150)), o_out, o_in, K]
+    solids.append(rim_band(b1.outer, 12.0, keep_top, -48.5, 48.5))
+
+    bO, bA = boom_kin["seg_O_Cb"][0], boom_kin["seg_Cb_A"][1]
+    o_in, o_out = _normal_pts(bO, boom_kin["seg_O_Cb"][1], K)
+    a_in, a_out = _normal_pts(bA, boom_kin["seg_Cb_A"][0], K)
+    keep_bot = [o_in, o_out, vsub(Cb, vscale(u, 150)), a_out, a_in, K]
+    solids.append(rim_band(b1.outer, 12.0, keep_bot, -48.5, 48.5))
 
     # foot boss OD70 ID40 L117 (z ±58.5)
     solids.append(tube_z(O[0], O[1], 70.0, 40.0, -58.5, 58.5))
@@ -272,22 +307,17 @@ def build_boom_solid(boom_parts_by_id, boom_kin):
     for sgn in (+1, -1):
         z0, z1 = sorted((sgn * 58.5, sgn * 70.5))
         solids.append(tube_z(Aj[0], Aj[1], 90.0, 35.0, z0, z1))
-    # A pivot bore through B1 sides too: cut a 35-dia hole through full width to keep it a clean through-bore
-    solids.append(cylinder_z(Aj[0], Aj[1], 35.0, -70.5, 70.5))
+    # A pivot bore through B1 sides and rings (subtracted after the union)
+    bore_A = cylinder_z(Aj[0], Aj[1], 35.0, -71.0, 71.0)
 
     # B4/B5 lugs x2, t16, z ±[36,52]
     for pid in ("B4", "B5"):
-        poly = boom_parts_by_id[pid].polygon
+        lp = boom_parts_by_id[pid]
         for sgn in (+1, -1):
             z0, z1 = sorted((sgn * 36.0, sgn * 52.0))
-            solids.append(extrude_polygon_z(poly, z0, z1))
+            solids.append(extrude_bulge(lp.outer, lp.holes, z0, z1))
 
-    solid = solids[0]
-    for s in solids[1:-1]:
-        solid = solid.union(s)
-    # cut the through-bore last (subtract) then continue unioning remaining if any
-    solid = solid.cut(solids[-1]) if len(solids) > 0 else solid
-    return solid
+    return union_all(solids).cut(bore_A)
 
 
 def _arc_pts_between(p1, p2, centre, nseg=24):
@@ -300,7 +330,7 @@ def _arc_pts_between(p1, p2, centre, nseg=24):
     while da > math.pi:
         da -= 2 * math.pi
     pts = []
-    for k in range(1, nseg):
+    for k in range(0, nseg + 1):
         a = a1 + da * k / nseg
         pts.append((centre[0] + r * math.cos(a), centre[1] + r * math.sin(a)))
     return pts
