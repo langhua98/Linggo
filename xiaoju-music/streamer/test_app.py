@@ -262,30 +262,44 @@ def test_photo_scan_and_download(monkeypatch):
 
 # ── 搬歌 ──
 
-def run_copier(songs, existing=(), limit=100, dry_run=False, flood_on=None):
+def run_copier(songs, existing=(), limit=100, dry_run=False, flood_on=None, **rule):
     forwarded, slept = [], []
 
     async def iter_music(source):
         assert source == 'VmoMusic'
         for s in songs:
-            yield s, s[0], s[1]
+            yield s, s[0], s[1], (s[2] if len(s) > 2 else 200)
+
+    class Sent:
+        def __init__(self, i):
+            self.id = i
 
     async def forward(target, msg):
         assert target == 'xiaojumusic'
         if flood_on == msg[0] and not slept:
             raise FloodWaitError(request=None, capture=7)
         forwarded.append(msg[0])
+        return [Sent(1000 + len(forwarded))]  # Telethon 返回转过去的新消息
 
     async def sleep(n):
         slept.append(n)
 
     async def main():
         c = appmod.Copier(iter_music=iter_music, forward=forward, sleep=sleep, pause=3)
-        c.start('VmoMusic', 'xiaojumusic', limit, list(existing), dry_run)
+        c.start('VmoMusic', 'xiaojumusic', limit, list(existing), dry_run, **rule)
         await c.task
         return c.state
 
     return asyncio.run(main()), forwarded, slept
+
+
+def test_copier_keywords_duration_and_any_language():
+    songs = [('夜曲 DJ版', '某人', 200), ('Destructure (Bass Mix)', 'DJ X', 180), ('晴天', '周杰伦', 260),
+             ('重低音车载', '', 40), ('慢摇串烧', '', 3000)]
+    state, forwarded, _ = run_copier(songs, keywords=['dj', '重低音', 'mix', '慢摇'], min_seconds=90, chinese_only=False)
+    assert forwarded == ['夜曲 DJ版', 'Destructure (Bass Mix)', '慢摇串烧']
+    assert state['skipped_other'] == 2  # 「晴天」没有关键词，「重低音车载」只有 40 秒
+    assert state['new_ids'] == [1001, 1002, 1003]
 
 
 def test_copier_takes_chinese_songs_skips_duplicates_and_stops_at_limit():

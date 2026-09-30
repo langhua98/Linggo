@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
 from telethon.errors import FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
+from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.types import InputMessagesFilterMusic
 from telethon.sessions import StringSession
 
@@ -199,34 +200,46 @@ class Copier:
     def running(self):
         return self.task is not None and not self.task.done()
 
-    def start(self, source, target, limit, existing, dry_run=False):
+    def start(self, source, target, limit, existing, dry_run=False, keywords=(), min_seconds=0, chinese_only=True):
+        """keywords：给了就只要歌名或歌手里含其中一个词的（不分大小写）；min_seconds：比这短的是片段，不要；
+        chinese_only：只要中文歌。"""
         if self.running():
             raise RuntimeError('already running')
         self.state = {'status': 'running', 'source': source, 'limit': limit, 'dry_run': dry_run,
-                      'scanned': 0, 'copied': 0, 'skipped_lang': 0, 'skipped_dup': 0, 'recent': [], 'error': ''}
+                      'scanned': 0, 'copied': 0, 'skipped_lang': 0, 'skipped_dup': 0, 'skipped_other': 0,
+                      'recent': [], 'new_ids': [], 'error': ''}
         seen = {song_key(t, a) for t, a in existing}
-        self.task = asyncio.create_task(self.run(source, target, limit, seen, dry_run))
+        rule = (tuple(k.lower() for k in keywords if k), min_seconds, chinese_only)
+        self.task = asyncio.create_task(self.run(source, target, limit, seen, dry_run, rule))
 
     def stop(self):
         if self.running():
             self.task.cancel()
 
-    async def run(self, source, target, limit, seen, dry_run):
+    async def run(self, source, target, limit, seen, dry_run, rule=((), 0, True)):
+        keywords, min_seconds, chinese_only = rule
         st = self.state
         try:
-            async for msg, title, performer in self.iter_music(source):
+            async for msg, title, performer, seconds in self.iter_music(source):
                 if st['copied'] >= limit:
                     break
                 st['scanned'] += 1
-                if not is_chinese((title or '') + (performer or '')):
+                text = (title or '') + ' ' + (performer or '')
+                if chinese_only and not is_chinese(text):
                     st['skipped_lang'] += 1
+                    continue
+                if (keywords and not any(k in text.lower() for k in keywords)) or (seconds or 0) < min_seconds:
+                    st['skipped_other'] += 1
                     continue
                 key = song_key(title, performer)
                 if key in seen:
                     st['skipped_dup'] += 1
                     continue
                 if not dry_run:
-                    await self.forward_patiently(target, msg)
+                    sent = await self.forward_patiently(target, msg)
+                    new_id = getattr(sent[0] if isinstance(sent, list) and sent else sent, 'id', None)
+                    if new_id:
+                        st['new_ids'].append(new_id)
                     await self.sleep(self.pause)  # 慢慢来，免得账号被限制
                 seen.add(key)
                 st['copied'] += 1
@@ -302,7 +315,8 @@ def user_music(client):
             f = msg.file
             if f is None:
                 continue
-            yield msg, f.title or re.sub(r'\.[a-z0-9]{1,5}$', '', f.name or '', flags=re.I), f.performer or ''
+            yield (msg, f.title or re.sub(r'\.[a-z0-9]{1,5}$', '', f.name or '', flags=re.I), f.performer or '',
+                   f.duration or 0)
     return iter_music
 
 
@@ -470,10 +484,23 @@ async def copy_start(request: Request):
     existing = [(str(t), str(a)) for t, a in body.get('existing', [])]
     limit = max(1, min(int(body.get('limit', 50)), 2000))
     try:
-        copier.start(source, target_channel(), limit, existing, bool(body.get('dry_run')))
+        keywords = [str(k)[:30] for k in body.get('keywords', [])][:30]
+        copier.start(source, target_channel(), limit, existing, bool(body.get('dry_run')), keywords,
+                     max(0, int(body.get('min_seconds', 0))), bool(body.get('chinese_only', True)))
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return copier.state
+
+
+@app.get('/search/channels')
+async def search_channels(q: str, request: Request):
+    """按名字搜公开频道（和 Telegram 里的全局搜索一样），给搬歌挑来源用。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    found = await user_client(SearchRequest(q=q[:64], limit=30))
+    return {'channels': [{'username': c.username, 'title': c.title, 'members': getattr(c, 'participants_count', None)}
+                         for c in found.chats if getattr(c, 'broadcast', False) and c.username]}
 
 
 @app.get('/copy/status')
