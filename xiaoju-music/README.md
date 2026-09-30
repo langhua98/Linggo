@@ -25,14 +25,15 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 
 | 路径 | 作用 |
 |---|---|
-| `GET /` | 播放页（`page.html`：深色沉浸式，电脑两栏、手机歌单 + 迷你条 + 全屏播放（往下拖收起、往上拖下一首）；「全部 / 我喜欢 / 歌手」三个页签，歌手页按歌手把歌归在一起，合唱的歌几位歌手底下都有） |
+| `GET /` | 播放页（`page.html`：深色沉浸式，电脑两栏、手机歌单 + 迷你条 + 全屏播放（往下拖收起、往上拖下一首）；「全部 / 歌单 / 我喜欢 / 歌手」四个页签（歌单是管理员编的），歌手页按歌手把歌归在一起，合唱的歌几位歌手底下都有） |
 | `GET /l/<消息号>` | 歌词 JSON：`{src, synced, lines: [[秒, 这句], …]}`（`synced` 为 false 时只有文字、秒是 null）。先看数据库，没有就去 LRCLIB、网易云找，找到（或确定没有）就存起来，见下方「歌词」 |
 | `GET /c/<消息号>` | 封面：优先用音乐文件自带的缩略图（新歌走 Bot API，更早的歌请流式服务用 MTProto 取）；没有就从频道的图片帖里随机挑一张（新图片帖由 webhook 记下，更早的由流式服务 `/photos` 按消息号扫出来）。挑定后存进数据库，不再变 |
-| `GET /api/tracks` | 歌单 JSON，新的在前；每首带 `big`（超过 20 MB）和 `playable`，不含 `file_id` |
+| `GET /api/tracks` | 歌曲 JSON，新的在前；每首带 `big`（超过 20 MB）和 `playable`，不含 `file_id`；`playlists` 是管理员编的歌单 |
 | `GET /a/<消息号>` | 音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；加 `?dl=1` 变成下载 |
 | `POST /tg-webhook` | Telegram 推送频道新帖，音频自动登记；回复某首歌发的 `.lrc` 文件就是这首的歌词 |
 | `GET /admin` | 管理页（`admin.html`） |
 | `GET /admin/api/state` / `POST /admin/api/remove` | 管理页数据 / 从歌单移除一首（`{track}`） |
+| `POST /admin/api/playlists` | 整体设置歌单：`{playlists: [{id?, name, cover?, tracks: [消息号…]}]}`，顺序就是显示顺序；带 `id` 的原地改，没列出的删掉 |
 
 管理接口都要 `Authorization: Bearer <ADMIN_KEY>`，响应不带 CORS 头。
 
@@ -46,6 +47,7 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 - `photos`：频道里的图片帖（`file_id` 为空的是流式服务扫出来的老帖，由它下载）；
 - `lyrics`：每首歌的歌词原文，`src` 是 `lrclib` / `netease` / `manual`（频道里手动发的）/ `none`（确定没有）；
   `retry_at` 不为 0 时，过了这个时间再去外面找一次；
+- `playlists`：管理员编的歌单（`pos` 顺序、`name`、`cover` 封面用哪首歌的消息号、`tracks` 消息号 JSON 数组）；
 - `config`：`migrated`（已从 KV 迁移过）。
 
 **收藏（我喜欢）不在服务器上**：存在各人浏览器的 localStorage 里（`xm-favs`，消息号数组，新收藏的在前；

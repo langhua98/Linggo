@@ -196,7 +196,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'covers', 'lyrics', 'photos', 'songs']);
+  assert.deepEqual(tables, ['config', 'covers', 'lyrics', 'photos', 'playlists', 'songs']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -473,6 +473,22 @@ await t('查重：新帖和已有的歌名、歌手一样、时长差 3 秒以�
   await hook({ edited_channel_post: audioPost(50, { title: '海阔天空', performer: 'Beyond', duration: 326, file_id: 'X50', file_size: 9 }) });
   assert.ok((await publicTracks()).some(x => x.id === 50), '编辑已登记的帖子不会把自己当重复');
   for (const id of [50, 53, 54]) await admin('remove', { track: id });
+});
+
+await t('歌单：管理员整体设置，跟着歌单 JSON 给出去；改名、排序保留 id，没列出的删掉；参数不对 400', async () => {
+  assert.deepEqual((await jsonOf(await req('/api/tracks'))).playlists, []);
+  assert.equal((await admin('playlists', { playlists: [{ name: '', tracks: [] }] })).status, 400);
+  assert.equal((await admin('playlists', { playlists: [{ name: 'x', tracks: ['a'] }] })).status, 400);
+  assert.equal((await admin('playlists', { playlists: [{ name: 'x', tracks: [] }] }, 'wrong')).status, 401);
+  let r = await jsonOf(await admin('playlists', { playlists: [{ name: ' 抖音热歌 ', tracks: [9, 10, 9] }, { name: '经典老歌', cover: 4, tracks: [4] }] }));
+  const [hot, old] = r.playlists;
+  assert.deepEqual([hot.name, hot.tracks, old.cover], ['抖音热歌', [9, 10], 4]);
+  assert.deepEqual((await jsonOf(await req('/api/tracks'))).playlists.map(p => p.name), ['抖音热歌', '经典老歌']);
+  r = await jsonOf(await admin('playlists', { playlists: [{ id: old.id, name: '经典', tracks: [4, 9] }, { name: '新的', tracks: [] }] }));
+  assert.deepEqual(r.playlists.map(p => [p.id === old.id, p.name, p.tracks]), [[true, '经典', [4, 9]], [false, '新的', []]]);
+  assert.ok(!r.playlists.some(p => p.id === hot.id), '没列出的歌单删掉');
+  assert.deepEqual((await jsonOf(await admin('state'))).playlists.map(p => p.name), ['经典', '新的']);
+  await admin('playlists', { playlists: [] });
 });
 
 await t('大文件：Range 原样转给流式服务（带密钥），返回的字节和原文件一致', async () => {

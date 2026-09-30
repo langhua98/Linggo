@@ -214,7 +214,19 @@ async function adminApi(request, env, url) {
 
   const action = url.pathname.slice('/admin/api/'.length);
   if (action === 'state' && request.method === 'GET') {
-    return json({ channel: env.CHANNEL_USERNAME || '', streamer: streamerOn(env), tracks: await tracksFor(env) });
+    return json({ channel: env.CHANNEL_USERNAME || '', streamer: streamerOn(env), tracks: await tracksFor(env), playlists: await lib(env).listPlaylists() });
+  }
+  // 整体设置歌单：{ playlists: [{ id?, name, cover?, tracks: [消息号...] }] }，顺序就是显示顺序
+  if (action === 'playlists' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const list = Array.isArray(body.playlists) ? body.playlists : null;
+    const ok = list && list.length <= 100 && list.every(p => p && typeof p.name === 'string' && p.name.trim() && p.name.length <= 40 &&
+      Array.isArray(p.tracks) && p.tracks.length <= 5000 && p.tracks.every(Number.isInteger) &&
+      (p.id === undefined || Number.isInteger(p.id)) && (p.cover === undefined || Number.isInteger(p.cover)));
+    if (!ok) return json({ error: '参数不对' }, 400);
+    const saved = await lib(env).setPlaylists(list.map(p => ({ id: p.id, name: p.name.trim(), cover: p.cover, tracks: [...new Set(p.tracks)] })));
+    listCache = null;
+    return json({ ok: true, playlists: saved });
   }
   if (action === 'remove' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));
@@ -241,7 +253,8 @@ async function tracksFor(env) {
 async function trackList(env) {
   const now = Date.now();
   if (!listCache || listCache.exp < now) {
-    listCache = { body: JSON.stringify({ channel: env.CHANNEL_USERNAME || '', tracks: await tracksFor(env) }), exp: now + LIST_TTL_MS };
+    const [tracks, playlists] = await Promise.all([tracksFor(env), lib(env).listPlaylists()]);
+    listCache = { body: JSON.stringify({ channel: env.CHANNEL_USERNAME || '', tracks, playlists }), exp: now + LIST_TTL_MS };
   }
   return new Response(listCache.body, {
     headers: cors({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=15' }),
@@ -749,6 +762,8 @@ export class Library extends DurableObject {
       // 歌词：src 是 lrclib / netease / manual（频道里手动发的）/ none（确定没有）；lrc 是原文；
       // retry_at 不为 0 时，过了这个时间要再去外面找一次
       this.sql.exec('CREATE TABLE IF NOT EXISTS lyrics (id INTEGER PRIMARY KEY, src TEXT NOT NULL, lrc TEXT NOT NULL, retry_at INTEGER NOT NULL DEFAULT 0)');
+      // 管理员编的歌单：pos 是在歌单列表里的顺序，tracks 是消息号数组（JSON），按歌单里的顺序
+      this.sql.exec('CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, pos INTEGER NOT NULL, name TEXT NOT NULL, cover INTEGER NOT NULL DEFAULT 0, tracks TEXT NOT NULL)');
       this.dropSplitterLeftovers();
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
       if (this.cfg('coversV') !== '2') {
@@ -812,6 +827,26 @@ export class Library extends DurableObject {
     this.sql.exec('DELETE FROM songs WHERE id = ?', id);
     this.sql.exec('DELETE FROM covers WHERE id = ?', id);
     this.sql.exec('DELETE FROM lyrics WHERE id = ?', id);
+  }
+
+  async listPlaylists() {
+    return this.sql.exec('SELECT id, name, cover, tracks FROM playlists ORDER BY pos').toArray()
+      .map(r => ({ id: r.id, name: r.name, cover: r.cover, tracks: JSON.parse(r.tracks) }));
+  }
+
+  // 整体换掉：给的是 [{ id?, name, cover?, tracks }]，没带 id（或 id 不存在）的是新歌单。
+  // 中间没有 await，这一串 SQL 不会被别的请求打断，也会一起写进存储
+  async setPlaylists(list) {
+    const keep = [];
+    list.forEach((p, pos) => {
+      const args = [pos, p.name, p.cover || 0, JSON.stringify(p.tracks)];
+      const hit = Number.isInteger(p.id)
+        ? this.sql.exec('UPDATE playlists SET pos = ?, name = ?, cover = ?, tracks = ? WHERE id = ? RETURNING id', ...args, p.id).toArray()[0]
+        : null;
+      keep.push(hit ? hit.id : this.sql.exec('INSERT INTO playlists (pos, name, cover, tracks) VALUES (?, ?, ?, ?) RETURNING id', ...args).toArray()[0].id);
+    });
+    this.sql.exec(`DELETE FROM playlists WHERE id NOT IN (${keep.map(() => '?').join(',') || 'NULL'})`, ...keep);
+    return this.listPlaylists();
   }
 
   async getLyrics(id) {
