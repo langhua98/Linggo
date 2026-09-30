@@ -50,6 +50,8 @@ body.playing .disc{animation-play-state:running}
   background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font-size:14px;color:var(--muted);text-align:center;padding:0 24px}
 .spinner{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+.now{width:100%;display:flex;flex-direction:column;align-items:center;transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .25s}
+.now.instant,.stage.dragging .now{transition:none}
 .meta{width:100%;margin-top:28px;min-width:0;display:flex;align-items:center;gap:10px}
 .meta-text{flex:1;min-width:0}
 .t{font-size:24px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -97,8 +99,7 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radiu
 .brand{display:flex;align-items:center;gap:12px;min-width:0}
 .logo{width:44px;height:44px;flex:none;border-radius:13px;display:grid;place-items:center;font-size:24px;
   background:linear-gradient(135deg,#fdba74,#ea580c);box-shadow:0 8px 20px rgba(234,88,12,.35)}
-h1{font-size:18px;margin:0;line-height:1.2}
-#count{margin:3px 0 0;font-size:12.5px;color:var(--faint)}
+h1{font-size:20px;margin:0;line-height:1.2}
 .search{display:flex;align-items:center;gap:8px;margin:6px 16px 8px;height:40px;padding:0 12px;border-radius:12px;background:rgba(255,255,255,.07);color:var(--faint)}
 .search .ic{width:17px;height:17px;flex:none}
 .search input{flex:1;min-width:0;height:100%;border:0;background:none;color:var(--fg);font:inherit;outline:none}
@@ -152,23 +153,23 @@ h1{font-size:18px;margin:0;line-height:1.2}
 .mini{display:none}
 #toast{position:fixed;left:50%;top:calc(14px + env(safe-area-inset-top));z-index:50;max-width:calc(100vw - 32px);transform:translate(-50%,-160%);
   padding:10px 16px;border-radius:12px;background:var(--glass-strong);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border:1px solid var(--line);
-  font-size:14px;transition:transform .3s ease;pointer-events:none}
-#toast.show{transform:translate(-50%,0)}
+  font-size:14px;transition:transform .3s ease,visibility .3s;pointer-events:none;visibility:hidden}
+#toast.show{transform:translate(-50%,0);visibility:visible}
 #toast.act{pointer-events:auto}
 #toast button{margin-left:14px;padding:0;border:0;background:none;color:var(--accent);font-weight:700;cursor:pointer}
 
-/* 手机：平时是歌单 + 底部迷你播放条；点播放条展开全屏「正在播放」 */
+/* 手机：平时是歌单 + 底部迷你播放条；点播放条展开全屏「正在播放」。
+   整页不滚动，只让歌单面板自己滚：页面一滚，Safari 的地址栏就缩到屏幕底部，这时点底部播放条，
+   第一下会被 Safari 拿去展开地址栏，要点第二下才进得去播放页 */
 @media (max-width:899px){
-  body{overflow:auto}
-  body.sheet-open{overflow:hidden}
   body.sheet-open .panel,body.sheet-open .mini{visibility:hidden}
-  .app{display:block;height:auto;padding:0}
-  .panel{border:0;border-radius:0;overflow:visible;background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+  .app{display:block;height:100vh;height:100dvh;padding:0}
+  .panel{display:block;height:100%;overflow-y:auto;overscroll-behavior:contain;border:0;border-radius:0;background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
   .head{padding:calc(18px + env(safe-area-inset-top)) 16px 8px}
   .list{overflow:visible;padding:4px 6px calc(100px + env(safe-area-inset-bottom))}
   .stage{position:fixed;inset:0;z-index:30;max-width:none;align-self:stretch;justify-self:stretch;justify-content:center;padding:calc(56px + env(safe-area-inset-top)) 28px calc(28px + env(safe-area-inset-bottom));
     background:rgba(12,10,9,.28);
-    transform:translateY(100%);visibility:hidden;transition:transform .38s cubic-bezier(.2,.8,.2,1),visibility .38s}
+    transform:translateY(100%);visibility:hidden;transition:transform .38s cubic-bezier(.2,.8,.2,1),visibility .38s;touch-action:none}
   .stage.open{transform:none;visibility:visible}
   #close{display:grid;position:absolute;top:calc(8px + env(safe-area-inset-top));left:50%;margin-left:-22px}
   .stage.dragging{transition:none}
@@ -176,7 +177,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
   .vol{display:none}
   .mini{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:20;display:flex;align-items:center;gap:4px;padding:8px;
     border-radius:16px;overflow:hidden;background:var(--glass-strong);-webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4);
-    border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.45)}
+    border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.45);cursor:pointer}
   .mini-open{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:none;padding:0;text-align:left;cursor:pointer}
   .mini .thumb{width:42px;height:42px;border-radius:50%;animation:spin 10s linear infinite;animation-play-state:paused}
   body.playing .mini .thumb{animation-play-state:running}
@@ -201,7 +202,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
   <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m20.5 20.5-4.2-4.2"/></symbol>
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></symbol>
-  <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
   <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 21s-6.7-4.4-9.2-8.3C1 9.9 2.2 5.9 5.9 5.1c2.3-.5 4.3.6 6.1 2.7 1.8-2.1 3.8-3.2 6.1-2.7 3.7.8 4.9 4.8 3.1 7.6C18.7 16.6 12 21 12 21z"/></symbol>
 </svg>
 
@@ -210,6 +210,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
 <div class="app">
   <section class="stage" id="stage" aria-label="正在播放">
     <button class="icon" id="close" type="button" aria-label="收起"><svg class="ic stroke"><use href="#i-down"/></svg></button>
+    <div class="now" id="now">
     <div class="cover-wrap">
       <div class="disc"><div class="label noart" id="coverWrap"><img id="art" alt=""><div class="cover-fallback"></div></div></div>
       <div class="waking" id="waking" hidden><span class="spinner"></span><span>大文件服务正在唤醒<br>大约需要一分钟</span></div>
@@ -217,6 +218,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
     <div class="meta">
       <div class="meta-text"><div class="t" id="t">小橘音乐</div><div class="a" id="a">选一首歌开始听</div></div>
       <button class="icon fav" id="like" type="button" aria-label="收藏" aria-pressed="false" hidden><svg class="ic stroke"><use href="#i-heart"/></svg></button>
+    </div>
     </div>
     <div class="progress">
       <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="播放进度">
@@ -238,12 +240,12 @@ h1{font-size:18px;margin:0;line-height:1.2}
     <header class="head">
       <div class="brand">
         <div class="logo" aria-hidden="true">🍊</div>
-        <div><h1>小橘音乐</h1><p id="count">正在加载歌单…</p></div>
+        <h1>小橘音乐</h1>
       </div>
     </header>
     <label class="search"><svg class="ic stroke"><use href="#i-search"/></svg><input id="q" type="search" placeholder="搜索歌名或歌手" autocomplete="off" enterkeyhint="search"></label>
     <div class="tabs" role="tablist" aria-label="歌单">
-      <button class="tab" id="tabAll" type="button" role="tab" aria-selected="true">全部</button>
+      <button class="tab" id="tabAll" type="button" role="tab" aria-selected="true">全部<span class="n" id="nAll"></span></button>
       <button class="tab" id="tabFav" type="button" role="tab" aria-selected="false"><svg class="ic"><use href="#i-heart"/></svg>我喜欢<span class="n" id="nFav"></span></button>
     </div>
     <ol class="list skeleton" id="list"></ol>
@@ -268,7 +270,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
   'use strict';
   function $(id){ return document.getElementById(id); }
   var audio = $('audio'), list = $('list');
-  var tracks = [], byId = {}, curId = null, channel = '', loaded = false;
+  var tracks = [], byId = {}, curId = null, loaded = false;
   var retries = 0, retryTimer = 0, seeking = false, bgFront = 1, toastTimer = 0;
   var narrow = window.matchMedia('(max-width: 899px)');
   // tab：歌单显示「全部」还是「我喜欢」；ctx：正在放的这首是从哪一页点的，上一首/下一首就在那一页里切
@@ -733,26 +735,65 @@ h1{font-size:18px;margin:0;line-height:1.2}
   // 手机上的全屏「正在播放」
   function openStage(){ $('stage').classList.add('open'); document.body.classList.add('sheet-open'); }
   function closeStage(){ $('stage').classList.remove('open'); document.body.classList.remove('sheet-open'); }
-  $('miniOpen').addEventListener('click', openStage);
-  // 手机上按住往下拖可以收起（拖过 110px 松手就收，不到就弹回）；拖进度条、音量条时不算
-  var drag = null, stage = $('stage');
+  // 迷你播放条：点哪儿都展开（播放、下一首两个按钮除外）
+  $('mini').addEventListener('click', function(e){
+    if(!e.target.closest('#miniPlay, #miniNext')) openStage();
+  });
+  // 手机上的播放页：按住往下拖收起（拖过 110px 松手就收，不到就弹回），往上拖切到下一首（拖过 90px）。
+  // 拖进度条、横着划都不算
+  var drag = null, stage = $('stage'), now = $('now'), swapping = false;
   stage.addEventListener('touchstart', function(e){
-    if(!narrow.matches || !stage.classList.contains('open') || e.target.closest('input')) return;
-    drag = { y: e.touches[0].clientY, dy: 0 };
-    stage.classList.add('dragging');
+    if(!narrow.matches || !stage.classList.contains('open') || e.touches.length > 1 || e.target.closest('input')) return;
+    drag = { x: e.touches[0].clientX, y: e.touches[0].clientY, dy: 0, dir: '' };
   }, { passive: true });
   stage.addEventListener('touchmove', function(e){
     if(!drag) return;
-    drag.dy = Math.max(0, e.touches[0].clientY - drag.y);
-    stage.style.transform = 'translateY(' + drag.dy + 'px)';
-  }, { passive: true });
-  function endDrag(){
+    var dx = e.touches[0].clientX - drag.x, dy = e.touches[0].clientY - drag.y;
+    if(!drag.dir){
+      if(Math.abs(dx) < 8 && Math.abs(dy) < 8) return; // 还看不出往哪边划
+      if(Math.abs(dx) > Math.abs(dy)){ drag = null; return; }
+      drag.dir = dy > 0 ? 'down' : 'up';
+      stage.classList.add('dragging');
+    }
+    e.preventDefault(); // 别让页面跟着一起滚、一起回弹
+    drag.dy = dy;
+    if(drag.dir === 'down'){
+      stage.style.transform = 'translateY(' + Math.max(0, dy) + 'px)';
+    } else {
+      var up = Math.min(0, dy);
+      now.style.transform = 'translateY(' + up * 0.6 + 'px)';
+      now.style.opacity = String(Math.max(0.3, 1 + up / 300));
+    }
+  }, { passive: false });
+  function endDrag(e){
     if(!drag) return;
-    var far = drag.dy > 110;
+    var d = drag, cancel = e.type === 'touchcancel';
     drag = null;
     stage.classList.remove('dragging');
-    stage.style.transform = '';
-    if(far) closeStage();
+    if(d.dir === 'down'){
+      stage.style.transform = '';
+      if(!cancel && d.dy > 110) closeStage();
+    } else if(d.dir === 'up'){
+      if(!cancel && d.dy < -90) swipeNext();
+      else { now.style.transform = ''; now.style.opacity = ''; }
+    }
+  }
+  // 这首往上滑走，下一首从下面滑上来
+  function swipeNext(){
+    if(swapping) return;
+    swapping = true;
+    now.style.transform = 'translateY(-110px)';
+    now.style.opacity = '0';
+    setTimeout(function(){
+      step(1);
+      now.classList.add('instant');
+      now.style.transform = 'translateY(110px)';
+      void now.offsetWidth; // 先瞬间挪到下面，再滑上来
+      now.classList.remove('instant');
+      now.style.transform = '';
+      now.style.opacity = '';
+      swapping = false;
+    }, 200);
   }
   stage.addEventListener('touchend', endDrag);
   stage.addEventListener('touchcancel', endDrag);
@@ -783,12 +824,10 @@ h1{font-size:18px;margin:0;line-height:1.2}
       return r.json();
     }).then(function(d){
       tracks = d.tracks || [];
-      channel = d.channel || '';
       byId = {};
       tracks.forEach(function(t){ byId[t.id] = t; });
       loaded = true;
-      var n = tracks.length;
-      $('count').textContent = n ? n + ' 首 · 来自 Telegram 频道 @' + channel : '还没有歌';
+      $('nAll').textContent = tracks.length ? String(tracks.length) : '';
       // 分享链接 #消息号 优先，其次上次听的；只选中不自动出声（浏览器也不允许）
       var want = Number(location.hash.slice(1)) || prefs.last;
       var first = byId[want] && byId[want].playable ? byId[want] : playable()[0];
@@ -798,7 +837,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
     }).catch(function(){
       list.textContent = '';
       list.classList.remove('skeleton');
-      $('count').textContent = '歌单加载失败';
       var s = $('status');
       s.hidden = false;
       s.textContent = '歌单加载失败';
