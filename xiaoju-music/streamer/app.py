@@ -535,20 +535,29 @@ async def bot_ask(request: Request):
         raise HTTPException(400, 'bad bot')
     sent = await user_client.send_message(bot, str(body.get('text', ''))[:200])
     await asyncio.sleep(max(2, min(int(body.get('wait', 6)), 20)))
-    replies, links = [], []
+    replies, links, hits = [], [], []
     async for m in user_client.iter_messages(bot, min_id=sent.id, limit=10):
         if m.out:
             continue
         text = m.raw_text or ''
         replies.append(text)
-        urls = re.findall(r't\.me/(?:s/)?([A-Za-z]\w{3,})', text)
-        for e in m.entities or []:
-            urls += re.findall(r't\.me/(?:s/)?([A-Za-z]\w{3,})', getattr(e, 'url', None) or '')
+        urls = re.findall(r't\.me/\S+', text)
+        # 结果列表里每一行的文字和它指向的消息链接：{text: 这一行, url: t.me/频道/消息号}
+        for e, inner in m.get_entities_text():
+            url = getattr(e, 'url', None)
+            if url:
+                urls.append(url)
+                hit = re.search(r't\.me/(?:s/)?([A-Za-z]\w{3,})/(\d+)', url)
+                if hit:
+                    hits.append({'text': inner, 'channel': hit[1], 'id': int(hit[2])})
         for row in (m.buttons or []):
             for b in row:
-                urls += re.findall(r't\.me/(?:s/)?([A-Za-z]\w{3,})', getattr(b, 'url', None) or '')
-        links += [u for u in urls if u not in links]
-    return {'replies': replies, 'links': links}
+                urls.append(getattr(b, 'url', None) or '')
+        for u in urls:
+            name = re.search(r't\.me/(?:s/)?([A-Za-z]\w{3,})', u)
+            if name and name[1] not in links:
+                links.append(name[1])
+    return {'replies': replies, 'links': links, 'hits': hits}
 
 
 @app.post('/copy/pick')
@@ -561,7 +570,12 @@ async def copy_pick(request: Request):
     done = []
     for it in items:
         try:
-            sent = await user_client.forward_messages(target_channel(), int(it['id']), str(it['channel']), drop_author=True)
+            # 只转音频：搜索机器人给的链接可能指向别的东西
+            msg = await user_client.get_messages(str(it['channel']), ids=int(it['id']))
+            if msg is None or msg.file is None or not (msg.file.mime_type or '').startswith('audio/'):
+                done.append(None)
+                continue
+            sent = await user_client.forward_messages(target_channel(), msg, drop_author=True)
             done.append(getattr(sent[0] if isinstance(sent, list) else sent, 'id', None))
         except Exception as e:  # noqa: BLE001
             log.info('pick %s failed: %s', it, e)
