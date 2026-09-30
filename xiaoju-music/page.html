@@ -10,7 +10,7 @@
 :root{
   --bg:#0c0a09;--fg:#fafaf9;--muted:rgba(250,250,249,.66);--faint:rgba(250,250,249,.42);
   --line:rgba(255,255,255,.09);--glass:rgba(22,18,16,.5);--glass-strong:rgba(22,18,16,.74);
-  --hover:rgba(255,255,255,.06);--accent:#fb923c;--ink:#1c1917;
+  --hover:rgba(255,255,255,.06);--accent:#fb923c;--love:#f43f5e;--ink:#1c1917;
   color-scheme:dark;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -50,7 +50,8 @@ body.playing .disc{animation-play-state:running}
   background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font-size:14px;color:var(--muted);text-align:center;padding:0 24px}
 .spinner{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.meta{width:100%;margin-top:28px;min-width:0}
+.meta{width:100%;margin-top:28px;min-width:0;display:flex;align-items:center;gap:10px}
+.meta-text{flex:1;min-width:0}
 .t{font-size:24px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .a{font-size:17px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .progress{width:100%;margin-top:20px}
@@ -66,7 +67,6 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radiu
 @media (hover:none){input[type=range]::-webkit-slider-thumb{opacity:1}}
 .controls{width:100%;display:flex;align-items:center;justify-content:space-between;margin-top:10px}
 .icon{display:grid;place-items:center;width:44px;height:44px;border:0;border-radius:50%;background:none;cursor:pointer;opacity:.86;transition:background .15s,opacity .15s,transform .15s}
-.icon:hover{background:var(--hover);opacity:1}
 .icon:active{transform:scale(.92)}
 .icon.big .ic{width:30px;height:30px}
 .icon[aria-pressed=true]{color:var(--accent);opacity:1}
@@ -81,6 +81,15 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radiu
 .vol{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted)}
 .vol .ic{width:18px;height:18px}
 .vol input{width:110px}
+/* 收藏的心：空心 → 点一下变实心，弹一下、外面散开一圈 */
+.fav{position:relative;flex:none}
+.fav[aria-pressed=true]{color:var(--love);opacity:1}
+.fav[aria-pressed=true] .ic{fill:currentColor}
+#like .ic{width:26px;height:26px}
+.fav.pop .ic{animation:pop .45s cubic-bezier(.3,1.6,.5,1)}
+.fav.pop::after{content:"";position:absolute;inset:6px;border-radius:50%;border:2px solid var(--love);pointer-events:none;animation:burst .5s ease-out forwards}
+@keyframes pop{0%{transform:scale(1)}35%{transform:scale(1.35)}100%{transform:scale(1)}}
+@keyframes burst{from{transform:scale(.3);opacity:.9}to{transform:scale(1.5);opacity:0}}
 
 .panel{min-height:0;display:flex;flex-direction:column;border-radius:22px;overflow:hidden;border:1px solid var(--line);
   background:var(--glass);-webkit-backdrop-filter:blur(34px) saturate(1.5);backdrop-filter:blur(34px) saturate(1.5)}
@@ -94,11 +103,28 @@ h1{font-size:18px;margin:0;line-height:1.2}
 .search .ic{width:17px;height:17px;flex:none}
 .search input{flex:1;min-width:0;height:100%;border:0;background:none;color:var(--fg);font:inherit;outline:none}
 .search input::placeholder{color:var(--faint)}
+.tabs{display:flex;gap:8px;margin:0 16px 6px}
+.tab{display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 14px;border:0;border-radius:99px;background:rgba(255,255,255,.07);color:var(--muted);font-size:13.5px;cursor:pointer;transition:background .15s,color .15s}
+.tab[aria-selected=true]{background:var(--fg);color:var(--ink);font-weight:600}
+.tab .ic{width:14px;height:14px;fill:var(--love)}
+.tab .n{font-variant-numeric:tabular-nums;opacity:.65;font-weight:400}
 .list{list-style:none;margin:0;padding:4px 8px 16px;overflow:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
-.row{width:100%;display:flex;align-items:center;gap:12px;padding:8px 10px;border:0;border-radius:12px;background:none;text-align:left;cursor:pointer;transition:background .15s}
-.row:hover{background:var(--hover)}
+.row{display:flex;align-items:center;border-radius:12px;transition:background .15s}
 .row.on{background:rgba(255,255,255,.1)}
-.row.off{opacity:.42;cursor:not-allowed}
+.pick{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:8px 6px 8px 10px;border:0;border-radius:12px;background:none;text-align:left;cursor:pointer}
+.row.off .pick{opacity:.42;cursor:not-allowed}
+.row .fav{width:40px;height:40px;margin-right:4px;color:var(--faint)}
+.row .fav .ic{width:20px;height:20px}
+.row .fav[aria-pressed=true]{color:var(--love)}
+/* 悬停效果只给有鼠标的设备：触屏上点过的按钮会一直停在 :hover。
+   电脑上没收藏的心平时藏着，鼠标移到这一行才出来；手机上一直显示 */
+@media (hover:hover){
+  .icon:hover{background:var(--hover);opacity:1}
+  .tab:hover{background:rgba(255,255,255,.12)}
+  .row:hover{background:var(--hover)}
+  .row .fav[aria-pressed=false]{opacity:0}
+  .row:hover .fav[aria-pressed=false],.row .fav[aria-pressed=false]:focus-visible{opacity:.86}
+}
 .thumb{position:relative;width:46px;height:46px;flex:none;border-radius:9px;overflow:hidden;background:linear-gradient(135deg,#57534e,#292524)}
 .thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .3s}
 .thumb img.ready{opacity:1}
@@ -116,6 +142,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
 .row.playing .eq i:nth-child(3){animation-delay:.5s}
 @keyframes eq{0%,100%{height:25%}50%{height:100%}}
 .status{margin:24px 20px;color:var(--faint);text-align:center;font-size:14px}
+.status strong{display:block;margin-bottom:4px;font-size:16px;font-weight:600;color:var(--muted)}
 .status button{margin-left:8px;border:1px solid var(--line);border-radius:99px;padding:4px 12px;background:rgba(255,255,255,.06);cursor:pointer}
 .skeleton .row{pointer-events:none}
 .skeleton .thumb,.skeleton .rt,.skeleton .ra{background:rgba(255,255,255,.07);border-radius:6px;color:transparent}
@@ -127,6 +154,8 @@ h1{font-size:18px;margin:0;line-height:1.2}
   padding:10px 16px;border-radius:12px;background:var(--glass-strong);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border:1px solid var(--line);
   font-size:14px;transition:transform .3s ease;pointer-events:none}
 #toast.show{transform:translate(-50%,0)}
+#toast.act{pointer-events:auto}
+#toast button{margin-left:14px;padding:0;border:0;background:none;color:var(--accent);font-weight:700;cursor:pointer}
 
 /* 手机：平时是歌单 + 底部迷你播放条；点播放条展开全屏「正在播放」 */
 @media (max-width:899px){
@@ -173,6 +202,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m20.5 20.5-4.2-4.2"/></symbol>
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 21s-6.7-4.4-9.2-8.3C1 9.9 2.2 5.9 5.9 5.1c2.3-.5 4.3.6 6.1 2.7 1.8-2.1 3.8-3.2 6.1-2.7 3.7.8 4.9 4.8 3.1 7.6C18.7 16.6 12 21 12 21z"/></symbol>
 </svg>
 
 <div class="backdrop" aria-hidden="true"><div class="art-bg" id="bg1"></div><div class="art-bg" id="bg2"></div><div class="shade"></div></div>
@@ -184,7 +214,10 @@ h1{font-size:18px;margin:0;line-height:1.2}
       <div class="disc"><div class="label noart" id="coverWrap"><img id="art" alt=""><div class="cover-fallback"></div></div></div>
       <div class="waking" id="waking" hidden><span class="spinner"></span><span>大文件服务正在唤醒<br>大约需要一分钟</span></div>
     </div>
-    <div class="meta"><div class="t" id="t">小橘音乐</div><div class="a" id="a">选一首歌开始听</div></div>
+    <div class="meta">
+      <div class="meta-text"><div class="t" id="t">小橘音乐</div><div class="a" id="a">选一首歌开始听</div></div>
+      <button class="icon fav" id="like" type="button" aria-label="收藏" aria-pressed="false" hidden><svg class="ic stroke"><use href="#i-heart"/></svg></button>
+    </div>
     <div class="progress">
       <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="播放进度">
       <div class="times"><span id="cur">0:00</span><span id="dur">0:00</span></div>
@@ -209,6 +242,10 @@ h1{font-size:18px;margin:0;line-height:1.2}
       </div>
     </header>
     <label class="search"><svg class="ic stroke"><use href="#i-search"/></svg><input id="q" type="search" placeholder="搜索歌名或歌手" autocomplete="off" enterkeyhint="search"></label>
+    <div class="tabs" role="tablist" aria-label="歌单">
+      <button class="tab" id="tabAll" type="button" role="tab" aria-selected="true">全部</button>
+      <button class="tab" id="tabFav" type="button" role="tab" aria-selected="false"><svg class="ic"><use href="#i-heart"/></svg>我喜欢<span class="n" id="nFav"></span></button>
+    </div>
     <ol class="list skeleton" id="list"></ol>
     <p class="status" id="status" hidden></p>
   </main>
@@ -231,12 +268,17 @@ h1{font-size:18px;margin:0;line-height:1.2}
   'use strict';
   function $(id){ return document.getElementById(id); }
   var audio = $('audio'), list = $('list');
-  var tracks = [], byId = {}, curId = null, channel = '';
+  var tracks = [], byId = {}, curId = null, channel = '', loaded = false;
   var retries = 0, retryTimer = 0, seeking = false, bgFront = 1, toastTimer = 0;
   var narrow = window.matchMedia('(max-width: 899px)');
-  var prefs = { repeat: 'all', shuffle: false, volume: 1, last: null };
+  // tab：歌单显示「全部」还是「我喜欢」；ctx：正在放的这首是从哪一页点的，上一首/下一首就在那一页里切
+  var prefs = { repeat: 'all', shuffle: false, volume: 1, last: null, tab: 'all', ctx: 'all' };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem('xm-prefs') || '{}')); } catch (e) {}
+  if(prefs.tab !== 'fav') prefs.tab = 'all';
+  if(prefs.ctx !== 'fav') prefs.ctx = 'all';
   function savePrefs(){ try { localStorage.setItem('xm-prefs', JSON.stringify(prefs)); } catch (e) {} }
+  // favs：收藏的消息号，新收藏的在前；pos：正在放的这首在播放顺序里排第几；seen：封面加载过没有
+  var favs = readFavs(), pos = 0, seen = {};
 
   function el(tag, cls, text){
     var e = document.createElement(tag);
@@ -266,13 +308,22 @@ h1{font-size:18px;margin:0;line-height:1.2}
     btn.querySelector('use').setAttribute('href', '#i-' + name);
     if(label) btn.setAttribute('aria-label', label);
   }
-  function toast(msg){
+  // undo：给了就在提示后面放一个「撤销」按钮
+  function toast(msg, undo){
     var t = $('toast');
     t.textContent = msg;
+    if(undo){
+      var b = el('button', null, '撤销');
+      b.type = 'button';
+      b.addEventListener('click', function(){ hideToast(); undo(); });
+      t.appendChild(b);
+    }
+    t.classList.toggle('act', !!undo);
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function(){ t.classList.remove('show'); }, 3200);
+    toastTimer = setTimeout(hideToast, undo ? 5000 : 3200);
   }
+  function hideToast(){ $('toast').classList.remove('show', 'act'); }
   // 先铺好渐变色块；封面加载成功就盖上去，失败（这首没有封面）就留着色块
   function coverImg(img, holder, id){
     var t = byId[id];
@@ -282,51 +333,131 @@ h1{font-size:18px;margin:0;line-height:1.2}
       var fb = holder.querySelector('.cover-fallback');
       if(fb) fb.textContent = firstChar(t);
     }
-    img.onerror = function(){ holder.classList.add('noart'); img.removeAttribute('src'); };
-    img.onload = function(){ holder.classList.remove('noart'); img.classList.add('ready'); };
-    holder.classList.remove('noart');
-    img.classList.remove('ready');
-    img.src = coverUrl(id);
+    img.onerror = function(){ seen[id] = false; holder.classList.add('noart'); img.removeAttribute('src'); };
+    img.onload = function(){ seen[id] = true; holder.classList.remove('noart'); img.classList.add('ready'); };
+    // 加载过的封面（切页签、搜索时重画歌单）直接显示，不再每张淡入一遍
+    holder.classList.toggle('noart', seen[id] === false);
+    img.classList.toggle('ready', seen[id] === true);
+    if(seen[id] !== false) img.src = coverUrl(id);
+  }
+
+  // ── 收藏：存在这台设备的浏览器里（localStorage 的 xm-favs） ──
+  function readFavs(){
+    try {
+      var v = JSON.parse(localStorage.getItem('xm-favs') || '[]');
+      if(!Array.isArray(v)) return [];
+      return v.filter(function(id, i){ return Number.isInteger(id) && id > 0 && v.indexOf(id) === i; });
+    } catch (e) { return []; }
+  }
+  function saveFavs(){ try { localStorage.setItem('xm-favs', JSON.stringify(favs)); } catch (e) {} }
+  function isFav(id){ return favs.indexOf(id) >= 0; }
+  // 频道里已经移除的歌不显示，但留着记录
+  function favTracks(){ return favs.map(function(id){ return byId[id]; }).filter(Boolean); }
+  function toggleFav(id, btn){
+    if(!byId[id]) return;
+    syncPos();
+    var at = favs.indexOf(id);
+    if(at < 0){
+      favs.unshift(id);
+      if(btn) pop(btn);
+      toast('已加入「我喜欢」');
+    } else {
+      favs.splice(at, 1);
+      toast('已取消收藏', function(){
+        if(isFav(id)) return;
+        syncPos();
+        favs.splice(Math.min(at, favs.length), 0, id); // 放回原来的位置
+        saveFavs();
+        favsChanged();
+      });
+    }
+    saveFavs();
+    favsChanged();
+  }
+  // 「我喜欢」页整个重画（多一行或少一行），「全部」页只改心的状态
+  function favsChanged(){
+    if(loaded && prefs.tab === 'fav') render(); else paintFavs();
+  }
+  function paintFavs(){
+    var rows = list.querySelectorAll('.row[data-id]');
+    for(var i = 0; i < rows.length; i++){
+      var h = rows[i].querySelector('.fav');
+      if(h) h.setAttribute('aria-pressed', String(isFav(Number(rows[i].dataset.id))));
+    }
+    $('like').setAttribute('aria-pressed', String(curId !== null && isFav(curId)));
+    var n = favTracks().length;
+    $('nFav').textContent = n ? String(n) : '';
+  }
+  function pop(btn){
+    btn.classList.remove('pop');
+    void btn.offsetWidth; // 让动画能再播一次
+    btn.classList.add('pop');
+    clearTimeout(btn._pop);
+    btn._pop = setTimeout(function(){ btn.classList.remove('pop'); }, 600);
+  }
+  function heart(){
+    var b = el('button', 'icon fav');
+    b.type = 'button';
+    b.setAttribute('aria-label', '收藏');
+    b.setAttribute('aria-pressed', 'false');
+    b.innerHTML = '<svg class="ic stroke"><use href="#i-heart"/></svg>';
+    return b;
   }
 
   // ── 歌单 ──
   function render(){
-    var q = $('q').value.trim().toLowerCase();
+    var raw = $('q').value.trim(), q = raw.toLowerCase(), fav = prefs.tab === 'fav';
     list.textContent = '';
     list.classList.remove('skeleton');
     var shown = 0;
-    tracks.forEach(function(t){
+    (fav ? favTracks() : tracks).forEach(function(t){
       if(q && (t.title + ' ' + t.artist).toLowerCase().indexOf(q) < 0) return;
       shown++;
-      var li = el('li');
-      var b = el('button', 'row' + (t.playable ? '' : ' off'));
-      b.type = 'button';
-      b.dataset.id = t.id;
-      var th = el('span', 'thumb');
-      var img = el('img');
-      img.alt = '';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      th.appendChild(img);
-      coverImg(img, th, t.id);
-      var info = el('span', 'info');
-      info.appendChild(el('span', 'rt', t.title));
-      var ra = el('span', 'ra');
-      if(t.mime === 'audio/flac') ra.appendChild(el('em', 'badge', '无损'));
-      ra.appendChild(document.createTextNode(t.playable ? [t.artist, fmt(t.duration)].filter(Boolean).join(' · ') : '暂时不能在网页播放'));
-      info.appendChild(ra);
-      var eq = el('span', 'eq');
-      eq.setAttribute('aria-hidden', 'true');
-      eq.appendChild(el('i')); eq.appendChild(el('i')); eq.appendChild(el('i'));
-      b.appendChild(th); b.appendChild(info); b.appendChild(eq);
-      if(!t.playable) b.disabled = true;
-      b.addEventListener('click', function(){ choose(t.id); });
-      li.appendChild(b);
-      list.appendChild(li);
+      list.appendChild(row(t));
     });
-    $('status').hidden = !!shown;
-    if(!shown) $('status').textContent = q ? '没有找到「' + $('q').value.trim() + '」' : '频道里还没有音频';
+    var s = $('status');
+    s.hidden = !!shown;
+    s.textContent = '';
+    if(!shown){
+      if(q) s.textContent = (fav ? '「我喜欢」里' : '') + '没有找到「' + raw + '」';
+      else if(fav){
+        s.appendChild(el('strong', null, '还没有收藏的歌'));
+        s.appendChild(document.createTextNode('点歌曲旁边的 ♡，就会收进这里'));
+      } else s.textContent = '频道里还没有音频';
+    }
+    paintFavs();
     mark();
+  }
+
+  function row(t){
+    var li = el('li', 'row' + (t.playable ? '' : ' off'));
+    li.dataset.id = t.id;
+    var b = el('button', 'pick');
+    b.type = 'button';
+    var th = el('span', 'thumb');
+    var img = el('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    th.appendChild(img);
+    coverImg(img, th, t.id);
+    var info = el('span', 'info');
+    info.appendChild(el('span', 'rt', t.title));
+    var ra = el('span', 'ra');
+    if(t.mime === 'audio/flac') ra.appendChild(el('em', 'badge', '无损'));
+    ra.appendChild(document.createTextNode(t.playable ? [t.artist, fmt(t.duration)].filter(Boolean).join(' · ') : '暂时不能在网页播放'));
+    info.appendChild(ra);
+    var eq = el('span', 'eq');
+    eq.setAttribute('aria-hidden', 'true');
+    eq.appendChild(el('i')); eq.appendChild(el('i')); eq.appendChild(el('i'));
+    b.appendChild(th); b.appendChild(info); b.appendChild(eq);
+    if(!t.playable) b.disabled = true;
+    b.addEventListener('click', function(){ choose(t.id); });
+    var h = heart();
+    h.addEventListener('click', function(){ toggleFav(t.id, h); });
+    li.appendChild(b);
+    li.appendChild(h);
+    return li;
   }
 
   function mark(){
@@ -340,13 +471,13 @@ h1{font-size:18px;margin:0;line-height:1.2}
 
   function skeleton(){
     for(var i = 0; i < 8; i++){
-      var b = el('div', 'row');
+      var b = el('div', 'pick');
       b.appendChild(el('span', 'thumb'));
       var info = el('span', 'info');
       info.appendChild(el('span', 'rt', '.'));
       info.appendChild(el('span', 'ra', '.'));
       b.appendChild(info);
-      var li = el('li');
+      var li = el('li', 'row');
       li.appendChild(b);
       list.appendChild(li);
     }
@@ -368,6 +499,9 @@ h1{font-size:18px;margin:0;line-height:1.2}
     coverImg($('art'), $('coverWrap'), id);
     coverImg($('miniArt'), $('miniThumb'), id);
     backdrop(id);
+    $('like').hidden = false;
+    $('like').setAttribute('aria-pressed', String(isFav(id)));
+    syncPos();
     $('mini').hidden = false;
     document.title = t.title + ' · 小橘音乐';
     paint(0, t.duration);
@@ -410,35 +544,50 @@ h1{font-size:18px;margin:0;line-height:1.2}
     var p = audio.play();
     if(p && p.catch) p.catch(function(){});
   }
+  // 从歌单里点歌：之后的上一首/下一首就在当前这一页（全部 / 我喜欢）里切
   function choose(id){
-    if(id === curId){ toggle(); return; }
+    if(prefs.ctx !== prefs.tab){ prefs.ctx = prefs.tab; savePrefs(); }
+    if(id === curId){ syncPos(); toggle(); return; }
     select(id);
     start();
   }
   function toggle(){
     if(curId === null){
-      var f = playable()[0];
+      var f = queue()[0];
       if(f){ select(f.id); start(); }
       return;
     }
     if(audio.paused) start(); else audio.pause();
   }
   function playable(){ return tracks.filter(function(t){ return t.playable; }); }
+  // 播放顺序：从「我喜欢」点的歌就在收藏里轮（收藏全取消了就退回全部）
+  function queue(){
+    if(prefs.ctx === 'fav'){
+      var fs = favTracks().filter(function(t){ return t.playable; });
+      if(fs.length) return fs;
+    }
+    return playable();
+  }
+  function syncPos(){
+    var q = queue();
+    for(var i = 0; i < q.length; i++) if(q[i].id === curId){ pos = i; return; }
+  }
   function step(dir, auto){
-    var ps = playable();
-    if(!ps.length) return;
+    var q = queue();
+    if(!q.length) return;
     var pick;
-    if(prefs.shuffle && ps.length > 1){
-      do { pick = ps[Math.floor(Math.random() * ps.length)]; } while(pick.id === curId);
+    if(prefs.shuffle && q.length > 1){
+      do { pick = q[Math.floor(Math.random() * q.length)]; } while(pick.id === curId);
     } else {
       var i = -1;
-      for(var k = 0; k < ps.length; k++) if(ps[k].id === curId){ i = k; break; }
-      var j = i + dir;
-      if(j >= ps.length || j < 0){
+      for(var k = 0; k < q.length; k++) if(q[k].id === curId){ i = k; break; }
+      // 正在放的这首刚被移出播放顺序（在「我喜欢」里取消了收藏）：pos 上现在就是原来的下一首
+      var j = i >= 0 ? i + dir : (dir > 0 ? pos : pos - 1);
+      if(j >= q.length || j < 0){
         if(auto && prefs.repeat === 'off') return; // 播完最后一首就停
-        j = (j + ps.length) % ps.length;
+        j = (j % q.length + q.length) % q.length;
       }
-      pick = ps[j];
+      pick = q[j];
     }
     select(pick.id);
     start();
@@ -557,6 +706,30 @@ h1{font-size:18px;margin:0;line-height:1.2}
   });
   $('q').addEventListener('input', render);
 
+  // 页签：全部 / 我喜欢
+  function paintTabs(){
+    $('tabAll').setAttribute('aria-selected', String(prefs.tab === 'all'));
+    $('tabFav').setAttribute('aria-selected', String(prefs.tab === 'fav'));
+    $('q').placeholder = prefs.tab === 'fav' ? '在「我喜欢」里搜索' : '搜索歌名或歌手';
+  }
+  function setTab(tab){
+    if(prefs.tab === tab) return;
+    prefs.tab = tab;
+    savePrefs();
+    paintTabs();
+    list.scrollTop = 0;
+    if(loaded) render();
+  }
+  $('tabAll').addEventListener('click', function(){ setTab('all'); });
+  $('tabFav').addEventListener('click', function(){ setTab('fav'); });
+  $('like').addEventListener('click', function(){ if(curId !== null) toggleFav(curId, this); });
+  // 同一台设备开着两个页面：一边收藏了，另一边跟着变
+  window.addEventListener('storage', function(e){
+    if(e.key !== 'xm-favs' && e.key !== null) return;
+    favs = readFavs();
+    favsChanged();
+  });
+
   // 手机上的全屏「正在播放」
   function openStage(){ $('stage').classList.add('open'); document.body.classList.add('sheet-open'); }
   function closeStage(){ $('stage').classList.remove('open'); document.body.classList.remove('sheet-open'); }
@@ -613,12 +786,14 @@ h1{font-size:18px;margin:0;line-height:1.2}
       channel = d.channel || '';
       byId = {};
       tracks.forEach(function(t){ byId[t.id] = t; });
+      loaded = true;
       var n = tracks.length;
       $('count').textContent = n ? n + ' 首 · 来自 Telegram 频道 @' + channel : '还没有歌';
-      render();
       // 分享链接 #消息号 优先，其次上次听的；只选中不自动出声（浏览器也不允许）
       var want = Number(location.hash.slice(1)) || prefs.last;
       var first = byId[want] && byId[want].playable ? byId[want] : playable()[0];
+      if(first && prefs.ctx === 'fav' && !isFav(first.id)) prefs.ctx = 'all';
+      render();
       if(first) select(first.id);
     }).catch(function(){
       list.textContent = '';
@@ -635,6 +810,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
   }
 
   paintModes();
+  paintTabs();
   syncPlay();
   skeleton();
   load();
