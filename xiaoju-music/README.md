@@ -62,9 +62,14 @@ Telegram 的 webhook（见下方「重设 webhook」）。
 
 ## 部署流式服务
 
-按 [`streamer/README.md`](streamer/README.md) 在 Hugging Face 建一个 Docker Space，把 `streamer/` 下的
-`app.py`、`Dockerfile`、`requirements.txt`、`README.md` 推上去，设好环境变量；然后把 Space 地址填进
-Worker 的 `STREAMER_URL`，两边的 `STREAMER_KEY` 设成同一个值。
+流式服务跑在 Hugging Face Space **`langhua1998/douyin-proxy`** 上，地址
+`https://langhua1998-douyin-proxy.hf.space`。2026 年 9 月起，免费账号新建、复制、迁移（含改名）
+Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复用了这个原本做抖音链接解析代理的 Space
+（原来的代码在它的 Git 历史里，提交 `031d368d79`）。
+
+更新代码：把 `streamer/` 下的 `app.py`、`Dockerfile`、`requirements.txt`、`README.md` 推到这个 Space 的仓库，
+Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
+填上面的地址，两边的 `STREAMER_KEY` 设成同一个值。
 
 ## 改完代码后
 
@@ -82,7 +87,7 @@ Worker 的 `STREAMER_URL`，两边的 `STREAMER_KEY` 设成同一个值。
    ```bash
    ACC=aca35ff5f62ae4208757219dbc3b489b
    KV=738216f3f7d64f1ab143128406d1b35e
-   STREAMER_URL=https://langhua1998-xiaoju-streamer.hf.space   # 没部署流式服务就写空字符串
+   STREAMER_URL=https://langhua1998-douyin-proxy.hf.space      # 没部署流式服务就写空字符串
    curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/xiaoju-music" \
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
      -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"TRACKS\",\"namespace_id\":\"$KV\"},{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_ID\",\"text\":\"-1003817921075\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_USERNAME\",\"text\":\"xiaojumusic\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"$STREAMER_URL\"}]};type=application/json" \
@@ -91,7 +96,7 @@ Worker 的 `STREAMER_URL`，两边的 `STREAMER_KEY` 设成同一个值。
 
    也可以在本目录用 `wrangler deploy`（`wrangler.toml` 已写好绑定和迁移，secret 不受影响）。
 
-3. 改了流式服务：把 `streamer/` 下那四个文件推到 Hugging Face Space 的仓库，Space 会自动重新构建。
+3. 改了流式服务：把 `streamer/` 下那四个文件推到 `langhua1998/douyin-proxy` 这个 Space 的仓库，Space 会自动重新构建。
 
 ## 日常维护
 

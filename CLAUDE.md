@@ -71,8 +71,9 @@
     没有去删它（本批次只改 CLAUDE.md），如需清理请单独立项确认。**
 - **`xiaoju-music/`**：「小橘音乐」——把用户的 Telegram 频道 @xiaojumusic 里的音频变成
   网页直接播放的 Cloudflare Worker（线上 `https://xiaoju-music.langhua98.workers.dev`，数据在
-  Durable Object 里）；超过 20 MB 的文件由 `streamer/` 这个 Hugging Face Space（Python + Telethon，
-  走 MTProto）按 Range 现取现传，用户明确选了「只用流式，不切片」。**和阅读器没有任何代码共享、
+  Durable Object 里）；超过 20 MB 的文件由 `streamer/`（Python + Telethon，走 MTProto）按 Range 现取现传，
+  用户明确选了「只用流式，不切片」。它跑在复用的 Hugging Face Space `langhua1998/douyin-proxy` 上
+  （免费账号新建 Docker Space 要 PRO）。**和阅读器没有任何代码共享、
   引用关系**，只是借这个仓库存代码；不在 `sw.js` 的 `SHELL` 里。结构、绑定、重新部署和日常维护见
   `xiaoju-music/README.md`，改完先跑 `node xiaoju-music/test.mjs` 和 `streamer/` 里的 `pytest`。
 
