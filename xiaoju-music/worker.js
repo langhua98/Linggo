@@ -12,7 +12,8 @@
 //   GET  /api/tracks       歌单 JSON（新的在前）
 //   GET  /a/<消息号>        音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；?dl=1 变成下载
 //   GET  /c/<消息号>        封面：音乐文件自带的缩略图；没有就从频道的图片帖里随机挑一张，挑定后存进数据库
-//   POST /tg-webhook       Telegram 推送频道新帖，音频自动登记
+//   GET  /l/<消息号>        歌词 JSON：先看数据库；没有就去 LRCLIB、网易云找，找到（或确定没有）就存起来
+//   POST /tg-webhook       Telegram 推送频道新帖，音频自动登记；回复某首歌发的 .lrc 文件就是这首的歌词
 //   GET  /admin            管理页（admin.html，管理密钥登录）：把频道里已删掉的帖子从歌单移除
 //   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>）
 //
@@ -37,6 +38,17 @@ const REC_TTL_MS = 60 * 1000;
 const STREAMER_WAIT_MS = 25 * 1000;
 // Telegram 给音乐文件生成的缩略图一般 20 KB 上下，超过这个大小就不当封面存
 const COVER_LIMIT = 512 * 1024;
+
+// 歌词：LRCLIB 是公开的歌词库（本来就给播放器用）；网易云用的是它网页版的接口，不是公开 API，随时可能变
+const LRCLIB = 'https://lrclib.net/api/search';
+const NETEASE = 'https://music.163.com/api';
+const UA = 'xiaoju-music (https://xiaoju-music.langhua98.workers.dev)';
+// 外面那首歌的时长和我们这首相差几秒以内，才认为时间轴对得上
+const LYRICS_SLACK_S = 3;
+const LYRICS_WAIT_MS = 8000;
+const DAY_MS = 24 * 3600 * 1000;
+// 手动发的 .lrc 文件大小上限（一首歌的歌词一般几 KB）
+const LRC_LIMIT = 256 * 1024;
 
 const MSG = {
   unavailable: 'Telegram 暂时取不到这个文件，请稍后再试',
@@ -85,6 +97,8 @@ export default {
       if (m) return await audio(request, env, Number(m[1]), url.searchParams.has('dl'));
       const c = path.match(/^\/c\/(\d{1,10})$/);
       if (c) return await cover(env, Number(c[1]));
+      const l = path.match(/^\/l\/(\d{1,10})$/);
+      if (l) return await lyrics(env, Number(l[1]));
       return text('Not Found', 404);
     } catch (e) {
       if (e instanceof HttpError) return text(e.message, e.status, e.headers);
@@ -115,6 +129,15 @@ async function webhook(request, env) {
   const post = update && (update.channel_post || update.edited_channel_post);
   // 只收自己频道的帖子；别的群、私聊一律忽略，但仍回 200，免得 Telegram 反复重发
   if (!post || !Number.isInteger(post.message_id) || String(post.chat && post.chat.id) !== String(env.CHANNEL_ID)) {
+    return text('ok');
+  }
+  // .lrc 文件：手动给某首歌配歌词。出了错也回 200，免得 Telegram 反复重发、把后面的新歌堵住
+  if (post.document && /\.lrc$/i.test(post.document.file_name || '')) {
+    try {
+      await attachLyrics(env, post);
+    } catch {
+      // 重新发一次就好
+    }
     return text('ok');
   }
   // 图片帖：记下来，给没有封面的歌当封面
@@ -348,6 +371,225 @@ function fromBase64(b64) {
   return out;
 }
 
+// ── 歌词 ─────────────────────────────────────────────────────────
+
+// 先看数据库；没有（或者上次没找到、到了该再找的时候）就去外面找，找到什么都存起来。
+// 外面两边都出错时，有旧结果就先给旧的，没有就 503
+async function lyrics(env, id) {
+  const L = lib(env);
+  let row = await L.getLyrics(id);
+  if (!row || (row.retry_at && row.retry_at < Date.now())) {
+    const rec = await getRec(env, id);
+    if (!rec) throw new HttpError(404, '没有这首歌');
+    const found = await findLyrics(summary(rec));
+    if (found) row = await L.putLyrics(id, found.src, found.lrc, found.retryAt);
+    else if (!row) throw new HttpError(503, '歌词暂时取不到', { 'Retry-After': '60' });
+  }
+  const { synced, lines } = parseLrc(row.lrc);
+  return new Response(JSON.stringify({ src: lines.length ? row.src : 'none', synced, lines }), {
+    headers: cors({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=300' }),
+  });
+}
+
+// 先找「时间轴对得上」的：LRCLIB 优先，没有再问网易云。都没有就退一步，用同一首歌别的版本的歌词，
+// 只显示文字、不跟着滚。返回 { src, lrc, retryAt }（retryAt 为 0 表示不用再找）；两边都出错返回 null
+async function findLyrics(t) {
+  if (!t.title) return { src: 'none', lrc: '', retryAt: 0 };
+  const a = await fromLrclib(t).catch(() => null);
+  if (a && a.synced) return { ...a.synced, retryAt: 0 };
+  const b = await fromNetease(t).catch(() => null);
+  if (b && b.synced) return { ...b.synced, retryAt: 0 };
+  if (!a && !b) return null;
+  // 有一边这次出错了：先用着，过一天再找；否则只有文字的 30 天、完全没有的 14 天后再找（歌词库一直在长）
+  const soon = !a || !b;
+  const plain = (a && a.plain) || (b && b.plain);
+  if (plain) return { ...plain, retryAt: Date.now() + (soon ? 1 : 30) * DAY_MS };
+  return { src: 'none', lrc: '', retryAt: Date.now() + (soon ? 1 : 14) * DAY_MS };
+}
+
+// 返回 { synced, plain }：synced 是时长对得上、带时间轴的；plain 是同一首歌的文字歌词。出错就抛
+async function fromLrclib(t) {
+  let plain = null;
+  for (const title of titlesFor(t.title)) {
+    const q = { track_name: title };
+    if (t.artist) q.artist_name = t.artist;
+    let res = await getJson(LRCLIB + '?' + new URLSearchParams(q), { headers: { 'User-Agent': UA, 'Lrclib-Client': UA } });
+    if ((!Array.isArray(res) || !res.length) && t.artist) {
+      res = await getJson(LRCLIB + '?' + new URLSearchParams({ q: title + ' ' + t.artist }), { headers: { 'User-Agent': UA, 'Lrclib-Client': UA } });
+    }
+    const want = norm(cleanTitle(title));
+    const hits = (Array.isArray(res) ? res : [])
+      .filter(r => want && norm(r.trackName).includes(want) && !r.instrumental && sameArtist(t.artist, r.artistName))
+      .map(r => ({ r, diff: Math.abs((r.duration || 0) - t.duration) }))
+      .sort((x, y) => x.diff - y.diff);
+    for (const { r, diff } of hits) {
+      if (diff <= LYRICS_SLACK_S && isSynced(r.syncedLyrics)) return { synced: { src: 'lrclib', lrc: r.syncedLyrics }, plain: null };
+      if (!plain) {
+        const words = r.plainLyrics || plainText(r.syncedLyrics);
+        if (words && words.trim()) plain = { src: 'lrclib', lrc: words };
+      }
+    }
+  }
+  return { synced: null, plain };
+}
+
+// 网易云：搜歌（按歌名、歌手筛，时长最接近的两首），再取歌词
+async function fromNetease(t) {
+  const headers = { 'User-Agent': UA, Referer: 'https://music.163.com/' };
+  let plain = null;
+  for (const title of titlesFor(t.title)) {
+    const body = new URLSearchParams({ s: (title + ' ' + t.artist).trim(), type: '1', limit: '10', offset: '0' });
+    const j = await getJson(NETEASE + '/cloudsearch/pc', { method: 'POST', body, headers });
+    const want = norm(cleanTitle(title));
+    const picks = ((j && j.result && j.result.songs) || [])
+      .filter(s => want && norm(s.name).includes(want) && (!t.artist || (s.ar || []).some(a => sameArtist(t.artist, a.name))))
+      .map(s => ({ id: s.id, diff: Math.abs((s.dt || 0) / 1000 - t.duration) }))
+      .sort((x, y) => x.diff - y.diff)
+      .slice(0, 2);
+    for (const p of picks) {
+      const lj = await getJson(`${NETEASE}/song/lyric?id=${encodeURIComponent(p.id)}&lv=1&kv=1&tv=-1`, { headers });
+      const lrc = (lj && lj.lrc && lj.lrc.lyric) || '';
+      const words = plainText(lrc);
+      if (!words.trim() || /^纯音乐，请欣赏/.test(words.trim())) continue;
+      if (p.diff <= LYRICS_SLACK_S && isSynced(lrc)) return { synced: { src: 'netease', lrc }, plain: null };
+      if (!plain) plain = { src: 'netease', lrc: words };
+    }
+  }
+  return { synced: null, plain };
+}
+
+async function getJson(url, init) {
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(LYRICS_WAIT_MS) });
+  if (res.status === 404) {
+    if (res.body) await res.body.cancel();
+    return null;
+  }
+  if (!res.ok) {
+    if (res.body) await res.body.cancel();
+    throw new Error(`${url.split('?')[0]} → ${res.status}`);
+  }
+  return res.json();
+}
+
+// 先用完整歌名找，再用去掉「(DJ版)」「(Live)」之类版本说明的歌名找
+function titlesFor(title) {
+  return [...new Set([title, cleanTitle(title)])];
+}
+
+const VARIANT = /dj|版|remix|live|伴奏|加速|降调|0\.\d+x|抖音|片段|翻自|cover/i;
+function cleanTitle(title) {
+  let t = title.replace(/[(（[【][^)）\]】]*[)）\]】]/g, '');
+  if (VARIANT.test(t)) t = t.replace(/\s*[-—].*$/, '');
+  return t.trim() || title;
+}
+
+// 比较歌名、歌手时只看字母、数字和汉字
+function norm(s) {
+  return String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+// 我们这边的歌手可能是几个人（「A&B」「A、B」）；有一个对得上就算。我们这边没写歌手就不查
+function sameArtist(ours, theirs) {
+  const parts = String(ours || '').split(/[&、/,，]| x | feat\.? /).map(norm).filter(Boolean);
+  if (!parts.length) return true;
+  const th = norm(theirs);
+  return !!th && parts.some(p => p.includes(th) || th.includes(p));
+}
+
+// 至少 5 句带时间、有字的歌词，才算真有时间轴
+function isSynced(lrc) {
+  const { synced, lines } = parseLrc(lrc);
+  return synced && lines.filter(l => l[1]).length >= 5;
+}
+
+function plainText(lrc) {
+  return parseLrc(lrc).lines.map(l => l[1]).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// 解析 LRC，返回 { synced, lines: [[秒, 这句歌词], ...] }，按时间排好；没有时间轴时秒是 null。
+// 认得：一行多个时间 [00:12.00][01:30.00]、[offset:毫秒]、逐字时间 <00:12.34>（去掉）、
+// [ti:] [ar:] 之类的标签（跳过）、网易云开头几行 JSON 格式的演职员信息
+function parseLrc(text) {
+  const timed = [], plain = [];
+  let offset = 0;
+  for (const raw of String(text || '').replace(/^\uFEFF/, '').split(/\r\n|\r|\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('{')) {
+      try {
+        const j = JSON.parse(line); // {"t":毫秒,"c":[{"tx":"作词: "},{"tx":"某某"}]}
+        if (Number.isFinite(j.t) && Array.isArray(j.c)) timed.push([j.t / 1000, j.c.map(c => (c && c.tx) || '').join('').trim()]);
+      } catch {
+        plain.push(line);
+      }
+      continue;
+    }
+    const off = /^\[offset:\s*([+-]?\d+)\s*\]$/i.exec(line);
+    if (off) {
+      offset = Number(off[1]) / 1000; // 正数表示歌词整体提前
+      continue;
+    }
+    const times = [];
+    let rest = line, m;
+    while ((m = /^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/.exec(rest))) {
+      times.push(Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number('0.' + m[3]) : 0));
+      rest = rest.slice(m[0].length);
+    }
+    const words = rest.replace(/<\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?>/g, '').trim();
+    if (times.length) for (const t of times) timed.push([t, words]);
+    else if (!/^\[[a-z#]+:[^\]]*\]$/i.test(line)) plain.push(words);
+  }
+  if (timed.some(l => l[1])) {
+    const lines = timed.map(([t, w]) => [Math.max(0, Math.round((t - offset) * 100) / 100), w]).sort((a, b) => a[0] - b[0]);
+    return { synced: true, lines };
+  }
+  return { synced: false, lines: plain.filter(Boolean).map(w => [null, w]) };
+}
+
+// 频道里回复某首歌发一个 .lrc 文件，就是这首的歌词（优先于自动找到的）。
+// 没有回复具体哪首时按文件名找（「歌名.lrc」或「歌手 - 歌名.lrc」），只有唯一一首对得上才算
+async function attachLyrics(env, post) {
+  const doc = post.document;
+  if (!doc.file_id || (doc.file_size || 0) > LRC_LIMIT) return;
+  const L = lib(env);
+  const reply = post.reply_to_message && post.reply_to_message.message_id;
+  const id = Number.isInteger(reply) && (await L.getTrack(reply)) ? reply : await trackByFileName(env, doc.file_name);
+  if (!id) return;
+  const res = await fetchFile(env, doc.file_id, null);
+  if (!res.ok) {
+    if (res.body) await res.body.cancel();
+    return;
+  }
+  const lrc = decodeText(new Uint8Array(await res.arrayBuffer()));
+  if (parseLrc(lrc).lines.length) await L.putLyrics(id, 'manual', lrc, 0);
+}
+
+async function trackByFileName(env, fileName) {
+  const base = norm(stripExt(fileName));
+  if (!base) return null;
+  const hits = (await lib(env).listTracks()).filter(t => {
+    const title = norm(t.title), artist = norm(t.artist);
+    return base === title || (artist && (base === artist + title || base === title + artist));
+  });
+  return hits.length === 1 ? hits[0].id : null;
+}
+
+// .lrc 多是 UTF-8，也有不少老的中文歌词是 GBK，偶尔还有 Windows 记事本存的 UTF-16
+function decodeText(bytes) {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes);
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    // 不是 UTF-8
+  }
+  try {
+    return new TextDecoder('gb18030').decode(bytes);
+  } catch {
+    return new TextDecoder().decode(bytes);
+  }
+}
+
 // ── 音频流 ───────────────────────────────────────────────────────
 
 async function audio(request, env, id, download) {
@@ -502,6 +744,9 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
       // 频道里的图片帖；file_id 为空的是流式服务扫出来的老帖，要请它下载
       this.sql.exec("CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY, file_id TEXT NOT NULL DEFAULT '')");
+      // 歌词：src 是 lrclib / netease / manual（频道里手动发的）/ none（确定没有）；lrc 是原文；
+      // retry_at 不为 0 时，过了这个时间要再去外面找一次
+      this.sql.exec('CREATE TABLE IF NOT EXISTS lyrics (id INTEGER PRIMARY KEY, src TEXT NOT NULL, lrc TEXT NOT NULL, retry_at INTEGER NOT NULL DEFAULT 0)');
       this.dropSplitterLeftovers();
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
       if (this.cfg('coversV') !== '2') {
@@ -540,8 +785,11 @@ export class Library extends DurableObject {
 
   async upsertTrack(rec) {
     const old = await this.getTrack(rec.id);
-    // 帖子里换了文件，旧封面就作废
-    if (!old || old.file_unique_id !== rec.file_unique_id) this.sql.exec('DELETE FROM covers WHERE id = ?', rec.id);
+    // 帖子里换了文件，旧封面、旧歌词就作废
+    if (!old || old.file_unique_id !== rec.file_unique_id) {
+      this.sql.exec('DELETE FROM covers WHERE id = ?', rec.id);
+      this.sql.exec('DELETE FROM lyrics WHERE id = ?', rec.id);
+    }
     this.sql.exec(`INSERT INTO songs (id, rec, updated) VALUES (?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, updated = excluded.updated`,
       rec.id, JSON.stringify(rec), Date.now());
@@ -550,6 +798,19 @@ export class Library extends DurableObject {
   async removeTrack(id) {
     this.sql.exec('DELETE FROM songs WHERE id = ?', id);
     this.sql.exec('DELETE FROM covers WHERE id = ?', id);
+    this.sql.exec('DELETE FROM lyrics WHERE id = ?', id);
+  }
+
+  async getLyrics(id) {
+    return this.sql.exec('SELECT src, lrc, retry_at FROM lyrics WHERE id = ?', id).toArray()[0] || null;
+  }
+
+  // 自动找到的结果盖不掉手动配的歌词。返回最后存着的那一行
+  async putLyrics(id, src, lrc, retryAt) {
+    this.sql.exec(`INSERT INTO lyrics (id, src, lrc, retry_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET src = excluded.src, lrc = excluded.lrc, retry_at = excluded.retry_at
+      WHERE lyrics.src != 'manual' OR excluded.src = 'manual'`, id, src, lrc, retryAt);
+    return this.getLyrics(id);
   }
 
   async getCover(id) {

@@ -51,7 +51,15 @@ let seq = 0;
 const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); return id; };
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
 const calls = [];
-const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok' };
+const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok' };
+// 模拟歌词来源：LRCLIB 的歌词库，网易云的歌和歌词
+const lrclibDb = [];
+const neteaseDb = [];
+const neteaseLyrics = new Map();
+const nn = s => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+const DAY = 24 * 3600 * 1000;
+// 每句隔 4 秒：[00:01.50]、[00:05.50]……
+const lrcOf = words => words.map((w, i) => `[00:${String(1 + i * 4).padStart(2, '0')}.50]${w}`).join('\n');
 const JPEG = n => Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, ...bytesOf(n, n)]);
 
 function serve(bytes, range, extraHeaders = {}) {
@@ -92,6 +100,24 @@ globalThis.fetch = async (input, init = {}) => {
     if (!f) return new Response('Not Found', { status: 404 });
     if (mode.streamer === 'short') return new Response(f.slice(0, 10), { status: headers.get('Range') ? 206 : 200, headers: { 'Content-Length': '10' } });
     return serve(f, headers.get('Range'), { 'Content-Type': 'application/octet-stream' });
+  }
+  if (url.startsWith('https://lrclib.net/api/search?')) {
+    if (mode.lrclib === 'down') return new Response('oops', { status: 500 });
+    assert.match(headers.get('User-Agent'), /xiaoju-music/);
+    const p = new URL(url).searchParams;
+    return Response.json(lrclibDb.filter(e => p.has('q')
+      ? nn(p.get('q')).includes(nn(e.trackName))
+      : nn(e.trackName).includes(nn(p.get('track_name'))) && (!p.has('artist_name') || nn(e.artistName).includes(nn(p.get('artist_name'))))));
+  }
+  if (url === 'https://music.163.com/api/cloudsearch/pc') {
+    if (mode.netease === 'down') throw new TypeError('fetch failed');
+    assert.equal(init.method, 'POST');
+    assert.equal(headers.get('Referer'), 'https://music.163.com/');
+    const q = nn(new URLSearchParams(init.body).get('s'));
+    return Response.json({ code: 200, result: { songs: neteaseDb.filter(x => q.includes(nn(x.name.replace(/\s*[(（].*$/, '')))) } });
+  }
+  if ((m = url.match(/^https:\/\/music\.163\.com\/api\/song\/lyric\?id=(\d+)&/))) {
+    return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
   if ((m = url.match(/\/bot[^/]+\/getFile\?file_id=(.+)$/))) {
@@ -170,7 +196,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'covers', 'photos', 'songs']);
+  assert.deepEqual(tables, ['config', 'covers', 'lyrics', 'photos', 'songs']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -318,6 +344,122 @@ await t('封面：帖子换了文件就作废重取；删歌时封面一起删',
   await admin('remove', { track: 70 });
   assert.equal((await lib.getCover(70)), null);
   await admin('remove', { track: 71 });
+});
+
+await t('歌词：LRCLIB 有时长对得上、带时间轴的就用它（歌手、时长不对的不要），存下来，下次不再出去找', async () => {
+  await hook({ channel_post: audioPost(30, { title: '夜曲', performer: '周杰伦', duration: 226, file_id: 'X30', file_size: 9 }) });
+  lrclibDb.push(
+    { trackName: '夜曲', artistName: '别人', duration: 226, syncedLyrics: lrcOf(['翻唱1', '翻唱2', '翻唱3', '翻唱4', '翻唱5']) },
+    { trackName: '夜曲', artistName: '周杰伦', duration: 250, syncedLyrics: lrcOf(['长版1', '长版2', '长版3', '长版4', '长版5']) },
+    { trackName: '夜曲', artistName: '周杰伦', duration: 227.5, syncedLyrics: '[ti:夜曲]\n' + lrcOf(['一群嗜血的蚂蚁', '被腐肉所吸引', '我面无表情', '看孤独的风景', '失去你']) },
+  );
+  calls.length = 0;
+  const r = await req('/l/30');
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('Cache-Control'), /max-age=300/);
+  assert.equal(r.headers.get('Access-Control-Allow-Origin'), '*');
+  const d = await jsonOf(r);
+  assert.equal(d.src, 'lrclib');
+  assert.equal(d.synced, true);
+  assert.equal(d.lines.length, 5);
+  assert.deepEqual(d.lines[0], [1.5, '一群嗜血的蚂蚁']);
+  assert.ok(calls.length && calls.every(c => c.url.startsWith('https://lrclib.net/')), 'LRCLIB 找到了就不问网易云');
+  calls.length = 0;
+  await jsonOf(await req('/l/30'));
+  assert.equal(calls.length, 0, '第二次直接从数据库出');
+});
+
+await t('歌词：LRCLIB 没有就问网易云（挑时长最接近的）；网易云开头 JSON 格式的演职员行也认得', async () => {
+  await hook({ channel_post: audioPost(31, { title: '谪仙 (DJ版)', performer: '伊格赛听、叶里', duration: 181, file_id: 'X31', file_size: 9 }) });
+  neteaseDb.push({ id: 501, name: '谪仙', ar: [{ name: '伊格赛听' }], dt: 240000 }, { id: 502, name: '谪仙 (DJ版)', ar: [{ name: '伊格赛听' }, { name: '叶里' }], dt: 180500 });
+  neteaseLyrics.set(501, lrcOf(['原版1', '原版2', '原版3', '原版4', '原版5']));
+  neteaseLyrics.set(502, '{"t":0,"c":[{"tx":"作词: "},{"tx":"某某"}]}\n' + lrcOf(['画卷里的人', '一笔一画', '谪仙', '醉饮', '长歌']));
+  const d = await jsonOf(await req('/l/31'));
+  assert.equal(d.src, 'netease');
+  assert.equal(d.synced, true);
+  assert.deepEqual(d.lines.slice(0, 2), [[0, '作词: 某某'], [1.5, '画卷里的人']]);
+});
+
+await t('歌词：时长都对不上就只给文字；哪儿都没有记成「没有」、过段时间再找；外面出错时不乱下结论', async () => {
+  await hook({ channel_post: audioPost(32, { title: '晴天', performer: '周杰伦', duration: 269, file_id: 'X32', file_size: 9 }) });
+  lrclibDb.push({ trackName: '晴天', artistName: '周杰伦', duration: 309, syncedLyrics: lrcOf(['故事的小黄花', '从出生那年就飘着', '童年的荡秋千', '随记忆一直晃到现在', 'Re So So Si Do Si La']) });
+  let d = await jsonOf(await req('/l/32'));
+  assert.equal(d.src, 'lrclib');
+  assert.equal(d.synced, false);
+  assert.deepEqual(d.lines[0], [null, '故事的小黄花']);
+
+  await hook({ channel_post: audioPost(33, { title: '没人唱过的歌', performer: '无名', duration: 100, file_id: 'X33', file_size: 9 }) });
+  d = await jsonOf(await req('/l/33'));
+  assert.deepEqual(d, { src: 'none', synced: false, lines: [] });
+  const due = (await lib.getLyrics(33)).retry_at;
+  assert.ok(due > Date.now() + 13 * DAY && due < Date.now() + 15 * DAY);
+  calls.length = 0;
+  await jsonOf(await req('/l/33'));
+  assert.equal(calls.length, 0, '记成「没有」之后先不再找');
+  await lib.putLyrics(33, 'none', '', Date.now() - 1); // 到了该再找的时候
+  lrclibDb.push({ trackName: '没人唱过的歌', artistName: '无名', duration: 101, syncedLyrics: lrcOf(['终于', '有人', '写了', '这首', '歌词']) });
+  d = await jsonOf(await req('/l/33'));
+  assert.deepEqual([d.src, d.synced], ['lrclib', true]);
+  assert.equal((await lib.getLyrics(33)).retry_at, 0);
+
+  // LRCLIB 出错、网易云没有：先当没有，一天后就再找
+  await hook({ channel_post: audioPost(34, { title: '另一首', performer: '无名', duration: 100, file_id: 'X34', file_size: 9 }) });
+  mode.lrclib = 'down';
+  d = await jsonOf(await req('/l/34'));
+  assert.equal(d.src, 'none');
+  assert.ok((await lib.getLyrics(34)).retry_at < Date.now() + 2 * DAY);
+  // 两边都出错：503，什么都不存
+  mode.netease = 'down';
+  await hook({ channel_post: audioPost(35, { title: '第三首', performer: '无名', duration: 100, file_id: 'X35', file_size: 9 }) });
+  let r = await req('/l/35');
+  assert.equal(r.status, 503);
+  assert.equal(r.headers.get('Retry-After'), '60');
+  await textOf(r);
+  assert.equal(await lib.getLyrics(35), null);
+  // 存着旧结果的歌到期再找，又碰上两边都出错：照旧给存着的
+  await lib.putLyrics(34, 'none', '', Date.now() - 1);
+  r = await req('/l/34');
+  assert.equal(r.status, 200);
+  await textOf(r);
+  mode.lrclib = mode.netease = 'ok';
+  assert.equal((await req('/l/999')).status, 404);
+});
+
+await t('歌词：频道里回复某首歌发 .lrc（UTF-8、GBK、UTF-16 都认）就配上，自动找到的盖不掉它', async () => {
+  const gbk = Uint8Array.from([...Buffer.from('[00:01.00]'), 0xc4, 0xe3, 0xba, 0xc3, 0x0a, ...Buffer.from('[00:03.00]'), 0xd4, 0xd9, 0xbc, 0xfb]); // 你好、再见
+  await hook({ channel_post: { message_id: 40, chat, document: { file_name: '随便起的名.lrc', mime_type: 'application/octet-stream', file_id: addFile(gbk), file_unique_id: 'L40', file_size: gbk.length }, reply_to_message: { message_id: 30, chat } } });
+  assert.deepEqual(await jsonOf(await req('/l/30')), { src: 'manual', synced: true, lines: [[1, '你好'], [3, '再见']] });
+  assert.equal((await lib.putLyrics(30, 'lrclib', lrcOf(['a', 'b', 'c', 'd', 'e']), 0)).src, 'manual', '自动结果盖不掉手动的');
+  assert.ok(!(await publicTracks()).some(x => x.id === 40), '.lrc 帖子不算歌');
+
+  // 没回复哪首：文件名「歌手 - 歌名.lrc」对上唯一一首。顺带：[offset]、一行多个时间、逐字时间、CRLF、[ti:] 标签
+  const utf8 = new TextEncoder().encode('[ti:晴天]\r\n[offset:+500]\r\n[00:10.00][00:40.00]副歌\r\n[00:05.00]<00:05.00>第<00:05.40>一<00:05.80>句\r\n');
+  await hook({ channel_post: { message_id: 41, chat, document: { file_name: '周杰伦 - 晴天.lrc', file_id: addFile(utf8), file_unique_id: 'L41', file_size: utf8.length } } });
+  assert.deepEqual(await jsonOf(await req('/l/32')), { src: 'manual', synced: true, lines: [[4.5, '第一句'], [9.5, '副歌'], [39.5, '副歌']] });
+
+  // 文件名谁也对不上、文件太大：不下载、不理
+  calls.length = 0;
+  assert.equal((await hook({ channel_post: { message_id: 42, chat, document: { file_name: '谁也不是.lrc', file_id: addFile(utf8), file_size: utf8.length } } })).status, 200);
+  assert.equal((await hook({ channel_post: { message_id: 43, chat, document: { file_name: 'big.lrc', file_id: 'HUGE', file_size: 999999 }, reply_to_message: { message_id: 31, chat } } })).status, 200);
+  assert.equal(calls.length, 0);
+  assert.equal((await jsonOf(await req('/l/31'))).src, 'netease');
+
+  // Windows 记事本存的 UTF-16（带 BOM），没有时间轴的纯文字也行
+  const u16 = new Uint8Array(Buffer.from('\ufeff第一句\n第二句', 'utf16le'));
+  await hook({ channel_post: { message_id: 44, chat, document: { file_name: 'x.lrc', file_id: addFile(u16), file_size: u16.length }, reply_to_message: { message_id: 31, chat } } });
+  assert.deepEqual(await jsonOf(await req('/l/31')), { src: 'manual', synced: false, lines: [[null, '第一句'], [null, '第二句']] });
+  // Telegram 出错也回 200（不让它反复重发）
+  mode.getFile = 'fail';
+  assert.equal((await hook({ channel_post: { message_id: 45, chat, document: { file_name: 'y.lrc', file_id: addFile(utf8), file_size: utf8.length }, reply_to_message: { message_id: 33, chat } } })).status, 200);
+  mode.getFile = 'ok';
+});
+
+await t('歌词：帖子换了文件就作废；删歌时一起删', async () => {
+  await hook({ edited_channel_post: audioPost(33, { title: '没人唱过的歌', performer: '无名', duration: 100, file_id: 'X33b', file_unique_id: 'U33-new', file_size: 9 }) });
+  assert.equal(await lib.getLyrics(33), null);
+  await admin('remove', { track: 30 });
+  assert.equal(await lib.getLyrics(30), null);
+  for (const id of [31, 32, 33, 34, 35]) await admin('remove', { track: id });
 });
 
 await t('大文件：Range 原样转给流式服务（带密钥），返回的字节和原文件一致', async () => {
