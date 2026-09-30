@@ -503,6 +503,44 @@ async def search_channels(q: str, request: Request):
                          for c in found.chats if getattr(c, 'broadcast', False) and c.username]}
 
 
+@app.get('/search/music')
+async def search_music(q: str, channels: str, request: Request):
+    """在几个公开频道里按关键词搜音频（频道内搜索，不用加入），每个频道最多 20 条。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    out = []
+    for ch in [c.strip().lstrip('@') for c in channels.split(',') if c.strip()][:20]:
+        try:
+            async for msg in user_client.iter_messages(ch, search=q[:64], filter=InputMessagesFilterMusic, limit=20):
+                f = msg.file
+                if f:
+                    out.append({'channel': ch, 'id': msg.id, 'title': f.title or f.name or '', 'performer': f.performer or '',
+                                'duration': f.duration or 0, 'size': f.size or 0})
+        except Exception as e:  # noqa: BLE001 — 频道不存在、禁止保存内容之类，跳过这个频道
+            log.info('search %s in %s failed: %s', q, ch, e)
+    return {'results': out}
+
+
+@app.post('/copy/pick')
+async def copy_pick(request: Request):
+    """把挑好的几条转到小橘音乐：{items: [{channel, id}]}，返回每条转过去后的新消息号（失败为 null）。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    items = (await request.json()).get('items', [])[:50]
+    done = []
+    for it in items:
+        try:
+            sent = await user_client.forward_messages(target_channel(), int(it['id']), str(it['channel']), drop_author=True)
+            done.append(getattr(sent[0] if isinstance(sent, list) else sent, 'id', None))
+        except Exception as e:  # noqa: BLE001
+            log.info('pick %s failed: %s', it, e)
+            done.append(None)
+        await asyncio.sleep(3)
+    return {'new_ids': done}
+
+
 @app.get('/copy/status')
 async def copy_status(request: Request):
     check_key(request)
