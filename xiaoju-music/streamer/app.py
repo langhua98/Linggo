@@ -522,6 +522,35 @@ async def search_music(q: str, channels: str, request: Request):
     return {'results': out}
 
 
+@app.post('/bot/ask')
+async def bot_ask(request: Request):
+    """以频道主账号给搜索机器人（比如 @jisou）发一句话，等它回复，把回复文字和里面的 t.me 链接拿回来。
+    {bot, text, wait?} → {replies: [文字], links: [用户名]}"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    body = await request.json()
+    bot = str(body.get('bot', '')).strip().lstrip('@')
+    if not re.fullmatch(r'\w{4,64}', bot):
+        raise HTTPException(400, 'bad bot')
+    sent = await user_client.send_message(bot, str(body.get('text', ''))[:200])
+    await asyncio.sleep(max(2, min(int(body.get('wait', 6)), 20)))
+    replies, links = [], []
+    async for m in user_client.iter_messages(bot, min_id=sent.id, limit=10):
+        if m.out:
+            continue
+        text = m.raw_text or ''
+        replies.append(text)
+        urls = re.findall(r't\.me/(?:s/)?([A-Za-z]\w{3,})', text)
+        for e in m.entities or []:
+            urls += re.findall(r't\.me/(?:s/)?([A-Za-z]\w{3,})', getattr(e, 'url', None) or '')
+        for row in (m.buttons or []):
+            for b in row:
+                urls += re.findall(r't\.me/(?:s/)?([A-Za-z]\w{3,})', getattr(b, 'url', None) or '')
+        links += [u for u in urls if u not in links]
+    return {'replies': replies, 'links': links}
+
+
 @app.post('/copy/pick')
 async def copy_pick(request: Request):
     """把挑好的几条转到小橘音乐：{items: [{channel, id}]}，返回每条转过去后的新消息号（失败为 null）。"""
