@@ -3,51 +3,41 @@
 // 音频文件存在 Telegram 频道里，但网页没法直接播放 Telegram 的音乐文件。这个 Worker 在服务端
 // 持有机器人 token，把「频道消息号」换成浏览器能直接播放的地址。
 //
-// 超过 20 MB 的文件：官方 Bot API 的 getFile 只能取 20 MB 以内的文件，所以大文件会被切成每片
-// 19 MB 的「分片」存进一个私有「仓库频道」；播放时按 Range 把分片拼回原文件，浏览器拿到的和原
-// 文件逐字节相同，拖进度条照常可用。分片有两个来源：
-//   1. 自动：频道里一出现大文件，就派给 Hugging Face 上的切片服务（splitter/）。它用 MTProto
-//      （机器人走 MTProto 能下 2 GB）下载原文件、切片、上传到仓库频道，再回调登记；
-//   2. 手动：管理页 /admin 里选本地的同一个文件，浏览器切片后逐片上传。
+// 超过 20 MB 的文件：官方 Bot API 的 getFile 只能取 20 MB 以内的文件，这些文件转给 Hugging Face
+// 上的流式服务（streamer/）。它以机器人身份走 MTProto（不受 20 MB 限制），浏览器要哪一段，就从
+// Telegram 现取哪一段、边取边传。免费 Space 闲置会休眠：这时第一次请求会把它叫醒，Worker 先回 503，
+// 播放页等它醒了自动重试。
 //
 //   GET  /                 播放页
 //   GET  /api/tracks       歌单 JSON（新的在前）
-//   GET  /a/<消息号>        音频流，按 Range 取/拼分片（iOS Safari 开始播放、拖进度条都要 206）；?dl=1 变成下载
-//   POST /tg-webhook       Telegram 推送：频道新帖登记；机器人进了别的频道就记下来，供选作仓库
-//   GET  /admin            管理页（管理密钥登录）
-//   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>），切片服务也用它回调
+//   GET  /a/<消息号>        音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；?dl=1 变成下载
+//   POST /tg-webhook       Telegram 推送频道新帖，音频自动登记
+//   GET  /admin            管理页（管理密钥登录）：把频道里已删掉的帖子从歌单移除
+//   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>）
 //
 // 数据在 Durable Object「Library」的 SQLite 里：强一致，也没有 KV list 每天 1000 次的限制。
 //
 // 绑定：LIB（Durable Object）、TRACKS（旧 KV，只在第一次启动时迁移数据用）、
-//       TG_BOT_TOKEN / TG_WEBHOOK_SECRET / ADMIN_KEY / SPLITTER_KEY（secret）、
-//       CHANNEL_ID / CHANNEL_USERNAME / BOT_USERNAME / SPLITTER_URL（普通变量；
-//       SPLITTER_URL 或 SPLITTER_KEY 为空就不自动切片，只能在管理页手动上传）
+//       TG_BOT_TOKEN / TG_WEBHOOK_SECRET / ADMIN_KEY / STREAMER_KEY（secret）、
+//       CHANNEL_ID / CHANNEL_USERNAME / STREAMER_URL（普通变量；STREAMER_URL 为空则大文件不能播放）
 
 import { DurableObject } from 'cloudflare:workers';
 
 const TG = 'https://api.telegram.org';
-// 官方 Bot API 的 getFile 只能取 20 MB 以内的文件
+// 官方 Bot API 的 getFile 只能取 20 MB 以内的文件，更大的走流式服务
 const BOT_DOWNLOAD_LIMIT = 20 * 1024 * 1024;
-// 分片大小：离 20 MB 上限留余量（上限不管按 20 MiB 还是 20,000,000 字节算都安全）
-const PART_SIZE = 19 * 1024 * 1024;
-// 一次响应最多拼几片。每片最多两个子请求（getFile + 下载），免费版每次请求最多 50 个子请求
-const MAX_PARTS_PER_RESPONSE = 16;
-const SUBREQUEST_BUDGET = 45;
 // getFile 给的下载路径保证至少 1 小时有效，留 10 分钟余量
 const PATH_TTL_MS = 50 * 60 * 1000;
 const LIST_TTL_MS = 20 * 1000;
 const REC_TTL_MS = 60 * 1000;
-// 自动切片：同一首最多派 5 次；排队或处理中超过 30 分钟没有进展，就当作卡住了重新派
-const MAX_ATTEMPTS = 5;
-const STALE_MS = 30 * 60 * 1000;
-const WAITING = ['pending', 'queued', 'processing'];
+// 等流式服务回响应头的时间；等不到多半是它在休眠，先让播放页过会儿再试
+const STREAMER_WAIT_MS = 25 * 1000;
 
 const MSG = {
   unavailable: 'Telegram 暂时取不到这个文件，请稍后再试',
-  processing: '这首超过 20 MB，正在切片处理，稍后再试',
-  unplayable: '这首超过 20 MB，还没有可以播放的分片',
-  tooBigDownload: '文件太大，请到 Telegram 原帖下载',
+  waking: '大文件服务正在唤醒，大约 1 分钟后再试',
+  noStreamer: '这首超过 20 MB，暂时不能在网页播放',
+  gone: '频道里找不到这首了',
 };
 
 const MIME_BY_EXT = {
@@ -62,14 +52,15 @@ const recCache = new Map();  // 消息号 -> { rec, exp }
 let listCache = null;        // { body, exp }
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, headers) {
     super(message);
     this.status = status;
+    this.headers = headers;
   }
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -78,25 +69,20 @@ export default {
         return new Response(null, { status: 204, headers: cors({ 'Access-Control-Max-Age': '86400' }) });
       }
       if (path === '/tg-webhook') {
-        return method === 'POST' ? await webhook(request, env, ctx) : text('Method Not Allowed', 405);
+        return method === 'POST' ? await webhook(request, env) : text('Method Not Allowed', 405);
       }
-      if (path.startsWith('/admin/api/')) return await adminApi(request, env, ctx, url);
+      if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
       if (path === '/') return html(PAGE, method);
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
       if (path === '/api/tracks') return await trackList(env);
       const m = path.match(/^\/a\/(\d{1,10})(?:\.[a-z0-9]{1,5})?$/i);
-      if (m) return await audio(request, env, ctx, Number(m[1]), url.searchParams.has('dl'));
+      if (m) return await audio(request, env, Number(m[1]), url.searchParams.has('dl'));
       return text('Not Found', 404);
     } catch (e) {
-      if (e instanceof HttpError) return text(e.message, e.status);
+      if (e instanceof HttpError) return text(e.message, e.status, e.headers);
       return text('服务器出错了，请稍后再试', 500);
     }
-  },
-
-  // 定时任务：把还没派出去、失败待重试、卡住的大文件重新派给切片服务
-  async scheduled(event, env) {
-    await dispatch(env, await lib(env).claim(Date.now()));
   },
 };
 
@@ -104,41 +90,25 @@ function lib(env) {
   return env.LIB.get(env.LIB.idFromName('library'), { locationHint: 'apac' });
 }
 
-// ── Telegram webhook ─────────────────────────────────────────────
+function streamerOn(env) {
+  return !!(env.STREAMER_URL && env.STREAMER_KEY);
+}
 
-async function webhook(request, env, ctx) {
+// ── Telegram webhook：登记频道里的音频 ──────────────────────────────
+
+async function webhook(request, env) {
   const got = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
   if (!env.TG_WEBHOOK_SECRET || !sameString(got, env.TG_WEBHOOK_SECRET)) return text('Forbidden', 403);
 
   const update = await request.json().catch(() => null);
-  if (!update) return text('ok');
-  const L = lib(env);
-
-  // 机器人被加进（或移出）别的频道：记下来，管理页可以把它选作「仓库频道」
-  const member = update.my_chat_member;
-  if (member) {
-    const chat = member.chat;
-    if (chat && chat.type === 'channel' && String(chat.id) !== String(env.CHANNEL_ID)) {
-      await L.noteChat(String(chat.id), chat.title || '', (member.new_chat_member && member.new_chat_member.status) || '');
-    }
+  const post = update && (update.channel_post || update.edited_channel_post);
+  // 只收自己频道的帖子；别的群、私聊一律忽略，但仍回 200，免得 Telegram 反复重发
+  if (!post || !Number.isInteger(post.message_id) || String(post.chat && post.chat.id) !== String(env.CHANNEL_ID)) {
     return text('ok');
   }
-
-  const post = update.channel_post || update.edited_channel_post;
-  if (!post || !post.chat || !Number.isInteger(post.message_id)) return text('ok');
-  if (String(post.chat.id) !== String(env.CHANNEL_ID)) {
-    // 别的频道里的帖子：不登记，只记下这个频道（机器人能收到频道帖子，说明它是那里的管理员）
-    if (post.chat.type === 'channel') await L.noteChat(String(post.chat.id), post.chat.title || '', 'administrator');
-    return text('ok');
-  }
-
   const rec = toRecord(post);
-  if (rec) {
-    const { needsParts } = await L.upsertTrack(rec);
-    if (needsParts) ctx.waitUntil(dispatch(env, [jobFor(rec)]));
-  } else if (update.edited_channel_post) {
-    await L.removeTrack(post.message_id); // 编辑后已不含音频
-  }
+  if (rec) await lib(env).upsertTrack(rec);
+  else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
   forget(post.message_id);
   return text('ok');
 }
@@ -184,169 +154,43 @@ function pickMime(name, telegramMime, kind) {
   return telegramMime && telegramMime.startsWith('audio/') ? telegramMime : 'application/octet-stream';
 }
 
-function needsParts(rec) {
-  return rec.size > BOT_DOWNLOAD_LIMIT && !(rec.parts && rec.parts.length);
-}
-
-function jobFor(rec) {
-  return { track: rec.id, size: rec.size, file_unique_id: rec.file_unique_id || '' };
-}
-
-// ── 自动切片：派活给 Hugging Face 上的切片服务 ──────────────────────
-
-// 服务睡着时第一次派活会失败（Hugging Face 唤醒要一两分钟），定时任务会接着派
-async function dispatch(env, jobs) {
-  if (!jobs.length || !env.SPLITTER_URL || !env.SPLITTER_KEY) return;
-  const L = lib(env);
-  const { storage } = await L.getConfig();
-  if (!storage) return;
-  for (const job of jobs) {
-    let ok = false;
-    let note = '';
-    try {
-      const res = await fetch(env.SPLITTER_URL.replace(/\/+$/, '') + '/split', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Key': env.SPLITTER_KEY },
-        body: JSON.stringify({ ...job, channel: env.CHANNEL_USERNAME, storage, part_size: PART_SIZE }),
-        signal: AbortSignal.timeout(20000),
-      });
-      ok = res.ok;
-      note = ok ? '' : '切片服务返回 ' + res.status + '，稍后自动重试';
-      if (res.body) await res.body.cancel();
-    } catch {
-      note = '切片服务暂时没响应（可能在休眠），稍后自动重试';
-    }
-    await L.kicked(job.track, ok, note);
-    forget(job.track);
-  }
-}
-
 // ── 管理接口 ─────────────────────────────────────────────────────
 
-async function adminApi(request, env, ctx, url) {
+async function adminApi(request, env, url) {
   const auth = request.headers.get('Authorization') || '';
   const key = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!env.ADMIN_KEY || !sameString(key, env.ADMIN_KEY)) return json({ error: '管理密钥不对' }, 401);
 
-  const L = lib(env);
   const action = url.pathname.slice('/admin/api/'.length);
-  try {
-    if (action === 'state' && request.method === 'GET') {
-      const [config, tracks, chats] = await Promise.all([L.getConfig(), L.listTracks(true), L.listChats()]);
-      return json({
-        channel: env.CHANNEL_USERNAME || '',
-        bot: env.BOT_USERNAME || '',
-        storage: config.storage ? { id: config.storage, title: config.storageTitle } : null,
-        chats: chats.filter(c => c.id !== String(env.CHANNEL_ID) && c.id !== config.storage),
-        splitter: !!(env.SPLITTER_URL && env.SPLITTER_KEY),
-        partSize: PART_SIZE,
-        limit: BOT_DOWNLOAD_LIMIT,
-        tracks,
-      });
-    }
-    if (request.method !== 'POST') return json({ error: 'Method Not Allowed' }, 405);
-    if (action === 'part') return json(await uploadPart(request, env, L, url));
-
+  if (action === 'state' && request.method === 'GET') {
+    return json({ channel: env.CHANNEL_USERNAME || '', streamer: streamerOn(env), tracks: await tracksFor(env) });
+  }
+  if (action === 'remove' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));
     const track = Number(body.track);
-    if (['commit', 'status', 'retry', 'remove'].includes(action) && !Number.isInteger(track)) {
-      return json({ error: '参数不对' }, 400);
-    }
-    let result;
-    switch (action) {
-      case 'commit':
-        result = await L.commitParts(track, body.size, body.parts, !!body.force, String(body.mime || ''));
-        break;
-      case 'status':
-        await L.setTrackStatus(track, String(body.status || ''), String(body.note || ''));
-        result = { ok: true };
-        break;
-      case 'retry': {
-        const job = await L.retryTrack(track);
-        if (job) ctx.waitUntil(dispatch(env, [job]));
-        result = job ? { ok: true } : { error: '这首不需要处理' };
-        break;
-      }
-      case 'remove':
-        await L.removeTrack(track);
-        result = { ok: true };
-        break;
-      case 'storage':
-        result = await L.setStorage(String(body.id || ''));
-        break;
-      default:
-        return json({ error: 'Not Found' }, 404);
-    }
+    if (!Number.isInteger(track)) return json({ error: '参数不对' }, 400);
+    await lib(env).removeTrack(track);
     forget(track);
-    return json(result, result.error ? 400 : 200);
-  } catch (e) {
-    if (e instanceof HttpError) return json({ error: e.message, retryAfter: e.retryAfter }, e.status);
-    return json({ error: '服务器出错了' }, 500);
+    return json({ ok: true });
   }
-}
-
-// 管理页手动上传的一片：请求体原样流进 multipart 发到仓库频道，Worker 里不整块缓冲 19 MB
-async function uploadPart(request, env, L, url) {
-  const { storage } = await L.getConfig();
-  if (!storage) throw new HttpError(409, '还没有设置仓库频道');
-  const track = intParam(url, 'track');
-  const index = intParam(url, 'index');
-  const count = intParam(url, 'count');
-  if (track === null || index === null || count === null || count < 1 || count > 500 || index >= count) {
-    throw new HttpError(400, '参数不对');
-  }
-  const length = Number(request.headers.get('Content-Length'));
-  if (!request.body || !Number.isInteger(length) || length <= 0 || length > PART_SIZE) {
-    throw new HttpError(413, '每片必须在 1 字节到 19 MB 之间');
-  }
-  const doc = await sendDocument(env, storage, `t${track}-p${index + 1}of${count}.bin`, `#t${track} ${index + 1}/${count}`, request.body, length);
-  if (doc.file_size !== length) throw new HttpError(502, '上传后的大小不对，请重试');
-  return { file_id: doc.file_id, size: doc.file_size };
-}
-
-async function sendDocument(env, chatId, filename, caption, body, length) {
-  const boundary = 'xm' + crypto.randomUUID().replace(/-/g, '');
-  const field = (name, value) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
-  const enc = new TextEncoder();
-  const head = enc.encode(
-    field('chat_id', chatId) + field('caption', caption) +
-    field('disable_notification', 'true') + field('disable_content_type_detection', 'true') +
-    `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${filename}"\r\n` +
-    'Content-Type: application/octet-stream\r\n\r\n');
-  const tail = enc.encode(`\r\n--${boundary}--\r\n`);
-  const { readable, writable } = fixedLengthStream(head.length + length + tail.length);
-  const pump = (async () => {
-    const w = writable.getWriter();
-    await w.write(head);
-    w.releaseLock();
-    await body.pipeTo(writable, { preventClose: true });
-    const w2 = writable.getWriter();
-    await w2.write(tail);
-    await w2.close();
-  })();
-  const [res] = await Promise.all([
-    fetch(`${TG}/bot${env.TG_BOT_TOKEN}/sendDocument`, {
-      method: 'POST',
-      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-      body: readable,
-      duplex: 'half',
-    }),
-    pump,
-  ]);
-  const j = await res.json().catch(() => null);
-  if (j && j.ok && j.result && j.result.document) return j.result.document;
-  const err = new HttpError(res.status === 429 ? 429 : 502, '上传到 Telegram 失败：' + ((j && j.description) || res.status));
-  err.retryAfter = j && j.parameters && j.parameters.retry_after;
-  throw err;
+  return json({ error: 'Not Found' }, 404);
 }
 
 // ── 歌单 ─────────────────────────────────────────────────────────
 
+// 大文件能不能播，取决于流式服务配没配
+async function tracksFor(env) {
+  const on = streamerOn(env);
+  return (await lib(env).listTracks()).map(t => {
+    const big = t.size > BOT_DOWNLOAD_LIMIT;
+    return { ...t, big, playable: !big || on };
+  });
+}
+
 async function trackList(env) {
   const now = Date.now();
   if (!listCache || listCache.exp < now) {
-    const tracks = await lib(env).listTracks(false);
-    listCache = { body: JSON.stringify({ channel: env.CHANNEL_USERNAME || '', tracks }), exp: now + LIST_TTL_MS };
+    listCache = { body: JSON.stringify({ channel: env.CHANNEL_USERNAME || '', tracks: await tracksFor(env) }), exp: now + LIST_TTL_MS };
   }
   return new Response(listCache.body, {
     headers: cors({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=15' }),
@@ -369,15 +213,12 @@ function forget(id) {
 
 // ── 音频流 ───────────────────────────────────────────────────────
 
-async function audio(request, env, ctx, id, download) {
+async function audio(request, env, id, download) {
   const rec = await getRec(env, id);
   if (!rec) throw new HttpError(404, '没有这首歌');
-  if (rec.status !== 'ok') {
-    throw new HttpError(503, WAITING.includes(rec.status) ? MSG.processing : MSG.unplayable);
-  }
+  const big = rec.size > BOT_DOWNLOAD_LIMIT;
+  if (big && !streamerOn(env)) throw new HttpError(503, MSG.noStreamer);
 
-  const pieces = piecesOf(rec);
-  const total = pieces.reduce((n, p) => n + p.size, 0);
   const headers = cors({
     'Content-Type': rec.mime,
     'Accept-Ranges': 'bytes',
@@ -385,43 +226,19 @@ async function audio(request, env, ctx, id, download) {
     'Content-Disposition': contentDisposition(rec, download),
   });
   if (request.method === 'HEAD') {
-    if (total) headers['Content-Length'] = String(total);
+    if (rec.size) headers['Content-Length'] = String(rec.size);
     return new Response(null, { headers });
   }
-  if (!total) return await passthrough(request, env, rec, headers); // 没有登记大小的老记录：照旧透传
+  if (!rec.size) return await passthrough(request, env, rec, headers); // 没有登记大小的老记录：照旧透传
 
-  const range = parseRange(request.headers.get('Range'), total);
+  const range = parseRange(request.headers.get('Range'), rec.size);
   if (!range) {
-    return new Response(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${total}`, 'Cache-Control': 'no-store' } });
+    return new Response(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${rec.size}`, 'Cache-Control': 'no-store' } });
   }
-  let segs = segments(pieces, range.start, range.end);
-  if (segs.length > MAX_PARTS_PER_RESPONSE) {
-    // 范围太长：只给前 16 片（206 允许少给，浏览器会接着要后面的）；整个文件的下载没法少给
-    if (!range.partial) throw new HttpError(413, MSG.tooBigDownload);
-    segs = segs.slice(0, MAX_PARTS_PER_RESPONSE);
-    const last = segs[segs.length - 1];
-    range.end = last.offset + last.to;
-  }
-
-  const length = range.end - range.start + 1;
-  headers['Content-Length'] = String(length);
-  if (range.partial) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${total}`;
-  const status = range.partial ? 206 : 200;
-  const budget = { left: SUBREQUEST_BUDGET };
-  const first = await openSegment(env, segs[0], budget);
-  if (segs.length === 1) return new Response(first.body, { status, headers });
-  return new Response(concat(env, ctx, first, segs.slice(1), length, budget), { status, headers });
-}
-
-// 把一首歌看成若干「片」首尾相接：没切过的就是它自己这一个文件
-function piecesOf(rec) {
-  const list = rec.parts && rec.parts.length ? rec.parts : [{ file_id: rec.file_id, size: rec.size }];
-  let offset = 0;
-  return list.map(p => {
-    const piece = { file_id: p.file_id, size: p.size, offset };
-    offset += p.size;
-    return piece;
-  });
+  headers['Content-Length'] = String(range.end - range.start + 1);
+  if (range.partial) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${rec.size}`;
+  const res = big ? await fromStreamer(env, rec, range) : await fromBotApi(env, rec, range);
+  return new Response(res.body, { status: range.partial ? 206 : 200, headers });
 }
 
 // 返回 { start, end, partial }；null 表示范围没法满足（416）。认不出的格式、多段 Range 一律当作要整个文件
@@ -440,51 +257,57 @@ function parseRange(header, total) {
   return { start, end, partial: true };
 }
 
-// [start, end] 落在哪几片上；from/to 是片内的字节位置
-function segments(pieces, start, end) {
-  const out = [];
-  for (const p of pieces) {
-    const last = p.offset + p.size - 1;
-    if (last < start) continue;
-    if (p.offset > end) break;
-    out.push({ file_id: p.file_id, size: p.size, offset: p.offset, from: Math.max(start, p.offset) - p.offset, to: Math.min(end, last) - p.offset });
-  }
-  return out;
+// 要的是整个文件就不带 Range，上游回 200；否则带上算好的 Range，上游回 206
+function upstreamRange(rec, range) {
+  return range.start === 0 && range.end === rec.size - 1 ? null : `bytes=${range.start}-${range.end}`;
 }
 
-async function openSegment(env, seg, budget) {
-  const whole = seg.from === 0 && seg.to === seg.size - 1;
-  const res = await fetchFile(env, seg.file_id, whole ? null : `bytes=${seg.from}-${seg.to}`, budget);
+function bodyMatches(res, want, range, strict) {
   const len = res.headers.get('Content-Length');
-  const ok = res.status === (whole ? 200 : 206) && (len === null || Number(len) === seg.to - seg.from + 1);
-  if (!ok) {
+  return res.status === (want ? 206 : 200) &&
+    (len === null ? !strict : Number(len) === range.end - range.start + 1);
+}
+
+async function fromBotApi(env, rec, range) {
+  const want = upstreamRange(rec, range);
+  const res = await fetchFile(env, rec.file_id, want);
+  if (!bodyMatches(res, want, range, false)) {
     if (res.body) res.body.cancel();
     throw new HttpError(502, MSG.unavailable);
   }
   return res;
 }
 
-// 多片按顺序接进同一个定长流；下一片要等上一片被读完才去取，不会一口气把整首拉下来
-function concat(env, ctx, first, rest, length, budget) {
-  const { readable, writable } = fixedLengthStream(length);
-  ctx.waitUntil((async () => {
-    try {
-      await first.body.pipeTo(writable, { preventClose: true });
-      for (const seg of rest) {
-        const res = await openSegment(env, seg, budget);
-        await res.body.pipeTo(writable, { preventClose: true });
-      }
-      await writable.close();
-    } catch (e) {
-      await writable.abort(e).catch(() => {});
-    }
-  })());
-  return readable;
+async function fromStreamer(env, rec, range) {
+  const want = upstreamRange(rec, range);
+  const headers = { 'X-Key': env.STREAMER_KEY };
+  if (want) headers.Range = want;
+  // 只限制等响应头的时间；拿到响应头后就不再计时，长歌可以一直传下去
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), STREAMER_WAIT_MS);
+  let res;
+  try {
+    res = await fetch(`${env.STREAMER_URL.replace(/\/+$/, '')}/stream/${rec.id}`, { headers, signal: abort.signal });
+  } catch {
+    throw waking();
+  } finally {
+    clearTimeout(timer);
+  }
+  if (bodyMatches(res, want, range, true)) return res;
+  if (res.body) res.body.cancel();
+  if (res.status === 404) throw new HttpError(404, MSG.gone);
+  // 5xx 或者一张网页（Hugging Face 的「正在启动」页）：服务还没醒
+  if (res.status >= 500 || (res.headers.get('Content-Type') || '').includes('text/html')) throw waking();
+  throw new HttpError(502, MSG.unavailable);
+}
+
+function waking() {
+  return new HttpError(503, MSG.waking, { 'Retry-After': '15' });
 }
 
 async function passthrough(request, env, rec, headers) {
   const raw = (request.headers.get('Range') || '').trim();
-  const res = await fetchFile(env, rec.file_id, /^bytes=(\d+-\d*|-\d+)$/.test(raw) ? raw : null, { left: SUBREQUEST_BUDGET });
+  const res = await fetchFile(env, rec.file_id, /^bytes=(\d+-\d*|-\d+)$/.test(raw) ? raw : null);
   if (![200, 206, 416].includes(res.status)) {
     if (res.body) res.body.cancel();
     throw new HttpError(502, MSG.unavailable);
@@ -496,13 +319,12 @@ async function passthrough(request, env, rec, headers) {
   return new Response(res.body, { status: res.status, headers });
 }
 
-async function fetchFile(env, fileId, range, budget) {
+async function fetchFile(env, fileId, range) {
   for (let attempt = 0; ; attempt++) {
-    const path = await filePath(env, fileId, attempt > 0, budget);
-    spend(budget);
+    const path = await filePath(env, fileId, attempt > 0);
     const res = await fetch(`${TG}/file/bot${env.TG_BOT_TOKEN}/${path}`, { headers: range ? { Range: range } : {} });
     // 缓存的下载路径过期会回 4xx：重新 getFile 换个新路径，再试一次
-    if (attempt === 0 && [401, 403, 404].includes(res.status) && budget.left >= 2) {
+    if (attempt === 0 && [401, 403, 404].includes(res.status)) {
       if (res.body) res.body.cancel();
       continue;
     }
@@ -510,29 +332,16 @@ async function fetchFile(env, fileId, range, budget) {
   }
 }
 
-async function filePath(env, fileId, refresh, budget) {
+async function filePath(env, fileId, refresh) {
   const hit = filePaths.get(fileId);
   if (hit && !refresh && hit.exp > Date.now()) return hit.path;
 
-  spend(budget);
   const r = await fetch(`${TG}/bot${env.TG_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
   const j = await r.json().catch(() => null);
-  if (!j || !j.ok || !j.result || !j.result.file_path) {
-    const tooBig = /too big/i.test((j && j.description) || '');
-    throw new HttpError(tooBig ? 413 : 502, tooBig ? MSG.unplayable : MSG.unavailable);
-  }
+  if (!j || !j.ok || !j.result || !j.result.file_path) throw new HttpError(502, MSG.unavailable);
   if (filePaths.size > 500) filePaths.clear();
   filePaths.set(fileId, { path: j.result.file_path, exp: Date.now() + PATH_TTL_MS });
   return j.result.file_path;
-}
-
-function spend(budget) {
-  if (budget.left-- <= 0) throw new HttpError(502, MSG.unavailable);
-}
-
-function fixedLengthStream(length) {
-  // FixedLengthStream 是 Workers 特有的：让流式响应带上 Content-Length；本地测试里退回普通流
-  return typeof FixedLengthStream === 'function' ? new FixedLengthStream(length) : new TransformStream();
 }
 
 function contentDisposition(rec, download) {
@@ -550,12 +359,10 @@ export class Library extends DurableObject {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     ctx.blockConcurrencyWhile(async () => {
-      this.sql.exec(`CREATE TABLE IF NOT EXISTS tracks (
-        id INTEGER PRIMARY KEY, rec TEXT NOT NULL, status TEXT NOT NULL,
-        note TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0)`);
-      this.sql.exec('CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL, updated INTEGER NOT NULL)');
+      this.sql.exec('CREATE TABLE IF NOT EXISTS songs (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, updated INTEGER NOT NULL)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
-      // 第一次启动：把旧版存在 KV 里的歌单搬过来
+      this.dropSplitterLeftovers();
+      // 第一次启动：把更早版本存在 KV 里的歌单搬过来
       if (!this.cfg('migrated')) {
         if (env.TRACKS) await this.importKV(env.TRACKS);
         this.setCfg('migrated', '1');
@@ -563,121 +370,36 @@ export class Library extends DurableObject {
     });
   }
 
-  async listTracks(admin) {
-    return this.sql.exec('SELECT * FROM tracks ORDER BY id DESC').toArray().map(r => summary(r, admin));
+  // 试过「切片」方案的那一版把歌存在 tracks 表（多几列处理状态），还有 chats 表和仓库频道配置。
+  // 换成流式后都用不上：歌搬进 songs，其余删掉。tracks 不存在时 INSERT 会报错，说明已经搬过了
+  dropSplitterLeftovers() {
+    try {
+      this.sql.exec('INSERT OR IGNORE INTO songs (id, rec, updated) SELECT id, rec, updated FROM tracks');
+      this.sql.exec('DROP TABLE tracks');
+    } catch {
+      // 没有旧表
+    }
+    this.sql.exec('DROP TABLE IF EXISTS chats');
+    this.sql.exec("DELETE FROM config WHERE k IN ('storage', 'storageTitle')");
+  }
+
+  async listTracks() {
+    return this.sql.exec('SELECT rec FROM songs ORDER BY id DESC').toArray().map(r => summary(JSON.parse(r.rec)));
   }
 
   async getTrack(id) {
-    const r = this.row(id);
-    return r ? { ...JSON.parse(r.rec), status: r.status } : null;
+    const r = this.sql.exec('SELECT rec FROM songs WHERE id = ?', id).toArray()[0];
+    return r ? JSON.parse(r.rec) : null;
   }
 
   async upsertTrack(rec) {
-    const old = this.row(rec.id);
-    const prev = old && JSON.parse(old.rec);
-    const sameFile = !!(prev && prev.file_unique_id && prev.file_unique_id === rec.file_unique_id);
-    // 只是改了说明文字：已有的分片沿用（手动上传时可能换过大小和类型，也一起沿用）
-    if (sameFile && prev.parts) Object.assign(rec, { parts: prev.parts, size: prev.size, mime: prev.mime });
-    if (!needsParts(rec)) {
-      this.write(rec, 'ok', '', 0);
-      return { needsParts: false };
-    }
-    if (sameFile) {
-      this.write(rec, old.status, old.note, old.attempts);
-      return { needsParts: old.status === 'pending' };
-    }
-    this.write(rec, 'pending', '', 0);
-    return { needsParts: true };
+    this.sql.exec(`INSERT INTO songs (id, rec, updated) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, updated = excluded.updated`,
+      rec.id, JSON.stringify(rec), Date.now());
   }
 
   async removeTrack(id) {
-    this.sql.exec('DELETE FROM tracks WHERE id = ?', id);
-  }
-
-  // 切片服务回报进度或失败
-  async setTrackStatus(id, status, note) {
-    if (status !== 'processing' && status !== 'failed') return;
-    const r = this.row(id);
-    if (!r || r.status === 'ok') return;
-    this.sql.exec('UPDATE tracks SET status = ?, note = ?, updated = ? WHERE id = ?', status, cut(note, 200), Date.now(), id);
-  }
-
-  // 派活的结果：派出去了就记一次尝试；没派出去只记原因，状态不变，等定时任务再派
-  async kicked(id, ok, note) {
-    const r = this.row(id);
-    if (!r || r.status === 'ok') return;
-    if (ok) {
-      this.sql.exec('UPDATE tracks SET status = ?, note = ?, attempts = attempts + 1, updated = ? WHERE id = ?',
-        r.status === 'processing' ? 'processing' : 'queued', '', Date.now(), id);
-    } else {
-      this.sql.exec('UPDATE tracks SET note = ?, updated = ? WHERE id = ?', cut(note, 200), Date.now(), id);
-    }
-  }
-
-  // 定时任务要重新派的活：还没派出去的、失败后退避到期的、卡住的；每次最多 3 首
-  async claim(now) {
-    const rows = this.sql.exec("SELECT * FROM tracks WHERE status != 'ok' ORDER BY id").toArray();
-    const due = rows.filter(r => r.attempts < MAX_ATTEMPTS && (
-      r.status === 'pending' ||
-      (r.status === 'failed' && now - r.updated > 10 * 60 * 1000 * 2 ** Math.max(0, r.attempts - 1)) ||
-      ((r.status === 'queued' || r.status === 'processing') && now - r.updated > STALE_MS)));
-    return due.slice(0, 3).map(r => jobFor(JSON.parse(r.rec)));
-  }
-
-  async retryTrack(id) {
-    const r = this.row(id);
-    if (!r || r.status === 'ok') return null;
-    this.sql.exec("UPDATE tracks SET status = 'pending', note = '', attempts = 0, updated = ? WHERE id = ?", Date.now(), id);
-    return jobFor(JSON.parse(r.rec));
-  }
-
-  // 登记分片：切片服务或管理页上传完成后调用
-  async commitParts(id, size, parts, force, mime) {
-    const r = this.row(id);
-    if (!r) return { error: '没有这首歌' };
-    if (!Number.isInteger(size) || size <= 0 || !Array.isArray(parts) || !parts.length || parts.length > 500) {
-      return { error: '分片列表不对' };
-    }
-    let total = 0;
-    for (const p of parts) {
-      if (!p || typeof p.file_id !== 'string' || !p.file_id || !Number.isInteger(p.size) || p.size <= 0 || p.size > BOT_DOWNLOAD_LIMIT) {
-        return { error: '分片列表不对' };
-      }
-      total += p.size;
-    }
-    if (total !== size) return { error: '分片加起来的大小不对' };
-    const rec = JSON.parse(r.rec);
-    if (size !== rec.size) {
-      if (!force) return { error: '大小和频道里的文件不一致' };
-      rec.size = size;
-      if (mime.startsWith('audio/')) rec.mime = mime;
-    }
-    rec.parts = parts.map(p => ({ file_id: p.file_id, size: p.size }));
-    this.write(rec, 'ok', '', r.attempts);
-    return { ok: true };
-  }
-
-  async noteChat(id, title, status) {
-    this.sql.exec(`INSERT INTO chats (id, title, status, updated) VALUES (?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET title = excluded.title, status = excluded.status, updated = excluded.updated`,
-      id, cut(title, 100), status, Date.now());
-  }
-
-  async listChats() {
-    return this.sql.exec('SELECT id, title, status FROM chats ORDER BY updated DESC LIMIT 20').toArray();
-  }
-
-  async getConfig() {
-    return { storage: this.cfg('storage') || '', storageTitle: this.cfg('storageTitle') || '' };
-  }
-
-  async setStorage(id) {
-    const c = this.sql.exec('SELECT * FROM chats WHERE id = ?', id).toArray()[0];
-    if (!c) return { error: '机器人不在这个频道里' };
-    if (c.status !== 'administrator' && c.status !== 'creator') return { error: '机器人在这个频道里不是管理员' };
-    this.setCfg('storage', c.id);
-    this.setCfg('storageTitle', c.title);
-    return { ok: true };
+    this.sql.exec('DELETE FROM songs WHERE id = ?', id);
   }
 
   async importKV(kv) {
@@ -686,21 +408,10 @@ export class Library extends DurableObject {
       const page = await kv.list(cursor ? { prefix: 't:', cursor } : { prefix: 't:' });
       for (const k of page.keys) {
         const rec = await kv.get(k.name, 'json');
-        if (rec && Number.isInteger(rec.id)) this.write(rec, needsParts(rec) ? 'pending' : 'ok', '', 0);
+        if (rec && Number.isInteger(rec.id)) await this.upsertTrack(rec);
       }
       cursor = page.list_complete ? null : page.cursor;
     } while (cursor);
-  }
-
-  row(id) {
-    return this.sql.exec('SELECT * FROM tracks WHERE id = ?', id).toArray()[0] || null;
-  }
-
-  write(rec, status, note, attempts) {
-    this.sql.exec(`INSERT INTO tracks (id, rec, status, note, attempts, updated) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, status = excluded.status, note = excluded.note,
-        attempts = excluded.attempts, updated = excluded.updated`,
-      rec.id, JSON.stringify(rec), status, note, attempts, Date.now());
   }
 
   cfg(k) {
@@ -713,19 +424,12 @@ export class Library extends DurableObject {
   }
 }
 
-// 歌单里的一行；file_id、分片清单这些只在服务端用，不给出去
-function summary(r, admin) {
-  const rec = JSON.parse(r.rec);
-  const parts = rec.parts ? rec.parts.length : 0;
-  const playable = r.status === 'ok';
-  const out = {
+// 歌单里的一行；file_id 只在服务端用，不给出去
+function summary(rec) {
+  return {
     id: rec.id, kind: rec.kind, title: rec.title, performer: rec.performer, mime: rec.mime,
     size: rec.size, duration: rec.duration, date: rec.date,
-    status: r.status, playable, parts,
-    downloadable: playable && parts <= MAX_PARTS_PER_RESPONSE,
   };
-  if (admin) Object.assign(out, { note: r.note, attempts: r.attempts, updated: r.updated });
-  return out;
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────
@@ -742,17 +446,6 @@ function stripExt(name) {
 function extFromMime(mime) {
   const ext = Object.keys(MIME_BY_EXT).find(k => MIME_BY_EXT[k] === mime);
   return ext ? '.' + ext : '';
-}
-
-// 按码位截断，不会把 emoji 劈成半个
-function cut(s, n) {
-  const chars = Array.from(s || '');
-  return chars.length > n ? chars.slice(0, n - 1).join('') + '…' : chars.join('');
-}
-
-function intParam(url, name) {
-  const v = url.searchParams.get(name) || '';
-  return /^\d{1,10}$/.test(v) ? Number(v) : null;
 }
 
 function sameString(a, b) {
@@ -772,10 +465,10 @@ function cors(extra) {
   };
 }
 
-function text(body, status = 200) {
+function text(body, status = 200, extra) {
   return new Response(body, {
     status,
-    headers: cors({ 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }),
+    headers: cors({ 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...extra }),
   });
 }
 
@@ -829,7 +522,7 @@ const PAGE = `<!doctype html>
 .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .meta{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .track.on .title,.track.on .num{color:var(--accent)}
-.track.big{opacity:.55}
+.track.off{opacity:.55}
 .links{display:flex;gap:14px;flex:none;font-size:13px}
 .links a{color:var(--muted);text-decoration:none;padding:8px 0}
 .links a:hover{color:var(--accent)}
@@ -864,8 +557,7 @@ audio{display:block;width:100%;height:40px}
   var player = document.getElementById('player');
   var nowTitle = document.getElementById('now-title');
   var nowArtist = document.getElementById('now-artist');
-  var WAITING = { pending: 1, queued: 1, processing: 1 };
-  var tracks = [], curId = null, channel = '', timer = 0, firstLoad = true;
+  var tracks = [], curId = null, channel = '', retries = 0, retryTimer = 0;
 
   // 表演者字段常带着转发来源的 @频道名，展示时去掉
   function artist(p){ return (p || '').replace(/@\\w+/g, '').replace(/\\s+/g, ' ').trim(); }
@@ -882,14 +574,14 @@ audio{display:block;width:100%;height:40px}
     return -1;
   }
   function metaText(t){
-    if(t.playable) return [artist(t.performer), mmss(t.duration), mb(t.size)].filter(Boolean).join(' · ');
-    return WAITING[t.status] ? '超过 20 MB，正在处理，稍后就能播放' : '超过 20 MB，暂时无法在网页播放';
+    if(!t.playable) return '超过 20 MB，暂时不能在网页播放';
+    return [artist(t.performer), mmss(t.duration), mb(t.size)].filter(Boolean).join(' · ');
   }
 
   function render(){
     list.textContent = '';
     tracks.forEach(function(t, i){
-      var li = el('li', 'track' + (t.playable ? '' : ' big') + (t.id === curId ? ' on' : ''));
+      var li = el('li', 'track' + (t.playable ? '' : ' off') + (t.id === curId ? ' on' : ''));
       var btn = el('button', 'play');
       btn.type = 'button';
       btn.setAttribute('aria-label', '播放 ' + t.title);
@@ -902,7 +594,7 @@ audio{display:block;width:100%;height:40px}
       btn.addEventListener('click', function(){ play(t.id); });
       li.appendChild(btn);
       var links = el('span', 'links');
-      if(t.downloadable){
+      if(t.playable){
         var dl = el('a', null, '下载');
         dl.href = '/a/' + t.id + '?dl=1';
         links.appendChild(dl);
@@ -922,6 +614,8 @@ audio{display:block;width:100%;height:40px}
   function select(id){
     var t = tracks[indexOf(id)];
     curId = id;
+    retries = 0;
+    clearTimeout(retryTimer);
     audio.src = '/a/' + id;
     nowTitle.textContent = t.title;
     nowArtist.textContent = artist(t.performer);
@@ -949,10 +643,36 @@ audio{display:block;width:100%;height:40px}
     }
   }
 
-  audio.addEventListener('ended', function(){ step(1); });
+  // 大文件服务休眠时第一次请求会失败（503）：提示一下，每 10 秒重试，最多等 2 分钟
   audio.addEventListener('error', function(){
-    if(curId !== null) nowArtist.textContent = '这首暂时播放不了，稍后再试';
+    var id = curId;
+    if(id === null) return;
+    var pos = audio.currentTime || 0;
+    fetch('/a/' + id, { headers: { Range: 'bytes=0-0' } }).then(function(r){
+      if(r.body && r.body.cancel) r.body.cancel();
+      if(id !== curId) return;
+      if(r.status !== 503 || retries >= 12){
+        nowArtist.textContent = '这首暂时播放不了，稍后再试';
+        return;
+      }
+      retries++;
+      nowArtist.textContent = '大文件服务正在唤醒，请稍等…';
+      retryTimer = setTimeout(function(){
+        if(id !== curId) return;
+        audio.src = '/a/' + id;
+        if(pos) audio.addEventListener('loadedmetadata', function(){ audio.currentTime = pos; }, { once: true });
+        var p = audio.play();
+        if(p && p.catch) p.catch(function(){});
+      }, 10000);
+    }).catch(function(){
+      if(id === curId) nowArtist.textContent = '网络不太好，稍后再试';
+    });
   });
+  audio.addEventListener('playing', function(){
+    var i = indexOf(curId);
+    if(i >= 0) nowArtist.textContent = artist(tracks[i].performer);
+  });
+  audio.addEventListener('ended', function(){ step(1); });
   if('mediaSession' in navigator){
     try {
       navigator.mediaSession.setActionHandler('previoustrack', function(){ step(-1); });
@@ -961,7 +681,8 @@ audio{display:block;width:100%;height:40px}
   }
 
   function load(){
-    clearTimeout(timer);
+    statusEl.hidden = false;
+    statusEl.textContent = '加载中…';
     fetch('/api/tracks').then(function(r){
       if(!r.ok) throw new Error(String(r.status));
       return r.json();
@@ -970,28 +691,16 @@ audio{display:block;width:100%;height:40px}
       channel = d.channel || '';
       if(channel) document.getElementById('tg').href = 'https://t.me/' + channel;
       document.getElementById('count').textContent = tracks.length ? ' · ' + tracks.length + ' 首' : '';
-      if(!tracks.length){
-        statusEl.hidden = false;
-        statusEl.textContent = '频道里还没有音频';
-        list.textContent = '';
-        return;
-      }
+      if(!tracks.length){ statusEl.textContent = '频道里还没有音频'; return; }
       statusEl.hidden = true;
       render();
-      if(firstLoad){
-        firstLoad = false;
-        // 分享链接 /#消息号：选中那首（浏览器不允许自动出声，需要再点一下播放）
-        var i = indexOf(Number(location.hash.slice(1)));
-        if(i >= 0 && tracks[i].playable){
-          select(tracks[i].id);
-          list.children[i].scrollIntoView({ block: 'center' });
-        }
+      // 分享链接 /#消息号：选中那首（浏览器不允许自动出声，需要再点一下播放）
+      var i = indexOf(Number(location.hash.slice(1)));
+      if(i >= 0 && tracks[i].playable){
+        select(tracks[i].id);
+        list.children[i].scrollIntoView({ block: 'center' });
       }
-      // 有大文件正在处理：每 20 秒刷新一次，处理好了就能直接点
-      if(tracks.some(function(t){ return WAITING[t.status]; })) timer = setTimeout(load, 20000);
     }).catch(function(){
-      if(!firstLoad){ timer = setTimeout(load, 60000); return; } // 后台刷新失败不打扰，过会儿再试
-      statusEl.hidden = false;
       statusEl.textContent = '歌单加载失败';
       var retry = el('button', null, '重试');
       retry.type = 'button';
@@ -1021,19 +730,14 @@ h2{font-size:18px;margin:28px 0 4px}
 .hint{color:var(--muted);font-size:14px;margin:0 0 8px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:16px}
 .card p{margin:6px 0}
-.card ol{margin:6px 0;padding-left:20px}
-.warn{color:var(--accent);font-weight:600}
 .err{color:var(--danger);font-size:14px}
 .rows{list-style:none;margin:0;padding:0}
 .row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
 .row .info{flex:1;min-width:0}
 .row .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .meta{font-size:13px;color:var(--muted)}
-.acts{display:flex;gap:8px;flex:none;flex-wrap:wrap;justify-content:flex-end}
 .empty{color:var(--muted);padding:10px 0}
-.chat{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0}
-button{font:inherit;font-size:14px;color:var(--accent);background:none;border:1px solid currentColor;border-radius:8px;padding:6px 12px;cursor:pointer}
-button:disabled{opacity:.45;cursor:not-allowed}
+button{font:inherit;font-size:14px;color:var(--accent);background:none;border:1px solid currentColor;border-radius:8px;padding:6px 12px;cursor:pointer;flex:none}
 button.danger{color:var(--danger)}
 button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
 #login{margin-top:24px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
@@ -1054,12 +758,9 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
     <p id="login-err" class="err"></p>
   </form>
   <div id="app" hidden>
-    <section class="card" id="setup"></section>
-    <h2>超过 20 MB 的文件</h2>
-    <p class="hint">要切成 19 MB 的分片存进仓库频道才能在网页播放。开了自动处理会自己完成；也可以选本地的同一个文件手动上传。</p>
-    <ul id="big" class="rows"></ul>
+    <section class="card"><p id="streamer"></p></section>
     <h2>全部歌曲</h2>
-    <p class="hint">频道里删掉的帖子不会自动从网页消失，在这里移除。</p>
+    <p class="hint">频道里删掉的帖子不会自动从网页消失，在这里移除（不会动 Telegram 里的帖子）。</p>
     <ul id="all" class="rows"></ul>
     <p><button type="button" id="logout" class="link">退出管理</button></p>
   </div>
@@ -1067,10 +768,8 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
 <script>
 (function(){
   var KEY_STORE = 'xm-admin-key';
-  var STATUS = { pending: '等待处理', queued: '已派给自动处理，等它开始', processing: '正在处理', failed: '处理失败', ok: '已可播放' };
   var key = '';
   try { key = localStorage.getItem(KEY_STORE) || ''; } catch(e){}
-  var state = null, busy = {};
 
   function $(id){ return document.getElementById(id); }
   function el(tag, cls, txt){
@@ -1079,27 +778,18 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
     if(txt != null) e.textContent = txt;
     return e;
   }
-  function button(label, cls, onClick){
-    var b = el('button', cls, label);
-    b.type = 'button';
-    b.addEventListener('click', onClick);
-    return b;
-  }
   function mb(b){ return (b / 1048576).toFixed(1) + ' MB'; }
-  function post(obj){ return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) }; }
-  function alertErr(e){ alert('出错了：' + e.message); }
 
-  function api(path, opts){
-    opts = opts || {};
-    opts.headers = Object.assign({ Authorization: 'Bearer ' + key }, opts.headers || {});
+  function api(path, body){
+    var opts = { headers: { Authorization: 'Bearer ' + key } };
+    if(body){
+      opts.method = 'POST';
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
     return fetch('/admin/api/' + path, opts).then(function(r){
       return r.json().catch(function(){ return {}; }).then(function(d){
-        if(!r.ok){
-          var e = new Error(d.error || ('HTTP ' + r.status));
-          e.status = r.status;
-          e.retryAfter = d.retryAfter;
-          throw e;
-        }
+        if(!r.ok){ var e = new Error(d.error || ('HTTP ' + r.status)); e.status = r.status; throw e; }
         return d;
       });
     });
@@ -1113,12 +803,12 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
 
   function refresh(){
     return api('state').then(function(s){
-      state = s;
       $('login').hidden = true;
       $('app').hidden = false;
-      renderSetup();
-      renderBig();
-      renderAll();
+      $('streamer').textContent = s.streamer
+        ? '大文件服务：已开启，超过 20 MB 的歌也能播放'
+        : '大文件服务：未开启，超过 20 MB 的歌暂时不能播放';
+      render(s.tracks);
     }).catch(function(e){
       if(e.status === 401){
         key = '';
@@ -1130,138 +820,24 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
     });
   }
 
-  function isAdmin(c){ return c.status === 'administrator' || c.status === 'creator'; }
-
-  function renderSetup(){
-    var box = $('setup');
-    box.textContent = '';
-    if(state.storage){
-      box.appendChild(el('p', null, '仓库频道：' + (state.storage.title || state.storage.id)));
-    } else {
-      box.appendChild(el('p', 'warn', '还没有设置仓库频道，大文件的分片没地方存'));
-      var ol = el('ol');
-      ol.appendChild(el('li', null, '在 Telegram 新建一个「私有频道」，名字随意，比如「小橘仓库」'));
-      ol.appendChild(el('li', null, '把 @' + (state.bot || '你的机器人') + ' 加为这个频道的管理员（要能发消息）'));
-      ol.appendChild(el('li', null, '回到这里点「刷新」，在下面把它设为仓库'));
-      box.appendChild(ol);
-      state.chats.forEach(function(c){
-        var row = el('div', 'chat');
-        row.appendChild(el('span', null, (c.title || c.id) + (isAdmin(c) ? '' : '（机器人还不是管理员）')));
-        var b = button('设为仓库', null, function(){ api('storage', post({ id: c.id })).then(refresh).catch(alertErr); });
-        b.disabled = !isAdmin(c);
-        row.appendChild(b);
-        box.appendChild(row);
-      });
-      box.appendChild(button('刷新', null, refresh));
-    }
-    box.appendChild(el('p', null, state.splitter
-      ? '自动处理：已开启，频道里一出现大文件就会自动切片'
-      : '自动处理：未开启，可以在下面手动上传本地文件'));
-  }
-
-  function renderBig(){
-    var ul = $('big');
-    ul.textContent = '';
-    var big = state.tracks.filter(function(t){ return t.size > state.limit || t.parts; });
-    if(!big.length){ ul.appendChild(el('li', 'empty', '没有超过 20 MB 的文件')); return; }
-    big.forEach(function(t){
-      var li = el('li', 'row');
-      var info = el('div', 'info');
-      info.appendChild(el('div', 'title', '#' + t.id + ' ' + t.title));
-      var s = STATUS[t.status] || t.status;
-      if(t.status === 'ok') s += '（' + t.parts + ' 片）';
-      if(t.note) s += '：' + t.note;
-      info.appendChild(el('div', 'meta', mb(t.size) + ' · ' + (busy[t.id] || s)));
-      li.appendChild(info);
-      var acts = el('div', 'acts');
-      if(t.status !== 'ok' && !busy[t.id] && state.storage){
-        var input = el('input');
-        input.type = 'file';
-        input.hidden = true;
-        input.accept = 'audio/*,.mp3,.m4a,.flac,.wav,.ogg,.opus,.aac';
-        input.addEventListener('change', function(){ if(input.files[0]) upload(t, input.files[0]); });
-        acts.appendChild(input);
-        acts.appendChild(button('上传本地文件', null, function(){ input.click(); }));
-        if(state.splitter){
-          acts.appendChild(button('重新自动处理', null, function(){ api('retry', post({ track: t.id })).then(refresh).catch(alertErr); }));
-        }
-      }
-      li.appendChild(acts);
-      ul.appendChild(li);
-    });
-  }
-
-  function renderAll(){
+  function render(tracks){
     var ul = $('all');
     ul.textContent = '';
-    if(!state.tracks.length){ ul.appendChild(el('li', 'empty', '歌单是空的')); return; }
-    state.tracks.forEach(function(t){
+    if(!tracks.length){ ul.appendChild(el('li', 'empty', '歌单是空的')); return; }
+    tracks.forEach(function(t){
       var li = el('li', 'row');
       var info = el('div', 'info');
       info.appendChild(el('div', 'title', '#' + t.id + ' ' + t.title));
-      info.appendChild(el('div', 'meta', mb(t.size) + ' · ' + (STATUS[t.status] || t.status)));
+      info.appendChild(el('div', 'meta', mb(t.size) + (t.big ? ' · 大文件' : '')));
       li.appendChild(info);
-      var acts = el('div', 'acts');
-      acts.appendChild(button('移除', 'danger', function(){
+      var rm = el('button', 'danger', '移除');
+      rm.type = 'button';
+      rm.addEventListener('click', function(){
         if(!confirm('从网页歌单移除「' + t.title + '」？\\n不会删除 Telegram 里的帖子。')) return;
-        api('remove', post({ track: t.id })).then(refresh).catch(alertErr);
-      }));
-      li.appendChild(acts);
+        api('remove', { track: t.id }).then(refresh).catch(function(e){ alert('出错了：' + e.message); });
+      });
+      li.appendChild(rm);
       ul.appendChild(li);
-    });
-  }
-
-  // 浏览器里把文件切成 19 MB 一片，逐片上传；传好的片记在本地，中断后重选同一个文件能接着传
-  function upload(t, file){
-    var PART = state.partSize;
-    var force = false;
-    if(file.size !== t.size){
-      if(!confirm('选的文件（' + mb(file.size) + '）和频道里的（' + mb(t.size) + '）大小不一样，可能不是同一个文件。\\n仍然上传，并用它在网页上播放吗？')) return;
-      force = true;
-    }
-    var count = Math.ceil(file.size / PART);
-    var store = 'xm-up:' + t.id + ':' + file.size + ':' + file.lastModified;
-    var done = [];
-    try { done = JSON.parse(localStorage.getItem(store) || '[]'); } catch(e){}
-    var i = 0;
-
-    function show(msg){ busy[t.id] = msg; renderBig(); }
-    function uploaded(){ var n = 0; for(var k = 0; k < count; k++) if(done[k]) n++; return n; }
-    function sendPart(idx, blob, attempt){
-      return api('part?track=' + t.id + '&index=' + idx + '&count=' + count, {
-        method: 'POST', body: blob, headers: { 'Content-Type': 'application/octet-stream' }
-      }).catch(function(e){
-        if(attempt >= 4 || e.status === 400 || e.status === 401 || e.status === 409) throw e;
-        var wait = (e.retryAfter || (attempt + 1) * 3) * 1000;
-        show('第 ' + (idx + 1) + ' 片没传上去，' + Math.round(wait / 1000) + ' 秒后重试…');
-        return new Promise(function(res){ setTimeout(res, wait); }).then(function(){ return sendPart(idx, blob, attempt + 1); });
-      });
-    }
-    function next(){
-      while(i < count && done[i]) i++;
-      if(i >= count) return finish();
-      show('正在上传第 ' + (i + 1) + '/' + count + ' 片（已完成 ' + Math.round(uploaded() / count * 100) + '%）');
-      var blob = file.slice(i * PART, Math.min(file.size, (i + 1) * PART));
-      return sendPart(i, blob, 0).then(function(r){
-        done[i] = r;
-        try { localStorage.setItem(store, JSON.stringify(done)); } catch(e){}
-        i++;
-        return next();
-      });
-    }
-    function finish(){
-      show('正在登记…');
-      return api('commit', post({ track: t.id, size: file.size, parts: done.slice(0, count), force: force, mime: file.type }))
-        .then(function(){ try { localStorage.removeItem(store); } catch(e){} });
-    }
-
-    next().then(function(){
-      delete busy[t.id];
-      return refresh();
-    }, function(e){
-      delete busy[t.id];
-      alert('上传失败：' + e.message + '\\n已经传好的分片会保留，重新选同一个文件就能接着传。');
-      refresh();
     });
   }
 
@@ -1276,12 +852,6 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
     try { localStorage.removeItem(KEY_STORE); } catch(e){}
     showLogin('');
   });
-
-  // 有文件在处理时，每 15 秒刷新一次（正在上传时不刷，免得打断）
-  setInterval(function(){
-    if(state && key && !Object.keys(busy).length && document.visibilityState === 'visible' &&
-       state.tracks.some(function(t){ return t.status !== 'ok'; })) refresh();
-  }, 15000);
 
   if(key) refresh(); else showLogin('');
 })();
