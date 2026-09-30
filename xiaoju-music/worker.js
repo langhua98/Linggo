@@ -38,6 +38,8 @@ const REC_TTL_MS = 60 * 1000;
 const STREAMER_WAIT_MS = 25 * 1000;
 // Telegram 给音乐文件生成的缩略图一般 20 KB 上下，超过这个大小就不当封面存
 const COVER_LIMIT = 512 * 1024;
+// 同一张图被这么多首歌当封面，就当它是别的频道的台标
+const LOGO_MIN_SONGS = 8;
 
 // 歌词：LRCLIB 是公开的歌词库（本来就给播放器用）；网易云用的是它网页版的接口，不是公开 API，随时可能变
 const LRCLIB = 'https://lrclib.net/api/search';
@@ -236,6 +238,14 @@ async function adminApi(request, env, url) {
     forget(track);
     return json({ ok: true });
   }
+  // 这首现在的封面不要了（比如别的频道的台标）：用这张图的歌都改用频道图片，以后也不再用它
+  if (action === 'ban-cover' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const track = Number(body.track);
+    if (!Number.isInteger(track)) return json({ error: '参数不对' }, 400);
+    const affected = await lib(env).banCover(track);
+    return json({ ok: true, affected });
+  }
   return json({ error: 'Not Found' }, 404);
 }
 
@@ -286,6 +296,7 @@ async function cover(env, id) {
     const rec = await getRec(env, id);
     if (!rec) throw new HttpError(404, '没有这首歌');
     let got = await fetchCover(env, rec);
+    if (got && got !== 'none' && (await L.isLogo(toBase64(got.data)))) got = 'none'; // 别的频道的台标，不算封面
     if (got === 'none') got = await photoCover(env);
     if (!got) throw new HttpError(503, '封面暂时取不到', { 'Retry-After': '60' });
     c = got === 'none' ? { none: true } : { mime: got.mime, b64: toBase64(got.data) };
@@ -764,11 +775,17 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS lyrics (id INTEGER PRIMARY KEY, src TEXT NOT NULL, lrc TEXT NOT NULL, retry_at INTEGER NOT NULL DEFAULT 0)');
       // 管理员编的歌单：pos 是在歌单列表里的顺序，tracks 是消息号数组（JSON），按歌单里的顺序
       this.sql.exec('CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, pos INTEGER NOT NULL, name TEXT NOT NULL, cover INTEGER NOT NULL DEFAULT 0, tracks TEXT NOT NULL)');
+      // 别的频道的台标：搬来的歌自带的「封面」常是那个频道的标志，好多首共用同一张。记下来的图不再当封面
+      this.sql.exec('CREATE TABLE IF NOT EXISTS logo_covers (data TEXT PRIMARY KEY)');
       this.dropSplitterLeftovers();
+      const coversV = this.cfg('coversV');
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
-      if (this.cfg('coversV') !== '2') {
-        this.sql.exec("DELETE FROM covers WHERE mime = 'none'");
-        this.setCfg('coversV', '2');
+      if (coversV !== '2' && coversV !== '3') this.sql.exec("DELETE FROM covers WHERE mime = 'none'");
+      // 已经存下的台标封面：找出来记住，这些歌重新配图
+      if (coversV !== '3') {
+        const shared = this.sql.exec(`SELECT data FROM covers WHERE mime != 'none' GROUP BY data HAVING COUNT(*) >= ${LOGO_MIN_SONGS}`).toArray();
+        for (const r of shared) this.markLogo(r.data);
+        this.setCfg('coversV', '3');
       }
       // 第一次启动：把更早版本存在 KV 里的歌单搬过来
       if (!this.cfg('migrated')) {
@@ -859,6 +876,29 @@ export class Library extends DurableObject {
       ON CONFLICT(id) DO UPDATE SET src = excluded.src, lrc = excluded.lrc, retry_at = excluded.retry_at
       WHERE lyrics.src != 'manual' OR excluded.src = 'manual'`, id, src, lrc, retryAt);
     return this.getLyrics(id);
+  }
+
+  // 这张图是不是台标：记下过的，或者已经有 LOGO_MIN_SONGS - 1 首歌用它当封面（同一张专辑的歌共用封面，
+  // 不过很少有七八首同专辑的；台标一搬就是几十首）。是的话记下来，用它的歌全部重新配图
+  async isLogo(data) {
+    if (this.sql.exec('SELECT 1 FROM logo_covers WHERE data = ?', data).toArray().length) return true;
+    if (this.sql.exec('SELECT COUNT(*) AS n FROM covers WHERE data = ?', data).toArray()[0].n < LOGO_MIN_SONGS - 1) return false;
+    this.markLogo(data);
+    return true;
+  }
+
+  // 返回受影响的歌有几首（这首没存封面、或者存的是「没有」时为 0）
+  async banCover(id) {
+    const r = this.sql.exec("SELECT data FROM covers WHERE id = ? AND mime != 'none'", id).toArray()[0];
+    if (!r) return 0;
+    const n = this.sql.exec('SELECT COUNT(*) AS n FROM covers WHERE data = ?', r.data).toArray()[0].n;
+    this.markLogo(r.data);
+    return n;
+  }
+
+  markLogo(data) {
+    this.sql.exec('INSERT OR IGNORE INTO logo_covers (data) VALUES (?)', data);
+    this.sql.exec('DELETE FROM covers WHERE data = ?', data);
   }
 
   async getCover(id) {

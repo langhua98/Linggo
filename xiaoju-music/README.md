@@ -33,6 +33,7 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 | `POST /tg-webhook` | Telegram 推送频道新帖，音频自动登记；回复某首歌发的 `.lrc` 文件就是这首的歌词 |
 | `GET /admin` | 管理页（`admin.html`） |
 | `GET /admin/api/state` / `POST /admin/api/remove` | 管理页数据 / 从歌单移除一首（`{track}`） |
+| `POST /admin/api/ban-cover` | 这首现在的封面不要了（`{track}`）：用这张图的歌都改用频道图片，以后也不再用它 |
 | `POST /admin/api/playlists` | 整体设置歌单：`{playlists: [{id?, name, cover?, tracks: [消息号…]}]}`，顺序就是显示顺序；带 `id` 的原地改，没列出的删掉 |
 
 管理接口都要 `Authorization: Bearer <ADMIN_KEY>`，响应不带 CORS 头。
@@ -44,6 +45,7 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 - `songs`：每首歌一行，`rec` 是完整记录（含 `file_id`、大小、类型、标题等）；
 - `covers`：每首歌定下来的封面（base64 文本；`mime='none'` 表示频道里连图片都没有）。FLAC 占大多数且没有内嵌封面，
   所以大多数歌用的是频道图片；
+- `logo_covers`：不当封面用的图（别的频道的台标）。同一张图被 8 首以上的歌当封面会自动记进来，也可以用 `ban-cover` 手动加；
 - `photos`：频道里的图片帖（`file_id` 为空的是流式服务扫出来的老帖，由它下载）；
 - `lyrics`：每首歌的歌词原文，`src` 是 `lrclib` / `netease` / `manual`（频道里手动发的）/ `none`（确定没有）；
   `retry_at` 不为 0 时，过了这个时间再去外面找一次；

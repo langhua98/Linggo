@@ -328,7 +328,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
     var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = String(s % 60).padStart(2, '0');
     return h ? h + ':' + String(m).padStart(2, '0') + ':' + r : m + ':' + r;
   }
-  function coverUrl(id){ return '/c/' + id; }
+  // ?v= 变了，浏览器就不用缓存里的旧封面（换掉台标封面时改过一次）
+  function coverUrl(id){ return '/c/' + id + '?v=2'; }
   // 没有封面的歌：按歌名算一个固定的色相，做成渐变色块，上面放歌名第一个字
   function hue(text){
     var h = 7;

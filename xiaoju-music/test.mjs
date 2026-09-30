@@ -196,7 +196,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'covers', 'lyrics', 'photos', 'playlists', 'songs']);
+  assert.deepEqual(tables, ['config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -473,6 +473,32 @@ await t('查重：新帖和已有的歌名、歌手一样、时长差 3 秒以�
   await hook({ edited_channel_post: audioPost(50, { title: '海阔天空', performer: 'Beyond', duration: 326, file_id: 'X50', file_size: 9 }) });
   assert.ok((await publicTracks()).some(x => x.id === 50), '编辑已登记的帖子不会把自己当重复');
   for (const id of [50, 53, 54]) await admin('remove', { track: id });
+});
+
+await t('封面：同一张图被 8 首歌当封面就是别的频道的台标，这些歌都改用频道图片，以后也不再用这张', async () => {
+  const logo = JSON.stringify([...JPEG(33)]);
+  const logoPost = id => audioPost(id, { file_id: 'L' + id, file_size: 9, thumbnail: { file_id: addFile(Uint8Array.from(JSON.parse(logo))) } });
+  const isLogo = async id => Buffer.from(await bytes(await req('/c/' + id))).equals(Buffer.from(JSON.parse(logo)));
+  for (let id = 600; id < 607; id++) {
+    await hook({ channel_post: logoPost(id) });
+    assert.ok(await isLogo(id), '前 7 首还当它是封面');
+  }
+  await hook({ channel_post: logoPost(607) });
+  assert.ok(!(await isLogo(607)), '第 8 首认出是台标');
+  for (let id = 600; id < 607; id++) assert.ok(!(await isLogo(id)), '之前的 7 首也换掉');
+  await hook({ channel_post: logoPost(608) });
+  assert.ok(!(await isLogo(608)), '记住了，以后也不用');
+  for (let id = 600; id <= 608; id++) await admin('remove', { track: id });
+
+  // 只有一两首用的台标认不出来：管理员可以手动说「这张封面不要了」
+  const odd = [...JPEG(44)];
+  for (const id of [610, 611]) await hook({ channel_post: audioPost(id, { file_id: 'M' + id, file_size: 9, thumbnail: { file_id: addFile(Uint8Array.from(odd)) } }) });
+  const isOdd = async id => Buffer.from(await bytes(await req('/c/' + id))).equals(Buffer.from(odd));
+  assert.ok((await isOdd(610)) && (await isOdd(611)));
+  assert.equal((await jsonOf(await admin('ban-cover', { track: 610 }))).affected, 2);
+  assert.ok(!(await isOdd(610)) && !(await isOdd(611)));
+  assert.equal((await admin('ban-cover', { track: 'x' })).status, 400);
+  for (const id of [610, 611]) await admin('remove', { track: id });
 });
 
 await t('歌单：管理员整体设置，跟着歌单 JSON 给出去；改名、排序保留 id，没列出的删掉；参数不对 400', async () => {
