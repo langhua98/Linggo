@@ -155,3 +155,15 @@ def test_http_endpoint_checks_the_key(monkeypatch):
     assert client.post('/split', json={'track': 1}, headers={'X-Key': 'wrong'}).status_code == 403
     r = client.post('/split', json={'track': 1}, headers={'X-Key': 'k1'})
     assert r.json() == {'accepted': True} and accepted == [{'track': 1}]
+
+
+def test_client_never_subscribes_to_updates(monkeypatch):
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, session, api_id, api_hash, **kw):
+            seen.update(api_id=api_id, api_hash=api_hash, **kw)
+
+    monkeypatch.setattr(appmod, 'TelegramClient', FakeClient)
+    appmod.make_client({'TG_API_ID': '123', 'TG_API_HASH': 'abc'})
+    assert seen == {'api_id': 123, 'api_hash': 'abc', 'receive_updates': False}

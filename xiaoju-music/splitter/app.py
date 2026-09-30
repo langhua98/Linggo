@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 TG = 'https://api.telegram.org'
 # Bot API 的下载上限；分片必须比它小
@@ -173,14 +175,18 @@ class Splitter:
 splitter = None
 
 
+def make_client(env):
+    # receive_updates=False：这个 MTProto 会话只调用、不订阅推送。机器人同时挂在官方 Bot API 上收
+    # webhook，Telegram 给同一个机器人的推送可能只送到其中一个会话；这里要是订阅了，频道新帖的推送
+    # 就可能被它接走，Worker 就漏登记新歌（自建 telegram-bot-api 要先 logOut 官方服务器也是这个原因）
+    return TelegramClient(StringSession(), int(env['TG_API_ID']), env['TG_API_HASH'], receive_updates=False)
+
+
 @asynccontextmanager
 async def lifespan(app):
     global splitter
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-
     env = os.environ
-    client = TelegramClient(StringSession(), int(env['TG_API_ID']), env['TG_API_HASH'])
+    client = make_client(env)
     await client.start(bot_token=env['TG_BOT_TOKEN'])
     log.info('logged in to Telegram as a bot')
 

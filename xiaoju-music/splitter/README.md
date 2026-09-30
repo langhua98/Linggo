@@ -22,6 +22,21 @@ Telegram 官方 Bot API 只能下载 20 MB 以内的文件，机器人走 MTProt
 
 一次只处理一首，内存里最多留一片多一点（约 40 MB）。
 
+Telethon 以 `receive_updates=False` 登录：这个会话只调用、不订阅推送。机器人同时挂在官方 Bot API
+上收 webhook，Telegram 给同一个机器人的推送可能只送到其中一个会话，订阅了就可能把频道新帖抢走。
+
+### 为什么不在这里跑官方的 telegram-bot-api（`--local` 模式）
+
+它也能突破 20 MB，但要当机器人唯一的 Bot API 服务器用，放在免费 Space 上不合适：
+
+- 启用前必须先对官方服务器 `logOut`（否则推送可能被两边瓜分），之后 webhook 和所有调用都得走它；
+  登出后 10 分钟内还切不回官方服务器；
+- 免费 Space 闲置约 48 小时会休眠，磁盘不持久，重启就清空；它一停，新歌的推送就没人接；
+- `--local` 下 `getFile` 要等整个文件下载到本机磁盘才返回，文件还得另配 HTTP 服务提供下载，
+  每首大文件的第一次播放都要等整首下完。
+
+切片方案只在新的大文件出现时用一下这个 Space，播放完全不依赖它。
+
 ## 环境变量（Space → Settings → Variables and secrets，都设成 secret）
 
 | 名字 | 内容 |
