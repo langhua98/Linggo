@@ -1,15 +1,14 @@
 # Linggo 代码库说明
 
-> ## ⭐ 优先级第一（最高工作约定）：Plan Big, Execute Small
-> **Fable 5 你来负责设计和编排，请将实现交给 Sonnet 5。**
+> ## ⭐ 优先级第一（最高工作约定）：所有代码由 Claude 亲自编写
+> **所有代码都由主会话里的 Claude 亲自编写，不再交给 Sonnet 子代理。**（用户明确要求）
 >
-> 本项目遵循 Anthropic 官方 cookbook 的「协调者模式」（大模型规划、小模型执行），
-> 原文副本存于 `docs/CMA_plan_big_execute_small.ipynb`（来源：anthropics/claude-cookbooks，MIT 协议）。
->
-> 具体分工：由 Fable 5 负责需求分析、方案设计与任务编排（诊断问题、给出精确的实现规格与验收标准），
-> 具体代码实现交由 Sonnet 5 子代理执行（通过 Agent 工具，model 指定为 sonnet）；
-> Fable 5 不直接写实现代码，但审查子代理产出、修补审查中发现的小缺陷属于编排职责。
+> 需求分析、方案设计、写代码、测试、审查都在主会话里完成；不要用 Agent 工具把代码实现
+> 委派给任何子代理（包括 model 指定为 sonnet 的子代理）。
 > 此条优先于本文件其余所有约定。
+>
+> 历史：此前的约定是「Plan Big, Execute Small」（大模型规划、Sonnet 子代理执行，参考
+> `docs/CMA_plan_big_execute_small.ipynb`），已按用户要求废止，该 notebook 仅作存档。
 
 ---
 
@@ -128,7 +127,8 @@
 - `cloudflare-proxy/`：`worker.js` + `wrangler.toml` + `README.md`，图书下载代理的
   Worker 源码，见「图书下载代理」一节。
 - `admin.html`（21.9 KB，525 行）：自包含管理后台，内嵌 CSS+JS，独立于阅读器。
-- `docs/CMA_plan_big_execute_small.ipynb`：本文件顶部工作约定引用的 cookbook 原文。
+- `docs/CMA_plan_big_execute_small.ipynb`：已废止的旧工作约定（Plan Big, Execute Small）引用的
+  cookbook 原文，仅作存档。
 - `CHANGELOG.md`：迭代记录，**内容已滞后**（写的是 `linggo-v126`，当前 `sw.js` 是
   `linggo-v206`），仅作历史参考，不要当作当前状态的信息源。
 - `.github/workflows/supabase-keepalive.yml`：唯一的 Actions workflow，每 3 天 ping
