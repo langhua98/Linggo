@@ -1,0 +1,16 @@
+name = "xiaoju-music"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+[vars]
+CHANNEL_ID = "-1003817921075"
+CHANNEL_USERNAME = "xiaojumusic"
+
+[[kv_namespaces]]
+binding = "TRACKS"
+id = "738216f3f7d64f1ab143128406d1b35e"
+
+# 两个 secret 不写在这里（仓库是公开的），线上已设好；需要改时用：
+#   wrangler secret put TG_BOT_TOKEN
+#   wrangler secret put TG_WEBHOOK_SECRET

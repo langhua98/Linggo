@@ -47,7 +47,7 @@
 - `admin.html`：查看运营数据（用户数、词汇数、访问量统计图），客户端密码门（见「已知
   问题 · 安全」）
 
-### ⚠️ 仓库里两个和阅读器完全无关的东西
+### ⚠️ 仓库里和阅读器完全无关的东西
 
 - **`ble.html`（约 366 KB，906 → 实测见下方文件清单）**：一个独立的单文件项目，
   `<title>` 是「OM BLE 控制台 · DUML」——DJI OM 云台的 BLE DUML 调试控制台。
@@ -69,6 +69,11 @@
     `/Linggo/kokoro/` 的注释说是给它让路，但既然没人请求这些文件，这 114 MB 实际上
     只是占着仓库体积，不影响任何用户可感知的行为。**这是一处怀疑是遗留代码的发现，
     没有去删它（本批次只改 CLAUDE.md），如需清理请单独立项确认。**
+- **`xiaoju-music/`**：「小橘音乐」——把用户的 Telegram 频道 @xiaojumusic 里的音频变成
+  网页直接播放的 Cloudflare Worker（线上 `https://xiaoju-music.langhua98.workers.dev`）。
+  **和阅读器没有任何代码共享、引用关系**，只是借这个仓库存代码；不在 `sw.js` 的 `SHELL`
+  里。结构、绑定、重新部署和日常维护见 `xiaoju-music/README.md`，改完先跑
+  `node xiaoju-music/test.mjs`。
 
 ---
 
@@ -126,6 +131,7 @@
 - `lottie/`（520 KB，多个小 `.json`）：Lottie 动画数据，`licon.js` 按需 `fetch`。
 - `cloudflare-proxy/`：`worker.js` + `wrangler.toml` + `README.md`，图书下载代理的
   Worker 源码，见「图书下载代理」一节。
+- `xiaoju-music/`：Telegram 频道音频中转 Worker，与阅读器无关，见上方「⚠️」一节。
 - `admin.html`（21.9 KB，525 行）：自包含管理后台，内嵌 CSS+JS，独立于阅读器。
 - `docs/CMA_plan_big_execute_small.ipynb`：已废止的旧工作约定（Plan Big, Execute Small）引用的
   cookbook 原文，仅作存档。
