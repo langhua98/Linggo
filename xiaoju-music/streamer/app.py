@@ -3,7 +3,7 @@
 Telegram 官方 Bot API 只能下载 20 MB 以内的文件，机器人走 MTProto 却没有这个限制。小橘音乐的
 Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里（GET /stream/<消息号>）。这里用 Telethon
 以机器人身份按消息号取到频道里的原文件，浏览器要哪一段，就从 Telegram 现取哪一段、边取边传：
-不落盘，也不用等整首下完。
+不落盘，也不用等整首下完。另外 GET /thumb/<消息号> 给出音乐文件自带的专辑封面，Worker 取一次就存起来。
 
 环境变量（在 Space 的 Settings → Variables and secrets 里设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
@@ -56,10 +56,11 @@ def parse_range(header, total):
 class Streamer:
     """下载和取消息的实现由外面注入，方便测试。"""
 
-    def __init__(self, *, channel, fetch_message, iter_download, clock=time.monotonic):
+    def __init__(self, *, channel, fetch_message, iter_download, download_thumb=None, clock=time.monotonic):
         self.channel = channel
-        self.fetch_message = fetch_message  # async (频道, 消息号) -> Telethon 消息或 None
-        self.iter_download = iter_download  # (文件, offset=, request_size=, file_size=) -> 异步迭代的字节块
+        self.fetch_message = fetch_message    # async (频道, 消息号) -> Telethon 消息或 None
+        self.iter_download = iter_download    # (文件, offset=, request_size=, file_size=) -> 异步迭代的字节块
+        self.download_thumb = download_thumb  # async (消息) -> 封面缩略图的 JPEG 字节或 None
         self.clock = clock
         self.cache = {}  # 消息号 -> (消息, 取到的时间)
 
@@ -75,6 +76,13 @@ class Streamer:
             self.cache.clear()
         self.cache[message_id] = (msg, self.clock())
         return msg
+
+    async def thumbnail(self, message_id):
+        """音乐文件自带的专辑封面（Telegram 生成的缩略图，最大那张，通常 320×320）；没有就返回 None。"""
+        msg = await self.message(message_id)
+        if msg is None or not getattr(msg.document, 'thumbs', None):
+            return None
+        return await self.download_thumb(msg)
 
     async def body(self, message_id, start, end):
         """边取边吐 [start, end] 这段字节。文件引用在途中过期就重取消息，从断开的地方接着传。"""
@@ -137,8 +145,12 @@ async def lifespan(app):
     async def fetch_message(channel, message_id):
         return await client.get_messages(channel, ids=message_id)
 
+    async def download_thumb(msg):
+        # 传消息本身（不是 msg.document）：Telethon 才能在文件引用过期时自己重取消息
+        return await client.download_media(msg, file=bytes, thumb=-1)
+
     streamer = Streamer(channel=env.get('TG_CHANNEL', 'xiaojumusic'), fetch_message=fetch_message,
-                        iter_download=client.iter_download)
+                        iter_download=client.iter_download, download_thumb=download_thumb)
     try:
         yield
     finally:
@@ -153,12 +165,25 @@ async def health():
     return {'ok': True}
 
 
-@app.get('/stream/{message_id}')
-async def stream(message_id: int, request: Request):
+def check_key(request):
     got = request.headers.get('x-key', '').encode()
     want = os.environ.get('STREAMER_KEY', '').encode()
     if not want or not hmac.compare_digest(got, want):
         raise HTTPException(403)
+
+
+@app.get('/thumb/{message_id}')
+async def thumb(message_id: int, request: Request):
+    check_key(request)
+    data = await streamer.thumbnail(message_id)
+    if not data:
+        raise HTTPException(404)
+    return Response(content=data, media_type='image/jpeg')
+
+
+@app.get('/stream/{message_id}')
+async def stream(message_id: int, request: Request):
+    check_key(request)
     msg = await streamer.message(message_id)
     if msg is None:
         raise HTTPException(404)

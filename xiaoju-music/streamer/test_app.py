@@ -178,6 +178,43 @@ def test_http_endpoint(monkeypatch):
     assert r.status_code == 416 and r.headers['content-range'] == f'bytes */{len(DATA)}'
 
 
+def test_thumbnail_endpoint(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    jpeg = b'\xff\xd8\xff\xe0' + b'x' * 100
+    downloaded = []
+
+    class WithThumbs(FakeTelegram):
+        async def fetch_message(self, channel, message_id):
+            msg = await super().fetch_message(channel, message_id)
+            if msg is not None and message_id == 12:
+                msg.document.thumbs = ['320x320']
+            return msg
+
+    async def download_thumb(msg):
+        downloaded.append(msg)
+        return jpeg
+
+    tg = WithThumbs()
+    monkeypatch.setattr(appmod, 'streamer', Streamer(channel='xiaojumusic', fetch_message=tg.fetch_message,
+                                                     iter_download=tg.iter_download, download_thumb=download_thumb))
+    client = TestClient(appmod.app)
+    assert client.get('/thumb/12').status_code == 403
+    r = client.get('/thumb/12', headers={'X-Key': 'k1'})
+    assert r.status_code == 200 and r.content == jpeg and r.headers['content-type'] == 'image/jpeg'
+    assert client.get('/thumb/99', headers={'X-Key': 'k1'}).status_code == 404  # 没有这条消息
+    assert len(downloaded) == 1
+
+
+def test_thumbnail_missing_when_file_has_none():
+    tg = FakeTelegram()  # Doc 没有 thumbs 属性
+
+    async def never(msg):
+        raise AssertionError('should not download')
+
+    s = Streamer(channel='xiaojumusic', fetch_message=tg.fetch_message, iter_download=tg.iter_download, download_thumb=never)
+    assert asyncio.run(s.thumbnail(12)) is None
+
+
 def test_client_never_subscribes_to_updates(monkeypatch):
     seen = {}
 

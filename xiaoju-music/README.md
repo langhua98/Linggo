@@ -25,11 +25,12 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 
 | 路径 | 作用 |
 |---|---|
-| `GET /` | 播放页（HTML 在 `worker.js` 末尾的 `PAGE` 常量里） |
+| `GET /` | 播放页（`page.html`：深色沉浸式，电脑两栏、手机歌单 + 迷你条 + 全屏播放） |
+| `GET /c/<消息号>` | 专辑封面：新歌用帖子里的缩略图，更早的歌请流式服务用 MTProto 取；取一次就存进数据库，确定没有的记为没有 |
 | `GET /api/tracks` | 歌单 JSON，新的在前；每首带 `big`（超过 20 MB）和 `playable`，不含 `file_id` |
 | `GET /a/<消息号>` | 音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；加 `?dl=1` 变成下载 |
 | `POST /tg-webhook` | Telegram 推送频道新帖，音频自动登记 |
-| `GET /admin` | 管理页（`ADMIN_PAGE` 常量） |
+| `GET /admin` | 管理页（`admin.html`） |
 | `GET /admin/api/state` / `POST /admin/api/remove` | 管理页数据 / 从歌单移除一首（`{track}`） |
 
 管理接口都要 `Authorization: Bearer <ADMIN_KEY>`，响应不带 CORS 头。
@@ -39,6 +40,8 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 在 Durable Object `Library` 的 SQLite 里（强一致，也没有 KV list 每天 1000 次的限制）：
 
 - `songs`：每首歌一行，`rec` 是完整记录（含 `file_id`、大小、类型、标题等）；
+- `covers`：封面（base64 文本；`mime='none'` 表示确定没有）。频道里 FLAC 占大多数，它们没有内嵌封面，
+  播放页给这些歌按歌名生成渐变色块加首字；
 - `config`：`migrated`（已从 KV 迁移过）。
 
 `Library` 启动时会做两次性的迁移：最早版本存在 KV（`TRACKS`）里的 `t:<消息号>` 记录搬进来；
@@ -91,10 +94,13 @@ Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/RE
    curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/xiaoju-music" \
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
      -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"TRACKS\",\"namespace_id\":\"$KV\"},{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_ID\",\"text\":\"-1003817921075\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_USERNAME\",\"text\":\"xiaojumusic\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"$STREAMER_URL\"}]};type=application/json" \
-     -F 'worker.js=@xiaoju-music/worker.js;type=application/javascript+module'
+     -F 'worker.js=@xiaoju-music/worker.js;type=application/javascript+module' \
+     -F 'page.html=@xiaoju-music/page.html;type=text/plain' \
+     -F 'admin.html=@xiaoju-music/admin.html;type=text/plain'
    ```
 
-   也可以在本目录用 `wrangler deploy`（`wrangler.toml` 已写好绑定和迁移，secret 不受影响）。
+   `page.html`、`admin.html` 以 `text/plain` 上传，就是 Workers 的文本模块，`worker.js` 里 `import` 进来当字符串用。
+   也可以在本目录用 `wrangler deploy`（`wrangler.toml` 已写好绑定、迁移和 `.html` 文本模块规则，secret 不受影响）。
 
 3. 改了流式服务：把 `streamer/` 下那四个文件推到 `langhua1998/douyin-proxy` 这个 Space 的仓库，Space 会自动重新构建。
 

@@ -8,11 +8,12 @@
 // Telegram 现取哪一段、边取边传。免费 Space 闲置会休眠：这时第一次请求会把它叫醒，Worker 先回 503，
 // 播放页等它醒了自动重试。
 //
-//   GET  /                 播放页
+//   GET  /                 播放页（page.html）
 //   GET  /api/tracks       歌单 JSON（新的在前）
 //   GET  /a/<消息号>        音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；?dl=1 变成下载
+//   GET  /c/<消息号>        专辑封面（音乐文件自带的缩略图），取一次就存进数据库
 //   POST /tg-webhook       Telegram 推送频道新帖，音频自动登记
-//   GET  /admin            管理页（管理密钥登录）：把频道里已删掉的帖子从歌单移除
+//   GET  /admin            管理页（admin.html，管理密钥登录）：把频道里已删掉的帖子从歌单移除
 //   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>）
 //
 // 数据在 Durable Object「Library」的 SQLite 里：强一致，也没有 KV list 每天 1000 次的限制。
@@ -22,6 +23,8 @@
 //       CHANNEL_ID / CHANNEL_USERNAME / STREAMER_URL（普通变量；STREAMER_URL 为空则大文件不能播放）
 
 import { DurableObject } from 'cloudflare:workers';
+import PAGE from './page.html';
+import ADMIN_PAGE from './admin.html';
 
 const TG = 'https://api.telegram.org';
 // 官方 Bot API 的 getFile 只能取 20 MB 以内的文件，更大的走流式服务
@@ -32,6 +35,8 @@ const LIST_TTL_MS = 20 * 1000;
 const REC_TTL_MS = 60 * 1000;
 // 等流式服务回响应头的时间；等不到多半是它在休眠，先让播放页过会儿再试
 const STREAMER_WAIT_MS = 25 * 1000;
+// Telegram 给音乐文件生成的缩略图一般 20 KB 上下，超过这个大小就不当封面存
+const COVER_LIMIT = 512 * 1024;
 
 const MSG = {
   unavailable: 'Telegram 暂时取不到这个文件，请稍后再试',
@@ -78,6 +83,8 @@ export default {
       if (path === '/api/tracks') return await trackList(env);
       const m = path.match(/^\/a\/(\d{1,10})(?:\.[a-z0-9]{1,5})?$/i);
       if (m) return await audio(request, env, Number(m[1]), url.searchParams.has('dl'));
+      const c = path.match(/^\/c\/(\d{1,10})$/);
+      if (c) return await cover(env, Number(c[1]));
       return text('Not Found', 404);
     } catch (e) {
       if (e instanceof HttpError) return text(e.message, e.status, e.headers);
@@ -92,6 +99,10 @@ function lib(env) {
 
 function streamerOn(env) {
   return !!(env.STREAMER_URL && env.STREAMER_KEY);
+}
+
+function streamerBase(env) {
+  return env.STREAMER_URL.replace(/\/+$/, '');
 }
 
 // ── Telegram webhook：登记频道里的音频 ──────────────────────────────
@@ -128,6 +139,8 @@ function toRecord(post) {
     kind,
     file_id: f.file_id,
     file_unique_id: f.file_unique_id || '',
+    // 音乐文件自带的专辑封面；空字符串表示确定没有（更早登记的歌没有这个字段，封面要靠流式服务去取）
+    thumb: (f.thumbnail || f.thumb || {}).file_id || '',
     title: f.title || stripExt(name) || caption.split('\n')[0].trim() || (kind === 'voice' ? '语音' : '未命名') + ' #' + id,
     performer: f.performer || '',
     name,
@@ -211,6 +224,75 @@ function forget(id) {
   listCache = null;
 }
 
+// ── 封面 ─────────────────────────────────────────────────────────
+
+// 先看数据库里存没存；没有就去取一次（新歌用 Bot API 取缩略图，更早的歌请流式服务用 MTProto 取），
+// 取到了（或确定没有）就存起来，以后不再惊动 Telegram 和流式服务
+async function cover(env, id) {
+  const L = lib(env);
+  let c = await L.getCover(id);
+  if (!c) {
+    const rec = await getRec(env, id);
+    if (!rec) throw new HttpError(404, '没有这首歌');
+    const got = await fetchCover(env, rec);
+    if (!got) throw new HttpError(503, '封面暂时取不到', { 'Retry-After': '60' });
+    c = got === 'none' ? { none: true } : { mime: got.mime, b64: toBase64(got.data) };
+    await L.putCover(id, c.none ? 'none' : c.mime, c.none ? '' : c.b64);
+  }
+  if (c.none) throw new HttpError(404, '这首没有封面', { 'Cache-Control': 'public, max-age=86400' });
+  return new Response(fromBase64(c.b64), {
+    headers: cors({ 'Content-Type': c.mime, 'Cache-Control': 'public, max-age=604800' }),
+  });
+}
+
+// 返回 { mime, data }；'none' 表示确定没有封面；null 表示这次没取到（别存，下次再试）
+async function fetchCover(env, rec) {
+  if (rec.kind === 'voice' || rec.thumb === '') return 'none';
+  try {
+    if (rec.thumb) {
+      const res = await fetchFile(env, rec.thumb, null);
+      return await imageFrom(res, 'image/jpeg');
+    }
+    if (!streamerOn(env)) return null;
+    const res = await fetch(`${streamerBase(env)}/thumb/${rec.id}`, {
+      headers: { 'X-Key': env.STREAMER_KEY },
+      signal: AbortSignal.timeout(STREAMER_WAIT_MS),
+    });
+    // 流式服务自己的 404 是 JSON；Hugging Face 的错误页是网页，不能当成「没有封面」
+    if (res.status === 404 && (res.headers.get('Content-Type') || '').includes('json')) {
+      if (res.body) await res.body.cancel();
+      return 'none';
+    }
+    return await imageFrom(res, null);
+  } catch {
+    return null;
+  }
+}
+
+async function imageFrom(res, fallbackMime) {
+  const type = (res.headers.get('Content-Type') || '').split(';')[0].trim();
+  const mime = type.startsWith('image/') ? type : fallbackMime;
+  if (!res.ok || !mime) {
+    if (res.body) await res.body.cancel();
+    return null;
+  }
+  const data = new Uint8Array(await res.arrayBuffer());
+  return data.length && data.length <= COVER_LIMIT ? { mime, data } : null;
+}
+
+function toBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function fromBase64(b64) {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
 // ── 音频流 ───────────────────────────────────────────────────────
 
 async function audio(request, env, id, download) {
@@ -287,7 +369,7 @@ async function fromStreamer(env, rec, range) {
   const timer = setTimeout(() => abort.abort(), STREAMER_WAIT_MS);
   let res;
   try {
-    res = await fetch(`${env.STREAMER_URL.replace(/\/+$/, '')}/stream/${rec.id}`, { headers, signal: abort.signal });
+    res = await fetch(`${streamerBase(env)}/stream/${rec.id}`, { headers, signal: abort.signal });
   } catch {
     throw waking();
   } finally {
@@ -360,6 +442,8 @@ export class Library extends DurableObject {
     this.sql = ctx.storage.sql;
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec('CREATE TABLE IF NOT EXISTS songs (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, updated INTEGER NOT NULL)');
+      // 封面存成 base64 文本（一张二三十 KB）；mime 为 'none' 表示确定没有封面
+      this.sql.exec('CREATE TABLE IF NOT EXISTS covers (id INTEGER PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
       this.dropSplitterLeftovers();
       // 第一次启动：把更早版本存在 KV 里的歌单搬过来
@@ -393,6 +477,9 @@ export class Library extends DurableObject {
   }
 
   async upsertTrack(rec) {
+    const old = await this.getTrack(rec.id);
+    // 帖子里换了文件，旧封面就作废
+    if (!old || old.file_unique_id !== rec.file_unique_id) this.sql.exec('DELETE FROM covers WHERE id = ?', rec.id);
     this.sql.exec(`INSERT INTO songs (id, rec, updated) VALUES (?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, updated = excluded.updated`,
       rec.id, JSON.stringify(rec), Date.now());
@@ -400,6 +487,18 @@ export class Library extends DurableObject {
 
   async removeTrack(id) {
     this.sql.exec('DELETE FROM songs WHERE id = ?', id);
+    this.sql.exec('DELETE FROM covers WHERE id = ?', id);
+  }
+
+  async getCover(id) {
+    const r = this.sql.exec('SELECT mime, data FROM covers WHERE id = ?', id).toArray()[0];
+    if (!r) return null;
+    return r.mime === 'none' ? { none: true } : { mime: r.mime, b64: r.data };
+  }
+
+  async putCover(id, mime, data) {
+    this.sql.exec(`INSERT INTO covers (id, mime, data) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET mime = excluded.mime, data = excluded.data`, id, mime, data);
   }
 
   async importKV(kv) {
@@ -424,10 +523,19 @@ export class Library extends DurableObject {
   }
 }
 
-// 歌单里的一行；file_id 只在服务端用，不给出去
+// 歌单里的一行；file_id 只在服务端用，不给出去。
+// 这个频道的歌多是从别的频道转来的：表演者一栏常混着转发来源的广告（「更多音乐 @某频道」），
+// 标题又常写成「歌手 - 歌名」，这里理成干净的歌名和歌手
 function summary(rec) {
+  let title = rec.title || '';
+  let artist = (rec.performer || '').replace(/@\w+/g, '').replace(/更多音乐/g, '').replace(/\s+/g, ' ').trim();
+  const m = !artist && /^(.+?)\s+-\s+(.+)$/.exec(title);
+  if (m) {
+    artist = m[1].trim();
+    title = m[2].trim();
+  }
   return {
-    id: rec.id, kind: rec.kind, title: rec.title, performer: rec.performer, mime: rec.mime,
+    id: rec.id, kind: rec.kind, title, artist, mime: rec.mime,
     size: rec.size, duration: rec.duration, date: rec.date,
   };
 }
@@ -485,377 +593,3 @@ function html(body, method, extra) {
     headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...extra },
   });
 }
-
-// ── 页面（客户端脚本里不用反引号和 ${，免得和外层模板字符串打架）─────────
-
-const BASE_STYLE = `
-:root{--bg:#fffaf5;--card:#fff;--text:#1c1917;--muted:#78716c;--line:#f0e6db;--accent:#ea580c;--danger:#dc2626;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#171412;--card:#221d1a;--text:#f5f0eb;--muted:#a8a29e;--line:#2f2925;--accent:#fb923c;--danger:#f87171;color-scheme:dark}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;-webkit-text-size-adjust:100%}
-header,main{max-width:720px;margin:0 auto;padding:0 16px}
-header{padding-top:28px;padding-bottom:8px}
-h1{font-size:24px;line-height:1.3;margin:0}
-.sub{margin:4px 0 0;color:var(--muted);font-size:14px}
-.sub a{color:var(--accent);text-decoration:none}
-[hidden]{display:none!important}
-`;
-
-const PAGE = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>小橘音乐</title>
-<meta name="theme-color" content="#fffaf5" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#171412" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍊</text></svg>">
-<style>${BASE_STYLE}
-#status{color:var(--muted);padding:24px 0;margin:0}
-#status button{margin-left:8px;font:inherit;color:var(--accent);background:none;border:1px solid currentColor;border-radius:6px;padding:2px 10px;cursor:pointer}
-#list{list-style:none;margin:0;padding:0 0 150px}
-.track{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
-.play{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:12px 0;background:none;border:0;color:inherit;font:inherit;text-align:left;cursor:pointer}
-.play:disabled{cursor:not-allowed}
-.num{width:2em;flex:none;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
-.info{min-width:0;display:flex;flex-direction:column}
-.title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.meta{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.track.on .title,.track.on .num{color:var(--accent)}
-.track.off{opacity:.55}
-.links{display:flex;gap:14px;flex:none;font-size:13px}
-.links a{color:var(--muted);text-decoration:none;padding:8px 0}
-.links a:hover{color:var(--accent)}
-#player{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,0,0,.06);padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
-#player .wrap{max-width:720px;margin:0 auto}
-.now{display:flex;gap:8px;align-items:baseline;min-width:0;margin-bottom:6px}
-#now-title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none;max-width:70%}
-#now-artist{color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-audio{display:block;width:100%;height:40px}
-</style>
-</head>
-<body>
-<header>
-  <h1>小橘🍊音乐</h1>
-  <p class="sub"><a id="tg" href="https://t.me/" target="_blank" rel="noopener">在 Telegram 打开频道</a><span id="count"></span></p>
-</header>
-<main>
-  <p id="status">加载中…</p>
-  <ol id="list"></ol>
-</main>
-<div id="player" hidden>
-  <div class="wrap">
-    <div class="now"><span id="now-title"></span><span id="now-artist"></span></div>
-    <audio id="audio" controls preload="none"></audio>
-  </div>
-</div>
-<script>
-(function(){
-  var list = document.getElementById('list');
-  var statusEl = document.getElementById('status');
-  var audio = document.getElementById('audio');
-  var player = document.getElementById('player');
-  var nowTitle = document.getElementById('now-title');
-  var nowArtist = document.getElementById('now-artist');
-  var tracks = [], curId = null, channel = '', retries = 0, retryTimer = 0;
-
-  // 表演者字段常带着转发来源的 @频道名，展示时去掉
-  function artist(p){ return (p || '').replace(/@\\w+/g, '').replace(/\\s+/g, ' ').trim(); }
-  function mmss(s){ if(!s) return ''; s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
-  function mb(b){ return b ? (b / 1048576).toFixed(1) + ' MB' : ''; }
-  function el(tag, cls, txt){
-    var e = document.createElement(tag);
-    if(cls) e.className = cls;
-    if(txt != null) e.textContent = txt;
-    return e;
-  }
-  function indexOf(id){
-    for(var i = 0; i < tracks.length; i++) if(tracks[i].id === id) return i;
-    return -1;
-  }
-  function metaText(t){
-    if(!t.playable) return '超过 20 MB，暂时不能在网页播放';
-    return [artist(t.performer), mmss(t.duration), mb(t.size)].filter(Boolean).join(' · ');
-  }
-
-  function render(){
-    list.textContent = '';
-    tracks.forEach(function(t, i){
-      var li = el('li', 'track' + (t.playable ? '' : ' off') + (t.id === curId ? ' on' : ''));
-      var btn = el('button', 'play');
-      btn.type = 'button';
-      btn.setAttribute('aria-label', '播放 ' + t.title);
-      btn.appendChild(el('span', 'num', String(i + 1)));
-      var info = el('span', 'info');
-      info.appendChild(el('span', 'title', t.title));
-      info.appendChild(el('span', 'meta', metaText(t)));
-      btn.appendChild(info);
-      if(!t.playable) btn.disabled = true;
-      btn.addEventListener('click', function(){ play(t.id); });
-      li.appendChild(btn);
-      var links = el('span', 'links');
-      if(t.playable){
-        var dl = el('a', null, '下载');
-        dl.href = '/a/' + t.id + '?dl=1';
-        links.appendChild(dl);
-      }
-      if(channel){
-        var src = el('a', null, '原帖');
-        src.href = 'https://t.me/' + channel + '/' + t.id;
-        src.target = '_blank';
-        src.rel = 'noopener';
-        links.appendChild(src);
-      }
-      li.appendChild(links);
-      list.appendChild(li);
-    });
-  }
-
-  function select(id){
-    var t = tracks[indexOf(id)];
-    curId = id;
-    retries = 0;
-    clearTimeout(retryTimer);
-    audio.src = '/a/' + id;
-    nowTitle.textContent = t.title;
-    nowArtist.textContent = artist(t.performer);
-    player.hidden = false;
-    document.title = t.title + ' · 小橘音乐';
-    for(var k = 0; k < list.children.length; k++) list.children[k].classList.toggle('on', tracks[k].id === id);
-    if('mediaSession' in navigator && typeof MediaMetadata !== 'undefined'){
-      navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: artist(t.performer), album: '小橘音乐' });
-    }
-    history.replaceState(null, '', '#' + id);
-  }
-
-  function play(id){
-    var i = indexOf(id);
-    if(i < 0 || !tracks[i].playable) return;
-    if(id === curId && !audio.paused){ audio.pause(); return; }
-    if(id !== curId) select(id);
-    var p = audio.play();
-    if(p && p.catch) p.catch(function(){});
-  }
-
-  function step(dir){
-    for(var j = indexOf(curId) + dir; j >= 0 && j < tracks.length; j += dir){
-      if(tracks[j].playable){ play(tracks[j].id); return; }
-    }
-  }
-
-  // 大文件服务休眠时第一次请求会失败（503）：提示一下，每 10 秒重试，最多等 2 分钟
-  audio.addEventListener('error', function(){
-    var id = curId;
-    if(id === null) return;
-    var pos = audio.currentTime || 0;
-    fetch('/a/' + id, { headers: { Range: 'bytes=0-0' } }).then(function(r){
-      if(r.body && r.body.cancel) r.body.cancel();
-      if(id !== curId) return;
-      if(r.status !== 503 || retries >= 12){
-        nowArtist.textContent = '这首暂时播放不了，稍后再试';
-        return;
-      }
-      retries++;
-      nowArtist.textContent = '大文件服务正在唤醒，请稍等…';
-      retryTimer = setTimeout(function(){
-        if(id !== curId) return;
-        audio.src = '/a/' + id;
-        if(pos) audio.addEventListener('loadedmetadata', function(){ audio.currentTime = pos; }, { once: true });
-        var p = audio.play();
-        if(p && p.catch) p.catch(function(){});
-      }, 10000);
-    }).catch(function(){
-      if(id === curId) nowArtist.textContent = '网络不太好，稍后再试';
-    });
-  });
-  audio.addEventListener('playing', function(){
-    var i = indexOf(curId);
-    if(i >= 0) nowArtist.textContent = artist(tracks[i].performer);
-  });
-  audio.addEventListener('ended', function(){ step(1); });
-  if('mediaSession' in navigator){
-    try {
-      navigator.mediaSession.setActionHandler('previoustrack', function(){ step(-1); });
-      navigator.mediaSession.setActionHandler('nexttrack', function(){ step(1); });
-    } catch(e){}
-  }
-
-  function load(){
-    statusEl.hidden = false;
-    statusEl.textContent = '加载中…';
-    fetch('/api/tracks').then(function(r){
-      if(!r.ok) throw new Error(String(r.status));
-      return r.json();
-    }).then(function(d){
-      tracks = d.tracks || [];
-      channel = d.channel || '';
-      if(channel) document.getElementById('tg').href = 'https://t.me/' + channel;
-      document.getElementById('count').textContent = tracks.length ? ' · ' + tracks.length + ' 首' : '';
-      if(!tracks.length){ statusEl.textContent = '频道里还没有音频'; return; }
-      statusEl.hidden = true;
-      render();
-      // 分享链接 /#消息号：选中那首（浏览器不允许自动出声，需要再点一下播放）
-      var i = indexOf(Number(location.hash.slice(1)));
-      if(i >= 0 && tracks[i].playable){
-        select(tracks[i].id);
-        list.children[i].scrollIntoView({ block: 'center' });
-      }
-    }).catch(function(){
-      statusEl.textContent = '歌单加载失败';
-      var retry = el('button', null, '重试');
-      retry.type = 'button';
-      retry.addEventListener('click', load);
-      statusEl.appendChild(retry);
-    });
-  }
-
-  load();
-})();
-</script>
-</body>
-</html>
-`;
-
-const ADMIN_PAGE = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="robots" content="noindex">
-<title>小橘音乐管理</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍊</text></svg>">
-<style>${BASE_STYLE}
-main{padding-bottom:48px}
-h2{font-size:18px;margin:28px 0 4px}
-.hint{color:var(--muted);font-size:14px;margin:0 0 8px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:16px}
-.card p{margin:6px 0}
-.err{color:var(--danger);font-size:14px}
-.rows{list-style:none;margin:0;padding:0}
-.row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
-.row .info{flex:1;min-width:0}
-.row .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.row .meta{font-size:13px;color:var(--muted)}
-.empty{color:var(--muted);padding:10px 0}
-button{font:inherit;font-size:14px;color:var(--accent);background:none;border:1px solid currentColor;border-radius:8px;padding:6px 12px;cursor:pointer;flex:none}
-button.danger{color:var(--danger)}
-button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
-#login{margin-top:24px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-#login p{width:100%;margin:0}
-#key{flex:1;min-width:0;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
-</style>
-</head>
-<body>
-<header>
-  <h1>小橘🍊音乐 · 管理</h1>
-  <p class="sub"><a href="/">返回播放页</a></p>
-</header>
-<main>
-  <form id="login" hidden>
-    <p>输入管理密钥：</p>
-    <input id="key" type="password" autocomplete="current-password" required>
-    <button type="submit">进入</button>
-    <p id="login-err" class="err"></p>
-  </form>
-  <div id="app" hidden>
-    <section class="card"><p id="streamer"></p></section>
-    <h2>全部歌曲</h2>
-    <p class="hint">频道里删掉的帖子不会自动从网页消失，在这里移除（不会动 Telegram 里的帖子）。</p>
-    <ul id="all" class="rows"></ul>
-    <p><button type="button" id="logout" class="link">退出管理</button></p>
-  </div>
-</main>
-<script>
-(function(){
-  var KEY_STORE = 'xm-admin-key';
-  var key = '';
-  try { key = localStorage.getItem(KEY_STORE) || ''; } catch(e){}
-
-  function $(id){ return document.getElementById(id); }
-  function el(tag, cls, txt){
-    var e = document.createElement(tag);
-    if(cls) e.className = cls;
-    if(txt != null) e.textContent = txt;
-    return e;
-  }
-  function mb(b){ return (b / 1048576).toFixed(1) + ' MB'; }
-
-  function api(path, body){
-    var opts = { headers: { Authorization: 'Bearer ' + key } };
-    if(body){
-      opts.method = 'POST';
-      opts.headers['Content-Type'] = 'application/json';
-      opts.body = JSON.stringify(body);
-    }
-    return fetch('/admin/api/' + path, opts).then(function(r){
-      return r.json().catch(function(){ return {}; }).then(function(d){
-        if(!r.ok){ var e = new Error(d.error || ('HTTP ' + r.status)); e.status = r.status; throw e; }
-        return d;
-      });
-    });
-  }
-
-  function showLogin(msg){
-    $('app').hidden = true;
-    $('login').hidden = false;
-    $('login-err').textContent = msg || '';
-  }
-
-  function refresh(){
-    return api('state').then(function(s){
-      $('login').hidden = true;
-      $('app').hidden = false;
-      $('streamer').textContent = s.streamer
-        ? '大文件服务：已开启，超过 20 MB 的歌也能播放'
-        : '大文件服务：未开启，超过 20 MB 的歌暂时不能播放';
-      render(s.tracks);
-    }).catch(function(e){
-      if(e.status === 401){
-        key = '';
-        try { localStorage.removeItem(KEY_STORE); } catch(e2){}
-        showLogin('管理密钥不对');
-      } else {
-        showLogin('加载失败：' + e.message);
-      }
-    });
-  }
-
-  function render(tracks){
-    var ul = $('all');
-    ul.textContent = '';
-    if(!tracks.length){ ul.appendChild(el('li', 'empty', '歌单是空的')); return; }
-    tracks.forEach(function(t){
-      var li = el('li', 'row');
-      var info = el('div', 'info');
-      info.appendChild(el('div', 'title', '#' + t.id + ' ' + t.title));
-      info.appendChild(el('div', 'meta', mb(t.size) + (t.big ? ' · 大文件' : '')));
-      li.appendChild(info);
-      var rm = el('button', 'danger', '移除');
-      rm.type = 'button';
-      rm.addEventListener('click', function(){
-        if(!confirm('从网页歌单移除「' + t.title + '」？\\n不会删除 Telegram 里的帖子。')) return;
-        api('remove', { track: t.id }).then(refresh).catch(function(e){ alert('出错了：' + e.message); });
-      });
-      li.appendChild(rm);
-      ul.appendChild(li);
-    });
-  }
-
-  $('login').addEventListener('submit', function(e){
-    e.preventDefault();
-    key = $('key').value.trim();
-    try { localStorage.setItem(KEY_STORE, key); } catch(e2){}
-    refresh();
-  });
-  $('logout').addEventListener('click', function(){
-    key = '';
-    try { localStorage.removeItem(KEY_STORE); } catch(e){}
-    showLogin('');
-  });
-
-  if(key) refresh(); else showLogin('');
-})();
-</script>
-</body>
-</html>
-`;

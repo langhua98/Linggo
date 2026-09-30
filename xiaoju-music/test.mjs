@@ -45,11 +45,13 @@ function makeKV(records) {
 // ── 模拟 Telegram（小文件）和流式服务（大文件）──
 const files = new Map();   // file_id -> 字节（Bot API 能取的小文件）
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
+const thumbs = new Map();   // 消息号 -> 封面字节（流式服务用 MTProto 取的那种）
 let seq = 0;
 const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); return id; };
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
 const calls = [];
-const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok' };
+const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok' };
+const JPEG = n => Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, ...bytesOf(n, n)]);
 
 function serve(bytes, range, extraHeaders = {}) {
   if (!range) return new Response(bytes, { headers: { 'Content-Length': String(bytes.length), ...extraHeaders } });
@@ -65,6 +67,13 @@ globalThis.fetch = async (input, init = {}) => {
   const headers = new Headers(init.headers || {});
   calls.push({ url, range: headers.get('Range'), key: headers.get('X-Key') });
   let m;
+  if ((m = url.match(/^https:\/\/streamer\.example\/thumb\/(\d+)$/))) {
+    if (mode.thumbs === 'down') throw new TypeError('fetch failed');
+    if (mode.thumbs === 'starting') return new Response('<html>starting</html>', { headers: { 'Content-Type': 'text/html' } });
+    assert.equal(headers.get('X-Key'), SKEY);
+    const img = thumbs.get(Number(m[1]));
+    return img ? new Response(img, { headers: { 'Content-Type': 'image/jpeg' } }) : Response.json({ detail: 'Not Found' }, { status: 404 });
+  }
   if ((m = url.match(/^https:\/\/streamer\.example\/stream\/(\d+)$/))) {
     if (mode.streamer === 'down') throw new TypeError('fetch failed');
     if (mode.streamer === 'starting') return new Response('<html>Space is starting</html>', { headers: { 'Content-Type': 'text/html' } });
@@ -135,7 +144,8 @@ await t('第一次启动把 KV 里的旧歌单迁进来（分页读全）；大�
   assert.deepEqual(list.map(x => x.id), [12, 4]);
   assert.deepEqual([find(list, 4).big, find(list, 4).playable], [false, true]);
   assert.deepEqual([find(list, 12).big, find(list, 12).playable], [true, true]);
-  assert.ok(!JSON.stringify(list).includes('file_id'));
+  assert.equal(find(list, 4).artist, '张万森'); // 「张万森 @auvvip」去掉转发来源
+  assert.ok(!JSON.stringify(list).includes('file_id') && !JSON.stringify(list).includes('performer'));
 });
 
 await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表、仓库配置都清掉，不再从 KV 重搬', async () => {
@@ -151,7 +161,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'songs']);
+  assert.deepEqual(tables, ['config', 'covers', 'songs']);
   assert.deepEqual(db.prepare('SELECT k FROM config').all().map(r => r.k), ['migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -174,6 +184,100 @@ await t('webhook：密钥错误 403；登记 mp3、m4a（纠正类型）、wav �
   assert.equal(find(list, 11).title, 'Transformer interview');
   assert.equal(find(list, 11).mime, 'audio/wav');
   assert.equal(find(list, 13).title, '语音 #13');
+});
+
+await t('歌单里的歌名和歌手：去掉「更多音乐」和 @频道；「歌手 - 歌名」拆开；有歌手时不拆', async () => {
+  await hook({ channel_post: audioPost(60, { performer: '更多音乐 @auvvip', title: '泪海', file_id: 'X60', file_size: 9 }) });
+  await hook({ channel_post: audioPost(61, { performer: '', title: '魏佳艺 - 掌心之中', file_id: 'X61', file_size: 9 }) });
+  await hook({ channel_post: audioPost(62, { performer: '小柯', title: 'A - B', file_id: 'X62', file_size: 9 }) });
+  const list = await publicTracks();
+  assert.deepEqual([find(list, 60).title, find(list, 60).artist], ['泪海', '']);
+  assert.deepEqual([find(list, 61).title, find(list, 61).artist], ['掌心之中', '魏佳艺']);
+  assert.deepEqual([find(list, 62).title, find(list, 62).artist], ['A - B', '小柯']);
+  for (const id of [60, 61, 62]) await admin('remove', { track: id });
+});
+
+await t('封面：新歌用 Bot API 取缩略图，取一次就存下，之后不再找 Telegram', async () => {
+  const img = JPEG(300);
+  await hook({ channel_post: audioPost(70, { file_id: addFile(bytesOf(10, 7)), file_size: 10, thumbnail: { file_id: addFile(img), width: 320, height: 320 } }) });
+  calls.length = 0;
+  let r = await req('/c/70');
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('Content-Type'), 'image/jpeg');
+  assert.match(r.headers.get('Cache-Control'), /max-age=604800/);
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(img)));
+  assert.equal(calls.filter(c => c.url.includes('api.telegram.org')).length, 2); // getFile + 下载
+  calls.length = 0;
+  r = await req('/c/70');
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(img)));
+  assert.equal(calls.length, 0, '第二次直接从数据库出');
+});
+
+await t('封面：更早登记的歌（没记缩略图）请流式服务取，同样只取一次', async () => {
+  const img = JPEG(500);
+  thumbs.set(4, img);
+  calls.length = 0;
+  let r = await req('/c/4');
+  assert.equal(r.status, 200);
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(img)));
+  assert.deepEqual(calls.map(c => [c.url, c.key]), [[STREAMER + '/thumb/4', SKEY]]);
+  calls.length = 0;
+  r = await req('/c/4');
+  await bytes(r);
+  assert.equal(calls.length, 0);
+});
+
+await t('封面：确定没有（缩略图为空、语音、流式服务说 404）就记下来，不再反复去取', async () => {
+  await hook({ channel_post: audioPost(71, { file_id: addFile(bytesOf(10, 8)), file_size: 10 }) }); // 帖子里没有缩略图
+  calls.length = 0;
+  let r = await req('/c/71');
+  assert.equal(r.status, 404);
+  assert.match(r.headers.get('Cache-Control'), /max-age=86400/);
+  await textOf(r);
+  assert.equal(calls.length, 0, '确定没有就不用问任何人');
+  assert.equal((await req('/c/13')).status, 404); // 语音
+  calls.length = 0;
+  r = await req('/c/12'); // 从旧 KV 迁来的歌（没记缩略图），流式服务那边也说没有
+  assert.equal(r.status, 404);
+  await textOf(r);
+  assert.deepEqual(calls.map(c => c.url), [STREAMER + '/thumb/12']);
+  calls.length = 0;
+  assert.equal((await req('/c/12')).status, 404);
+  assert.equal(calls.length, 0);
+  assert.equal((await req('/c/999')).status, 404);
+});
+
+await t('封面：流式服务没醒（连不上、回网页）就 503，不存，醒了再取', async () => {
+  // 模拟更早登记的歌：记录里没有 thumb 字段，只能请流式服务取
+  await lib.upsertTrack({ id: 72, kind: 'audio', file_id: 'X72', file_unique_id: 'U72', title: '旧歌', performer: '', name: 'old.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
+  thumbs.set(72, JPEG(200));
+  for (const m of ['down', 'starting']) {
+    mode.thumbs = m;
+    const r = await req('/c/72');
+    assert.equal(r.status, 503, m);
+    assert.equal(r.headers.get('Retry-After'), '60');
+    await textOf(r);
+  }
+  mode.thumbs = 'ok';
+  const r = await req('/c/72');
+  assert.equal(r.status, 200);
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(thumbs.get(72))));
+  await admin('remove', { track: 72 });
+});
+
+await t('封面：帖子换了文件就作废重取；删歌时封面一起删', async () => {
+  const img2 = JPEG(120);
+  await hook({ edited_channel_post: audioPost(70, { file_id: addFile(bytesOf(10, 9)), file_unique_id: 'U70-new', file_size: 10, thumbnail: { file_id: addFile(img2) } }) });
+  let r = await req('/c/70');
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(img2)));
+  await hook({ edited_channel_post: { ...audioPost(70, { file_id: 'same', file_unique_id: 'U70-new', file_size: 10, thumbnail: { file_id: 'unused' } }), caption: '只改说明' } });
+  calls.length = 0;
+  r = await req('/c/70');
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(img2)));
+  assert.equal(calls.length, 0, '同一个文件，封面沿用');
+  await admin('remove', { track: 70 });
+  assert.equal((await lib.getCover(70)), null);
+  await admin('remove', { track: 71 });
 });
 
 await t('大文件：Range 原样转给流式服务（带密钥），返回的字节和原文件一致', async () => {
