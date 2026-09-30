@@ -6,11 +6,29 @@ workers_dev = true
 [vars]
 CHANNEL_ID = "-1003817921075"
 CHANNEL_USERNAME = "xiaojumusic"
+BOT_USERNAME = "xiaoju_music_bot"
+# 切片服务（splitter/，部署在 Hugging Face Space）的地址；留空就只能在管理页手动上传大文件
+SPLITTER_URL = ""
 
+# 旧版存歌单用的 KV：Durable Object 第一次启动时从这里迁移数据，之后不再读写
 [[kv_namespaces]]
 binding = "TRACKS"
 id = "738216f3f7d64f1ab143128406d1b35e"
 
-# 两个 secret 不写在这里（仓库是公开的），线上已设好；需要改时用：
+[[durable_objects.bindings]]
+name = "LIB"
+class_name = "Library"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Library"]
+
+# 每 10 分钟把还没派出去、失败待重试、卡住的大文件重新派给切片服务
+[triggers]
+crons = ["*/10 * * * *"]
+
+# 四个 secret 不写在这里（仓库是公开的），线上已设好；需要改时用：
 #   wrangler secret put TG_BOT_TOKEN
 #   wrangler secret put TG_WEBHOOK_SECRET
+#   wrangler secret put ADMIN_KEY
+#   wrangler secret put SPLITTER_KEY
