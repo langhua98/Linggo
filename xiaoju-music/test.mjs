@@ -462,6 +462,19 @@ await t('歌词：帖子换了文件就作废；删歌时一起删', async () =>
   for (const id of [31, 32, 33, 34, 35]) await admin('remove', { track: id });
 });
 
+await t('查重：新帖和已有的歌名、歌手一样、时长差 3 秒以内就不登记；别的版本、编辑旧帖照常', async () => {
+  await hook({ channel_post: audioPost(50, { title: '海阔天空', performer: 'Beyond', duration: 326, file_id: 'X50', file_size: 9 }) });
+  await hook({ channel_post: audioPost(51, { title: '海阔天空', performer: 'Beyond @yinyue555', duration: 328, file_id: 'X51', file_size: 9 }) });
+  await hook({ channel_post: audioPost(52, { title: 'Beyond - 海阔天空', performer: '', duration: 325, file_id: 'X52', file_size: 9 }) });
+  await hook({ channel_post: audioPost(53, { title: '海阔天空', performer: 'Beyond', duration: 400, file_id: 'X53', file_size: 9 }) }); // 另一个版本
+  await hook({ channel_post: audioPost(54, { title: '海阔天空', performer: '别人', duration: 326, file_id: 'X54', file_size: 9 }) }); // 翻唱
+  let ids = (await publicTracks()).map(x => x.id);
+  assert.ok(ids.includes(50) && !ids.includes(51) && !ids.includes(52) && ids.includes(53) && ids.includes(54));
+  await hook({ edited_channel_post: audioPost(50, { title: '海阔天空', performer: 'Beyond', duration: 326, file_id: 'X50', file_size: 9 }) });
+  assert.ok((await publicTracks()).some(x => x.id === 50), '编辑已登记的帖子不会把自己当重复');
+  for (const id of [50, 53, 54]) await admin('remove', { track: id });
+});
+
 await t('大文件：Range 原样转给流式服务（带密钥），返回的字节和原文件一致', async () => {
   const src = bigFiles.get(12);
   const N = src.length;

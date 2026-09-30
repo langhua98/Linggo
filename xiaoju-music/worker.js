@@ -146,6 +146,8 @@ async function webhook(request, env) {
     return text('ok');
   }
   const rec = toRecord(post);
+  // 新帖是已有的歌（歌名、歌手一样，时长差 3 秒以内）：不再进歌单。编辑已登记的帖子不算
+  if (rec && update.channel_post && (await lib(env).findSame(rec))) return text('ok');
   if (rec) await lib(env).upsertTrack(rec);
   else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
   forget(post.message_id);
@@ -776,6 +778,17 @@ export class Library extends DurableObject {
 
   async listTracks() {
     return this.sql.exec('SELECT rec FROM songs ORDER BY id DESC').toArray().map(r => summary(JSON.parse(r.rec)));
+  }
+
+  // 歌单里有没有同一首歌（按整理后的歌名、歌手比，时长相差 3 秒以内；时长不知道的也算）
+  async findSame(rec) {
+    const want = summary(rec);
+    const key = norm(want.title) + '|' + norm(want.artist);
+    for (const r of this.sql.exec('SELECT rec FROM songs WHERE id != ?', rec.id).toArray()) {
+      const t = summary(JSON.parse(r.rec));
+      if (norm(t.title) + '|' + norm(t.artist) === key && (!t.duration || !want.duration || Math.abs(t.duration - want.duration) <= 3)) return t.id;
+    }
+    return null;
   }
 
   async getTrack(id) {
