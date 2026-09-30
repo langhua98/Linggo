@@ -143,6 +143,14 @@ h1{font-size:20px;margin:0;line-height:1.2}
   .row .fav[aria-pressed=false]{opacity:0}
   .row:hover .fav[aria-pressed=false],.row .fav[aria-pressed=false]:focus-visible{opacity:.86}
 }
+/* 歌手页：歌手列表（圆头像 + 几首），点进去是这位歌手的歌，最上面有返回和「播放全部」 */
+.thumb.round{border-radius:50%}
+.artist-head{display:flex;align-items:center;gap:6px;padding:4px 4px 10px}
+.artist-head .who{flex:1;min-width:0}
+.artist-head .who b{display:block;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.artist-head .who span{font-size:12.5px;color:var(--faint)}
+.playall{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 14px;border:0;border-radius:99px;background:var(--accent);color:var(--ink);font-weight:600;cursor:pointer;flex:none}
+.playall .ic{width:16px;height:16px}
 .thumb{position:relative;width:46px;height:46px;flex:none;border-radius:9px;overflow:hidden;background:linear-gradient(135deg,#57534e,#292524)}
 .thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .3s}
 .thumb img.ready{opacity:1}
@@ -219,6 +227,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m20.5 20.5-4.2-4.2"/></symbol>
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
   <symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M3 6h11M3 11h11M3 16h7"/><path d="M19 17V5l3 1.5"/><circle cx="16.5" cy="17" r="2.5"/></symbol>
   <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 21s-6.7-4.4-9.2-8.3C1 9.9 2.2 5.9 5.9 5.1c2.3-.5 4.3.6 6.1 2.7 1.8-2.1 3.8-3.2 6.1-2.7 3.7.8 4.9 4.8 3.1 7.6C18.7 16.6 12 21 12 21z"/></symbol>
 </svg>
@@ -267,6 +276,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     <div class="tabs" role="tablist" aria-label="歌单">
       <button class="tab" id="tabAll" type="button" role="tab" aria-selected="true">全部<span class="n" id="nAll"></span></button>
       <button class="tab" id="tabFav" type="button" role="tab" aria-selected="false"><svg class="ic"><use href="#i-heart"/></svg>我喜欢<span class="n" id="nFav"></span></button>
+      <button class="tab" id="tabArtist" type="button" role="tab" aria-selected="false">歌手</button>
     </div>
     <ol class="list skeleton" id="list"></ol>
     <p class="status" id="status" hidden></p>
@@ -296,8 +306,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
   // tab：歌单显示「全部」还是「我喜欢」；ctx：正在放的这首是从哪一页点的，上一首/下一首就在那一页里切
   var prefs = { repeat: 'all', shuffle: false, volume: 1, last: null, tab: 'all', ctx: 'all' };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem('xm-prefs') || '{}')); } catch (e) {}
-  if(prefs.tab !== 'fav') prefs.tab = 'all';
-  if(prefs.ctx !== 'fav') prefs.ctx = 'all';
+  if(['fav', 'artist'].indexOf(prefs.tab) < 0) prefs.tab = 'all';
+  if(['fav', 'artist'].indexOf(prefs.ctx) < 0) prefs.ctx = 'all';
   function savePrefs(){ try { localStorage.setItem('xm-prefs', JSON.stringify(prefs)); } catch (e) {} }
   // favs：收藏的消息号，新收藏的在前；pos：正在放的这首在播放顺序里排第几；seen：封面加载过没有
   var favs = readFavs(), pos = 0, seen = {};
@@ -431,12 +441,96 @@ h1{font-size:20px;margin:0;line-height:1.2}
   }
 
   // ── 歌单 ──
+  // ── 歌手 ──
+  // 「A&B」「A、B」这样合唱的歌，两位歌手底下都有
+  function artistsOf(t){
+    return String(t.artist || '').split(/[&＆、/,，]| x | feat\.? /i).map(function(a){ return a.trim(); }).filter(Boolean);
+  }
+  var artistCache = null;
+  function artistIndex(){
+    if(artistCache) return artistCache;
+    var m = {};
+    tracks.forEach(function(t){ artistsOf(t).forEach(function(a){ (m[a] = m[a] || []).push(t); }); });
+    artistCache = Object.keys(m).map(function(a){ return { name: a, songs: m[a] }; })
+      .sort(function(x, y){ return y.songs.length - x.songs.length || x.name.localeCompare(y.name, 'zh'); });
+    return artistCache;
+  }
+  function songsOf(name){
+    var hit = artistIndex().filter(function(a){ return a.name === name; })[0];
+    return hit ? hit.songs : [];
+  }
+  function openArtist(name){
+    prefs.artist = name;
+    savePrefs();
+    $('q').value = '';
+    paintTabs();
+    list.scrollTop = 0;
+    render();
+  }
+  function artistRow(a){
+    var li = el('li', 'row');
+    li.dataset.artist = a.name;
+    var b = el('button', 'pick');
+    b.type = 'button';
+    var th = el('span', 'thumb round');
+    var img = el('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    th.appendChild(img);
+    coverImg(img, th, a.songs[0].id);
+    var info = el('span', 'info');
+    info.appendChild(el('span', 'rt', a.name));
+    info.appendChild(el('span', 'ra', a.songs.length + ' 首'));
+    b.appendChild(th); b.appendChild(info);
+    b.addEventListener('click', function(){ openArtist(a.name); });
+    li.appendChild(b);
+    return li;
+  }
+  function artistHead(name, songs){
+    var li = el('li', 'artist-head');
+    var back = el('button', 'icon');
+    back.type = 'button';
+    back.setAttribute('aria-label', '返回歌手列表');
+    back.innerHTML = '<svg class="ic stroke"><use href="#i-back"/></svg>';
+    back.addEventListener('click', function(){ openArtist(null); });
+    var who = el('div', 'who');
+    who.appendChild(el('b', null, name));
+    who.appendChild(el('span', null, songs.length + ' 首'));
+    var all = el('button', 'playall');
+    all.type = 'button';
+    all.innerHTML = '<svg class="ic"><use href="#i-play"/></svg>播放全部';
+    all.addEventListener('click', function(){
+      var first = songs.filter(function(t){ return t.playable; })[0];
+      if(!first) return;
+      prefs.ctx = 'artist';
+      prefs.ctxArtist = name;
+      if(prefs.shuffle){ var ps = songs.filter(function(t){ return t.playable; }); first = ps[Math.floor(Math.random() * ps.length)]; }
+      select(first.id);
+      start();
+    });
+    li.appendChild(back); li.appendChild(who); li.appendChild(all);
+    return li;
+  }
+
   function render(){
-    var raw = $('q').value.trim(), q = raw.toLowerCase(), fav = prefs.tab === 'fav';
+    var raw = $('q').value.trim(), q = raw.toLowerCase(), fav = prefs.tab === 'fav', art = prefs.tab === 'artist';
     list.textContent = '';
     list.classList.remove('skeleton');
     var shown = 0;
-    (fav ? favTracks() : tracks).forEach(function(t){
+    if(art && prefs.artist && !songsOf(prefs.artist).length) prefs.artist = null; // 这位歌手的歌都被移除了
+    if(art && !prefs.artist){
+      artistIndex().forEach(function(a){
+        if(q && a.name.toLowerCase().indexOf(q) < 0) return;
+        shown++;
+        list.appendChild(artistRow(a));
+      });
+      $('status').hidden = !!shown;
+      $('status').textContent = shown ? '' : (q ? '没有找到歌手「' + raw + '」' : '还没有歌手');
+      mark();
+      return;
+    }
+    if(art) list.appendChild(artistHead(prefs.artist, songsOf(prefs.artist)));
+    (fav ? favTracks() : art ? songsOf(prefs.artist) : tracks).forEach(function(t){
       if(q && (t.title + ' ' + t.artist).toLowerCase().indexOf(q) < 0) return;
       shown++;
       list.appendChild(row(t));
@@ -574,7 +668,9 @@ h1{font-size:20px;margin:0;line-height:1.2}
   }
   // 从歌单里点歌：之后的上一首/下一首就在当前这一页（全部 / 我喜欢）里切
   function choose(id){
-    if(prefs.ctx !== prefs.tab){ prefs.ctx = prefs.tab; savePrefs(); }
+    prefs.ctx = prefs.tab;
+    if(prefs.tab === 'artist') prefs.ctxArtist = prefs.artist;
+    savePrefs();
     if(id === curId){ syncPos(); toggle(); return; }
     select(id);
     start();
@@ -590,8 +686,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
   function playable(){ return tracks.filter(function(t){ return t.playable; }); }
   // 播放顺序：从「我喜欢」点的歌就在收藏里轮（收藏全取消了就退回全部）
   function queue(){
-    if(prefs.ctx === 'fav'){
-      var fs = favTracks().filter(function(t){ return t.playable; });
+    if(prefs.ctx === 'fav' || prefs.ctx === 'artist'){
+      var fs = (prefs.ctx === 'fav' ? favTracks() : songsOf(prefs.ctxArtist)).filter(function(t){ return t.playable; });
       if(fs.length) return fs;
     }
     return playable();
@@ -845,10 +941,15 @@ h1{font-size:20px;margin:0;line-height:1.2}
   function paintTabs(){
     $('tabAll').setAttribute('aria-selected', String(prefs.tab === 'all'));
     $('tabFav').setAttribute('aria-selected', String(prefs.tab === 'fav'));
-    $('q').placeholder = prefs.tab === 'fav' ? '在「我喜欢」里搜索' : '搜索歌名或歌手';
+    $('tabArtist').setAttribute('aria-selected', String(prefs.tab === 'artist'));
+    $('q').placeholder = prefs.tab === 'fav' ? '在「我喜欢」里搜索'
+      : prefs.tab === 'artist' ? (prefs.artist ? '在「' + prefs.artist + '」的歌里搜索' : '搜索歌手') : '搜索歌名或歌手';
   }
   function setTab(tab){
-    if(prefs.tab === tab) return;
+    if(prefs.tab === tab){
+      if(tab === 'artist' && prefs.artist) openArtist(null); // 在歌手页里再点「歌手」：回到歌手列表
+      return;
+    }
     prefs.tab = tab;
     savePrefs();
     paintTabs();
@@ -857,6 +958,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   }
   $('tabAll').addEventListener('click', function(){ setTab('all'); });
   $('tabFav').addEventListener('click', function(){ setTab('fav'); });
+  $('tabArtist').addEventListener('click', function(){ setTab('artist'); });
   $('like').addEventListener('click', function(){ if(curId !== null) toggleFav(curId, this); });
   // 同一台设备开着两个页面：一边收藏了，另一边跟着变
   window.addEventListener('storage', function(e){
@@ -957,6 +1059,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       return r.json();
     }).then(function(d){
       tracks = d.tracks || [];
+      artistCache = null;
       byId = {};
       tracks.forEach(function(t){ byId[t.id] = t; });
       loaded = true;
@@ -965,6 +1068,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       var want = Number(location.hash.slice(1)) || prefs.last;
       var first = byId[want] && byId[want].playable ? byId[want] : playable()[0];
       if(first && prefs.ctx === 'fav' && !isFav(first.id)) prefs.ctx = 'all';
+      if(first && prefs.ctx === 'artist' && artistsOf(first).indexOf(prefs.ctxArtist) < 0) prefs.ctx = 'all';
       render();
       if(first) select(first.id);
     }).catch(function(){
