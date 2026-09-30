@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
-from telethon.errors import FileReferenceExpiredError
+from telethon.errors import FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
 
 import app as appmod
 from app import CHUNK, Streamer, parse_range
@@ -258,3 +258,98 @@ def test_photo_scan_and_download(monkeypatch):
     r = client.get('/photo/50', headers={'X-Key': 'k1'})
     assert r.status_code == 200 and r.content == b'\xff\xd8img50'
     assert client.get('/photo/51', headers={'X-Key': 'k1'}).status_code == 404
+
+
+# ── 搬歌 ──
+
+def run_copier(songs, existing=(), limit=100, dry_run=False, flood_on=None):
+    forwarded, slept = [], []
+
+    async def iter_music(source):
+        assert source == 'VmoMusic'
+        for s in songs:
+            yield s, s[0], s[1]
+
+    async def forward(target, msg):
+        assert target == 'xiaojumusic'
+        if flood_on == msg[0] and not slept:
+            raise FloodWaitError(request=None, capture=7)
+        forwarded.append(msg[0])
+
+    async def sleep(n):
+        slept.append(n)
+
+    async def main():
+        c = appmod.Copier(iter_music=iter_music, forward=forward, sleep=sleep, pause=3)
+        c.start('VmoMusic', 'xiaojumusic', limit, list(existing), dry_run)
+        await c.task
+        return c.state
+
+    return asyncio.run(main()), forwarded, slept
+
+
+def test_copier_takes_chinese_songs_skips_duplicates_and_stops_at_limit():
+    songs = [('晴天', '周杰伦 @VmoMusic'), ('Shape of You', 'Ed Sheeran'), ('周杰伦 - 晴天', ''),
+             ('稻香', '周杰伦'), ('江南', '林俊杰'), ('マリーゴールド', 'あいみょん'), ('사랑', '아이유'),
+             ('小情歌', '苏打绿'), ('夜曲', '周杰伦')]
+    state, forwarded, slept = run_copier(songs, existing=[('江南', '林俊杰')], limit=3)
+    assert forwarded == ['晴天', '稻香', '小情歌']
+    assert state['status'] == 'done' and state['copied'] == 3
+    assert state['skipped_dup'] == 2 and state['skipped_lang'] == 3
+    assert slept == [3, 3, 3]
+    assert state['recent'][0] == '苏打绿 - 小情歌'
+
+
+def test_copier_dry_run_forwards_nothing():
+    state, forwarded, _ = run_copier([('晴天', '周杰伦')], dry_run=True)
+    assert forwarded == [] and state['copied'] == 1
+
+
+def test_copier_waits_out_flood_limits():
+    state, forwarded, slept = run_copier([('晴天', '周杰伦'), ('稻香', '周杰伦')], flood_on='晴天')
+    assert forwarded == ['晴天', '稻香'] and slept[0] == 8 and state['status'] == 'done'
+
+
+def test_login_with_two_step_password():
+    events = []
+
+    class FakeUser:
+        def __init__(self, session):
+            self.session = session
+
+        async def connect(self):
+            events.append('connect')
+
+        async def send_code_request(self, phone):
+            events.append(('code', phone))
+
+            class Sent:
+                phone_code_hash = 'H'
+            return Sent()
+
+        async def sign_in(self, phone=None, code=None, phone_code_hash=None, password=None):
+            events.append(('sign_in', code, phone_code_hash, password))
+            if password is None:
+                raise SessionPasswordNeededError(request=None)
+
+    async def main():
+        lg = appmod.Login(FakeUser)
+        await lg.send_code('+15550100000')
+        with pytest.raises(SessionPasswordNeededError):
+            await lg.verify('12345')
+        client = await lg.verify('12345', 'pw')  # 第二次只交密码，不再交验证码
+        return client, lg
+
+    client, lg = asyncio.run(main())
+    assert isinstance(client, FakeUser) and lg.pending is None
+    assert events == ['connect', ('code', '+15550100000'), ('sign_in', '12345', 'H', None), ('sign_in', None, None, 'pw')]
+
+
+def test_copy_endpoints_need_key_and_login(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    monkeypatch.setattr(appmod, 'copier', None)
+    client = TestClient(appmod.app)
+    assert client.post('/copy/start', json={'source': 'VmoMusic'}).status_code == 403
+    assert client.post('/copy/start', json={'source': 'VmoMusic'}, headers={'X-Key': 'k1'}).status_code == 409
+    assert client.get('/copy/status', headers={'X-Key': 'k1'}).json() == {'logged_in': False, 'status': 'idle'}
+    assert client.post('/login/code', json={'phone': 'abc'}, headers={'X-Key': 'k1'}).status_code == 400

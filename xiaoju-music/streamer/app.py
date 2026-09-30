@@ -5,13 +5,20 @@ Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里�
 以机器人身份按消息号取到频道里的原文件，浏览器要哪一段，就从 Telegram 现取哪一段、边取边传：
 不落盘，也不用等整首下完。另外 GET /thumb/<消息号> 给出音乐文件自带的专辑封面，Worker 取一次就存起来。
 
+搬歌（频道主要求）：机器人看不到别人的频道，所以另有一个用频道主自己的账号登录的会话（TG_USER_SESSION），
+把指定公开频道里的中文歌转到小橘音乐频道（不带「转发自」），转过去的帖子由 Worker 的 webhook 照常登记、查重。
+开了「禁止保存内容」的频道 Telegram 不让转，这里也不去绕。登录走 POST /login/code、/login/verify，
+搬歌走 /copy/start、/copy/status、/copy/stop。
+
 环境变量（在 Space 的 Settings → Variables and secrets 里设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
   TG_BOT_TOKEN              机器人 token（和 Worker 里的是同一个）
   TG_CHANNEL                频道用户名，xiaojumusic
   STREAMER_KEY              Worker 转发请求时带的密钥（X-Key 请求头）
+  TG_USER_SESSION           （可选）频道主账号的登录凭证，搬歌用；由 /login/verify 生成
 """
 
+import asyncio
 import hmac
 import logging
 import os
@@ -22,7 +29,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
-from telethon.errors import FileReferenceExpiredError
+from telethon.errors import FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
+from telethon.tl.types import InputMessagesFilterMusic
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -144,6 +152,137 @@ class Streamer:
                         log.debug('closing download iterator failed', exc_info=True)
 
 
+# ── 搬歌 ──────────────────────────────────────────────────────────
+
+CJK = re.compile(r'[一-鿿]')
+# 日文假名、韩文：有这些的是日韩歌（只用汉字写的日本歌手名分不出来）
+KANA_HANGUL = re.compile(r'[぀-ヿ가-힯]')
+
+
+def is_chinese(text):
+    return bool(CJK.search(text)) and not KANA_HANGUL.search(text)
+
+
+def norm(s):
+    return re.sub(r'[\W_]+', '', (s or '').lower())
+
+
+def clean_names(title, performer):
+    """和 Worker 的 summary() 一样理歌名、歌手：去掉「@频道」「更多音乐」，没有歌手时拆「歌手 - 歌名」。"""
+    title = (title or '').strip()
+    artist = re.sub(r'\s+', ' ', re.sub(r'@\w+|更多音乐', '', performer or '')).strip()
+    if not artist:
+        m = re.match(r'^(.+?)\s+-\s+(.+)$', title)
+        if m:
+            artist, title = m[1].strip(), m[2].strip()
+    return title, artist
+
+
+def song_key(title, performer):
+    t, a = clean_names(title, performer)
+    return norm(t) + '|' + norm(a)
+
+
+class Copier:
+    """把 source 频道里的中文歌（歌名或歌手里有汉字）从新到旧转到 target，跳过已有的，最多 limit 首。
+
+    iter_music(source) 异步给出 (消息, 歌名, 歌手)；forward(target, 消息) 转一条。都由外面注入，方便测试。"""
+
+    def __init__(self, *, iter_music, forward, sleep=asyncio.sleep, pause=3.0):
+        self.iter_music = iter_music
+        self.forward = forward
+        self.sleep = sleep
+        self.pause = pause
+        self.task = None
+        self.state = {'status': 'idle'}
+
+    def running(self):
+        return self.task is not None and not self.task.done()
+
+    def start(self, source, target, limit, existing, dry_run=False):
+        if self.running():
+            raise RuntimeError('already running')
+        self.state = {'status': 'running', 'source': source, 'limit': limit, 'dry_run': dry_run,
+                      'scanned': 0, 'copied': 0, 'skipped_lang': 0, 'skipped_dup': 0, 'recent': [], 'error': ''}
+        seen = {song_key(t, a) for t, a in existing}
+        self.task = asyncio.create_task(self.run(source, target, limit, seen, dry_run))
+
+    def stop(self):
+        if self.running():
+            self.task.cancel()
+
+    async def run(self, source, target, limit, seen, dry_run):
+        st = self.state
+        try:
+            async for msg, title, performer in self.iter_music(source):
+                if st['copied'] >= limit:
+                    break
+                st['scanned'] += 1
+                if not is_chinese((title or '') + (performer or '')):
+                    st['skipped_lang'] += 1
+                    continue
+                key = song_key(title, performer)
+                if key in seen:
+                    st['skipped_dup'] += 1
+                    continue
+                if not dry_run:
+                    await self.forward_patiently(target, msg)
+                    await self.sleep(self.pause)  # 慢慢来，免得账号被限制
+                seen.add(key)
+                st['copied'] += 1
+                t, a = clean_names(title, performer)
+                st['recent'] = ([f'{a} - {t}' if a else t] + st['recent'])[:30]
+            st['status'] = 'done'
+        except asyncio.CancelledError:
+            st['status'] = 'stopped'
+        except Exception as e:  # noqa: BLE001 — 记下来给 /copy/status 看
+            log.exception('copy failed')
+            st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'
+
+    async def forward_patiently(self, target, msg):
+        for attempt in range(3):
+            try:
+                return await self.forward(target, msg)
+            except FloodWaitError as e:  # Telegram 叫我们等一会儿
+                if attempt == 2 or e.seconds > 3600:
+                    raise
+                self.state['waiting'] = e.seconds
+                await self.sleep(e.seconds + 1)
+                self.state.pop('waiting', None)
+
+
+class Login:
+    """账号登录两步走：先发验证码，再用验证码（开了两步验证时再加密码）登录。"""
+
+    def __init__(self, make_user_client):
+        self.make_user_client = make_user_client
+        self.pending = None  # (客户端, 手机号, phone_code_hash)
+        self.need_password = False
+
+    async def send_code(self, phone):
+        client = self.make_user_client(StringSession())
+        await client.connect()
+        sent = await client.send_code_request(phone)
+        self.pending, self.need_password = (client, phone, sent.phone_code_hash), False
+
+    async def verify(self, code, password=None):
+        """成功返回已登录的客户端；要两步验证密码而没给时抛 SessionPasswordNeededError（可以带密码再调一次）。"""
+        if not self.pending:
+            raise RuntimeError('no code requested')
+        client, phone, code_hash = self.pending
+        if not self.need_password:
+            try:
+                await client.sign_in(phone=phone, code=code, phone_code_hash=code_hash)
+            except SessionPasswordNeededError:
+                self.need_password = True  # 验证码已经对了，下次只交密码
+        if self.need_password:
+            if not password:
+                raise SessionPasswordNeededError(request=None)
+            await client.sign_in(password=password)
+        self.pending, self.need_password = None, False
+        return client
+
+
 def make_client(env):
     # receive_updates=False：这个 MTProto 会话只调用、不订阅推送。机器人同时挂在官方 Bot API 上收
     # webhook，Telegram 给同一个机器人的推送可能只送到其中一个会话；这里要是订阅了，频道新帖的推送
@@ -152,6 +291,30 @@ def make_client(env):
 
 
 streamer = None
+user_client = None  # 频道主账号（搬歌用），没登录时为 None
+copier = None
+login = None
+
+
+def user_music(client):
+    async def iter_music(source):
+        async for msg in client.iter_messages(source, filter=InputMessagesFilterMusic):
+            f = msg.file
+            if f is None:
+                continue
+            yield msg, f.title or re.sub(r'\.[a-z0-9]{1,5}$', '', f.name or '', flags=re.I), f.performer or ''
+    return iter_music
+
+
+def set_user_client(client):
+    global user_client, copier
+    user_client = client
+
+    async def forward(target, msg):
+        # drop_author：转过去是一条新帖，不带「转发自」
+        return await client.forward_messages(target, msg, drop_author=True)
+
+    copier = Copier(iter_music=user_music(client), forward=forward)
 
 
 @asynccontextmanager
@@ -178,9 +341,27 @@ async def lifespan(app):
 
     streamer = Streamer(channel=env.get('TG_CHANNEL', 'xiaojumusic'), fetch_message=fetch_message,
                         iter_download=client.iter_download, download_thumb=download_thumb, download_photo=download_photo)
+
+    global login
+    login = Login(lambda session: TelegramClient(session, int(env['TG_API_ID']), env['TG_API_HASH'], receive_updates=False))
+    if env.get('TG_USER_SESSION'):
+        try:
+            u = login.make_user_client(StringSession(env['TG_USER_SESSION']))
+            await u.connect()
+            if await u.is_user_authorized():
+                set_user_client(u)
+                log.info('user session ready')
+            else:
+                log.warning('TG_USER_SESSION is no longer valid')
+        except Exception:  # noqa: BLE001 — 搬歌用不了不影响播放
+            log.exception('user session failed')
     try:
         yield
     finally:
+        if copier:
+            copier.stop()
+        if user_client:
+            await user_client.disconnect()
         await client.disconnect()
 
 
@@ -239,3 +420,71 @@ async def stream(message_id: int, request: Request):
         headers['Content-Range'] = f'bytes {start}-{end}/{size}'
     return StreamingResponse(streamer.body(message_id, start, end), status_code=206 if partial else 200,
                              headers=headers, media_type='application/octet-stream')
+
+
+# ── 登录、搬歌（都要 X-Key）─────────────────────────────────────────
+
+def target_channel():
+    return os.environ.get('TG_CHANNEL', 'xiaojumusic')
+
+
+@app.post('/login/code')
+async def login_code(request: Request):
+    check_key(request)
+    phone = str((await request.json()).get('phone', '')).strip()
+    if not re.fullmatch(r'\+?\d{6,16}', phone):
+        raise HTTPException(400, 'bad phone')
+    await login.send_code(phone)
+    return {'ok': True}
+
+
+@app.post('/login/verify')
+async def login_verify(request: Request):
+    check_key(request)
+    body = await request.json()
+    try:
+        client = await login.verify(str(body.get('code', '')).strip(), body.get('password') or None)
+    except SessionPasswordNeededError:
+        return {'ok': False, 'need_password': True}
+    set_user_client(client)
+    me = await client.get_me()
+    try:
+        perm = await client.get_permissions(target_channel(), 'me')
+        can_post = bool(perm.is_creator or (perm.is_admin and perm.post_messages))
+    except Exception:  # noqa: BLE001 — 不在频道里
+        can_post = False
+    # 登录凭证只在这里给一次，要存成 Space 的 secret（TG_USER_SESSION），重启后才还能用
+    return {'ok': True, 'session': client.session.save(), 'can_post': can_post,
+            'me': {'id': me.id, 'name': ' '.join(x for x in [me.first_name, me.last_name] if x), 'username': me.username}}
+
+
+@app.post('/copy/start')
+async def copy_start(request: Request):
+    check_key(request)
+    if copier is None:
+        raise HTTPException(409, 'not logged in')
+    body = await request.json()
+    source = str(body.get('source', '')).strip().lstrip('@')
+    if not re.fullmatch(r'\w{4,64}', source):
+        raise HTTPException(400, 'bad source')
+    existing = [(str(t), str(a)) for t, a in body.get('existing', [])]
+    limit = max(1, min(int(body.get('limit', 50)), 2000))
+    try:
+        copier.start(source, target_channel(), limit, existing, bool(body.get('dry_run')))
+    except RuntimeError:
+        raise HTTPException(409, 'already running')
+    return copier.state
+
+
+@app.get('/copy/status')
+async def copy_status(request: Request):
+    check_key(request)
+    return {'logged_in': copier is not None, **(copier.state if copier else {'status': 'idle'})}
+
+
+@app.post('/copy/stop')
+async def copy_stop(request: Request):
+    check_key(request)
+    if copier:
+        copier.stop()
+    return {'ok': True}
