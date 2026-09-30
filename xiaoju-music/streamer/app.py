@@ -56,11 +56,14 @@ def parse_range(header, total):
 class Streamer:
     """下载和取消息的实现由外面注入，方便测试。"""
 
-    def __init__(self, *, channel, fetch_message, iter_download, download_thumb=None, clock=time.monotonic):
+    def __init__(self, *, channel, fetch_message, iter_download, download_thumb=None, download_photo=None,
+                 clock=time.monotonic):
         self.channel = channel
         self.fetch_message = fetch_message    # async (频道, 消息号) -> Telethon 消息或 None
         self.iter_download = iter_download    # (文件, offset=, request_size=, file_size=) -> 异步迭代的字节块
         self.download_thumb = download_thumb  # async (消息) -> 封面缩略图的 JPEG 字节或 None
+        self.download_photo = download_photo  # async (消息) -> 图片帖里合适尺寸的 JPEG 字节
+        self.scan = None                      # (upto, 图片帖消息号列表, 扫描时间)
         self.clock = clock
         self.cache = {}  # 消息号 -> (消息, 取到的时间)
 
@@ -83,6 +86,23 @@ class Streamer:
         if msg is None or not getattr(msg.document, 'thumbs', None):
             return None
         return await self.download_thumb(msg)
+
+    async def photo_ids(self, upto):
+        """频道里 1..upto 号消息中哪些是图片帖。机器人不能翻历史，只能按消息号每 100 条批量取。结果缓存 10 分钟。"""
+        if self.scan and self.scan[0] >= upto and self.clock() - self.scan[2] < 600:
+            return self.scan[1]
+        ids = []
+        for first in range(1, upto + 1, 100):
+            msgs = await self.fetch_message(self.channel, list(range(first, min(first + 100, upto + 1))))
+            ids += [m.id for m in msgs if m is not None and getattr(m, 'photo', None)]
+        self.scan = (upto, ids, self.clock())
+        return ids
+
+    async def photo(self, message_id):
+        msg = await self.fetch_message(self.channel, message_id)
+        if msg is None or not getattr(msg, 'photo', None):
+            return None
+        return await self.download_photo(msg)
 
     async def body(self, message_id, start, end):
         """边取边吐 [start, end] 这段字节。文件引用在途中过期就重取消息，从断开的地方接着传。"""
@@ -149,8 +169,15 @@ async def lifespan(app):
         # 传消息本身（不是 msg.document）：Telethon 才能在文件引用过期时自己重取消息
         return await client.download_media(msg, file=bytes, thumb=-1)
 
+    async def download_photo(msg):
+        # 取边长不超过 800 的最大一档（当封面够清楚，又不至于太大）；都超过就取最小的
+        sizes = [s for s in msg.photo.sizes if getattr(s, 'w', 0) and getattr(s, 'h', 0)]
+        fit = [s for s in sizes if max(s.w, s.h) <= 800]
+        size = max(fit, key=lambda s: s.w * s.h) if fit else min(sizes, key=lambda s: s.w * s.h)
+        return await client.download_media(msg, file=bytes, thumb=size)
+
     streamer = Streamer(channel=env.get('TG_CHANNEL', 'xiaojumusic'), fetch_message=fetch_message,
-                        iter_download=client.iter_download, download_thumb=download_thumb)
+                        iter_download=client.iter_download, download_thumb=download_thumb, download_photo=download_photo)
     try:
         yield
     finally:
@@ -176,6 +203,21 @@ def check_key(request):
 async def thumb(message_id: int, request: Request):
     check_key(request)
     data = await streamer.thumbnail(message_id)
+    if not data:
+        raise HTTPException(404)
+    return Response(content=data, media_type='image/jpeg')
+
+
+@app.get('/photos')
+async def photos(upto: int, request: Request):
+    check_key(request)
+    return {'photos': await streamer.photo_ids(max(1, min(upto, 100000)))}
+
+
+@app.get('/photo/{message_id}')
+async def photo(message_id: int, request: Request):
+    check_key(request)
+    data = await streamer.photo(message_id)
     if not data:
         raise HTTPException(404)
     return Response(content=data, media_type='image/jpeg')

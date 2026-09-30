@@ -225,3 +225,36 @@ def test_client_never_subscribes_to_updates(monkeypatch):
     monkeypatch.setattr(appmod, 'TelegramClient', FakeClient)
     appmod.make_client({'TG_API_ID': '123', 'TG_API_HASH': 'abc'})
     assert seen == {'api_id': 123, 'api_hash': 'abc', 'receive_updates': False}
+
+
+def test_photo_scan_and_download(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+
+    class M:
+        def __init__(self, i, photo):
+            self.id = i
+            self.photo = photo
+
+    calls = []
+
+    async def fetch_message(channel, ids):
+        calls.append(ids)
+        if isinstance(ids, list):
+            return [M(i, 'P' if i % 50 == 0 else None) if i <= 180 else None for i in ids]
+        return M(ids, 'P') if ids == 50 else None
+
+    async def download_photo(msg):
+        return b'\xff\xd8img' + str(msg.id).encode()
+
+    s = Streamer(channel='xiaojumusic', fetch_message=fetch_message, iter_download=None, download_photo=download_photo)
+    monkeypatch.setattr(appmod, 'streamer', s)
+    client = TestClient(appmod.app)
+    assert client.get('/photos?upto=250').status_code == 403
+    r = client.get('/photos?upto=250', headers={'X-Key': 'k1'})
+    assert r.json() == {'photos': [50, 100, 150]}
+    assert [len(c) for c in calls] == [100, 100, 50]
+    client.get('/photos?upto=200', headers={'X-Key': 'k1'})
+    assert len(calls) == 3  # 缓存命中
+    r = client.get('/photo/50', headers={'X-Key': 'k1'})
+    assert r.status_code == 200 and r.content == b'\xff\xd8img50'
+    assert client.get('/photo/51', headers={'X-Key': 'k1'}).status_code == 404

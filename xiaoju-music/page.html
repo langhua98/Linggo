@@ -32,13 +32,21 @@ button{font:inherit;color:inherit}
 .app{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,470px);gap:48px;height:100vh;height:100dvh;padding:40px 48px}
 .stage{align-self:center;justify-self:center;width:100%;max-width:440px;display:flex;flex-direction:column;align-items:center}
 #close{display:none}
-.cover-wrap{position:relative;width:min(420px,38vw,58vh);aspect-ratio:1;border-radius:18px;overflow:hidden;
-  background:linear-gradient(135deg,#fdba74,#9a3412);box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.06)}
+/* 封面做成黑胶唱片：封面是中间的圆标，播放时整张唱片转，暂停就停 */
+.cover-wrap{position:relative;width:min(420px,38vw,58vh);aspect-ratio:1;border-radius:50%;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.cover-wrap::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;
+  background:conic-gradient(from 30deg,transparent 0 40deg,rgba(255,255,255,.1) 55deg,transparent 75deg 220deg,rgba(255,255,255,.07) 235deg,transparent 255deg)}
+.disc{position:absolute;inset:0;border-radius:50%;
+  background:repeating-radial-gradient(circle,#141414 0 1.5px,#0a0a0a 1.5px 3px);box-shadow:inset 0 0 0 3px #1c1c1c,inset 0 0 40px rgba(0,0,0,.8);
+  animation:spin 24s linear infinite;animation-play-state:paused}
+body.playing .disc{animation-play-state:running}
+.disc::after{content:"";position:absolute;left:50%;top:50%;width:5%;height:5%;margin:-2.5% 0 0 -2.5%;border-radius:50%;background:var(--bg);box-shadow:0 0 0 2px rgba(0,0,0,.6)}
+.label{position:absolute;inset:17%;border-radius:50%;overflow:hidden;background:linear-gradient(135deg,#fdba74,#9a3412);box-shadow:0 0 0 4px #050505}
 #art{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .4s}
 #art.ready{opacity:1}
-.cover-fallback{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(72px,12vw,150px);font-weight:700;color:rgba(255,255,255,.92);text-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .3s}
+.cover-fallback{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(40px,7vw,90px);font-weight:700;color:rgba(255,255,255,.92);text-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .3s}
 .noart .cover-fallback{opacity:1}
-.waking{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
+.waking{position:absolute;inset:0;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
   background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font-size:14px;color:var(--muted);text-align:center;padding:0 24px}
 .spinner{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -70,9 +78,6 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radiu
 .play:active{transform:scale(.94)}
 .play.busy::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:var(--accent);animation:spin .9s linear infinite}
 .extras{width:100%;display:flex;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap}
-.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);text-decoration:none;padding:7px 12px;border-radius:99px;border:1px solid var(--line);background:rgba(255,255,255,.04);transition:color .15s,background .15s}
-.chip:hover{color:var(--fg);background:rgba(255,255,255,.09)}
-.chip .ic{width:15px;height:15px}
 .vol{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted)}
 .vol .ic{width:18px;height:18px}
 .vol input{width:110px}
@@ -85,7 +90,6 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radiu
   background:linear-gradient(135deg,#fdba74,#ea580c);box-shadow:0 8px 20px rgba(234,88,12,.35)}
 h1{font-size:18px;margin:0;line-height:1.2}
 #count{margin:3px 0 0;font-size:12.5px;color:var(--faint)}
-.tg{color:var(--muted);text-decoration:none}
 .search{display:flex;align-items:center;gap:8px;margin:6px 16px 8px;height:40px;padding:0 12px;border-radius:12px;background:rgba(255,255,255,.07);color:var(--faint)}
 .search .ic{width:17px;height:17px;flex:none}
 .search input{flex:1;min-width:0;height:100%;border:0;background:none;color:var(--fg);font:inherit;outline:none}
@@ -138,13 +142,15 @@ h1{font-size:18px;margin:0;line-height:1.2}
     transform:translateY(100%);visibility:hidden;transition:transform .38s cubic-bezier(.2,.8,.2,1),visibility .38s}
   .stage.open{transform:none;visibility:visible}
   #close{display:grid;position:absolute;top:calc(8px + env(safe-area-inset-top));left:50%;margin-left:-22px}
+  .stage.dragging{transition:none}
   .cover-wrap{width:min(80vw,46vh,380px)}
   .vol{display:none}
   .mini{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:20;display:flex;align-items:center;gap:4px;padding:8px;
     border-radius:16px;overflow:hidden;background:var(--glass-strong);-webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4);
     border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.45)}
   .mini-open{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:none;padding:0;text-align:left;cursor:pointer}
-  .mini .thumb{width:42px;height:42px;border-radius:8px}
+  .mini .thumb{width:42px;height:42px;border-radius:50%;animation:spin 10s linear infinite;animation-play-state:paused}
+  body.playing .mini .thumb{animation-play-state:running}
   .mini-meta{min-width:0;display:flex;flex-direction:column}
   #miniT{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #miniA{font-size:12.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -166,7 +172,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
   <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m20.5 20.5-4.2-4.2"/></symbol>
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 21h14"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></symbol>
 </svg>
 
@@ -175,9 +180,8 @@ h1{font-size:18px;margin:0;line-height:1.2}
 <div class="app">
   <section class="stage" id="stage" aria-label="正在播放">
     <button class="icon" id="close" type="button" aria-label="收起"><svg class="ic stroke"><use href="#i-down"/></svg></button>
-    <div class="cover-wrap noart" id="coverWrap">
-      <img id="art" alt="">
-      <div class="cover-fallback"></div>
+    <div class="cover-wrap">
+      <div class="disc"><div class="label noart" id="coverWrap"><img id="art" alt=""><div class="cover-fallback"></div></div></div>
       <div class="waking" id="waking" hidden><span class="spinner"></span><span>大文件服务正在唤醒<br>大约需要一分钟</span></div>
     </div>
     <div class="meta"><div class="t" id="t">小橘音乐</div><div class="a" id="a">选一首歌开始听</div></div>
@@ -193,8 +197,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
       <button class="icon" id="repeat" type="button" aria-label="列表循环" aria-pressed="true"><svg class="ic stroke"><use href="#i-repeat"/></svg><span class="one" hidden>1</span></button>
     </div>
     <div class="extras">
-      <a class="chip" id="dl" hidden><svg class="ic stroke"><use href="#i-download"/></svg>下载</a>
-      <a class="chip" id="post" target="_blank" rel="noopener" hidden><svg class="ic stroke"><use href="#i-send"/></svg>Telegram 原帖</a>
       <label class="vol"><svg class="ic stroke"><use href="#i-volume"/></svg><input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="音量"></label>
     </div>
   </section>
@@ -205,7 +207,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
         <div class="logo" aria-hidden="true">🍊</div>
         <div><h1>小橘音乐</h1><p id="count">正在加载歌单…</p></div>
       </div>
-      <a class="icon tg" id="channel" href="https://t.me/" target="_blank" rel="noopener" aria-label="打开 Telegram 频道"><svg class="ic stroke"><use href="#i-send"/></svg></a>
     </header>
     <label class="search"><svg class="ic stroke"><use href="#i-search"/></svg><input id="q" type="search" placeholder="搜索歌名或歌手" autocomplete="off" enterkeyhint="search"></label>
     <ol class="list skeleton" id="list"></ol>
@@ -367,10 +368,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
     coverImg($('art'), $('coverWrap'), id);
     coverImg($('miniArt'), $('miniThumb'), id);
     backdrop(id);
-    $('dl').href = '/a/' + id + '?dl=1';
-    $('dl').hidden = false;
-    $('post').href = 'https://t.me/' + channel + '/' + id;
-    $('post').hidden = !channel;
     $('mini').hidden = false;
     document.title = t.title + ' · 小橘音乐';
     paint(0, t.duration);
@@ -481,6 +478,7 @@ h1{font-size:18px;margin:0;line-height:1.2}
     var name = audio.paused ? 'play' : 'pause', label = audio.paused ? '播放' : '暂停';
     setIcon($('play'), name, label);
     setIcon($('miniPlay'), name, label);
+    document.body.classList.toggle('playing', !audio.paused);
     mark();
   }
   audio.addEventListener('play', syncPlay);
@@ -563,6 +561,28 @@ h1{font-size:18px;margin:0;line-height:1.2}
   function openStage(){ $('stage').classList.add('open'); document.body.classList.add('sheet-open'); }
   function closeStage(){ $('stage').classList.remove('open'); document.body.classList.remove('sheet-open'); }
   $('miniOpen').addEventListener('click', openStage);
+  // 手机上按住往下拖可以收起（拖过 110px 松手就收，不到就弹回）；拖进度条、音量条时不算
+  var drag = null, stage = $('stage');
+  stage.addEventListener('touchstart', function(e){
+    if(!narrow.matches || !stage.classList.contains('open') || e.target.closest('input')) return;
+    drag = { y: e.touches[0].clientY, dy: 0 };
+    stage.classList.add('dragging');
+  }, { passive: true });
+  stage.addEventListener('touchmove', function(e){
+    if(!drag) return;
+    drag.dy = Math.max(0, e.touches[0].clientY - drag.y);
+    stage.style.transform = 'translateY(' + drag.dy + 'px)';
+  }, { passive: true });
+  function endDrag(){
+    if(!drag) return;
+    var far = drag.dy > 110;
+    drag = null;
+    stage.classList.remove('dragging');
+    stage.style.transform = '';
+    if(far) closeStage();
+  }
+  stage.addEventListener('touchend', endDrag);
+  stage.addEventListener('touchcancel', endDrag);
   $('close').addEventListener('click', closeStage);
   document.addEventListener('keydown', function(e){
     if(e.key === 'Escape') closeStage();
@@ -593,7 +613,6 @@ h1{font-size:18px;margin:0;line-height:1.2}
       channel = d.channel || '';
       byId = {};
       tracks.forEach(function(t){ byId[t.id] = t; });
-      if(channel) $('channel').href = 'https://t.me/' + channel;
       var n = tracks.length;
       $('count').textContent = n ? n + ' 首 · 来自 Telegram 频道 @' + channel : '还没有歌';
       render();

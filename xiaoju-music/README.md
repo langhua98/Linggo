@@ -26,7 +26,7 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 | 路径 | 作用 |
 |---|---|
 | `GET /` | 播放页（`page.html`：深色沉浸式，电脑两栏、手机歌单 + 迷你条 + 全屏播放） |
-| `GET /c/<消息号>` | 专辑封面：新歌用帖子里的缩略图，更早的歌请流式服务用 MTProto 取；取一次就存进数据库，确定没有的记为没有 |
+| `GET /c/<消息号>` | 封面：优先用音乐文件自带的缩略图（新歌走 Bot API，更早的歌请流式服务用 MTProto 取）；没有就从频道的图片帖里随机挑一张（新图片帖由 webhook 记下，更早的由流式服务 `/photos` 按消息号扫出来）。挑定后存进数据库，不再变 |
 | `GET /api/tracks` | 歌单 JSON，新的在前；每首带 `big`（超过 20 MB）和 `playable`，不含 `file_id` |
 | `GET /a/<消息号>` | 音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；加 `?dl=1` 变成下载 |
 | `POST /tg-webhook` | Telegram 推送频道新帖，音频自动登记 |
@@ -40,8 +40,9 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 在 Durable Object `Library` 的 SQLite 里（强一致，也没有 KV list 每天 1000 次的限制）：
 
 - `songs`：每首歌一行，`rec` 是完整记录（含 `file_id`、大小、类型、标题等）；
-- `covers`：封面（base64 文本；`mime='none'` 表示确定没有）。频道里 FLAC 占大多数，它们没有内嵌封面，
-  播放页给这些歌按歌名生成渐变色块加首字；
+- `covers`：每首歌定下来的封面（base64 文本；`mime='none'` 表示频道里连图片都没有）。FLAC 占大多数且没有内嵌封面，
+  所以大多数歌用的是频道图片；
+- `photos`：频道里的图片帖（`file_id` 为空的是流式服务扫出来的老帖，由它下载）；
 - `config`：`migrated`（已从 KV 迁移过）。
 
 `Library` 启动时会做两次性的迁移：最早版本存在 KV（`TRACKS`）里的 `t:<消息号>` 记录搬进来；

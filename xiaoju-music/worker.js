@@ -11,7 +11,7 @@
 //   GET  /                 播放页（page.html）
 //   GET  /api/tracks       歌单 JSON（新的在前）
 //   GET  /a/<消息号>        音频流，支持 Range（iOS Safari 开始播放、拖进度条都要 206）；?dl=1 变成下载
-//   GET  /c/<消息号>        专辑封面（音乐文件自带的缩略图），取一次就存进数据库
+//   GET  /c/<消息号>        封面：音乐文件自带的缩略图；没有就从频道的图片帖里随机挑一张，挑定后存进数据库
 //   POST /tg-webhook       Telegram 推送频道新帖，音频自动登记
 //   GET  /admin            管理页（admin.html，管理密钥登录）：把频道里已删掉的帖子从歌单移除
 //   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>）
@@ -117,6 +117,11 @@ async function webhook(request, env) {
   if (!post || !Number.isInteger(post.message_id) || String(post.chat && post.chat.id) !== String(env.CHANNEL_ID)) {
     return text('ok');
   }
+  // 图片帖：记下来，给没有封面的歌当封面
+  if (post.photo && post.photo.length) {
+    await lib(env).addPhoto(post.message_id, pickPhotoSize(post.photo));
+    return text('ok');
+  }
   const rec = toRecord(post);
   if (rec) await lib(env).upsertTrack(rec);
   else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
@@ -150,6 +155,14 @@ function toRecord(post) {
     date: post.date || 0,
     caption,
   };
+}
+
+// 边长不超过 800 的最大一档；都超过就取最小的
+function pickPhotoSize(sizes) {
+  const area = s => (s.width || 0) * (s.height || 0);
+  const fit = sizes.filter(s => Math.max(s.width || 0, s.height || 0) <= 800);
+  const pool = fit.length ? fit : sizes;
+  return pool.reduce((a, b) => (fit.length ? area(b) > area(a) : area(b) < area(a)) ? b : a).file_id;
 }
 
 function isAudioDocument(d) {
@@ -234,7 +247,8 @@ async function cover(env, id) {
   if (!c) {
     const rec = await getRec(env, id);
     if (!rec) throw new HttpError(404, '没有这首歌');
-    const got = await fetchCover(env, rec);
+    let got = await fetchCover(env, rec);
+    if (got === 'none') got = await photoCover(env);
     if (!got) throw new HttpError(503, '封面暂时取不到', { 'Retry-After': '60' });
     c = got === 'none' ? { none: true } : { mime: got.mime, b64: toBase64(got.data) };
     await L.putCover(id, c.none ? 'none' : c.mime, c.none ? '' : c.b64);
@@ -263,6 +277,47 @@ async function fetchCover(env, rec) {
       if (res.body) await res.body.cancel();
       return 'none';
     }
+    return await imageFrom(res, null);
+  } catch {
+    return null;
+  }
+}
+
+// 从频道的图片帖里随机挑一张。更早的图片帖 webhook 没见过，第一次用时请流式服务按消息号扫一遍
+async function photoCover(env) {
+  const L = lib(env);
+  if (!(await L.getFlag('photosScanned'))) {
+    if (!streamerOn(env)) return null;
+    try {
+      const res = await fetch(`${streamerBase(env)}/photos?upto=${(await L.maxTrackId()) + 300}`, {
+        headers: { 'X-Key': env.STREAMER_KEY },
+        signal: AbortSignal.timeout(60 * 1000),
+      });
+      const j = res.ok ? await res.json().catch(() => null) : null;
+      if (!j || !Array.isArray(j.photos)) return null;
+      await L.addScannedPhotos(j.photos.filter(Number.isInteger));
+      await L.setFlag('photosScanned');
+    } catch {
+      return null;
+    }
+  }
+  const photos = await L.listPhotos();
+  if (!photos.length) return 'none';
+  for (let i = 0; i < 3; i++) {
+    const img = await fetchPhoto(env, photos[Math.floor(Math.random() * photos.length)]);
+    if (img) return img;
+  }
+  return null;
+}
+
+async function fetchPhoto(env, p) {
+  try {
+    if (p.file_id) return await imageFrom(await fetchFile(env, p.file_id, null), 'image/jpeg');
+    if (!streamerOn(env)) return null;
+    const res = await fetch(`${streamerBase(env)}/photo/${p.id}`, {
+      headers: { 'X-Key': env.STREAMER_KEY },
+      signal: AbortSignal.timeout(STREAMER_WAIT_MS),
+    });
     return await imageFrom(res, null);
   } catch {
     return null;
@@ -445,7 +500,14 @@ export class Library extends DurableObject {
       // 封面存成 base64 文本（一张二三十 KB）；mime 为 'none' 表示确定没有封面
       this.sql.exec('CREATE TABLE IF NOT EXISTS covers (id INTEGER PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+      // 频道里的图片帖；file_id 为空的是流式服务扫出来的老帖，要请它下载
+      this.sql.exec("CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY, file_id TEXT NOT NULL DEFAULT '')");
       this.dropSplitterLeftovers();
+      // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
+      if (this.cfg('coversV') !== '2') {
+        this.sql.exec("DELETE FROM covers WHERE mime = 'none'");
+        this.setCfg('coversV', '2');
+      }
       // 第一次启动：把更早版本存在 KV 里的歌单搬过来
       if (!this.cfg('migrated')) {
         if (env.TRACKS) await this.importKV(env.TRACKS);
@@ -499,6 +561,31 @@ export class Library extends DurableObject {
   async putCover(id, mime, data) {
     this.sql.exec(`INSERT INTO covers (id, mime, data) VALUES (?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET mime = excluded.mime, data = excluded.data`, id, mime, data);
+  }
+
+  async addPhoto(id, fileId) {
+    this.sql.exec('INSERT INTO photos (id, file_id) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET file_id = excluded.file_id', id, fileId || '');
+  }
+
+  async addScannedPhotos(ids) {
+    for (const id of ids) this.sql.exec('INSERT OR IGNORE INTO photos (id, file_id) VALUES (?, ?)', id, '');
+  }
+
+  async listPhotos() {
+    return this.sql.exec('SELECT id, file_id FROM photos').toArray();
+  }
+
+  async maxTrackId() {
+    const r = this.sql.exec('SELECT MAX(id) AS m FROM songs').toArray()[0];
+    return (r && r.m) || 0;
+  }
+
+  async getFlag(k) {
+    return this.cfg(k) === '1';
+  }
+
+  async setFlag(k) {
+    this.setCfg(k, '1');
   }
 
   async importKV(kv) {

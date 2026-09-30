@@ -46,6 +46,7 @@ function makeKV(records) {
 const files = new Map();   // file_id -> 字节（Bot API 能取的小文件）
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
 const thumbs = new Map();   // 消息号 -> 封面字节（流式服务用 MTProto 取的那种）
+const oldPhotos = new Map(); // 更早的图片帖：消息号 -> 字节（只有流式服务取得到）
 let seq = 0;
 const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); return id; };
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
@@ -67,6 +68,14 @@ globalThis.fetch = async (input, init = {}) => {
   const headers = new Headers(init.headers || {});
   calls.push({ url, range: headers.get('Range'), key: headers.get('X-Key') });
   let m;
+  if ((m = url.match(/^https:\/\/streamer\.example\/photos\?upto=(\d+)$/))) {
+    assert.equal(headers.get('X-Key'), SKEY);
+    return Response.json({ photos: [...oldPhotos.keys()].filter(id => id <= Number(m[1])) });
+  }
+  if ((m = url.match(/^https:\/\/streamer\.example\/photo\/(\d+)$/))) {
+    const img = oldPhotos.get(Number(m[1]));
+    return img ? new Response(img, { headers: { 'Content-Type': 'image/jpeg' } }) : Response.json({ detail: 'Not Found' }, { status: 404 });
+  }
   if ((m = url.match(/^https:\/\/streamer\.example\/thumb\/(\d+)$/))) {
     if (mode.thumbs === 'down') throw new TypeError('fetch failed');
     if (mode.thumbs === 'starting') return new Response('<html>starting</html>', { headers: { 'Content-Type': 'text/html' } });
@@ -161,8 +170,8 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'covers', 'songs']);
-  assert.deepEqual(db.prepare('SELECT k FROM config').all().map(r => r.k), ['migrated']);
+  assert.deepEqual(tables, ['config', 'covers', 'photos', 'songs']);
+  assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
 });
@@ -227,24 +236,55 @@ await t('封面：更早登记的歌（没记缩略图）请流式服务取，�
   assert.equal(calls.length, 0);
 });
 
-await t('封面：确定没有（缩略图为空、语音、流式服务说 404）就记下来，不再反复去取', async () => {
+await t('封面：频道里一张图片都没有时记为没有；语音、不存在的歌 404', async () => {
   await hook({ channel_post: audioPost(71, { file_id: addFile(bytesOf(10, 8)), file_size: 10 }) }); // 帖子里没有缩略图
   calls.length = 0;
   let r = await req('/c/71');
   assert.equal(r.status, 404);
   assert.match(r.headers.get('Cache-Control'), /max-age=86400/);
   await textOf(r);
-  assert.equal(calls.length, 0, '确定没有就不用问任何人');
-  assert.equal((await req('/c/13')).status, 404); // 语音
+  assert.deepEqual(calls.map(c => c.url), [STREAMER + '/photos?upto=371'], '只扫一次频道图片');
   calls.length = 0;
-  r = await req('/c/12'); // 从旧 KV 迁来的歌（没记缩略图），流式服务那边也说没有
-  assert.equal(r.status, 404);
-  await textOf(r);
-  assert.deepEqual(calls.map(c => c.url), [STREAMER + '/thumb/12']);
-  calls.length = 0;
-  assert.equal((await req('/c/12')).status, 404);
-  assert.equal(calls.length, 0);
+  assert.equal((await req('/c/71')).status, 404);
+  assert.equal(calls.length, 0, '记下「没有」后不再去取');
   assert.equal((await req('/c/999')).status, 404);
+  await lib.putCover(71, 'none', ''); // 留着给下一项用
+});
+
+await t('封面：没有自带封面的歌，从频道图片帖里随机挑一张，挑定就不再变', async () => {
+  const newPhoto = JPEG(90);
+  // 新发的图片帖由 webhook 记下（带 Bot API 的 file_id），取边长不超过 800 的最大一档
+  await hook({ channel_post: { message_id: 80, chat, photo: [
+    { file_id: addFile(JPEG(10)), width: 90, height: 90 },
+    { file_id: addFile(newPhoto), width: 800, height: 600 },
+    { file_id: addFile(JPEG(20)), width: 1280, height: 960 },
+  ] } });
+  assert.deepEqual(await lib.listPhotos(), [{ id: 80, file_id: [...files.entries()].find(([, v]) => v === newPhoto)[0] }]);
+  await hook({ channel_post: audioPost(73, { file_id: addFile(bytesOf(10, 3)), file_size: 10 }) });
+  let r = await req('/c/73');
+  assert.equal(r.status, 200);
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(newPhoto)));
+  calls.length = 0;
+  r = await req('/c/73');
+  await bytes(r);
+  assert.equal(calls.length, 0, '挑定的图存下了');
+  // 语音也用频道图片
+  r = await req('/c/13');
+  assert.equal(r.status, 200);
+  await bytes(r);
+  for (const id of [71, 73]) await admin('remove', { track: id });
+});
+
+await t('封面：更早的图片帖（webhook 没见过）由流式服务扫出来、下载', async () => {
+  const db = new DatabaseSync(':memory:');
+  const fresh = await makeLibrary({}, db);
+  const env2 = { ...env, LIB: { idFromName: n => n, get: () => fresh } };
+  oldPhotos.set(5, JPEG(77));
+  await fresh.upsertTrack({ id: 90, kind: 'audio', file_id: 'X90', file_unique_id: 'U90', thumb: '', title: '没封面', performer: '', name: 'a.flac', mime: 'audio/flac', size: 9, duration: 1, date: 1, caption: '' });
+  const r = await worker.fetch(new Request(BASE + '/c/90'), env2);
+  assert.equal(r.status, 200);
+  assert.ok(Buffer.from(await bytes(r)).equals(Buffer.from(oldPhotos.get(5))));
+  assert.deepEqual(await fresh.listPhotos(), [{ id: 5, file_id: '' }]);
 });
 
 await t('封面：流式服务没醒（连不上、回网页）就 503，不存，醒了再取', async () => {
