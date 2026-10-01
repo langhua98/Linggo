@@ -48,7 +48,7 @@ body.playing .disc{animation-play-state:running}
 #art.ready{opacity:1}
 .cover-fallback{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(40px,7vw,90px);font-weight:700;color:rgba(255,255,255,.92);text-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .3s}
 .noart .cover-fallback{opacity:1}
-/* 跑马灯：沿着播放页最外圈（手机是整个屏幕边缘，电脑是整个窗口边缘）一圈小灯，播放时一串追着跑，颜色一直在变；
+/* 跑马灯：沿着播放页最外圈（手机是整个屏幕边缘，电脑是整个窗口边缘）一圈长条小灯，播放时一串追着跑，颜色一直在变；
    音柱和它用同一个颜色 */
 .edge{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
 .stage>*:not(.edge){position:relative;z-index:1}
@@ -976,10 +976,10 @@ h1{font-size:20px;margin:0;line-height:1.2}
         }
       }
     }
-    // 跑马灯：沿圆角矩形一圈等距放小灯；一串亮灯（带拖尾）绕着跑，重拍时整圈亮一下
+    // 跑马灯：沿圆角矩形一圈等距放长条小灯；一串亮灯（带拖尾）绕着跑，重拍时整圈亮一下
     function drawEdge(playing){
       var wh = fit(edge, eg); if(!wh) return;
-      var w = wh[0], h = wh[1], m = 7, rr = Math.min(38, w / 6), gap = 17;
+      var w = wh[0], h = wh[1], m = 6, rr = Math.min(38, w / 6), gap = 22;
       var W = w - 2 * m, H = h - 2 * m, arc = Math.PI * rr / 2;
       var L = 2 * (W - 2 * rr) + 2 * (H - 2 * rr) + 4 * arc, n = Math.max(20, Math.round(L / gap)), step = L / n;
       var segs = [W - 2 * rr, arc, H - 2 * rr, arc, W - 2 * rr, arc, H - 2 * rr, arc];
@@ -999,8 +999,9 @@ h1{font-size:20px;margin:0;line-height:1.2}
         }
       }
       var tails = 4, tail = Math.max(6, Math.round(n / 14)); // 4 串，每串拖一条尾巴
+      var len = step * .62, thick = 4; // 长条灯：沿着边的方向摆，长度约为间距的六成
       for(var j = 0; j < n; j++){
-        var p = at(j * step), hc = (hue + j / n * 360) % 360, glow = 0;
+        var p = at(j * step), p2 = at(Math.min(L - .01, j * step + .5)), hc = (hue + j / n * 360) % 360, glow = 0;
         if(playing){
           for(var q = 0; q < tails; q++){
             var dist = ((head + q * n / tails - j) % n + n) % n;
@@ -1008,11 +1009,15 @@ h1{font-size:20px;margin:0;line-height:1.2}
           }
           glow = Math.min(1, glow + bass * .35);
         }
-        var a = .22 + glow * .78, r = 2.6 + glow * 1.4;
+        var a = .22 + glow * .78, th = thick + glow * 1.5;
         eg.globalAlpha = a;
         eg.fillStyle = 'hsl(' + hc + ',95%,' + (55 + glow * 15) + '%)';
-        if(glow > .5){ eg.shadowColor = eg.fillStyle; eg.shadowBlur = 10 * glow; } else eg.shadowBlur = 0;
-        eg.beginPath(); eg.arc(p[0], p[1], r, 0, Math.PI * 2); eg.fill();
+        if(glow > .5){ eg.shadowColor = eg.fillStyle; eg.shadowBlur = 12 * glow; } else eg.shadowBlur = 0;
+        eg.save();
+        eg.translate(p[0], p[1]);
+        eg.rotate(Math.atan2(p2[1] - p[1], p2[0] - p[0]));
+        eg.fillRect(-len / 2, -th / 2, len, th);
+        eg.restore();
       }
       eg.globalAlpha = 1; eg.shadowBlur = 0;
     }
