@@ -151,11 +151,13 @@ h1{font-size:20px;margin:0;line-height:1.2}
 .tab[aria-selected=true]::after{content:"";position:absolute;left:50%;bottom:5px;width:20px;height:3px;margin-left:-10px;border-radius:2px;background:var(--theme,#fb923c)}
 .tab .ic{width:14px;height:14px;fill:var(--love)}
 .tab .n{display:none}
+/* 左右滑切页签：手指拖着时不要过渡动画 */
+.list.swiping{transition:none}
 /* 列表顶上一行小字：共多少首 / 多少个歌单 */
 .count{list-style:none;padding:2px 12px 8px;font-size:12.5px;color:var(--faint)}
 .list.grid .count{grid-column:1/-1;padding:0 2px}
 #searchBtn{display:none}
-.list{list-style:none;margin:0;padding:4px 8px 16px;overflow:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
+.list{list-style:none;margin:0;padding:4px 8px 16px;transition:transform .2s cubic-bezier(.2,.8,.2,1),opacity .2s;overflow:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
 .row{display:flex;align-items:center;border-radius:12px;transition:background .15s}
 .row.on{background:rgba(255,255,255,.1)}
 .pick{flex:1;min-width:0;display:flex;align-items:center;gap:12px;padding:8px 6px 8px 10px;border:0;border-radius:12px;background:none;text-align:left;cursor:pointer}
@@ -1381,6 +1383,61 @@ h1{font-size:20px;margin:0;line-height:1.2}
     if(open) $('q').focus();
     else if($('q').value){ $('q').value = ''; render(); }
   });
+  // 手机上在列表上左右滑：在 全部 / 歌单 / 我喜欢 / 最近 / 歌手 之间切换（往左滑到右边那一页）。
+  // 从屏幕最左、最右边缘开始的不管（那是浏览器的返回手势），在页签条上滑是滚页签条
+  (function(){
+    var TABS = ['all', 'list', 'fav', 'recent', 'artist'], panel = document.querySelector('.panel'), sw = null, swipedAt = 0;
+    // 刚滑完松手时手指下面那首歌别被当成点了
+    list.addEventListener('click', function(e){
+      if(Date.now() - swipedAt < 400){ e.stopPropagation(); e.preventDefault(); }
+    }, true);
+    panel.addEventListener('touchstart', function(e){
+      if(!narrow.matches || e.touches.length > 1 || e.target.closest('.tabs, input, .card-play')) return;
+      var x = e.touches[0].clientX;
+      if(x < 24 || x > window.innerWidth - 24) return;
+      sw = { x: x, y: e.touches[0].clientY, dx: 0, dir: '' };
+    }, { passive: true });
+    panel.addEventListener('touchmove', function(e){
+      if(!sw) return;
+      var dx = e.touches[0].clientX - sw.x, dy = e.touches[0].clientY - sw.y;
+      if(!sw.dir){
+        if(Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+        if(Math.abs(dx) < Math.abs(dy) * 1.3){ sw = null; return; } // 竖着划：正常滚动
+        sw.dir = 'h';
+        list.classList.add('swiping');
+      }
+      e.preventDefault();
+      sw.dx = dx;
+      var i = TABS.indexOf(prefs.tab), edge = (dx > 0 && i <= 0) || (dx < 0 && i >= TABS.length - 1);
+      list.style.transform = 'translateX(' + dx * (edge ? .12 : .35) + 'px)'; // 已经是第一页/最后一页：拉不太动
+      list.style.opacity = String(edge ? 1 : Math.max(.4, 1 - Math.abs(dx) / 400));
+    }, { passive: false });
+    function end(e){
+      if(!sw) return;
+      var d = sw;
+      sw = null;
+      list.classList.remove('swiping');
+      if(d.dir !== 'h') return;
+      swipedAt = Date.now();
+      var i = TABS.indexOf(prefs.tab), dir = d.dx < 0 ? 1 : -1, next = TABS[i + dir];
+      if(e.type === 'touchcancel' || Math.abs(d.dx) < 70 || !next){
+        list.style.transform = ''; list.style.opacity = '';
+        return;
+      }
+      list.style.transform = 'translateX(' + (-dir * 60) + 'px)';
+      list.style.opacity = '0';
+      setTimeout(function(){
+        setTab(next);
+        list.classList.add('swiping');
+        list.style.transform = 'translateX(' + (dir * 60) + 'px)'; // 新的一页从另一边滑进来
+        void list.offsetWidth;
+        list.classList.remove('swiping');
+        list.style.transform = ''; list.style.opacity = '';
+      }, 160);
+    }
+    panel.addEventListener('touchend', end);
+    panel.addEventListener('touchcancel', end);
+  })();
   // 页签贴到顶上时垫一层毛玻璃
   (function(){
     var panel = document.querySelector('.panel'), tabs = document.querySelector('.tabs');
@@ -1410,6 +1467,11 @@ h1{font-size:20px;margin:0;line-height:1.2}
     savePrefs();
     paintTabs();
     list.scrollTop = 0;
+    // 手机上整页在滚：翻得很深时回到列表开头（页签还贴在顶上），没翻下去就不动
+    if(narrow.matches){
+      var panel = document.querySelector('.panel'), top = list.offsetTop - document.querySelector('.tabs').offsetHeight;
+      if(panel.scrollTop > top) panel.scrollTop = top;
+    }
     if(loaded) render();
   }
   $('tabAll').addEventListener('click', function(){ setTab('all'); });
