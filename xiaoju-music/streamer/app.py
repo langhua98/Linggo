@@ -563,6 +563,33 @@ async def channels_join(request: Request):
     return {'result': result}
 
 
+@app.post('/channels/check')
+async def channels_check(request: Request):
+    """核对一批候选频道：在不在、是不是频道、多少人、最近 200 条里有几首音频。{usernames: [...]}"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    out = {}
+    for name in [str(u).strip().lstrip('@') for u in (await request.json()).get('usernames', [])][:60]:
+        try:
+            e = await user_client.get_entity(name)
+            if not getattr(e, 'broadcast', False):
+                out[name] = {'ok': False, 'why': 'not a channel'}
+                continue
+            audio = 0
+            async for _ in user_client.iter_messages(e, filter=InputMessagesFilterMusic, limit=200):
+                audio += 1
+            out[name] = {'ok': True, 'username': e.username, 'title': e.title, 'members': getattr(e, 'participants_count', None),
+                         'audio': audio, 'noforwards': bool(getattr(e, 'noforwards', False))}
+        except FloodWaitError as e:
+            out[name] = {'ok': False, 'why': f'flood {e.seconds}s'}
+            break
+        except Exception as e:  # noqa: BLE001
+            out[name] = {'ok': False, 'why': type(e).__name__}
+        await asyncio.sleep(1.5)
+    return {'channels': out}
+
+
 @app.get('/search/global')
 async def search_global(q: str, only: str, request: Request, limit: int = 100):
     """一次搜遍频道主账号加入的频道里的音频（Telegram 的全局消息搜索，只搜音乐），
