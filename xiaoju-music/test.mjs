@@ -315,6 +315,11 @@ await t('封面：没有自带封面的歌，从频道图片帖里随机挑一�
   r = await req('/c/4?art=1');
   assert.equal(r.status, 200);
   await bytes(r);
+  // 歌单接口带上 art：判断过封面的歌标 1/0，网页就不用一首首去试
+  const arts = Object.fromEntries((await lib.listTracks()).map(t => [t.id, t.art]));
+  assert.equal(arts[73], 0);
+  assert.equal(arts[13], 0);
+  assert.equal(arts[4], 1);
   for (const id of [71, 73]) await admin('remove', { track: id });
 });
 

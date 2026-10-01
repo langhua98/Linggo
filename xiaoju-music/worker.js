@@ -878,8 +878,13 @@ export class Library extends DurableObject {
     this.sql.exec("DELETE FROM config WHERE k IN ('storage', 'storageTitle')");
   }
 
+  // art：这首有没有自己的专辑图（1 有 / 0 没有），封面还没判断过的不带。网页据此直接画文字封面，不用一首首去试
   async listTracks() {
-    return this.sql.exec('SELECT rec FROM songs ORDER BY id DESC').toArray().map(r => summary(JSON.parse(r.rec)));
+    return this.sql.exec('SELECT s.rec, c.mime, c.own FROM songs s LEFT JOIN covers c ON c.id = s.id ORDER BY s.id DESC').toArray().map(r => {
+      const t = summary(JSON.parse(r.rec));
+      if (r.mime != null) t.art = r.mime !== 'none' && r.own ? 1 : 0;
+      return t;
+    });
   }
 
   // 歌单里有没有同一首歌（按整理后的歌名、歌手比，时长相差 3 秒以内；时长不知道的也算）
