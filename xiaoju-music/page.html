@@ -157,6 +157,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
 .count{list-style:none;padding:2px 12px 8px;font-size:12.5px;color:var(--faint)}
 .list.grid .count{grid-column:1/-1;padding:0 2px}
 #searchBtn{display:none}
+/* 歌单这边的强调色（正在放的那首、跳动的小图标、无损标签）也跟着封面走，和页签下的小横线、播放栏一致 */
+.panel{--accent:var(--theme,#fb923c)}
 .list{list-style:none;margin:0;padding:4px 8px 16px;transition:transform .2s cubic-bezier(.2,.8,.2,1),opacity .2s;overflow:auto;flex:1;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
 .row{display:flex;align-items:center;border-radius:12px;transition:background .15s}
 .row.on{background:rgba(255,255,255,.1)}
@@ -215,7 +217,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
 .rt{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row.on .rt{color:var(--accent)}
 .ra{font-size:12.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
-.badge{font-style:normal;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--accent);border:1px solid rgba(251,146,60,.55);border-radius:4px;padding:0 4px;margin-right:6px;position:relative;top:-1px}
+.badge{font-style:normal;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);border-radius:4px;padding:0 4px;margin-right:6px;position:relative;top:-1px}
 .eq{display:none;align-items:flex-end;gap:2px;width:14px;height:14px;flex:none;margin-right:4px}
 .row.on .eq{display:flex}
 .eq i{width:3px;height:30%;border-radius:1px;background:var(--accent)}
@@ -246,11 +248,14 @@ h1{font-size:20px;margin:0;line-height:1.2}
   body.sheet-open .panel,body.sheet-open .mini{visibility:hidden}
   .app{display:block;height:100vh;height:100dvh;padding:0}
   .panel{display:block;height:100%;overflow-y:auto;overscroll-behavior:contain;border:0;border-radius:0;background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
-  .head{padding:calc(16px + env(safe-area-inset-top)) 12px 6px 20px}
+  .head{padding:calc(16px + env(safe-area-inset-top)) 20px 6px 20px}
   .logo{width:40px;height:40px;border-radius:12px}
   h1{font-size:27px;font-weight:800;letter-spacing:.5px}
   /* 搜索收进右上角的放大镜，点了才展开 */
-  #searchBtn{display:grid}
+  /* 放大镜做成和标题一样有分量的圆形按钮 */
+  #searchBtn{display:grid;width:42px;height:42px;background:rgba(255,255,255,.1);opacity:1}
+  #searchBtn .ic{width:21px;height:21px;stroke-width:2.4}
+  .panel.searching #searchBtn{background:var(--fg);color:var(--ink)}
   .panel:not(.searching) .search{display:none}
   .search{margin:2px 16px 6px}
   /* 页签吸顶：往下翻也一直在；贴住顶部后垫一层封面色的毛玻璃（连状态栏那块一起盖住） */
@@ -356,7 +361,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     <div class="tabs" role="tablist" aria-label="歌单">
       <button class="tab" id="tabAll" type="button" role="tab" aria-selected="true">全部<span class="n" id="nAll"></span></button>
       <button class="tab" id="tabList" type="button" role="tab" aria-selected="false">歌单</button>
-      <button class="tab" id="tabFav" type="button" role="tab" aria-selected="false"><svg class="ic"><use href="#i-heart"/></svg>我喜欢<span class="n" id="nFav"></span></button>
+      <button class="tab" id="tabFav" type="button" role="tab" aria-selected="false">我喜欢<span class="n" id="nFav"></span></button>
       <button class="tab" id="tabRecent" type="button" role="tab" aria-selected="false">最近</button>
       <button class="tab" id="tabArtist" type="button" role="tab" aria-selected="false">歌手</button>
     </div>
