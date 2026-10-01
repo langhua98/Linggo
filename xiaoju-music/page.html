@@ -33,6 +33,7 @@ button{font:inherit;color:inherit}
 .app{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,470px);gap:48px;height:100vh;height:100dvh;padding:40px 48px}
 .stage{--disc:min(420px,38vw,52vh);align-self:center;justify-self:center;width:100%;max-width:440px;display:flex;flex-direction:column;align-items:center}
 #close{display:none}
+.stage>.edge{position:fixed}
 /* 封面做成黑胶唱片：封面是中间的圆标，播放时整张唱片转，暂停就停 */
 .cover-wrap{position:relative;width:var(--disc);aspect-ratio:1;border-radius:50%;box-shadow:0 30px 80px rgba(0,0,0,.6);cursor:pointer}
 .cover-wrap::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;
@@ -47,18 +48,13 @@ body.playing .disc{animation-play-state:running}
 #art.ready{opacity:1}
 .cover-fallback{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(40px,7vw,90px);font-weight:700;color:rgba(255,255,255,.92);text-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .3s}
 .noart .cover-fallback{opacity:1}
-/* 跑马灯：绕着唱片一圈的小灯，播放时一盏接一盏追着亮，颜色慢慢转；低音重的时候整圈轻轻鼓一下 */
-.ring{position:absolute;inset:0;pointer-events:none;transform:scale(calc(1 + var(--beat,0) * .035));animation:hue 9s linear infinite}
-.ring i{position:absolute;left:50%;top:50%;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;
-  transform:rotate(calc(var(--i) * 6deg)) translateY(calc(var(--disc) / -2 - 16px));
-  background:hsl(calc(var(--i) * 6 + 20),95%,64%);opacity:.28;animation:chase 1.8s linear infinite;animation-delay:calc(var(--i) * -30ms);animation-play-state:paused}
-body.playing .ring i{animation-play-state:running}
-@keyframes chase{0%{opacity:1;box-shadow:0 0 10px 2px currentColor}35%{opacity:.28;box-shadow:none}100%{opacity:.28;box-shadow:none}}
-.ring i{color:hsl(calc(var(--i) * 6 + 20),95%,64%)}
-@keyframes hue{to{filter:hue-rotate(360deg)}}
+/* 跑马灯：沿着播放页最外圈（手机是整个屏幕边缘，电脑是整个窗口边缘）一圈小灯，播放时一串追着跑，颜色一直在变；
+   音柱和它用同一个颜色 */
+.edge{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.stage>*:not(.edge){position:relative;z-index:1}
+#close{z-index:2}
 /* 跟着音乐跳的音柱 */
 .viz{display:block;width:100%;height:40px;margin-top:14px}
-@media (prefers-reduced-motion:reduce){.ring i{animation:none}.ring{animation:none}}
 .waking{position:absolute;inset:0;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
   background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font-size:14px;color:var(--muted);text-align:center;padding:0 24px}
 .spinner{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .9s linear infinite}
@@ -216,6 +212,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     background:rgba(12,10,9,.28);
     transform:translateY(100%);visibility:hidden;transition:transform .38s cubic-bezier(.2,.8,.2,1),visibility .38s;touch-action:none}
   .stage.open{transform:none;visibility:visible}
+  .stage>.edge{position:absolute}
   #close{display:grid;position:absolute;top:calc(8px + env(safe-area-inset-top));left:50%;margin-left:-22px}
   .stage.dragging{transition:none}
   .vol{display:none}
@@ -256,11 +253,11 @@ h1{font-size:20px;margin:0;line-height:1.2}
 
 <div class="app">
   <section class="stage" id="stage" aria-label="正在播放">
+    <canvas class="edge" id="edge" aria-hidden="true"></canvas>
     <button class="icon" id="close" type="button" aria-label="收起"><svg class="ic stroke"><use href="#i-down"/></svg></button>
     <div class="now" id="now">
     <div class="cover-wrap" id="coverBox" title="看歌词">
       <div class="disc"><div class="label noart" id="coverWrap"><img id="art" alt=""><div class="cover-fallback"></div></div></div>
-      <div class="ring" id="ring" aria-hidden="true"></div>
       <div class="waking" id="waking" hidden><span class="spinner"></span><span>大文件服务正在唤醒<br>大约需要一分钟</span></div>
     </div>
     <div class="lyrics" id="lyrics"><ol id="lyricList"></ol></div>
@@ -916,13 +913,12 @@ h1{font-size:20px;margin:0;line-height:1.2}
   // 电脑、安卓：真的听音频（Web Audio 分析器），音柱按频率起伏；
   // iPhone / iPad：把 audio 接进 Web Audio 后，锁屏、切后台可能会没声音，所以不接，音柱用模拟的节奏动
   (function(){
-    var ring = $('ring'), cv = $('eq'), g = cv.getContext('2d');
+    var edge = $('edge'), eg = edge.getContext('2d'), cv = $('eq'), g = cv.getContext('2d');
     var N = 36, ROWS = 8, lv = [], i;
-    for(i = 0; i < 60; i++){ var d = document.createElement('i'); d.style.setProperty('--i', i); ring.appendChild(d); }
     for(i = 0; i < N; i++) lv.push(0);
     var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var an = null, buf = null, tried = false, raf = 0, bass = 0;
+    var an = null, buf = null, tried = false, raf = 0, bass = 0, hue = 20, head = 0, last = 0;
     function tryAnalyser(){
       if(tried || ios) return;
       tried = true;
@@ -959,52 +955,104 @@ h1{font-size:20px;margin:0;line-height:1.2}
       }
       return beat;
     }
-    function draw(){
-      var dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
-      if(!w || !h) return;
-      if(cv.width !== Math.round(w * dpr)){ cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
-      g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, w, h);
-      var cw = w / N, bw = Math.max(2, cw - 2), ch = h / ROWS, cellH = Math.max(2, ch - 1.5);
+    function fit(c, ctx){
+      var dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+      if(!w || !h) return null;
+      if(c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)){ c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      return [w, h];
+    }
+    // 音柱：每一列一个颜色，跟跑马灯一样一路渐变，整体颜色随时间转；越往上越亮
+    function drawBars(){
+      var wh = fit(cv, g); if(!wh) return;
+      var w = wh[0], h = wh[1], cw = w / N, bw = Math.max(2, cw - 2), ch = h / ROWS, cellH = Math.max(2, ch - 1.5);
       for(var c = 0; c < N; c++){
-        var on = Math.round(lv[c] * ROWS);
+        var on = Math.round(lv[c] * ROWS), hc = (hue + c * 6) % 360;
         for(var r = 0; r < ROWS; r++){
           if(r >= on && r > 0) break;
-          var f = r / (ROWS - 1);
-          g.fillStyle = 'hsl(' + (52 + f * 80) + ',85%,' + (60 + f * 4) + '%)'; // 下面黄、上面绿
+          g.fillStyle = 'hsl(' + hc + ',90%,' + (52 + r / (ROWS - 1) * 18) + '%)';
           g.fillRect(c * cw + (cw - bw) / 2, h - (r + 1) * ch, bw, cellH);
         }
       }
     }
+    // 跑马灯：沿圆角矩形一圈等距放小灯；一串亮灯（带拖尾）绕着跑，重拍时整圈亮一下
+    function drawEdge(playing){
+      var wh = fit(edge, eg); if(!wh) return;
+      var w = wh[0], h = wh[1], m = 7, rr = Math.min(38, w / 6), gap = 17;
+      var W = w - 2 * m, H = h - 2 * m, arc = Math.PI * rr / 2;
+      var L = 2 * (W - 2 * rr) + 2 * (H - 2 * rr) + 4 * arc, n = Math.max(20, Math.round(L / gap)), step = L / n;
+      var segs = [W - 2 * rr, arc, H - 2 * rr, arc, W - 2 * rr, arc, H - 2 * rr, arc];
+      function at(d){ // 从顶边左端顺时针走 d 的位置
+        var k = 0;
+        while(d > segs[k] && k < 7){ d -= segs[k]; k++; }
+        var a;
+        switch(k){
+          case 0: return [m + rr + d, m];
+          case 1: a = -Math.PI / 2 + d / rr; return [w - m - rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
+          case 2: return [w - m, m + rr + d];
+          case 3: a = d / rr; return [w - m - rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
+          case 4: return [w - m - rr - d, h - m];
+          case 5: a = Math.PI / 2 + d / rr; return [m + rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
+          case 6: return [m, h - m - rr - d];
+          default: a = Math.PI + d / rr; return [m + rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
+        }
+      }
+      var tails = 4, tail = Math.max(6, Math.round(n / 14)); // 4 串，每串拖一条尾巴
+      for(var j = 0; j < n; j++){
+        var p = at(j * step), hc = (hue + j / n * 360) % 360, glow = 0;
+        if(playing){
+          for(var q = 0; q < tails; q++){
+            var dist = ((head + q * n / tails - j) % n + n) % n;
+            if(dist < tail) glow = Math.max(glow, 1 - dist / tail);
+          }
+          glow = Math.min(1, glow + bass * .35);
+        }
+        var a = .22 + glow * .78, r = 2.6 + glow * 1.4;
+        eg.globalAlpha = a;
+        eg.fillStyle = 'hsl(' + hc + ',95%,' + (55 + glow * 15) + '%)';
+        if(glow > .5){ eg.shadowColor = eg.fillStyle; eg.shadowBlur = 10 * glow; } else eg.shadowBlur = 0;
+        eg.beginPath(); eg.arc(p[0], p[1], r, 0, Math.PI * 2); eg.fill();
+      }
+      eg.globalAlpha = 1; eg.shadowBlur = 0;
+    }
     function frame(t){
       raf = 0;
       if(audio.paused || document.hidden) return;
+      var dt = last ? Math.min(100, t - last) : 16; last = t;
       var bs = sample(t);
       bass += (bs - bass) * .4;
-      document.body.style.setProperty('--beat', bass.toFixed(3));
-      draw();
+      hue = (hue + dt * .03) % 360;            // 大约 12 秒转一圈颜色
+      head = (head + dt * (.022 + bass * .03)) % 100000; // 越响跑得越快
+      drawBars(); drawEdge(true);
       raf = requestAnimationFrame(frame);
     }
     function kick(){
-      if(reduce) return;
+      if(reduce){ drawBars(); drawEdge(false); return; }
       tryAnalyser();
+      last = 0;
       if(!raf) raf = requestAnimationFrame(frame);
     }
     audio.addEventListener('play', kick);
     audio.addEventListener('playing', kick);
     document.addEventListener('visibilitychange', kick);
+    window.addEventListener('resize', function(){ drawBars(); drawEdge(!audio.paused); });
     audio.addEventListener('pause', function(){
-      // 暂停后音柱落下去，不是冻在半空
+      // 暂停后音柱落下去，灯暗下来停住
       var t0 = performance.now();
       (function fall(t){
         if(!audio.paused) return;
         var any = false;
         for(var k = 0; k < N; k++){ lv[k] = Math.max(0, lv[k] - .08); if(lv[k] > 0) any = true; }
-        draw(); document.body.style.setProperty('--beat', 0);
+        bass = 0;
+        drawBars(); drawEdge(false);
         if(any && t - t0 < 900) requestAnimationFrame(fall);
       })(t0);
     });
-    draw();
+    // 手机上播放页是滑出来的，打开时画一下（暂停状态下也要有灯）
+    new MutationObserver(function(){ requestAnimationFrame(function(){ drawBars(); drawEdge(!audio.paused); }); })
+      .observe($('stage'), { attributes: true, attributeFilter: ['class'] });
+    drawBars(); drawEdge(false);
   })();
   audio.addEventListener('ended', function(){
     if(prefs.repeat === 'one'){ audio.currentTime = 0; start(); } else step(1, true);
