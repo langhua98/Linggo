@@ -222,7 +222,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   .app{display:block;height:100vh;height:100dvh;padding:0}
   .panel{display:block;height:100%;overflow-y:auto;overscroll-behavior:contain;border:0;border-radius:0;background:none;-webkit-backdrop-filter:none;backdrop-filter:none}
   .head{padding:calc(18px + env(safe-area-inset-top)) 16px 8px}
-  .list{overflow:visible;padding:4px 6px calc(100px + env(safe-area-inset-bottom))}
+  .list{overflow:visible;padding:4px 6px calc(118px + env(safe-area-inset-bottom))}
   .stage{--disc:min(80vw,44vh,380px);position:fixed;inset:0;z-index:30;max-width:none;align-self:stretch;justify-self:stretch;justify-content:center;padding:calc(56px + env(safe-area-inset-top)) 28px calc(28px + env(safe-area-inset-bottom));
     background:rgba(12,10,9,.28);
     transform:translateY(100%);visibility:hidden;transition:transform .38s cubic-bezier(.2,.8,.2,1),visibility .38s;touch-action:none}
@@ -231,18 +231,26 @@ h1{font-size:20px;margin:0;line-height:1.2}
   .stage.dragging{transition:none}
   .vol{display:none}
   .t{font-size:22px}
-  .mini{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:20;display:flex;align-items:center;gap:4px;padding:8px;
-    border-radius:16px;overflow:hidden;background:var(--glass-strong);-webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4);
-    border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.45);cursor:pointer}
-  .mini-open{flex:1;min-width:0;display:flex;align-items:center;gap:10px;border:0;background:none;padding:0;text-align:left;cursor:pointer}
-  .mini .thumb{width:42px;height:42px;border-radius:50%;animation:spin 10s linear infinite;animation-play-state:paused}
-  body.playing .mini .thumb{animation-play-state:running}
-  .mini-meta{min-width:0;display:flex;flex-direction:column}
-  #miniT{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #miniA{font-size:12.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .mini .icon{width:40px;height:40px}
-  .mini-bar{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,.1)}
-  .mini-bar i{display:block;height:100%;width:0;background:var(--accent)}
+  /* 播放栏：悬浮的毛玻璃胶囊，底色是封面主色压暗（换歌跟着变）；封面是不转的圆角小方块；
+     进度是播放键外面的一圈细环；第二行有歌词时显示正在唱的那句；左右滑切歌 */
+  .mini{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:20;display:flex;align-items:center;gap:2px;padding:8px 8px 8px 9px;
+    border-radius:24px;overflow:hidden;background:var(--theme-glass,var(--glass-strong));-webkit-backdrop-filter:blur(28px) saturate(1.6);backdrop-filter:blur(28px) saturate(1.6);
+    border:1px solid rgba(255,255,255,.14);box-shadow:0 16px 40px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.08);cursor:pointer;transition:background .6s}
+  .mini-open{flex:1;min-width:0;display:flex;align-items:center;gap:12px;border:0;background:none;padding:0;text-align:left;cursor:pointer;color:inherit;transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .25s}
+  .mini.swiping .mini-open{transition:none}
+  .mini .thumb{width:46px;height:46px;border-radius:11px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+  .mini .thumb.noart::after{font-size:19px}
+  .mini-meta{min-width:0;display:flex;flex-direction:column;gap:2px}
+  #miniT{font-weight:650;font-size:15.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #miniA{font-size:13px;color:rgba(255,255,255,.62);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #miniA.lyric{color:rgba(255,255,255,.9)}
+  .mini .icon{width:44px;height:44px;opacity:1}
+  #miniPlay{position:relative}
+  #miniPlay .ic{width:20px;height:20px}
+  .mini-ring{position:absolute;inset:3px;width:38px;height:38px;transform:rotate(-90deg);pointer-events:none}
+  .mini-ring circle{fill:none;stroke-width:2.4}
+  .mini-ring .bg{stroke:rgba(255,255,255,.18)}
+  .mini-ring .fg{stroke:var(--theme,#fb923c);stroke-linecap:round;stroke-dasharray:113.1;stroke-dashoffset:113.1;filter:brightness(1.25)}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -326,9 +334,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
     <span class="thumb" id="miniThumb"><img id="miniArt" alt=""></span>
     <span class="mini-meta"><span id="miniT"></span><span id="miniA"></span></span>
   </button>
-  <button class="icon" id="miniPlay" type="button" aria-label="播放"><svg class="ic"><use href="#i-play"/></svg></button>
+  <button class="icon" id="miniPlay" type="button" aria-label="播放"><svg class="mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle class="bg" cx="20" cy="20" r="18"/><circle class="fg" id="miniRing" cx="20" cy="20" r="18"/></svg><svg class="ic"><use href="#i-play"/></svg></button>
   <button class="icon" id="miniNext" type="button" aria-label="下一首"><svg class="ic"><use href="#i-next"/></svg></button>
-  <div class="mini-bar"><i id="miniProg"></i></div>
 </div>
 <div id="toast" role="status"></div>
 <div class="menu" id="timerMenu" role="menu" hidden>
@@ -446,6 +453,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     themeH = Math.round(h) % 360;
     themeS = Math.max(55, Math.min(92, Math.round(sat)));
     document.documentElement.style.setProperty('--theme', 'hsl(' + themeH + ' ' + themeS + '% 62%)');
+    document.documentElement.style.setProperty('--theme-glass', 'hsl(' + themeH + ' ' + Math.round(themeS * .55) + '% 13% / .95)');
     if(fx) fx.refresh();
   }
   function themeFrom(img, t){
@@ -748,7 +756,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     $('t').textContent = t.title;
     $('a').textContent = artistOf(t);
     $('miniT').textContent = t.title;
-    $('miniA').textContent = artistOf(t);
+    paintMiniSub();
     coverImg($('art'), $('coverWrap'), id);
     coverImg($('miniArt'), $('miniThumb'), id);
     backdrop(id);
@@ -891,6 +899,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     box.classList.toggle('synced', lyr.synced);
     box.scrollTop = 0;
     $('lyricNow').textContent = '';
+    paintMiniSub();
     if(lyr.state !== 'ok'){
       var note = el('li', 'note', { loading: '正在找歌词…', none: '暂无歌词', error: '歌词没取到，点这里再试一次' }[lyr.state] || '');
       if(lyr.state === 'error'){
@@ -932,6 +941,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       if(on && lyr.lines[k][1]) words.push(lyr.lines[k][1]);
     }
     $('lyricNow').textContent = words.join(' ');
+    paintMiniSub();
     // 自己翻歌词时先不抢着滚回去，停手 4 秒后再跟上
     if(lyricsOn && i >= 0 && (jump || Date.now() > userScrollUntil)) centerLine(lyr.els[i], jump);
   }
@@ -971,7 +981,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       $('seek').value = v;
       $('seek').style.setProperty('--p', v / 10 + '%');
     }
-    $('miniProg').style.width = v / 10 + '%';
+    $('miniRing').style.strokeDashoffset = String(113.1 * (1 - v / 1000));
   }
   function duration(){
     var t = byId[curId];
@@ -1200,10 +1210,16 @@ h1{font-size:20px;margin:0;line-height:1.2}
   });
   paintGlow();
 
+  // 播放栏第二行：唤醒中提示 > 正在唱的那句歌词 > 歌手
+  function paintMiniSub(){
+    var t = byId[curId], line = $('lyricNow').textContent, a = $('miniA');
+    if(!$('waking').hidden){ a.textContent = '大文件服务正在唤醒…'; a.classList.remove('lyric'); return; }
+    a.textContent = line || (t ? artistOf(t) : '');
+    a.classList.toggle('lyric', !!line);
+  }
   function setWaking(on){
     $('waking').hidden = !on;
-    var t = byId[curId];
-    $('miniA').textContent = on ? '大文件服务正在唤醒…' : (t ? artistOf(t) : '');
+    paintMiniSub();
     if(on) $('play').classList.add('busy');
   }
   // 大文件服务休眠时第一次请求会失败（503）：提示一下，每 10 秒重试一次，最多等 2 分钟
@@ -1309,8 +1325,57 @@ h1{font-size:20px;margin:0;line-height:1.2}
   function closeStage(){ $('stage').classList.remove('open'); document.body.classList.remove('sheet-open'); }
   // 迷你播放条：点哪儿都展开（播放、下一首两个按钮除外）
   $('mini').addEventListener('click', function(e){
+    if(miniSwiped) return;
     if(!e.target.closest('#miniPlay, #miniNext')) openStage();
   });
+  // 播放栏左右滑：往左下一首，往右上一首（滑过 60px 松手才算，竖着划不管）
+  var mdrag = null, miniSwiped = false, mini = $('mini'), miniOpen = $('miniOpen');
+  mini.addEventListener('touchstart', function(e){
+    if(e.touches.length > 1) return;
+    mdrag = { x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, dir: '' };
+  }, { passive: true });
+  mini.addEventListener('touchmove', function(e){
+    if(!mdrag) return;
+    var dx = e.touches[0].clientX - mdrag.x, dy = e.touches[0].clientY - mdrag.y;
+    if(!mdrag.dir){
+      if(Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if(Math.abs(dy) > Math.abs(dx)){ mdrag = null; return; }
+      mdrag.dir = 'h';
+      mini.classList.add('swiping');
+    }
+    e.preventDefault();
+    mdrag.dx = dx;
+    miniOpen.style.transform = 'translateX(' + dx * .6 + 'px)';
+    miniOpen.style.opacity = String(Math.max(.25, 1 - Math.abs(dx) / 220));
+  }, { passive: false });
+  function endMiniDrag(e){
+    if(!mdrag) return;
+    var d = mdrag;
+    mdrag = null;
+    mini.classList.remove('swiping');
+    if(d.dir !== 'h') return;
+    miniSwiped = true;
+    setTimeout(function(){ miniSwiped = false; }, 400);
+    if(e.type !== 'touchcancel' && Math.abs(d.dx) > 60){
+      var dir = d.dx < 0 ? 1 : -1;
+      miniOpen.style.transform = 'translateX(' + (-dir * 120) + 'px)';
+      miniOpen.style.opacity = '0';
+      setTimeout(function(){
+        step(dir);
+        mini.classList.add('swiping');
+        miniOpen.style.transform = 'translateX(' + (dir * 80) + 'px)'; // 新的一首从另一边滑进来
+        void miniOpen.offsetWidth;
+        mini.classList.remove('swiping');
+        miniOpen.style.transform = '';
+        miniOpen.style.opacity = '';
+      }, 180);
+    } else {
+      miniOpen.style.transform = '';
+      miniOpen.style.opacity = '';
+    }
+  }
+  mini.addEventListener('touchend', endMiniDrag);
+  mini.addEventListener('touchcancel', endMiniDrag);
   // 手机上的播放页：按住往下拖收起（拖过 110px 松手就收，不到就弹回），往上拖切到下一首（拖过 90px）。
   // 拖进度条、横着划都不算
   var drag = null, stage = $('stage'), now = $('now'), swapping = false;
