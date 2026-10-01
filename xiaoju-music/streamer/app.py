@@ -563,6 +563,36 @@ async def channels_join(request: Request):
     return {'result': result}
 
 
+MUSIC_WORDS = re.compile(r'音乐|歌|曲|dj|无损|music|musik|muzik|flac|mp3|电音|bass|说唱|rap|hip.?hop|唱片|听', re.I)
+
+
+@app.post('/channels/archive-music')
+async def channels_archive_music(request: Request):
+    """把频道主账号聊天列表里名字像音乐的群和频道收进「已归档」并静音（不静音的话来新消息会自己跳出来）。
+    只看名字，别的聊天不碰、也不列出来。{dry_run: true} 只返回会动到哪些。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    body = await request.json()
+    dry = bool(body.get('dry_run'))
+    also = {str(u).strip().lstrip('@').lower() for u in body.get('also', [])}  # 名字不像、但在来源名单里的音乐频道
+    done = []
+    async for d in user_client.iter_dialogs(archived=False):
+        e = d.entity
+        is_group_or_channel = getattr(e, 'broadcast', False) or getattr(e, 'megagroup', False) or d.is_group
+        name = (getattr(e, 'username', None) or '').lower()
+        if not is_group_or_channel or not (MUSIC_WORDS.search(d.title or '') or name in also):
+            continue
+        if (getattr(e, 'username', None) or '').lower() == target_channel().lower():
+            continue  # 小橘音乐自己不动
+        done.append(d.title)
+        if not dry:
+            await user_client(UpdateNotifySettingsRequest(peer=e, settings=InputPeerNotifySettings(mute_until=2**31 - 1)))
+            await user_client.edit_folder(e, 1)
+            await asyncio.sleep(1)
+    return {'archived' if not dry else 'would_archive': done}
+
+
 @app.post('/channels/check')
 async def channels_check(request: Request):
     """核对一批候选频道：在不在、是不是频道、多少人、最近 200 条里有几首音频。{usernames: [...]}"""
