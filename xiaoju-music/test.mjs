@@ -517,6 +517,16 @@ await t('歌单：管理员整体设置，跟着歌单 JSON 给出去；改名�
   await admin('playlists', { playlists: [] });
 });
 
+await t('音乐来源频道名单：管理员读写，去掉 @ 和重复，名字不对 400', async () => {
+  assert.deepEqual((await jsonOf(await admin('sources'))).sources, []);
+  assert.equal((await admin('sources', { sources: ['ok_name', 'x'] })).status, 400);
+  const r = await jsonOf(await admin('sources', { sources: ['@VmoMusic', 'dj225', 'VmoMusic'] }));
+  assert.deepEqual(r.sources, ['VmoMusic', 'dj225']);
+  assert.deepEqual((await jsonOf(await admin('sources'))).sources, ['VmoMusic', 'dj225']);
+  assert.equal((await admin('sources', { sources: [] }, 'wrong')).status, 401);
+  await admin('sources', { sources: [] });
+});
+
 await t('大文件：Range 原样转给流式服务（带密钥），返回的字节和原文件一致', async () => {
   const src = bigFiles.get(12);
   const N = src.length;

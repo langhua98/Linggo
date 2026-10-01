@@ -367,3 +367,8 @@ def test_copy_endpoints_need_key_and_login(monkeypatch):
     assert client.post('/copy/start', json={'source': 'VmoMusic'}, headers={'X-Key': 'k1'}).status_code == 409
     assert client.get('/copy/status', headers={'X-Key': 'k1'}).json() == {'logged_in': False, 'status': 'idle'}
     assert client.post('/login/code', json={'phone': 'abc'}, headers={'X-Key': 'k1'}).status_code == 400
+    # 加入频道、全局搜索也要密钥和登录
+    monkeypatch.setattr(appmod, 'user_client', None)
+    assert client.post('/channels/join', json={'usernames': ['abcd']}).status_code == 403
+    assert client.post('/channels/join', json={'usernames': ['abcd']}, headers={'X-Key': 'k1'}).status_code == 409
+    assert client.get('/search/global?q=x&only=dj225', headers={'X-Key': 'k1'}).status_code == 409

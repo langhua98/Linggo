@@ -238,6 +238,16 @@ async function adminApi(request, env, url) {
     forget(track);
     return json({ ok: true });
   }
+  // 搬歌用的「音乐来源频道」名单：{sources: [用户名...]}；GET 取、POST 整个换掉
+  if (action === 'sources') {
+    if (request.method === 'GET') return json({ sources: await lib(env).getSources() });
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const list = Array.isArray(body.sources) ? body.sources.map(s => String(s).trim().replace(/^@/, '')) : null;
+      if (!list || list.length > 500 || !list.every(s => /^\w{4,64}$/.test(s))) return json({ error: '参数不对' }, 400);
+      return json({ ok: true, sources: await lib(env).setSources([...new Set(list)]) });
+    }
+  }
   // 这首现在的封面不要了（比如别的频道的台标）：用这张图的歌都改用频道图片，以后也不再用它
   if (action === 'ban-cover' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));
@@ -844,6 +854,15 @@ export class Library extends DurableObject {
     this.sql.exec('DELETE FROM songs WHERE id = ?', id);
     this.sql.exec('DELETE FROM covers WHERE id = ?', id);
     this.sql.exec('DELETE FROM lyrics WHERE id = ?', id);
+  }
+
+  async getSources() {
+    return JSON.parse(this.cfg('sources') || '[]');
+  }
+
+  async setSources(list) {
+    this.setCfg('sources', JSON.stringify(list));
+    return list;
   }
 
   async listPlaylists() {

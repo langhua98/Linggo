@@ -30,8 +30,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
 from telethon.errors import FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
+from telethon.tl.functions.account import UpdateNotifySettingsRequest
+from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
-from telethon.tl.types import InputMessagesFilterMusic
+from telethon.tl.types import InputMessagesFilterMusic, InputPeerNotifySettings
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -519,6 +521,64 @@ async def search_music(q: str, channels: str, request: Request):
                                 'duration': f.duration or 0, 'size': f.size or 0})
         except Exception as e:  # noqa: BLE001 — 频道不存在、禁止保存内容之类，跳过这个频道
             log.info('search %s in %s failed: %s', q, ch, e)
+    return {'results': out}
+
+
+@app.post('/channels/join')
+async def channels_join(request: Request):
+    """用频道主账号加入（关注）一批公开频道：{usernames: [...]}。加入后可以用 /search/global 一次搜遍。
+    每个隔几秒，Telegram 叫等就等（超过 10 分钟就停下，剩下的标成 flood）。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    names = [str(u).strip().lstrip('@') for u in (await request.json()).get('usernames', [])][:50]
+
+    async def join(name):
+        await user_client(JoinChannelRequest(name))
+        # 静音、收进「已归档」：几十个频道不该刷屏、响通知，搜索照样搜得到
+        await user_client(UpdateNotifySettingsRequest(peer=name, settings=InputPeerNotifySettings(mute_until=2**31 - 1)))
+        await user_client.edit_folder(name, 1)
+
+    result = {}
+    for name in names:
+        if not re.fullmatch(r'\w{4,64}', name):
+            result[name] = 'bad name'
+            continue
+        try:
+            await join(name)
+            result[name] = 'joined'
+        except FloodWaitError as e:
+            if e.seconds > 600:
+                result[name] = f'flood {e.seconds}s'
+                break
+            await asyncio.sleep(e.seconds + 1)
+            try:
+                await join(name)
+                result[name] = 'joined'
+            except Exception as e2:  # noqa: BLE001
+                result[name] = type(e2).__name__
+        except Exception as e:  # noqa: BLE001 — 频道不存在、私有之类
+            result[name] = type(e).__name__
+        await asyncio.sleep(5)
+    return {'result': result}
+
+
+@app.get('/search/global')
+async def search_global(q: str, only: str, request: Request, limit: int = 100):
+    """一次搜遍频道主账号加入的频道里的音频（Telegram 的全局消息搜索，只搜音乐），
+    只留 only（逗号分隔的「音乐来源频道」名单）里的频道：账号自己关注的别的频道不掺进来。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    allowed = {c.strip().lstrip('@').lower() for c in only.split(',') if c.strip()}
+    out = []
+    async for msg in user_client.iter_messages(None, search=q[:64], filter=InputMessagesFilterMusic, limit=max(1, min(limit, 300))):
+        chat = msg.chat
+        f = msg.file
+        if not f or (getattr(chat, 'username', None) or '').lower() not in allowed:
+            continue
+        out.append({'channel': chat.username, 'id': msg.id, 'title': f.title or f.name or '', 'performer': f.performer or '',
+                    'duration': f.duration or 0, 'size': f.size or 0})
     return {'results': out}
 
 
