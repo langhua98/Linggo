@@ -979,7 +979,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     // 跑马灯：沿圆角矩形一圈等距放长条小灯；一串亮灯（带拖尾）绕着跑，重拍时整圈亮一下
     function drawEdge(playing){
       var wh = fit(edge, eg); if(!wh) return;
-      var w = wh[0], h = wh[1], m = 6, rr = Math.min(38, w / 6), gap = 22;
+      var w = wh[0], h = wh[1], m = 7, rr = Math.min(38, w / 6), gap = 21;
       var W = w - 2 * m, H = h - 2 * m, arc = Math.PI * rr / 2;
       var L = 2 * (W - 2 * rr) + 2 * (H - 2 * rr) + 4 * arc, n = Math.max(20, Math.round(L / gap)), step = L / n;
       var segs = [W - 2 * rr, arc, H - 2 * rr, arc, W - 2 * rr, arc, H - 2 * rr, arc];
@@ -998,41 +998,42 @@ h1{font-size:20px;margin:0;line-height:1.2}
           default: a = Math.PI + d / rr; return [m + rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
         }
       }
-      var tails = 1, tail = 3; // 只跑一颗灯，后面带一点点拖影
-      var len = step * .62, thick = 7; // 长条灯：沿着边的方向摆，长度约为间距的六成
+      var tail = 3; // 只跑一颗灯，后面带一点点拖影
+      var thick = 7, len = step * .8; // 长条灯沿边摆，彼此只隔几个像素
+      function bar(p, q, l, th){ // 两头圆的灯条：画一条圆头粗线
+        var ang = Math.atan2(q[1] - p[1], q[0] - p[0]), dx = Math.cos(ang) * (l - th) / 2, dy = Math.sin(ang) * (l - th) / 2;
+        eg.lineWidth = th; eg.lineCap = 'round';
+        eg.beginPath(); eg.moveTo(p[0] - dx, p[1] - dy); eg.lineTo(p[0] + dx, p[1] + dy); eg.stroke();
+      }
       for(var j = 0; j < n; j++){
-        var p = at(j * step), p2 = at(Math.min(L - .01, j * step + .5)), hc = (hue + j / n * 360) % 360, glow = 0;
+        var p = at(j * step), p2 = at(Math.min(L - .01, j * step + .5)), glow = 0;
         if(playing){
-          for(var q = 0; q < tails; q++){
-            var dist = ((head + q * n / tails - j) % n + n) % n;
-            if(dist < tail) glow = Math.max(glow, 1 - dist / tail);
-          }
-          glow = Math.min(1, glow + bass * .15);
+          var dist = ((head - j) % n + n) % n;
+          if(dist < tail) glow = 1 - dist / tail;
         }
-        var a = .16 + glow * .84, th = thick + glow * 3;
-        eg.globalAlpha = a;
-        eg.fillStyle = 'hsl(' + hc + ',100%,' + (52 + glow * 28) + '%)';
-        if(glow > .3){ eg.shadowColor = 'hsl(' + hc + ',100%,60%)'; eg.shadowBlur = 22 * glow; } else eg.shadowBlur = 0;
-        eg.save();
-        eg.translate(p[0], p[1]);
-        eg.rotate(Math.atan2(p2[1] - p[1], p2[0] - p[0]));
-        eg.fillRect(-len / 2, -th / 2, len, th);
-        eg.restore();
+        if(glow > 0){ // 拖影：有颜色
+          var hc = (hue + j / n * 360) % 360;
+          eg.globalAlpha = .25 + glow * .6;
+          eg.strokeStyle = 'hsl(' + hc + ',100%,' + (55 + glow * 20) + '%)';
+          eg.shadowColor = 'hsl(' + hc + ',100%,60%)'; eg.shadowBlur = 16 * glow;
+        } else { // 没轮到的灯：透明的玻璃灯，只看得出轮廓
+          eg.globalAlpha = 1;
+          eg.strokeStyle = 'rgba(255,255,255,.13)';
+          eg.shadowBlur = 0;
+        }
+        bar(p, p2, len, thick);
       }
       eg.globalAlpha = 1; eg.shadowBlur = 0;
       if(playing){ // 跑着的那一颗：顺滑地沿边走，彩色光晕 + 白芯，最亮
         var d = ((head % n) + n) % n * step, q1 = at(d), q2 = at(Math.min(L - .01, d + .5)), hh = (hue + d / L * 360) % 360;
-        eg.save();
-        eg.translate(q1[0], q1[1]);
-        eg.rotate(Math.atan2(q2[1] - q1[1], q2[0] - q1[0]));
         eg.globalCompositeOperation = 'lighter';
         eg.shadowColor = 'hsl(' + hh + ',100%,60%)';
-        eg.fillStyle = 'hsl(' + hh + ',100%,62%)';
-        eg.shadowBlur = 30; eg.fillRect(-len * .65, -(thick + 3) / 2, len * 1.3, thick + 3);
-        eg.shadowBlur = 16; eg.fillRect(-len * .65, -(thick + 3) / 2, len * 1.3, thick + 3);
-        eg.shadowBlur = 0; eg.fillStyle = 'rgba(255,255,255,.95)';
-        eg.fillRect(-len * .55, -thick / 4, len * 1.1, thick / 2);
-        eg.restore();
+        eg.strokeStyle = 'hsl(' + hh + ',100%,62%)';
+        eg.shadowBlur = 30; bar(q1, q2, len * 1.25, thick + 3);
+        eg.shadowBlur = 16; bar(q1, q2, len * 1.25, thick + 3);
+        eg.shadowBlur = 0; eg.strokeStyle = 'rgba(255,255,255,.95)';
+        bar(q1, q2, len * 1.1, thick / 2);
+        eg.globalCompositeOperation = 'source-over';
       }
     }
     function frame(t){
@@ -1042,7 +1043,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       var bs = sample(t);
       bass += (bs - bass) * .4;
       hue = (hue + dt * .03) % 360;            // 大约 12 秒转一圈颜色
-      head = (head + dt * (.03 + bass * .03)) % 100000; // 越响跑得越快
+      head = (head + dt * (.032 + bass * .032)) % 100000; // 越响跑得越快
       drawBars(); drawEdge(true);
       raf = requestAnimationFrame(frame);
     }
