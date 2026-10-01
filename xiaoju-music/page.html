@@ -31,7 +31,7 @@ button{font:inherit;color:inherit}
 
 /* 电脑：左边正在播放，右边歌单 */
 .app{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,470px);gap:48px;height:100vh;height:100dvh;padding:40px 48px}
-.stage{--disc:min(420px,38vw,52vh);align-self:center;justify-self:center;width:100%;max-width:440px;display:flex;flex-direction:column;align-items:center}
+.stage{--disc:min(400px,36vw,46vh);align-self:center;justify-self:center;width:100%;max-width:440px;display:flex;flex-direction:column;align-items:center}
 #close{display:none}
 .stage>.edge{position:fixed}
 /* 封面做成黑胶唱片：封面是中间的圆标，播放时整张唱片转，暂停就停 */
@@ -46,15 +46,25 @@ body.playing .disc{animation-play-state:running}
 .label{position:absolute;inset:17%;border-radius:50%;overflow:hidden;background:linear-gradient(135deg,#fdba74,#9a3412);box-shadow:0 0 0 4px #050505}
 #art{width:100%;height:100%;object-fit:cover;display:block;opacity:0;transition:opacity .4s}
 #art.ready{opacity:1}
-.cover-fallback{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(40px,7vw,90px);font-weight:700;color:rgba(255,255,255,.92);text-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .3s}
+.cover-fallback{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 15%;text-align:center;color:rgba(255,255,255,.95);text-shadow:0 2px 14px rgba(0,0,0,.3);opacity:0;transition:opacity .3s}
+/* 文字封面：没有自己专辑图的歌，唱片中间写歌名和歌手 */
+.cover-fallback b{font-size:clamp(17px,4.6vw,28px);font-weight:800;line-height:1.22;letter-spacing:.5px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.cover-fallback small{max-width:100%;margin-top:8px;font-size:clamp(11px,2.6vw,14px);font-weight:500;opacity:.78;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .noart .cover-fallback{opacity:1}
 /* 跑马灯：沿着播放页最外圈（手机是整个屏幕边缘，电脑是整个窗口边缘）一圈长条小灯，播放时一串追着跑，颜色一直在变；
    音柱和它用同一个颜色 */
-.edge{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+/* 让开刘海、灵动岛和底部横条，四个角就不会被屏幕圆角切掉 */
+.edge{position:absolute;top:env(safe-area-inset-top,0px);left:env(safe-area-inset-left,0px);pointer-events:none;z-index:0;
+  width:calc(100% - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));height:calc(100% - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px))}
+body.glow-off .edge{display:none}
+/* 播放页的强调色跟着封面走（进度条、当前这句歌词、按下的按钮） */
+.stage{--accent:var(--theme,#fb923c)}
+#seek::-webkit-slider-runnable-track{background:linear-gradient(to right,var(--accent) var(--p),rgba(255,255,255,.2) var(--p))}
+#seek::-moz-range-progress{background:var(--accent)}
 .stage>*:not(.edge){position:relative;z-index:1}
 #close{z-index:2}
 /* 跟着音乐跳的音柱 */
-.viz{display:block;width:100%;height:40px;margin-top:14px}
+.viz{display:block;width:100%;height:24px;margin-top:20px;margin-bottom:-12px}
 .waking{position:absolute;inset:0;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;
   background:rgba(0,0,0,.5);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);font-size:14px;color:var(--muted);text-align:center;padding:0 24px}
 .spinner{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .9s linear infinite}
@@ -78,7 +88,7 @@ body.lyrics-view .lyrics{display:block}
 .lyrics li.gap{height:12px;padding:0}
 .lyrics li.note{font-size:14px;font-weight:400;color:var(--faint)}
 .lyrics li.retry{cursor:pointer;text-decoration:underline}
-.ln{min-height:1.5em;margin-top:6px;font-size:14px;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.ln{min-height:1.5em;margin-top:8px;font-size:17px;font-weight:600;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 body.lyrics-view .ln{visibility:hidden}
 .t{font-size:24px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .a{font-size:17px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -106,6 +116,17 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radiu
 .play:active{transform:scale(.94)}
 .play.busy::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:var(--accent);animation:spin .9s linear infinite}
 .extras{width:100%;display:flex;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 13px;border:0;border-radius:99px;background:rgba(255,255,255,.08);color:var(--muted);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+.chip .ic{width:16px;height:16px}
+.chip.on{color:var(--accent);background:rgba(255,255,255,.12)}
+/* 定时关闭的选项 */
+.menu{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:60;width:min(300px,calc(100vw - 32px));padding:8px;border-radius:18px;
+  background:var(--glass-strong);-webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4);border:1px solid var(--line);box-shadow:0 18px 50px rgba(0,0,0,.55)}
+.menu[hidden]{display:none}
+.menu p{margin:6px 14px 4px;font-size:12px;color:var(--faint)}
+.menu button{display:block;width:100%;height:46px;padding:0 14px;border:0;border-radius:12px;background:none;color:var(--fg);font:inherit;font-size:15px;text-align:left;cursor:pointer}
+.menu button.on{color:var(--theme,#fb923c);font-weight:700}
+@media (hover:hover){.menu button:hover,.chip:hover{background:rgba(255,255,255,.1)}}
 .vol{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted)}
 .vol .ic{width:18px;height:18px}
 .vol input{width:110px}
@@ -129,7 +150,9 @@ h1{font-size:20px;margin:0;line-height:1.2}
 .search .ic{width:17px;height:17px;flex:none}
 .search input{flex:1;min-width:0;height:100%;border:0;background:none;color:var(--fg);font:inherit;outline:none}
 .search input::placeholder{color:var(--faint)}
-.tabs{display:flex;gap:8px;margin:0 16px 6px}
+.tabs{display:flex;gap:8px;margin:0 16px 6px;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs .tab{flex:none}
 .tab{display:inline-flex;align-items:center;gap:5px;height:32px;padding:0 14px;border:0;border-radius:99px;background:rgba(255,255,255,.07);color:var(--muted);font-size:13.5px;cursor:pointer;transition:background .15s,color .15s}
 .tab[aria-selected=true]{background:var(--fg);color:var(--ink);font-weight:600}
 .tab .ic{width:14px;height:14px;fill:var(--love)}
@@ -246,6 +269,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
   <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
   <symbol id="i-lyrics" viewBox="0 0 24 24"><path d="M3 6h11M3 11h11M3 16h7"/><path d="M19 17V5l3 1.5"/><circle cx="16.5" cy="17" r="2.5"/></symbol>
+  <symbol id="i-glow" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></symbol>
   <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 21s-6.7-4.4-9.2-8.3C1 9.9 2.2 5.9 5.9 5.1c2.3-.5 4.3.6 6.1 2.7 1.8-2.1 3.8-3.2 6.1-2.7 3.7.8 4.9 4.8 3.1 7.6C18.7 16.6 12 21 12 21z"/></symbol>
 </svg>
 
@@ -254,6 +279,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
 <div class="app">
   <section class="stage" id="stage" aria-label="正在播放">
     <canvas class="edge" id="edge" aria-hidden="true"></canvas>
+    <canvas class="edge" id="edgeRun" aria-hidden="true"></canvas>
     <button class="icon" id="close" type="button" aria-label="收起"><svg class="ic stroke"><use href="#i-down"/></svg></button>
     <div class="now" id="now">
     <div class="cover-wrap" id="coverBox" title="看歌词">
@@ -280,6 +306,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
       <button class="icon" id="repeat" type="button" aria-label="列表循环" aria-pressed="true"><svg class="ic stroke"><use href="#i-repeat"/></svg><span class="one" hidden>1</span></button>
     </div>
     <div class="extras">
+      <button class="chip" id="glowBtn" type="button" aria-label="氛围灯"><svg class="ic stroke"><use href="#i-glow"/></svg><span id="glowLbl">封面色</span></button>
+      <button class="chip" id="timerBtn" type="button" aria-label="定时关闭" aria-haspopup="true"><svg class="ic stroke"><use href="#i-timer"/></svg><span id="timerLbl">定时关闭</span></button>
       <label class="vol"><svg class="ic stroke"><use href="#i-volume"/></svg><input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="音量"></label>
     </div>
   </section>
@@ -296,6 +324,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       <button class="tab" id="tabAll" type="button" role="tab" aria-selected="true">全部<span class="n" id="nAll"></span></button>
       <button class="tab" id="tabList" type="button" role="tab" aria-selected="false">歌单</button>
       <button class="tab" id="tabFav" type="button" role="tab" aria-selected="false"><svg class="ic"><use href="#i-heart"/></svg>我喜欢<span class="n" id="nFav"></span></button>
+      <button class="tab" id="tabRecent" type="button" role="tab" aria-selected="false">最近</button>
       <button class="tab" id="tabArtist" type="button" role="tab" aria-selected="false">歌手</button>
     </div>
     <ol class="list skeleton" id="list"></ol>
@@ -313,6 +342,15 @@ h1{font-size:20px;margin:0;line-height:1.2}
   <div class="mini-bar"><i id="miniProg"></i></div>
 </div>
 <div id="toast" role="status"></div>
+<div class="menu" id="timerMenu" role="menu" hidden>
+  <p>定时关闭</p>
+  <button type="button" role="menuitem" data-min="15">15 分钟后</button>
+  <button type="button" role="menuitem" data-min="30">30 分钟后</button>
+  <button type="button" role="menuitem" data-min="60">1 小时后</button>
+  <button type="button" role="menuitem" data-min="90">1 个半小时后</button>
+  <button type="button" role="menuitem" data-min="end">播完这首</button>
+  <button type="button" role="menuitem" data-min="0">不开启</button>
+</div>
 <audio id="audio" preload="none"></audio>
 
 <script>
@@ -324,10 +362,20 @@ h1{font-size:20px;margin:0;line-height:1.2}
   var retries = 0, retryTimer = 0, seeking = false, bgFront = 1, toastTimer = 0;
   var narrow = window.matchMedia('(max-width: 899px)');
   // tab：歌单显示「全部」还是「我喜欢」；ctx：正在放的这首是从哪一页点的，上一首/下一首就在那一页里切
-  var prefs = { repeat: 'all', shuffle: false, volume: 1, last: null, tab: 'all', ctx: 'all' };
+  // glow：氛围灯（跑马灯 + 音柱）的颜色，theme 跟着封面 / rainbow 彩虹 / off 关掉跑马灯；lastPos：上次那首听到第几秒
+  var prefs = { repeat: 'all', shuffle: false, volume: 1, last: null, tab: 'all', ctx: 'all', glow: 'theme', lastPos: 0 };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem('xm-prefs') || '{}')); } catch (e) {}
-  if(['fav', 'artist', 'list'].indexOf(prefs.tab) < 0) prefs.tab = 'all';
-  if(['fav', 'artist', 'list'].indexOf(prefs.ctx) < 0) prefs.ctx = 'all';
+  if(['fav', 'artist', 'list', 'recent'].indexOf(prefs.tab) < 0) prefs.tab = 'all';
+  if(['fav', 'artist', 'list', 'recent'].indexOf(prefs.ctx) < 0) prefs.ctx = 'all';
+  if(['theme', 'rainbow', 'off'].indexOf(prefs.glow) < 0) prefs.glow = 'theme';
+  // 封面的主色（色相、饱和度），跑马灯、音柱、进度条都用它
+  var themeH = 28, themeS = 90;
+  // 最近播放：消息号，最近的在前；recentSnap：从「最近」页点歌时冻结的顺序（不然边放边变，上一首/下一首会乱跳）
+  var recent = readRecent(), recentSnap = null, loggedId = null;
+  // 继续播放：打开页面时接着上次的进度（等音频载好再跳过去）
+  var pendingSeek = null, lastSave = 0;
+  // 定时关闭：sleepAt 是到点的时间戳；sleepEnd 是「播完这首就停」
+  var sleepAt = 0, sleepEnd = false;
   function savePrefs(){ try { localStorage.setItem('xm-prefs', JSON.stringify(prefs)); } catch (e) {} }
   // favs：收藏的消息号，新收藏的在前；pos：正在放的这首在播放顺序里排第几；seen：封面加载过没有
   var favs = readFavs(), pos = 0, seen = {};
@@ -348,7 +396,9 @@ h1{font-size:20px;margin:0;line-height:1.2}
     return h ? h + ':' + String(m).padStart(2, '0') + ':' + r : m + ':' + r;
   }
   // ?v= 变了，浏览器就不用缓存里的旧封面（换掉台标封面时改过一次）
-  function coverUrl(id){ return '/c/' + id + '?v=3'; }
+  // art=1：只要这首歌自己的专辑图；没有的话网页自己画文字封面。歌单宫格可以用频道图片（photoUrl）
+  function coverUrl(id){ return '/c/' + id + '?v=4&art=1'; }
+  function photoUrl(id){ return '/c/' + id + '?v=3'; }
   // 没有封面的歌：按歌名算一个固定的色相，做成渐变色块，上面放歌名第一个字
   function hue(text){
     var h = 7;
@@ -382,20 +432,55 @@ h1{font-size:20px;margin:0;line-height:1.2}
   }
   function hideToast(){ $('toast').classList.remove('show', 'act'); }
   // 先铺好渐变色块；封面加载成功就盖上去，失败（这首没有封面）就留着色块
-  function coverImg(img, holder, id){
-    var t = byId[id];
+  // anyPic：频道图片也行（歌单宫格）；否则只认自己的专辑图，没有就是渐变底 + 文字
+  function coverImg(img, holder, id, anyPic){
+    var t = byId[id], key = (anyPic ? 'p' : '') + id;
     if(t){
       holder.style.background = gradient(t);
       holder.dataset.ch = firstChar(t);
       var fb = holder.querySelector('.cover-fallback');
-      if(fb) fb.textContent = firstChar(t);
+      if(fb){ // 唱片中间的大文字封面：歌名 + 歌手
+        fb.textContent = '';
+        fb.appendChild(el('b', null, t.title));
+        fb.appendChild(el('small', null, artistOf(t)));
+      }
     }
-    img.onerror = function(){ seen[id] = false; holder.classList.add('noart'); img.removeAttribute('src'); };
-    img.onload = function(){ seen[id] = true; holder.classList.remove('noart'); img.classList.add('ready'); };
+    img.onerror = function(){ seen[key] = false; holder.classList.add('noart'); img.removeAttribute('src'); };
+    img.onload = function(){ seen[key] = true; holder.classList.remove('noart'); img.classList.add('ready'); };
     // 加载过的封面（切页签、搜索时重画歌单）直接显示，不再每张淡入一遍
-    holder.classList.toggle('noart', seen[id] === false);
-    img.classList.toggle('ready', seen[id] === true);
-    if(seen[id] !== false) img.src = coverUrl(id);
+    holder.classList.toggle('noart', seen[key] === false);
+    img.classList.toggle('ready', seen[key] === true);
+    if(seen[key] !== false) img.src = anyPic ? photoUrl(id) : coverUrl(id); else img.removeAttribute('src');
+  }
+  // ── 主色：从封面里取（缩成 24×24，按色相分桶，挑「又鲜艳又不太暗不太亮」的那一桶）──
+  function setTheme(h, sat){
+    themeH = Math.round(h) % 360;
+    themeS = Math.max(55, Math.min(92, Math.round(sat)));
+    document.documentElement.style.setProperty('--theme', 'hsl(' + themeH + ' ' + themeS + '% 62%)');
+    if(fx) fx.refresh();
+  }
+  function themeFrom(img, t){
+    try {
+      var n = 24, c = document.createElement('canvas');
+      c.width = c.height = n;
+      var g = c.getContext('2d', { willReadFrequently: true });
+      g.drawImage(img, 0, 0, n, n);
+      var d = g.getImageData(0, 0, n, n).data, bins = {}, best = null;
+      for(var i = 0; i < d.length; i += 4){
+        var r = d[i] / 255, gr = d[i + 1] / 255, b = d[i + 2] / 255;
+        var mx = Math.max(r, gr, b), mn = Math.min(r, gr, b), l = (mx + mn) / 2, dl = mx - mn;
+        if(dl < .08 || l < .12 || l > .92) continue; // 灰、黑、白不算
+        var s = dl / (1 - Math.abs(2 * l - 1)), h;
+        if(mx === r) h = ((gr - b) / dl + 6) % 6; else if(mx === gr) h = (b - r) / dl + 2; else h = (r - gr) / dl + 4;
+        h *= 60;
+        var k = Math.floor(h / 24), w = s * (1 - Math.abs(l - .55));
+        var bin = bins[k] || (bins[k] = { w: 0, h: 0, s: 0 });
+        bin.w += w; bin.h += h * w; bin.s += s * w;
+        if(!best || bin.w > best.w) best = bin;
+      }
+      if(best && best.w > 3){ setTheme(best.h / best.w, best.s / best.w * 100); return; }
+    } catch (e) {}
+    setTheme(hue(t.title + t.artist), 70); // 封面几乎没有颜色（黑白照片）或读不了：用歌名算的颜色
   }
 
   // ── 收藏：存在这台设备的浏览器里（localStorage 的 xm-favs） ──
@@ -410,6 +495,18 @@ h1{font-size:20px;margin:0;line-height:1.2}
   function isFav(id){ return favs.indexOf(id) >= 0; }
   // 频道里已经移除的歌不显示，但留着记录
   function favTracks(){ return favs.map(function(id){ return byId[id]; }).filter(Boolean); }
+  // ── 最近播放：存在这台设备的浏览器里（xm-recent），最多 100 首 ──
+  function readRecent(){
+    try {
+      var v = JSON.parse(localStorage.getItem('xm-recent') || '[]');
+      return Array.isArray(v) ? v.filter(Number.isInteger).slice(0, 100) : [];
+    } catch (e) { return []; }
+  }
+  function recentTracks(ids){ return (ids || recent).map(function(id){ return byId[id]; }).filter(Boolean); }
+  function logRecent(id){
+    recent = [id].concat(recent.filter(function(x){ return x !== id; })).slice(0, 100);
+    try { localStorage.setItem('xm-recent', JSON.stringify(recent)); } catch (e) {}
+  }
   function toggleFav(id, btn){
     if(!byId[id]) return;
     syncPos();
@@ -516,7 +613,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     img.alt = '';
     img.loading = 'lazy';
     th.appendChild(img);
-    coverImg(img, th, byId[g.cover] ? g.cover : g.songs[0].id);
+    coverImg(img, th, byId[g.cover] ? g.cover : g.songs[0].id, kind === 'list');
     var info = el('span', 'info');
     info.appendChild(el('span', 'rt', g.name));
     info.appendChild(el('span', 'ra', g.songs.length + ' 首'));
@@ -552,7 +649,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   }
 
   function render(){
-    var raw = $('q').value.trim(), q = raw.toLowerCase(), fav = prefs.tab === 'fav';
+    var raw = $('q').value.trim(), q = raw.toLowerCase(), fav = prefs.tab === 'fav', rec = prefs.tab === 'recent';
     var kind = prefs.tab === 'artist' || prefs.tab === 'list' ? prefs.tab : null;
     list.textContent = '';
     list.classList.remove('skeleton');
@@ -572,7 +669,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       return;
     }
     if(g) list.appendChild(groupHead(kind, g));
-    (fav ? favTracks() : g ? g.songs : tracks).forEach(function(t){
+    (fav ? favTracks() : rec ? recentTracks() : g ? g.songs : tracks).forEach(function(t){
       if(q && (t.title + ' ' + t.artist).toLowerCase().indexOf(q) < 0) return;
       shown++;
       list.appendChild(row(t));
@@ -581,8 +678,11 @@ h1{font-size:20px;margin:0;line-height:1.2}
     s.hidden = !!shown;
     s.textContent = '';
     if(!shown){
-      if(q) s.textContent = (fav ? '「我喜欢」里' : '') + '没有找到「' + raw + '」';
-      else if(fav){
+      if(q) s.textContent = (fav ? '「我喜欢」里' : rec ? '「最近」里' : '') + '没有找到「' + raw + '」';
+      else if(rec){
+        s.appendChild(el('strong', null, '还没有播放记录'));
+        s.appendChild(document.createTextNode('听过的歌会按时间排在这里'));
+      } else if(fav){
         s.appendChild(el('strong', null, '还没有收藏的歌'));
         s.appendChild(document.createTextNode('点歌曲旁边的 ♡，就会收进这里'));
       } else s.textContent = '频道里还没有音频';
@@ -651,6 +751,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
     if(!t) return;
     curId = id;
     retries = 0;
+    pendingSeek = null;
+    prefs.lastPos = 0;
     clearTimeout(retryTimer);
     setWaking(false);
     audio.src = '/a/' + id;
@@ -689,6 +791,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     var probe = new Image();
     probe.onload = function(){
       if(curId !== id) return;
+      themeFrom(probe, byId[id]);
       show.style.backgroundImage = 'url("' + url + '")';
       show.classList.add('show');
       hide.classList.remove('show');
@@ -696,7 +799,9 @@ h1{font-size:20px;margin:0;line-height:1.2}
     };
     probe.onerror = function(){
       if(curId !== id) return;
-      show.style.backgroundImage = gradient(byId[id]);
+      var t = byId[id];
+      setTheme(hue(t.title + t.artist), 70); // 文字封面：和渐变底同一个色相
+      show.style.backgroundImage = gradient(t);
       show.classList.add('show');
       hide.classList.remove('show');
       bgFront = bgFront === 1 ? 2 : 1;
@@ -711,6 +816,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   // 从歌单里点歌：之后的上一首/下一首就在当前这一页（全部 / 我喜欢）里切
   function choose(id){
     prefs.ctx = prefs.tab;
+    if(prefs.tab === 'recent') recentSnap = recent.slice();
     if(CTX[prefs.tab]) prefs[CTX[prefs.tab]] = prefs[OPEN[prefs.tab]];
     savePrefs();
     if(id === curId){ syncPos(); toggle(); return; }
@@ -730,7 +836,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   function queue(){
     if(prefs.ctx !== 'all'){
       var g = CTX[prefs.ctx] ? groupOf(prefs.ctx, prefs[CTX[prefs.ctx]]) : null;
-      var fs = (prefs.ctx === 'fav' ? favTracks() : g ? g.songs : []).filter(function(t){ return t.playable; });
+      var fs = (prefs.ctx === 'fav' ? favTracks() : prefs.ctx === 'recent' ? recentTracks(recentSnap) : g ? g.songs : []).filter(function(t){ return t.playable; });
       if(fs.length) return fs;
     }
     return playable();
@@ -881,7 +987,35 @@ h1{font-size:20px;margin:0;line-height:1.2}
     var t = byId[curId];
     return isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (t ? t.duration : 0);
   }
-  audio.addEventListener('timeupdate', function(){ paint(audio.currentTime, duration()); syncLyric(false); });
+  audio.addEventListener('timeupdate', function(){
+    paint(audio.currentTime, duration());
+    syncLyric(false);
+    // 每 5 秒记一下听到哪儿，下次打开接着放（还没跳到上次的位置时别记，不然记成 0）
+    if(!pendingSeek && Date.now() - lastSave > 5000){
+      lastSave = Date.now();
+      prefs.lastPos = Math.floor(audio.currentTime);
+      savePrefs();
+    }
+    if(sleepAt && Date.now() >= sleepAt){
+      sleepAt = 0;
+      audio.pause();
+      paintTimer();
+      toast('定时关闭：已暂停');
+    } else if(sleepAt) paintTimer();
+  });
+  audio.addEventListener('loadedmetadata', function(){
+    if(pendingSeek && pendingSeek.id === curId){
+      var t = pendingSeek.t;
+      pendingSeek = null;
+      if(t < duration() - 5) audio.currentTime = t;
+    }
+  });
+  // 真正出声了才记进「最近」（同一首放着放着缓冲一下不重复记）
+  audio.addEventListener('playing', function(){
+    if(curId === null || loggedId === curId) return;
+    loggedId = curId;
+    logRecent(curId);
+  });
   audio.addEventListener('seeked', function(){ userScrollUntil = 0; syncLyric(false); });
   audio.addEventListener('durationchange', function(){ paint(audio.currentTime, duration()); });
   $('seek').addEventListener('input', function(){
@@ -911,14 +1045,16 @@ h1{font-size:20px;margin:0;line-height:1.2}
 
   // ── 跑马灯和音柱 ──
   // 电脑、安卓：真的听音频（Web Audio 分析器），音柱按频率起伏；
-  // iPhone / iPad：把 audio 接进 Web Audio 后，锁屏、切后台可能会没声音，所以不接，音柱用模拟的节奏动
-  (function(){
-    var edge = $('edge'), eg = edge.getContext('2d'), cv = $('eq'), g = cv.getContext('2d');
-    var N = 36, ROWS = 8, lv = [], i;
+  // iPhone / iPad：把 audio 接进 Web Audio 后，锁屏、切后台可能会没声音，所以不接，音柱用模拟的节奏动。
+  // 省电：不亮的透明灯条只在尺寸变化时画一次（edge 那层）；每帧只重画跑着的那颗（edgeRun 那层）；
+  // 看不见（手机上播放页收起来、切到后台）就不画
+  var fx = (function(){
+    var stat = $('edge'), sg = stat.getContext('2d'), run = $('edgeRun'), rg = run.getContext('2d'), cv = $('eq'), g = cv.getContext('2d');
+    var N = 36, ROWS = 6, lv = [], i;
     for(i = 0; i < N; i++) lv.push(0);
     var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var an = null, buf = null, tried = false, raf = 0, bass = 0, hue = 20, head = 0, last = 0;
+    var an = null, buf = null, tried = false, raf = 0, bass = 0, rainbow = 20, headF = 0, last = 0, buffering = false, geo = null;
+    function visible(){ return !document.hidden && (!narrow.matches || $('stage').classList.contains('open')); }
     function tryAnalyser(){
       if(tried || ios) return;
       tried = true;
@@ -955,128 +1091,190 @@ h1{font-size:20px;margin:0;line-height:1.2}
       }
       return beat;
     }
+    // f：0~1，沿着灯圈（或音柱从左到右）的位置。封面色：主色上下浮动一点；彩虹：整圈一轮
+    function color(f, light){
+      if(prefs.glow === 'rainbow') return 'hsl(' + ((rainbow + f * 360) % 360) + ',95%,' + light + '%)';
+      return 'hsl(' + ((themeH + (f - .5) * 40 + 360) % 360) + ',' + themeS + '%,' + light + '%)';
+    }
     function fit(c, ctx){
-      var dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+      var dpr = Math.min(2, window.devicePixelRatio || 1), w = c.clientWidth, h = c.clientHeight; // 3 倍屏也只画 2 倍，肉眼看不出，省一半
       if(!w || !h) return null;
       if(c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)){ c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
       return [w, h];
     }
-    // 音柱：每一列一个颜色，跟跑马灯一样一路渐变，整体颜色随时间转；越往上越亮
+    // 灯圈的形状：圆角矩形，等距放灯条
+    function layout(w, h){
+      var m = 7, rr = Math.min(narrow.matches ? 44 : 30, w / 5), W = w - 2 * m, H = h - 2 * m, arc = Math.PI * rr / 2;
+      var L = 2 * (W - 2 * rr) + 2 * (H - 2 * rr) + 4 * arc, n = Math.max(20, Math.round(L / 21));
+      geo = { w: w, h: h, m: m, rr: rr, L: L, n: n, step: L / n, len: L / n * .8, segs: [W - 2 * rr, arc, H - 2 * rr, arc, W - 2 * rr, arc, H - 2 * rr, arc] };
+    }
+    function at(d){ // 从顶边左端顺时针走 d 的位置（超出一圈的自动绕回来）
+      var G = geo, w = G.w, h = G.h, m = G.m, rr = G.rr, k = 0, a;
+      d = ((d % G.L) + G.L) % G.L;
+      while(d > G.segs[k] && k < 7){ d -= G.segs[k]; k++; }
+      switch(k){
+        case 0: return [m + rr + d, m];
+        case 1: a = -Math.PI / 2 + d / rr; return [w - m - rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
+        case 2: return [w - m, m + rr + d];
+        case 3: a = d / rr; return [w - m - rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
+        case 4: return [w - m - rr - d, h - m];
+        case 5: a = Math.PI / 2 + d / rr; return [m + rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
+        case 6: return [m, h - m - rr - d];
+        default: a = Math.PI + d / rr; return [m + rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
+      }
+    }
+    // 两头圆的灯条：在 d 处顺着灯圈方向画一条圆头粗线
+    function bar(ctx, d, l, th){
+      var p = at(d), p1 = at(d - .5), p2 = at(d + .5), ang = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
+      var dx = Math.cos(ang) * (l - th) / 2, dy = Math.sin(ang) * (l - th) / 2;
+      ctx.lineWidth = th; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(p[0] - dx, p[1] - dy); ctx.lineTo(p[0] + dx, p[1] + dy); ctx.stroke();
+    }
+    function drawStatic(){
+      var wh = fit(stat, sg); if(!wh) return;
+      layout(wh[0], wh[1]);
+      if(prefs.glow === 'off') return;
+      sg.strokeStyle = 'rgba(255,255,255,.13)'; // 没轮到的灯：透明的玻璃灯
+      for(var j = 0; j < geo.n; j++) bar(sg, j * geo.step, geo.len, 7);
+    }
+    function drawRun(playing){
+      var wh = fit(run, rg); if(!wh || !geo) return;
+      if(!playing || prefs.glow === 'off') return;
+      var hd = headF * geo.n, tail = 3;
+      for(var k = 1; k <= tail; k++){ // 拖影：身后几节有颜色，越远越淡
+        var j = Math.floor(hd) - k + 1, f = 1 - (hd - j) / (tail + 1);
+        if(f <= 0) continue;
+        rg.globalAlpha = .2 + f * .6;
+        rg.strokeStyle = color(((j % geo.n) + geo.n) % geo.n / geo.n, 58 + f * 14);
+        bar(rg, j * geo.step, geo.len, 7);
+      }
+      rg.globalAlpha = 1;
+      var d = headF * geo.L, c = color(headF, 62); // 跑着的那一颗：彩色光晕 + 白芯
+      rg.globalCompositeOperation = 'lighter';
+      rg.shadowColor = c; rg.strokeStyle = c;
+      rg.shadowBlur = 26; bar(rg, d, geo.len * 1.25, 10);
+      rg.shadowBlur = 0; rg.strokeStyle = 'rgba(255,255,255,.95)';
+      bar(rg, d, geo.len * 1.1, 3.5);
+      rg.globalCompositeOperation = 'source-over';
+    }
+    // 音柱：每一列一个颜色（和跑马灯同一套），越往上越亮
     function drawBars(){
       var wh = fit(cv, g); if(!wh) return;
       var w = wh[0], h = wh[1], cw = w / N, bw = Math.max(2, cw - 2), ch = h / ROWS, cellH = Math.max(2, ch - 1.5);
       for(var c = 0; c < N; c++){
-        var on = Math.round(lv[c] * ROWS), hc = (hue + c * 6) % 360;
+        var on = Math.round(lv[c] * ROWS);
         for(var r = 0; r < ROWS; r++){
           if(r >= on && r > 0) break;
-          g.fillStyle = 'hsl(' + hc + ',90%,' + (52 + r / (ROWS - 1) * 18) + '%)';
+          g.fillStyle = color(c / (N - 1), 50 + r / (ROWS - 1) * 22);
           g.fillRect(c * cw + (cw - bw) / 2, h - (r + 1) * ch, bw, cellH);
         }
       }
     }
-    // 跑马灯：沿圆角矩形一圈等距放长条小灯；一串亮灯（带拖尾）绕着跑，重拍时整圈亮一下
-    function drawEdge(playing){
-      var wh = fit(edge, eg); if(!wh) return;
-      var w = wh[0], h = wh[1], m = 7, rr = Math.min(38, w / 6), gap = 21;
-      var W = w - 2 * m, H = h - 2 * m, arc = Math.PI * rr / 2;
-      var L = 2 * (W - 2 * rr) + 2 * (H - 2 * rr) + 4 * arc, n = Math.max(20, Math.round(L / gap)), step = L / n;
-      var segs = [W - 2 * rr, arc, H - 2 * rr, arc, W - 2 * rr, arc, H - 2 * rr, arc];
-      function at(d){ // 从顶边左端顺时针走 d 的位置
-        var k = 0;
-        while(d > segs[k] && k < 7){ d -= segs[k]; k++; }
-        var a;
-        switch(k){
-          case 0: return [m + rr + d, m];
-          case 1: a = -Math.PI / 2 + d / rr; return [w - m - rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
-          case 2: return [w - m, m + rr + d];
-          case 3: a = d / rr; return [w - m - rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
-          case 4: return [w - m - rr - d, h - m];
-          case 5: a = Math.PI / 2 + d / rr; return [m + rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
-          case 6: return [m, h - m - rr - d];
-          default: a = Math.PI + d / rr; return [m + rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
-        }
-      }
-      var tail = 3; // 只跑一颗灯，后面带一点点拖影
-      var thick = 7, len = step * .8; // 长条灯沿边摆，彼此只隔几个像素
-      function bar(p, q, l, th){ // 两头圆的灯条：画一条圆头粗线
-        var ang = Math.atan2(q[1] - p[1], q[0] - p[0]), dx = Math.cos(ang) * (l - th) / 2, dy = Math.sin(ang) * (l - th) / 2;
-        eg.lineWidth = th; eg.lineCap = 'round';
-        eg.beginPath(); eg.moveTo(p[0] - dx, p[1] - dy); eg.lineTo(p[0] + dx, p[1] + dy); eg.stroke();
-      }
-      for(var j = 0; j < n; j++){
-        var p = at(j * step), p2 = at(Math.min(L - .01, j * step + .5)), glow = 0;
-        if(playing){
-          var dist = ((head - j) % n + n) % n;
-          if(dist < tail) glow = 1 - dist / tail;
-        }
-        if(glow > 0){ // 拖影：有颜色
-          var hc = (hue + j / n * 360) % 360;
-          eg.globalAlpha = .25 + glow * .6;
-          eg.strokeStyle = 'hsl(' + hc + ',100%,' + (55 + glow * 20) + '%)';
-          eg.shadowColor = 'hsl(' + hc + ',100%,60%)'; eg.shadowBlur = 16 * glow;
-        } else { // 没轮到的灯：透明的玻璃灯，只看得出轮廓
-          eg.globalAlpha = 1;
-          eg.strokeStyle = 'rgba(255,255,255,.13)';
-          eg.shadowBlur = 0;
-        }
-        bar(p, p2, len, thick);
-      }
-      eg.globalAlpha = 1; eg.shadowBlur = 0;
-      if(playing){ // 跑着的那一颗：顺滑地沿边走，彩色光晕 + 白芯，最亮
-        var d = ((head % n) + n) % n * step, q1 = at(d), q2 = at(Math.min(L - .01, d + .5)), hh = (hue + d / L * 360) % 360;
-        eg.globalCompositeOperation = 'lighter';
-        eg.shadowColor = 'hsl(' + hh + ',100%,60%)';
-        eg.strokeStyle = 'hsl(' + hh + ',100%,62%)';
-        eg.shadowBlur = 30; bar(q1, q2, len * 1.25, thick + 3);
-        eg.shadowBlur = 16; bar(q1, q2, len * 1.25, thick + 3);
-        eg.shadowBlur = 0; eg.strokeStyle = 'rgba(255,255,255,.95)';
-        bar(q1, q2, len * 1.1, thick / 2);
-        eg.globalCompositeOperation = 'source-over';
-      }
-    }
     function frame(t){
       raf = 0;
-      if(audio.paused || document.hidden) return;
+      if(audio.paused || !visible()) return;
       var dt = last ? Math.min(100, t - last) : 16; last = t;
       var bs = sample(t);
       bass += (bs - bass) * .4;
-      hue = (hue + dt * .03) % 360;            // 大约 12 秒转一圈颜色
-      head = (head + dt * (.032 + bass * .032)) % 100000; // 越响跑得越快
-      drawBars(); drawEdge(true);
+      rainbow = (rainbow + dt * .03) % 360;
+      // 越响跑得越快；缓冲（其实没出声）的时候灯停住
+      if(!buffering && geo) headF = (headF + dt * (.032 + bass * .032) / geo.n) % 1;
+      drawBars(); drawRun(true);
       raf = requestAnimationFrame(frame);
     }
     function kick(){
-      if(reduce){ drawBars(); drawEdge(false); return; }
+      if(!visible()) return;
+      if(reduceMotion.matches){ drawBars(); drawRun(false); return; }
       tryAnalyser();
       last = 0;
       if(!raf) raf = requestAnimationFrame(frame);
     }
+    function refresh(){ drawStatic(); drawBars(); drawRun(!audio.paused && !reduceMotion.matches); }
     audio.addEventListener('play', kick);
-    audio.addEventListener('playing', kick);
+    audio.addEventListener('playing', function(){ buffering = false; kick(); });
+    audio.addEventListener('waiting', function(){ buffering = true; });
     document.addEventListener('visibilitychange', kick);
-    window.addEventListener('resize', function(){ drawBars(); drawEdge(!audio.paused); });
+    window.addEventListener('resize', refresh);
     audio.addEventListener('pause', function(){
-      // 暂停后音柱落下去，灯暗下来停住
+      // 暂停后音柱落下去，跑着的灯熄掉
       var t0 = performance.now();
+      drawRun(false);
       (function fall(t){
         if(!audio.paused) return;
         var any = false;
         for(var k = 0; k < N; k++){ lv[k] = Math.max(0, lv[k] - .08); if(lv[k] > 0) any = true; }
         bass = 0;
-        drawBars(); drawEdge(false);
+        drawBars();
         if(any && t - t0 < 900) requestAnimationFrame(fall);
       })(t0);
     });
-    // 手机上播放页是滑出来的，打开时画一下（暂停状态下也要有灯）
-    new MutationObserver(function(){ requestAnimationFrame(function(){ drawBars(); drawEdge(!audio.paused); }); })
+    // 手机上播放页滑出来时重画并接着跑；收起来时 frame 自己会停
+    new MutationObserver(function(){ requestAnimationFrame(function(){ if(visible()){ refresh(); kick(); } }); })
       .observe($('stage'), { attributes: true, attributeFilter: ['class'] });
-    drawBars(); drawEdge(false);
+    refresh();
+    return { refresh: refresh };
   })();
   audio.addEventListener('ended', function(){
-    if(prefs.repeat === 'one'){ audio.currentTime = 0; start(); } else step(1, true);
+    if(sleepEnd){ // 定时「播完这首」：到这儿就停
+      sleepEnd = false;
+      paintTimer();
+      toast('定时关闭：这首播完了');
+      return;
+    }
+    if(prefs.repeat === 'one'){ audio.currentTime = 0; loggedId = null; start(); } else step(1, true);
   });
+
+  // ── 定时关闭 ──
+  function paintTimer(){
+    var on = !!sleepAt || sleepEnd, lbl = '定时关闭';
+    if(sleepAt) lbl = Math.max(1, Math.ceil((sleepAt - Date.now()) / 60000)) + ' 分钟后停';
+    else if(sleepEnd) lbl = '播完这首停';
+    $('timerLbl').textContent = lbl;
+    $('timerBtn').classList.toggle('on', on);
+    var opts = $('timerMenu').querySelectorAll('button');
+    for(var i = 0; i < opts.length; i++){
+      var m = opts[i].dataset.min;
+      opts[i].classList.toggle('on', m === 'end' ? sleepEnd : m === '0' ? !on : false);
+    }
+  }
+  $('timerBtn').addEventListener('click', function(e){
+    e.stopPropagation();
+    var menu = $('timerMenu');
+    menu.hidden = !menu.hidden;
+    paintTimer();
+  });
+  $('timerMenu').addEventListener('click', function(e){
+    var b = e.target.closest('button');
+    if(!b) return;
+    var m = b.dataset.min;
+    sleepEnd = m === 'end';
+    sleepAt = m !== 'end' && m !== '0' ? Date.now() + Number(m) * 60000 : 0;
+    this.hidden = true;
+    paintTimer();
+    toast(m === '0' ? '定时关闭已取消' : m === 'end' ? '这首播完就停' : b.textContent.replace('后', '') + '后停止播放');
+  });
+  document.addEventListener('click', function(e){
+    if(!$('timerMenu').hidden && !e.target.closest('#timerMenu, #timerBtn')) $('timerMenu').hidden = true;
+  });
+  setInterval(function(){ if(sleepAt) paintTimer(); }, 30000);
+  paintTimer();
+
+  // ── 氛围灯：封面色 → 彩虹 → 关 ──
+  function paintGlow(){
+    $('glowLbl').textContent = { theme: '封面色', rainbow: '彩虹', off: '氛围灯关' }[prefs.glow];
+    $('glowBtn').classList.toggle('on', prefs.glow !== 'off');
+    document.body.classList.toggle('glow-off', prefs.glow === 'off');
+  }
+  $('glowBtn').addEventListener('click', function(){
+    prefs.glow = { theme: 'rainbow', rainbow: 'off', off: 'theme' }[prefs.glow];
+    savePrefs();
+    paintGlow();
+    fx.refresh();
+    toast({ theme: '氛围灯：跟随封面颜色', rainbow: '氛围灯：彩虹', off: '氛围灯：关（更省电）' }[prefs.glow]);
+  });
+  paintGlow();
 
   function setWaking(on){
     $('waking').hidden = !on;
@@ -1152,8 +1350,9 @@ h1{font-size:20px;margin:0;line-height:1.2}
     $('tabList').setAttribute('aria-selected', String(prefs.tab === 'list'));
     $('tabFav').setAttribute('aria-selected', String(prefs.tab === 'fav'));
     $('tabArtist').setAttribute('aria-selected', String(prefs.tab === 'artist'));
+    $('tabRecent').setAttribute('aria-selected', String(prefs.tab === 'recent'));
     var g = OPEN[prefs.tab] && prefs[OPEN[prefs.tab]] != null && loaded ? groupOf(prefs.tab, prefs[OPEN[prefs.tab]]) : null;
-    $('q').placeholder = prefs.tab === 'fav' ? '在「我喜欢」里搜索'
+    $('q').placeholder = prefs.tab === 'fav' ? '在「我喜欢」里搜索' : prefs.tab === 'recent' ? '在「最近」里搜索'
       : g ? '在「' + g.name + '」里搜索'
       : prefs.tab === 'artist' ? '搜索歌手' : prefs.tab === 'list' ? '搜索歌单' : '搜索歌名或歌手';
   }
@@ -1172,6 +1371,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
   $('tabFav').addEventListener('click', function(){ setTab('fav'); });
   $('tabArtist').addEventListener('click', function(){ setTab('artist'); });
   $('tabList').addEventListener('click', function(){ setTab('list'); });
+  $('tabRecent').addEventListener('click', function(){ setTab('recent'); });
   $('like').addEventListener('click', function(){ if(curId !== null) toggleFav(curId, this); });
   // 同一台设备开着两个页面：一边收藏了，另一边跟着变
   window.addEventListener('storage', function(e){
@@ -1286,9 +1486,19 @@ h1{font-size:20px;margin:0;line-height:1.2}
         var g = groupOf(prefs.ctx, prefs[CTX[prefs.ctx]]);
         if(!g || g.songs.indexOf(first) < 0) prefs.ctx = 'all';
       }
+      if(prefs.ctx === 'recent') recentSnap = recent.slice();
+      var resume = first && first.id === prefs.last ? prefs.lastPos : 0;
       paintTabs();
       render();
-      if(first) select(first.id);
+      if(first){
+        select(first.id);
+        // 继续播放：接着上次的进度（点播放后跳过去）
+        if(resume > 5 && resume < first.duration - 5){
+          pendingSeek = { id: first.id, t: resume };
+          prefs.lastPos = resume;
+          paint(resume, first.duration);
+        }
+      }
     }).catch(function(){
       list.textContent = '';
       list.classList.remove('skeleton');

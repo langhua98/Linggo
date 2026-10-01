@@ -98,7 +98,7 @@ export default {
       const m = path.match(/^\/a\/(\d{1,10})(?:\.[a-z0-9]{1,5})?$/i);
       if (m) return await audio(request, env, Number(m[1]), url.searchParams.has('dl'));
       const c = path.match(/^\/c\/(\d{1,10})$/);
-      if (c) return await cover(env, Number(c[1]));
+      if (c) return await cover(env, Number(c[1]), url.searchParams.get('art') === '1');
       const l = path.match(/^\/l\/(\d{1,10})$/);
       if (l) return await lyrics(env, Number(l[1]));
       return text('Not Found', 404);
@@ -303,20 +303,22 @@ function forget(id) {
 
 // 先看数据库里存没存；没有就去取一次（新歌用 Bot API 取缩略图，更早的歌请流式服务用 MTProto 取），
 // 取到了（或确定没有）就存起来，以后不再惊动 Telegram 和流式服务
-async function cover(env, id) {
+// artOnly：只要这首歌自己的专辑图（播放页、歌曲列表用）；配的频道图片当作没有，网页改画文字封面。
+// 歌单宫格不带 artOnly，频道图片照样给
+async function cover(env, id, artOnly) {
   const L = lib(env);
   let c = await L.getCover(id);
   if (!c) {
     const rec = await getRec(env, id);
     if (!rec) throw new HttpError(404, '没有这首歌');
-    let got = await fetchCover(env, rec);
+    let got = await fetchCover(env, rec), own = true;
     if (got && got !== 'none' && (await L.isLogo(toBase64(got.data)))) got = 'none'; // 别的频道的台标，不算封面
-    if (got === 'none') got = await photoCover(env);
+    if (got === 'none'){ got = await photoCover(env); own = false; }
     if (!got) throw new HttpError(503, '封面暂时取不到', { 'Retry-After': '60' });
-    c = got === 'none' ? { none: true } : { mime: got.mime, b64: toBase64(got.data) };
-    await L.putCover(id, c.none ? 'none' : c.mime, c.none ? '' : c.b64);
+    c = got === 'none' ? { none: true } : { mime: got.mime, b64: toBase64(got.data), own };
+    await L.putCover(id, c.none ? 'none' : c.mime, c.none ? '' : c.b64, c.none ? 0 : own);
   }
-  if (c.none) throw new HttpError(404, '这首没有封面', { 'Cache-Control': 'public, max-age=86400' });
+  if (c.none || (artOnly && !c.own)) throw new HttpError(404, '这首没有封面', { 'Cache-Control': 'public, max-age=86400' });
   return new Response(fromBase64(c.b64), {
     headers: cors({ 'Content-Type': c.mime, 'Cache-Control': 'public, max-age=604800' }),
   });
@@ -801,6 +803,16 @@ export class Library extends DurableObject {
         for (const r of shared) this.markLogo(r.data);
         this.setCfg('coversV', '3');
       }
+      // own：这张封面是不是歌自己带的（1）还是配的频道图片（0）。加这一列之前存的按下面的规则补：
+      // 语音、确定没缩略图的 → 频道图片；有缩略图 file_id 的 → 自带；更早登记、说不清的删掉，下次请求时重新判断
+      if (!this.sql.exec('PRAGMA table_info(covers)').toArray().some(r => r.name === 'own')) {
+        this.sql.exec('ALTER TABLE covers ADD COLUMN own INTEGER NOT NULL DEFAULT 1');
+        for (const r of this.sql.exec("SELECT s.id, s.rec FROM songs s JOIN covers c ON c.id = s.id WHERE c.mime != 'none'").toArray()) {
+          const rec = JSON.parse(r.rec);
+          if (rec.kind === 'voice' || rec.thumb === '') this.sql.exec('UPDATE covers SET own = 0 WHERE id = ?', r.id);
+          else if (!rec.thumb) this.sql.exec('DELETE FROM covers WHERE id = ?', r.id);
+        }
+      }
       // 第一次启动：把更早版本存在 KV 里的歌单搬过来
       if (!this.cfg('migrated')) {
         if (env.TRACKS) await this.importKV(env.TRACKS);
@@ -940,14 +952,14 @@ export class Library extends DurableObject {
   }
 
   async getCover(id) {
-    const r = this.sql.exec('SELECT mime, data FROM covers WHERE id = ?', id).toArray()[0];
+    const r = this.sql.exec('SELECT mime, data, own FROM covers WHERE id = ?', id).toArray()[0];
     if (!r) return null;
-    return r.mime === 'none' ? { none: true } : { mime: r.mime, b64: r.data };
+    return r.mime === 'none' ? { none: true } : { mime: r.mime, b64: r.data, own: !!r.own };
   }
 
-  async putCover(id, mime, data) {
-    this.sql.exec(`INSERT INTO covers (id, mime, data) VALUES (?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET mime = excluded.mime, data = excluded.data`, id, mime, data);
+  async putCover(id, mime, data, own = 1) {
+    this.sql.exec(`INSERT INTO covers (id, mime, data, own) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET mime = excluded.mime, data = excluded.data, own = excluded.own`, id, mime, data, own ? 1 : 0);
   }
 
   async addPhoto(id, fileId) {

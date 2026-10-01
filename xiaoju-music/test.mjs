@@ -298,6 +298,16 @@ await t('封面：没有自带封面的歌，从频道图片帖里随机挑一�
   r = await req('/c/13');
   assert.equal(r.status, 200);
   await bytes(r);
+  // 播放页要的是「自己的专辑图」（?art=1）：配的频道图片当没有，好让网页画文字封面；自带封面照给
+  r = await req('/c/73?art=1');
+  assert.equal(r.status, 404);
+  await bytes(r);
+  r = await req('/c/13?art=1');
+  assert.equal(r.status, 404);
+  await bytes(r);
+  r = await req('/c/4?art=1');
+  assert.equal(r.status, 200);
+  await bytes(r);
   for (const id of [71, 73]) await admin('remove', { track: id });
 });
 
