@@ -143,6 +143,14 @@ h1{font-size:20px;margin:0;line-height:1.2}
   .row .fav[aria-pressed=false]{opacity:0}
   .row:hover .fav[aria-pressed=false],.row .fav[aria-pressed=false]:focus-visible{opacity:.86}
 }
+/* 歌单列表：两列大封面，左右排满再往下 */
+.list.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px;padding:8px 16px 16px;align-content:start}
+.list.grid .row{display:block}
+.list.grid .pick{width:100%;flex-direction:column;align-items:stretch;gap:7px;padding:0}
+.list.grid .thumb{width:100%;height:auto;aspect-ratio:1;border-radius:14px}
+.list.grid .thumb.noart::after{font-size:44px}
+.list.grid .info{padding:0 2px}
+.list.grid .rt{font-size:14.5px}
 /* 歌手页：歌手列表（圆头像 + 几首），点进去是这位歌手的歌，最上面有返回和「播放全部」 */
 .thumb.round{border-radius:50%}
 .artist-head{display:flex;align-items:center;gap:6px;padding:4px 4px 10px}
@@ -539,6 +547,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     list.classList.remove('skeleton');
     var shown = 0;
     var g = kind && prefs[OPEN[kind]] != null ? groupOf(kind, prefs[OPEN[kind]]) : null;
+    list.classList.toggle('grid', kind === 'list' && !g); // 歌单列表是两列大图
     if(kind && !g){ // 组列表（打开的那组已经没有歌了也回到这里）
       prefs[OPEN[kind]] = null;
       groups(kind).forEach(function(x){
