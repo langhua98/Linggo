@@ -998,8 +998,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
           default: a = Math.PI + d / rr; return [m + rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
         }
       }
-      var tails = 4, tail = Math.max(6, Math.round(n / 14)); // 4 串，每串拖一条尾巴
-      var len = step * .62, thick = 4; // 长条灯：沿着边的方向摆，长度约为间距的六成
+      var tails = 1, tail = 3; // 只跑一颗灯，后面带一点点拖影
+      var len = step * .62, thick = 7; // 长条灯：沿着边的方向摆，长度约为间距的六成
       for(var j = 0; j < n; j++){
         var p = at(j * step), p2 = at(Math.min(L - .01, j * step + .5)), hc = (hue + j / n * 360) % 360, glow = 0;
         if(playing){
@@ -1007,12 +1007,12 @@ h1{font-size:20px;margin:0;line-height:1.2}
             var dist = ((head + q * n / tails - j) % n + n) % n;
             if(dist < tail) glow = Math.max(glow, 1 - dist / tail);
           }
-          glow = Math.min(1, glow + bass * .35);
+          glow = Math.min(1, glow + bass * .15);
         }
-        var a = .22 + glow * .78, th = thick + glow * 1.5;
+        var a = .16 + glow * .84, th = thick + glow * 3;
         eg.globalAlpha = a;
-        eg.fillStyle = 'hsl(' + hc + ',95%,' + (55 + glow * 15) + '%)';
-        if(glow > .5){ eg.shadowColor = eg.fillStyle; eg.shadowBlur = 12 * glow; } else eg.shadowBlur = 0;
+        eg.fillStyle = 'hsl(' + hc + ',100%,' + (52 + glow * 28) + '%)';
+        if(glow > .3){ eg.shadowColor = 'hsl(' + hc + ',100%,60%)'; eg.shadowBlur = 22 * glow; } else eg.shadowBlur = 0;
         eg.save();
         eg.translate(p[0], p[1]);
         eg.rotate(Math.atan2(p2[1] - p[1], p2[0] - p[0]));
@@ -1020,6 +1020,20 @@ h1{font-size:20px;margin:0;line-height:1.2}
         eg.restore();
       }
       eg.globalAlpha = 1; eg.shadowBlur = 0;
+      if(playing){ // 跑着的那一颗：顺滑地沿边走，彩色光晕 + 白芯，最亮
+        var d = ((head % n) + n) % n * step, q1 = at(d), q2 = at(Math.min(L - .01, d + .5)), hh = (hue + d / L * 360) % 360;
+        eg.save();
+        eg.translate(q1[0], q1[1]);
+        eg.rotate(Math.atan2(q2[1] - q1[1], q2[0] - q1[0]));
+        eg.globalCompositeOperation = 'lighter';
+        eg.shadowColor = 'hsl(' + hh + ',100%,60%)';
+        eg.fillStyle = 'hsl(' + hh + ',100%,62%)';
+        eg.shadowBlur = 30; eg.fillRect(-len * .65, -(thick + 3) / 2, len * 1.3, thick + 3);
+        eg.shadowBlur = 16; eg.fillRect(-len * .65, -(thick + 3) / 2, len * 1.3, thick + 3);
+        eg.shadowBlur = 0; eg.fillStyle = 'rgba(255,255,255,.95)';
+        eg.fillRect(-len * .55, -thick / 4, len * 1.1, thick / 2);
+        eg.restore();
+      }
     }
     function frame(t){
       raf = 0;
@@ -1028,7 +1042,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       var bs = sample(t);
       bass += (bs - bass) * .4;
       hue = (hue + dt * .03) % 360;            // 大约 12 秒转一圈颜色
-      head = (head + dt * (.022 + bass * .03)) % 100000; // 越响跑得越快
+      head = (head + dt * (.03 + bass * .03)) % 100000; // 越响跑得越快
       drawBars(); drawEdge(true);
       raf = requestAnimationFrame(frame);
     }
