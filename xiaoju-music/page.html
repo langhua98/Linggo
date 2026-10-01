@@ -33,7 +33,6 @@ button{font:inherit;color:inherit}
 .app{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,470px);gap:48px;height:100vh;height:100dvh;padding:40px 48px}
 .stage{--disc:min(400px,36vw,46vh);align-self:center;justify-self:center;width:100%;max-width:440px;display:flex;flex-direction:column;align-items:center}
 #close{display:none}
-.stage>.edge{position:fixed}
 /* 封面做成黑胶唱片：封面是中间的圆标，播放时整张唱片转，暂停就停 */
 .cover-wrap{position:relative;width:var(--disc);aspect-ratio:1;border-radius:50%;box-shadow:0 30px 80px rgba(0,0,0,.6);cursor:pointer}
 .cover-wrap::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;
@@ -51,17 +50,10 @@ body.playing .disc{animation-play-state:running}
 .cover-fallback b{font-size:clamp(17px,4.6vw,28px);font-weight:800;line-height:1.22;letter-spacing:.5px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
 .cover-fallback small{max-width:100%;margin-top:8px;font-size:clamp(11px,2.6vw,14px);font-weight:500;opacity:.78;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .noart .cover-fallback{opacity:1}
-/* 跑马灯：沿着播放页最外圈（手机是整个屏幕边缘，电脑是整个窗口边缘）一圈长条小灯，播放时一串追着跑，颜色一直在变；
-   音柱和它用同一个颜色 */
-/* 让开刘海、灵动岛和底部横条，四个角就不会被屏幕圆角切掉 */
-.edge{position:absolute;top:env(safe-area-inset-top,0px);left:env(safe-area-inset-left,0px);pointer-events:none;z-index:0;
-  width:calc(100% - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));height:calc(100% - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px))}
-body.glow-off .edge{display:none}
 /* 播放页的强调色跟着封面走（进度条、当前这句歌词、按下的按钮） */
 .stage{--accent:var(--theme,#fb923c)}
 #seek::-webkit-slider-runnable-track{background:linear-gradient(to right,var(--accent) var(--p),rgba(255,255,255,.2) var(--p))}
 #seek::-moz-range-progress{background:var(--accent)}
-.stage>*:not(.edge){position:relative;z-index:1}
 #close{z-index:2}
 /* 跟着音乐跳的音柱 */
 .viz{display:block;width:100%;height:24px;margin-top:20px;margin-bottom:-12px}
@@ -235,7 +227,6 @@ h1{font-size:20px;margin:0;line-height:1.2}
     background:rgba(12,10,9,.28);
     transform:translateY(100%);visibility:hidden;transition:transform .38s cubic-bezier(.2,.8,.2,1),visibility .38s;touch-action:none}
   .stage.open{transform:none;visibility:visible}
-  .stage>.edge{position:absolute}
   #close{display:grid;position:absolute;top:calc(8px + env(safe-area-inset-top));left:50%;margin-left:-22px}
   .stage.dragging{transition:none}
   .vol{display:none}
@@ -278,8 +269,6 @@ h1{font-size:20px;margin:0;line-height:1.2}
 
 <div class="app">
   <section class="stage" id="stage" aria-label="正在播放">
-    <canvas class="edge" id="edge" aria-hidden="true"></canvas>
-    <canvas class="edge" id="edgeRun" aria-hidden="true"></canvas>
     <button class="icon" id="close" type="button" aria-label="收起"><svg class="ic stroke"><use href="#i-down"/></svg></button>
     <div class="now" id="now">
     <div class="cover-wrap" id="coverBox" title="看歌词">
@@ -306,7 +295,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       <button class="icon" id="repeat" type="button" aria-label="列表循环" aria-pressed="true"><svg class="ic stroke"><use href="#i-repeat"/></svg><span class="one" hidden>1</span></button>
     </div>
     <div class="extras">
-      <button class="chip" id="glowBtn" type="button" aria-label="氛围灯"><svg class="ic stroke"><use href="#i-glow"/></svg><span id="glowLbl">封面色</span></button>
+      <button class="chip" id="glowBtn" type="button" aria-label="音柱颜色"><svg class="ic stroke"><use href="#i-glow"/></svg><span id="glowLbl">封面色</span></button>
       <button class="chip" id="timerBtn" type="button" aria-label="定时关闭" aria-haspopup="true"><svg class="ic stroke"><use href="#i-timer"/></svg><span id="timerLbl">定时关闭</span></button>
       <label class="vol"><svg class="ic stroke"><use href="#i-volume"/></svg><input type="range" id="vol" min="0" max="100" step="1" value="100" aria-label="音量"></label>
     </div>
@@ -362,13 +351,13 @@ h1{font-size:20px;margin:0;line-height:1.2}
   var retries = 0, retryTimer = 0, seeking = false, bgFront = 1, toastTimer = 0;
   var narrow = window.matchMedia('(max-width: 899px)');
   // tab：歌单显示「全部」还是「我喜欢」；ctx：正在放的这首是从哪一页点的，上一首/下一首就在那一页里切
-  // glow：氛围灯（跑马灯 + 音柱）的颜色，theme 跟着封面 / rainbow 彩虹 / off 关掉跑马灯；lastPos：上次那首听到第几秒
+  // glow：音柱的颜色，theme 跟着封面 / rainbow 彩虹；lastPos：上次那首听到第几秒
   var prefs = { repeat: 'all', shuffle: false, volume: 1, last: null, tab: 'all', ctx: 'all', glow: 'theme', lastPos: 0 };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem('xm-prefs') || '{}')); } catch (e) {}
   if(['fav', 'artist', 'list', 'recent'].indexOf(prefs.tab) < 0) prefs.tab = 'all';
   if(['fav', 'artist', 'list', 'recent'].indexOf(prefs.ctx) < 0) prefs.ctx = 'all';
-  if(['theme', 'rainbow', 'off'].indexOf(prefs.glow) < 0) prefs.glow = 'theme';
-  // 封面的主色（色相、饱和度），跑马灯、音柱、进度条都用它
+  if(['theme', 'rainbow'].indexOf(prefs.glow) < 0) prefs.glow = 'theme';
+  // 封面的主色（色相、饱和度），音柱、进度条都用它
   var themeH = 28, themeS = 90;
   // 最近播放：消息号，最近的在前；recentSnap：从「最近」页点歌时冻结的顺序（不然边放边变，上一首/下一首会乱跳）
   var recent = readRecent(), recentSnap = null, loggedId = null;
@@ -1043,17 +1032,16 @@ h1{font-size:20px;margin:0;line-height:1.2}
   audio.addEventListener('waiting', function(){ $('play').classList.add('busy'); });
   audio.addEventListener('playing', function(){ $('play').classList.remove('busy'); setWaking(false); syncPlay(); });
 
-  // ── 跑马灯和音柱 ──
+  // ── 音柱 ──
   // 电脑、安卓：真的听音频（Web Audio 分析器），音柱按频率起伏；
   // iPhone / iPad：把 audio 接进 Web Audio 后，锁屏、切后台可能会没声音，所以不接，音柱用模拟的节奏动。
-  // 省电：不亮的透明灯条只在尺寸变化时画一次（edge 那层）；每帧只重画跑着的那颗（edgeRun 那层）；
   // 看不见（手机上播放页收起来、切到后台）就不画
   var fx = (function(){
-    var stat = $('edge'), sg = stat.getContext('2d'), run = $('edgeRun'), rg = run.getContext('2d'), cv = $('eq'), g = cv.getContext('2d');
+    var cv = $('eq'), g = cv.getContext('2d');
     var N = 36, ROWS = 6, lv = [], i;
     for(i = 0; i < N; i++) lv.push(0);
     var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    var an = null, buf = null, tried = false, raf = 0, bass = 0, rainbow = 20, headF = 0, last = 0, buffering = false, geo = null;
+    var an = null, buf = null, tried = false, raf = 0, rainbow = 20, last = 0;
     function visible(){ return !document.hidden && (!narrow.matches || $('stage').classList.contains('open')); }
     function tryAnalyser(){
       if(tried || ios) return;
@@ -1091,7 +1079,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       }
       return beat;
     }
-    // f：0~1，沿着灯圈（或音柱从左到右）的位置。封面色：主色上下浮动一点；彩虹：整圈一轮
+    // f：0~1，音柱从左到右的位置。封面色：主色左右浮动一点；彩虹：一路渐变
     function color(f, light){
       if(prefs.glow === 'rainbow') return 'hsl(' + ((rainbow + f * 360) % 360) + ',95%,' + light + '%)';
       return 'hsl(' + ((themeH + (f - .5) * 40 + 360) % 360) + ',' + themeS + '%,' + light + '%)';
@@ -1104,62 +1092,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       ctx.clearRect(0, 0, w, h);
       return [w, h];
     }
-    // 灯圈的形状：圆角矩形，等距放灯条
-    function layout(w, h){
-      var m = 7, rr = Math.min(narrow.matches ? 44 : 30, w / 5), W = w - 2 * m, H = h - 2 * m, arc = Math.PI * rr / 2;
-      var L = 2 * (W - 2 * rr) + 2 * (H - 2 * rr) + 4 * arc, n = Math.max(20, Math.round(L / 21));
-      geo = { w: w, h: h, m: m, rr: rr, L: L, n: n, step: L / n, len: L / n * .8, segs: [W - 2 * rr, arc, H - 2 * rr, arc, W - 2 * rr, arc, H - 2 * rr, arc] };
-    }
-    function at(d){ // 从顶边左端顺时针走 d 的位置（超出一圈的自动绕回来）
-      var G = geo, w = G.w, h = G.h, m = G.m, rr = G.rr, k = 0, a;
-      d = ((d % G.L) + G.L) % G.L;
-      while(d > G.segs[k] && k < 7){ d -= G.segs[k]; k++; }
-      switch(k){
-        case 0: return [m + rr + d, m];
-        case 1: a = -Math.PI / 2 + d / rr; return [w - m - rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
-        case 2: return [w - m, m + rr + d];
-        case 3: a = d / rr; return [w - m - rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
-        case 4: return [w - m - rr - d, h - m];
-        case 5: a = Math.PI / 2 + d / rr; return [m + rr + rr * Math.cos(a), h - m - rr + rr * Math.sin(a)];
-        case 6: return [m, h - m - rr - d];
-        default: a = Math.PI + d / rr; return [m + rr + rr * Math.cos(a), m + rr + rr * Math.sin(a)];
-      }
-    }
-    // 两头圆的灯条：在 d 处顺着灯圈方向画一条圆头粗线
-    function bar(ctx, d, l, th){
-      var p = at(d), p1 = at(d - .5), p2 = at(d + .5), ang = Math.atan2(p2[1] - p1[1], p2[0] - p1[0]);
-      var dx = Math.cos(ang) * (l - th) / 2, dy = Math.sin(ang) * (l - th) / 2;
-      ctx.lineWidth = th; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(p[0] - dx, p[1] - dy); ctx.lineTo(p[0] + dx, p[1] + dy); ctx.stroke();
-    }
-    function drawStatic(){
-      var wh = fit(stat, sg); if(!wh) return;
-      layout(wh[0], wh[1]);
-      if(prefs.glow === 'off') return;
-      sg.strokeStyle = 'rgba(255,255,255,.13)'; // 没轮到的灯：透明的玻璃灯
-      for(var j = 0; j < geo.n; j++) bar(sg, j * geo.step, geo.len, 7);
-    }
-    function drawRun(playing){
-      var wh = fit(run, rg); if(!wh || !geo) return;
-      if(!playing || prefs.glow === 'off') return;
-      var hd = headF * geo.n, tail = 3;
-      for(var k = 1; k <= tail; k++){ // 拖影：身后几节有颜色，越远越淡
-        var j = Math.floor(hd) - k + 1, f = 1 - (hd - j) / (tail + 1);
-        if(f <= 0) continue;
-        rg.globalAlpha = .2 + f * .6;
-        rg.strokeStyle = color(((j % geo.n) + geo.n) % geo.n / geo.n, 58 + f * 14);
-        bar(rg, j * geo.step, geo.len, 7);
-      }
-      rg.globalAlpha = 1;
-      var d = headF * geo.L, c = color(headF, 62); // 跑着的那一颗：彩色光晕 + 白芯
-      rg.globalCompositeOperation = 'lighter';
-      rg.shadowColor = c; rg.strokeStyle = c;
-      rg.shadowBlur = 26; bar(rg, d, geo.len * 1.25, 10);
-      rg.shadowBlur = 0; rg.strokeStyle = 'rgba(255,255,255,.95)';
-      bar(rg, d, geo.len * 1.1, 3.5);
-      rg.globalCompositeOperation = 'source-over';
-    }
-    // 音柱：每一列一个颜色（和跑马灯同一套），越往上越亮
+    // 音柱：每一列一个颜色，越往上越亮
     function drawBars(){
       var wh = fit(cv, g); if(!wh) return;
       var w = wh[0], h = wh[1], cw = w / N, bw = Math.max(2, cw - 2), ch = h / ROWS, cellH = Math.max(2, ch - 1.5);
@@ -1176,36 +1109,30 @@ h1{font-size:20px;margin:0;line-height:1.2}
       raf = 0;
       if(audio.paused || !visible()) return;
       var dt = last ? Math.min(100, t - last) : 16; last = t;
-      var bs = sample(t);
-      bass += (bs - bass) * .4;
+      sample(t);
       rainbow = (rainbow + dt * .03) % 360;
-      // 越响跑得越快；缓冲（其实没出声）的时候灯停住
-      if(!buffering && geo) headF = (headF + dt * (.032 + bass * .032) / geo.n) % 1;
-      drawBars(); drawRun(true);
+      drawBars();
       raf = requestAnimationFrame(frame);
     }
     function kick(){
       if(!visible()) return;
-      if(reduceMotion.matches){ drawBars(); drawRun(false); return; }
+      if(reduceMotion.matches){ drawBars(); return; }
       tryAnalyser();
       last = 0;
       if(!raf) raf = requestAnimationFrame(frame);
     }
-    function refresh(){ drawStatic(); drawBars(); drawRun(!audio.paused && !reduceMotion.matches); }
+    function refresh(){ drawBars(); }
     audio.addEventListener('play', kick);
-    audio.addEventListener('playing', function(){ buffering = false; kick(); });
-    audio.addEventListener('waiting', function(){ buffering = true; });
+    audio.addEventListener('playing', kick);
     document.addEventListener('visibilitychange', kick);
     window.addEventListener('resize', refresh);
     audio.addEventListener('pause', function(){
-      // 暂停后音柱落下去，跑着的灯熄掉
+      // 暂停后音柱落下去
       var t0 = performance.now();
-      drawRun(false);
       (function fall(t){
         if(!audio.paused) return;
         var any = false;
         for(var k = 0; k < N; k++){ lv[k] = Math.max(0, lv[k] - .08); if(lv[k] > 0) any = true; }
-        bass = 0;
         drawBars();
         if(any && t - t0 < 900) requestAnimationFrame(fall);
       })(t0);
@@ -1261,18 +1188,17 @@ h1{font-size:20px;margin:0;line-height:1.2}
   setInterval(function(){ if(sleepAt) paintTimer(); }, 30000);
   paintTimer();
 
-  // ── 氛围灯：封面色 → 彩虹 → 关 ──
+  // ── 音柱颜色：封面色 ⇄ 彩虹 ──
   function paintGlow(){
-    $('glowLbl').textContent = { theme: '封面色', rainbow: '彩虹', off: '氛围灯关' }[prefs.glow];
-    $('glowBtn').classList.toggle('on', prefs.glow !== 'off');
-    document.body.classList.toggle('glow-off', prefs.glow === 'off');
+    $('glowLbl').textContent = { theme: '封面色', rainbow: '彩虹' }[prefs.glow];
+    $('glowBtn').classList.add('on');
   }
   $('glowBtn').addEventListener('click', function(){
-    prefs.glow = { theme: 'rainbow', rainbow: 'off', off: 'theme' }[prefs.glow];
+    prefs.glow = prefs.glow === 'theme' ? 'rainbow' : 'theme';
     savePrefs();
     paintGlow();
     fx.refresh();
-    toast({ theme: '氛围灯：跟随封面颜色', rainbow: '氛围灯：彩虹', off: '氛围灯：关（更省电）' }[prefs.glow]);
+    toast({ theme: '音柱颜色：跟随封面', rainbow: '音柱颜色：彩虹' }[prefs.glow]);
   });
   paintGlow();
 
