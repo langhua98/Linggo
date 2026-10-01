@@ -34,6 +34,7 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 | `GET /admin` | 管理页（`admin.html`） |
 | `GET /admin/api/state` / `POST /admin/api/remove` | 管理页数据 / 从歌单移除一首（`{track}`） |
 | `GET/POST /admin/api/sources` | 搬歌用的「音乐来源频道」名单（`{sources: [用户名…]}`）。频道主账号加入这些频道（静音、归档）后，流式服务的 `/search/global` 一次搜遍，只认名单里的频道 |
+| `POST /admin/api/reshuffle-photo-covers` | 频道里新加了图片后用：没有自带封面、用着频道图片的歌清掉封面，下次打开时从现在的图库里重新挑 |
 | `POST /admin/api/ban-cover` | 这首现在的封面不要了（`{track}`）：用这张图的歌都改用频道图片，以后也不再用它 |
 | `POST /admin/api/playlists` | 整体设置歌单：`{playlists: [{id?, name, cover?, tracks: [消息号…]}]}`，顺序就是显示顺序；带 `id` 的原地改，没列出的删掉 |
 

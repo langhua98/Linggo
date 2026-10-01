@@ -249,6 +249,10 @@ async function adminApi(request, env, url) {
     }
   }
   // 这首现在的封面不要了（比如别的频道的台标）：用这张图的歌都改用频道图片，以后也不再用它
+  // 频道里新加了图片：没有自带封面、用着频道图片的歌清掉封面，下次打开时从现在的图库里重新挑
+  if (action === 'reshuffle-photo-covers' && request.method === 'POST') {
+    return json({ ok: true, cleared: await lib(env).clearPhotoCovers() });
+  }
   if (action === 'ban-cover' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));
     const track = Number(body.track);
@@ -907,6 +911,21 @@ export class Library extends DurableObject {
   }
 
   // 返回受影响的歌有几首（这首没存封面、或者存的是「没有」时为 0）
+  // 哪些歌用的是频道图片：语音、确定没有自带缩略图的（thumb 为空字符串）；更早登记、不知道有没有缩略图的，
+  // 封面和别的歌一模一样的也算（频道图片是好几首共用的，自带的专辑封面很少重）。返回清掉了几首
+  async clearPhotoCovers() {
+    const shared = new Set(this.sql.exec(`SELECT data FROM covers WHERE mime != 'none' GROUP BY data HAVING COUNT(*) >= 2`).toArray().map(r => r.data));
+    let n = 0;
+    for (const r of this.sql.exec("SELECT s.id, s.rec, c.data FROM songs s JOIN covers c ON c.id = s.id WHERE c.mime != 'none'").toArray()) {
+      const rec = JSON.parse(r.rec);
+      if (rec.kind === 'voice' || rec.thumb === '' || (rec.thumb === undefined && shared.has(r.data))) {
+        this.sql.exec('DELETE FROM covers WHERE id = ?', r.id);
+        n++;
+      }
+    }
+    return n;
+  }
+
   async banCover(id) {
     const r = this.sql.exec("SELECT data FROM covers WHERE id = ? AND mime != 'none'", id).toArray()[0];
     if (!r) return 0;

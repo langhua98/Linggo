@@ -517,6 +517,24 @@ await t('歌单：管理员整体设置，跟着歌单 JSON 给出去；改名�
   await admin('playlists', { playlists: [] });
 });
 
+await t('重新配图：只清掉用频道图片的歌（语音、确定没有自带缩略图的、和别首共用一张图的老歌），自带封面的不动', async () => {
+  await lib.upsertTrack({ id: 620, kind: 'audio', file_id: 'a', file_unique_id: 'u620', thumb: '', title: '没封面', performer: '', name: 'a.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
+  await lib.upsertTrack({ id: 621, kind: 'audio', file_id: 'b', file_unique_id: 'u621', thumb: 'T', title: '有封面', performer: '', name: 'b.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
+  await lib.upsertTrack({ id: 622, kind: 'audio', file_id: 'c', file_unique_id: 'u622', title: '老歌共用图', performer: '', name: 'c.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
+  await lib.upsertTrack({ id: 623, kind: 'audio', file_id: 'd', file_unique_id: 'u623', title: '老歌自己的图', performer: '', name: 'd.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
+  await lib.putCover(620, 'image/jpeg', 'PHOTO');
+  await lib.putCover(621, 'image/jpeg', 'OWN');
+  await lib.putCover(622, 'image/jpeg', 'PHOTO');
+  await lib.putCover(623, 'image/jpeg', 'OWN2');
+  const r = await jsonOf(await admin('reshuffle-photo-covers', {}));
+  assert.ok(r.cleared >= 2); // 前面测试留下的、用频道图片的歌也会一起清掉
+  assert.equal(await lib.getCover(620), null);
+  assert.equal(await lib.getCover(622), null);
+  assert.equal((await lib.getCover(621)).b64, 'OWN');
+  assert.equal((await lib.getCover(623)).b64, 'OWN2');
+  for (const id of [620, 621, 622, 623]) await admin('remove', { track: id });
+});
+
 await t('音乐来源频道名单：管理员读写，去掉 @ 和重复，名字不对 400', async () => {
   assert.deepEqual((await jsonOf(await admin('sources'))).sources, []);
   assert.equal((await admin('sources', { sources: ['ok_name', 'x'] })).status, 400);

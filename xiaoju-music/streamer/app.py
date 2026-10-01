@@ -33,7 +33,7 @@ from telethon.errors import FileReferenceExpiredError, FloodWaitError, SessionPa
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
-from telethon.tl.types import InputMessagesFilterMusic, InputPeerNotifySettings
+from telethon.tl.types import InputMessagesFilterMusic, InputMessagesFilterPhotos, InputPeerNotifySettings
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -366,6 +366,9 @@ async def lifespan(app):
             await u.connect()
             if await u.is_user_authorized():
                 set_user_client(u)
+                # 把聊天列表里的频道先记进缓存：用名字找已加入的频道时就不用再「查用户名」，
+                # 查用户名的次数 Telegram 卡得很严，多查几次就要等好几个小时
+                await u.get_dialogs()
                 log.info('user session ready')
             else:
                 log.warning('TG_USER_SESSION is no longer valid')
@@ -675,6 +678,36 @@ async def bot_ask(request: Request):
             if name and name[1] not in links:
                 links.append(name[1])
     return {'replies': replies, 'links': links, 'hits': hits}
+
+
+@app.post('/copy/photos')
+async def copy_photos(request: Request):
+    """把一个频道最新的图片帖转到小橘音乐（不带「转发自」，说明文字原样保留，画师署名不丢）。
+    Worker 会把频道里的图片帖记下来，给没有封面的歌当封面。{source, limit} → {new_ids, skipped}"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    body = await request.json()
+    source = str(body.get('source', '')).strip().lstrip('@')
+    if not re.fullmatch(r'\w{4,64}', source):
+        raise HTTPException(400, 'bad source')
+    limit = max(1, min(int(body.get('limit', 30)), 200))
+    skip = max(0, int(body.get('skip', 0)))  # 跳过最新的几张（上一批已经转过）
+    new_ids, skipped = [], 0
+    async for msg in user_client.iter_messages(source, filter=InputMessagesFilterPhotos, limit=limit, add_offset=skip):
+        try:
+            sent = await user_client.forward_messages(target_channel(), msg, drop_author=True)
+            new_ids.append(getattr(sent[0] if isinstance(sent, list) else sent, 'id', None))
+        except FloodWaitError as e:
+            if e.seconds > 600:
+                break
+            await asyncio.sleep(e.seconds + 1)
+            skipped += 1
+        except Exception as e:  # noqa: BLE001 — 比如来源频道禁止转发
+            log.info('photo %s failed: %s', msg.id, e)
+            skipped += 1
+        await asyncio.sleep(3)
+    return {'new_ids': new_ids, 'skipped': skipped}
 
 
 @app.post('/copy/pick')
