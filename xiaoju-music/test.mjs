@@ -51,7 +51,7 @@ let seq = 0;
 const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); return id; };
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
 const calls = [];
-const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok' };
+const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok', viz: 'ok' };
 // 模拟歌词来源：LRCLIB 的歌词库，网易云的歌和歌词
 const lrclibDb = [];
 const neteaseDb = [];
@@ -90,6 +90,13 @@ globalThis.fetch = async (input, init = {}) => {
     assert.equal(headers.get('X-Key'), SKEY);
     const img = thumbs.get(Number(m[1]));
     return img ? new Response(img, { headers: { 'Content-Type': 'image/jpeg' } }) : Response.json({ detail: 'Not Found' }, { status: 404 });
+  }
+  if ((m = url.match(/^https:\/\/streamer\.example\/viz\/(\d+)$/))) {
+    if (mode.viz === 'down') throw new TypeError('fetch failed');
+    if (mode.viz === 'starting') return new Response('<html>starting</html>', { headers: { 'Content-Type': 'text/html' } });
+    assert.equal(headers.get('X-Key'), SKEY);
+    if (Number(m[1]) === 404) return Response.json({ detail: 'Not Found' }, { status: 404 });
+    return new Response(Uint8Array.from([0x58, 0x56, 1, 15, 2, 0x12, 0xf0, Number(m[1]) & 255]), { headers: { 'Content-Type': 'application/octet-stream' } });
   }
   if ((m = url.match(/^https:\/\/streamer\.example\/stream\/(\d+)$/))) {
     if (mode.streamer === 'down') throw new TypeError('fetch failed');
@@ -196,7 +203,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs']);
+  assert.deepEqual(tables, ['config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'viz']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -669,6 +676,38 @@ await t('编辑成纯文字 → 移除；管理页也能移除；管理接口要
   const ids = (await publicTracks()).map(x => x.id);
   assert.ok(!ids.includes(13) && !ids.includes(4));
   assert.equal((await req('/a/4')).status, 404);
+});
+
+await t('音柱数据：第一次请流式服务算，存下来；算不了记住；服务没起来不记；换了文件要重算', async () => {
+  for (const id of [810, 811, 404]) await hook({ channel_post: audioPost(id, { file_id: addFile(bytesOf(10, id)), file_size: 10 }) });
+  calls.length = 0;
+  let r = await req('/v/810');
+  assert.equal(r.status, 200);
+  assert.deepEqual([...await bytes(r)], [0x58, 0x56, 1, 15, 2, 0x12, 0xf0, 810 & 255]);
+  r = await req('/v/810');
+  await bytes(r);
+  assert.equal(calls.filter(c => c.url.includes('/viz/')).length, 1, '算过的直接给');
+  r = await req('/v/404');
+  assert.equal(r.status, 404);
+  await bytes(r);
+  calls.length = 0;
+  assert.equal((await req('/v/404')).status, 404);
+  assert.equal(calls.length, 0, '算不了的记住，不再问');
+  mode.viz = 'starting';
+  r = await req('/v/811');
+  assert.equal(r.status, 503);
+  await bytes(r);
+  mode.viz = 'down';
+  assert.equal((await req('/v/811')).status, 503);
+  mode.viz = 'ok';
+  assert.equal((await req('/v/811')).status, 200, '服务好了再算');
+  assert.equal((await req('/v/9999')).status, 404, '没有这首歌');
+  // 帖子换了文件：旧数据作废
+  await hook({ edited_channel_post: audioPost(810, { file_id: addFile(bytesOf(12, 1)), file_size: 12, file_unique_id: 'U810b' }) });
+  assert.equal(await lib.getViz(810), null);
+  await admin('remove', { track: 811 });
+  assert.equal(await lib.getViz(811), null);
+  for (const id of [810, 404]) await admin('remove', { track: id });
 });
 
 await t('路由：404、405、CORS 预检', async () => {

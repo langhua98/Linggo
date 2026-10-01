@@ -23,9 +23,11 @@ import hmac
 import logging
 import os
 import re
+import subprocess
 import time
 from contextlib import asynccontextmanager
 
+import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
@@ -62,6 +64,74 @@ def parse_range(header, total):
     if end < start:
         return 0, total - 1, False
     return start, end, True
+
+
+# ── 音柱数据 ────────────────────────────────────────────────────
+# 播放页的音柱要跟着歌真的动。iPhone 上不能把播放器接进 Web Audio 实时分析（锁屏、切后台会没声音），
+# 所以在这里把整首歌先算一遍：每秒 VIZ_FPS 帧，每帧 VIZ_BANDS 个频段（50 Hz～5 kHz 按对数分）各多响，
+# 每个值 0～15 存成半个字节。网页按播放进度取对应那一帧画出来。
+# 格式：b'XV' + 版本 1 + 每秒帧数 + 频段数 + 逐帧、从低频到高频，两个值一个字节（高 4 位在前）
+VIZ_RATE = 11025
+VIZ_FPS = 15
+VIZ_BANDS = 16
+VIZ_WIN = 1024
+VIZ_MAX_BYTES = 150 * 1024 * 1024   # 再大的（几个小时的串烧）不算
+VIZ_MAX_SECONDS = 3 * 3600
+
+
+def decode_pcm(data):
+    """任意音频 → 单声道 11025 Hz 的 int16 采样（用 ffmpeg）。解不了返回 None。"""
+    try:
+        r = subprocess.run(['ffmpeg', '-v', 'error', '-i', 'pipe:0', '-t', str(VIZ_MAX_SECONDS), '-ac', '1', '-ar', str(VIZ_RATE),
+                            '-f', 's16le', 'pipe:1'], input=data, capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        log.exception('ffmpeg failed')
+        return None
+    if not r.stdout:
+        return None
+    return np.frombuffer(r.stdout[:len(r.stdout) // 2 * 2], dtype='<i2')
+
+
+def viz_levels(pcm, rate=VIZ_RATE, fps=VIZ_FPS, bands=VIZ_BANDS):
+    """采样 → 每帧每个频段 0～15 的二维数组（帧数 × 频段）。每个频段按这首歌里它自己最响的时候定满格，
+    低于那个 30 dB 算 0：高频本来就弱，不分开算的话右边的柱子永远是平的。"""
+    x = pcm.astype(np.float32) / 32768
+    hop = rate // fps
+    frames = max(1, len(x) // hop)
+    x = np.concatenate([x, np.zeros(VIZ_WIN, np.float32)])
+    win = np.hanning(VIZ_WIN).astype(np.float32)
+    freqs = np.fft.rfftfreq(VIZ_WIN, 1 / rate)
+    edges = np.geomspace(50, 5000, bands + 1)
+    masks = []
+    for b in range(bands):
+        m = (freqs >= edges[b]) & (freqs < edges[b + 1])
+        if not m.any():  # 最低几个频段可能比一个频点还窄：取最近的那个频点
+            m = np.zeros_like(m)
+            m[np.argmin(np.abs(freqs - (edges[b] + edges[b + 1]) / 2))] = True
+        masks.append(m)
+    db = np.empty((frames, bands), np.float32)
+    for f0 in range(0, frames, 2000):  # 分批算，几十分钟的串烧也不会一下吃掉太多内存
+        f1 = min(frames, f0 + 2000)
+        idx = np.arange(VIZ_WIN)[None, :] + hop * np.arange(f0, f1)[:, None]
+        power = np.abs(np.fft.rfft(x[idx] * win, axis=1)) ** 2
+        for b, m in enumerate(masks):
+            db[f0:f1, b] = 10 * np.log10(power[:, m].mean(axis=1) + 1e-10)
+    top = np.percentile(db, 98, axis=0)
+    loud = np.percentile(db, 98)
+    top = np.maximum(top, loud - 24)  # 某个频段整首都几乎没声音，就别把它的噪音放大成满格
+    v = np.clip((db - (top - 30)) / 30, 0, 1) ** 1.3
+    return np.rint(v * 15).astype(np.uint8)
+
+
+def pack_viz(levels, fps=VIZ_FPS):
+    flat = levels.reshape(-1)
+    if len(flat) % 2:
+        flat = np.concatenate([flat, np.zeros(1, np.uint8)])
+    packed = (flat[0::2] << 4) | flat[1::2]
+    return b'XV' + bytes([1, fps, levels.shape[1]]) + packed.astype(np.uint8).tobytes()
+
+
+viz_gate = asyncio.Semaphore(2)  # 同时最多算两首，免得把免费的 CPU 占满、拖慢播放
 
 
 class Streamer:
@@ -439,6 +509,24 @@ async def stream(message_id: int, request: Request):
         headers['Content-Range'] = f'bytes {start}-{end}/{size}'
     return StreamingResponse(streamer.body(message_id, start, end), status_code=206 if partial else 200,
                              headers=headers, media_type='application/octet-stream')
+
+
+@app.get('/viz/{message_id}')
+async def viz(message_id: int, request: Request):
+    """这首歌的音柱数据（格式见 pack_viz）。不是音频、太大或解不出来：404（Worker 记下来不再问）。"""
+    check_key(request)
+    msg = await streamer.message(message_id)
+    if msg is None or not (getattr(msg.document, 'mime_type', '') or '').startswith(('audio/', 'video/')) or msg.document.size > VIZ_MAX_BYTES:
+        raise HTTPException(404)
+    async with viz_gate:
+        data = bytearray()
+        async for chunk in streamer.body(message_id, 0, msg.document.size - 1):
+            data.extend(chunk)
+        pcm = await asyncio.to_thread(decode_pcm, bytes(data))
+        if pcm is None or len(pcm) < VIZ_RATE:
+            raise HTTPException(404)
+        levels = await asyncio.to_thread(viz_levels, pcm)
+    return Response(content=pack_viz(levels), media_type='application/octet-stream')
 
 
 # ── 登录、搬歌（都要 X-Key）─────────────────────────────────────────

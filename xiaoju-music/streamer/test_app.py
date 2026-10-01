@@ -16,6 +16,8 @@ DATA = bytes((i * 7 + (i >> 12)) & 255 for i in range(CHUNK * 3 + 12345))  # 3 �
 
 
 class Doc:
+    mime_type = 'audio/mpeg'
+
     def __init__(self, size, ref):
         self.size = size
         self.ref = ref
@@ -372,3 +374,66 @@ def test_copy_endpoints_need_key_and_login(monkeypatch):
     assert client.post('/channels/join', json={'usernames': ['abcd']}).status_code == 403
     assert client.post('/channels/join', json={'usernames': ['abcd']}, headers={'X-Key': 'k1'}).status_code == 409
     assert client.get('/search/global?q=x&only=dj225', headers={'X-Key': 'k1'}).status_code == 409
+
+
+# ── 音柱数据 ──
+
+def tones(*parts, rate=appmod.VIZ_RATE):
+    """拼一段测试音频：[(频率或 0 表示静音, 秒数), ...] → int16 采样"""
+    import numpy as np
+    out = []
+    for hz, sec in parts:
+        t = np.arange(int(rate * sec)) / rate
+        out.append((np.sin(2 * np.pi * hz * t) * 12000 if hz else np.zeros_like(t)).astype('<i2'))
+    return np.concatenate(out)
+
+
+def band_of(hz):
+    import numpy as np
+    edges = np.geomspace(50, 5000, appmod.VIZ_BANDS + 1)
+    return int(np.searchsorted(edges, hz) - 1)
+
+
+def test_viz_levels_follow_the_music():
+    lv = appmod.viz_levels(tones((100, 2), (3000, 2), (0, 1)))
+    fps = appmod.VIZ_FPS
+    assert lv.shape == (5 * fps, appmod.VIZ_BANDS)
+    lo, hi = band_of(100), band_of(3000)
+    first, second, quiet = lv[3:2 * fps - 3], lv[2 * fps + 3:4 * fps - 3], lv[4 * fps + 3:]
+    # 低音那两秒：低频柱子满、高频几乎没有；换成高音后反过来；静音时全部落到底
+    assert first[:, lo].min() >= 12 and first[:, hi].max() <= 3
+    assert second[:, hi].min() >= 12 and second[:, lo].max() <= 3
+    assert quiet.max() == 0
+
+
+def test_pack_viz_header_and_nibbles():
+    import numpy as np
+    lv = np.array([[1, 2, 3], [15, 0, 7], [4, 5, 6]], np.uint8)
+    b = appmod.pack_viz(lv, fps=15)
+    assert b[:5] == b'XV' + bytes([1, 15, 3])
+    body = b[5:]
+    vals = [v for byte in body for v in (byte >> 4, byte & 15)]
+    assert vals[:9] == [1, 2, 3, 15, 0, 7, 4, 5, 6] and len(body) == 5
+
+
+def test_viz_endpoint(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    tg = FakeTelegram()
+    monkeypatch.setattr(appmod, 'streamer', make(tg))
+    seen = {}
+
+    def fake_decode(data):
+        seen['bytes'] = data
+        return tones((100, 1), (3000, 1))
+
+    monkeypatch.setattr(appmod, 'decode_pcm', fake_decode)
+    client = TestClient(appmod.app)
+    assert client.get('/viz/12').status_code == 403
+    key = {'X-Key': 'k1'}
+    assert client.get('/viz/99', headers=key).status_code == 404
+    r = client.get('/viz/12', headers=key)
+    assert r.status_code == 200 and r.content[:5] == b'XV' + bytes([1, appmod.VIZ_FPS, appmod.VIZ_BANDS])
+    assert seen['bytes'] == DATA  # 整个文件都取下来交给 ffmpeg
+    assert len(r.content) == 5 + 2 * appmod.VIZ_FPS * appmod.VIZ_BANDS // 2
+    monkeypatch.setattr(appmod, 'decode_pcm', lambda data: None)  # 解不出来（不是能识别的音频）
+    assert client.get('/viz/12', headers=key).status_code == 404

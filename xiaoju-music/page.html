@@ -755,6 +755,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     $('like').hidden = false;
     $('lyricsBtn').hidden = false;
     loadLyrics(id);
+    fx.load(id);
     $('like').setAttribute('aria-pressed', String(isFav(id)));
     syncPos();
     $('mini').hidden = false;
@@ -1033,51 +1034,49 @@ h1{font-size:20px;margin:0;line-height:1.2}
   audio.addEventListener('playing', function(){ $('play').classList.remove('busy'); setWaking(false); syncPlay(); });
 
   // ── 音柱 ──
-  // 电脑、安卓：真的听音频（Web Audio 分析器），音柱按频率起伏；
-  // iPhone / iPad：把 audio 接进 Web Audio 后，锁屏、切后台可能会没声音，所以不接，音柱用模拟的节奏动。
+  // 跟着歌真的跳：服务器把每首歌提前分析好（/v/消息号：每秒 15 帧，每帧 16 个频段从低音到高音各多响），
+  // 这里按播放进度取对应那一帧画。不用 Web Audio 实时分析——iPhone 上那样锁屏、切后台会没声音。
+  // 数据还没到（第一次放这首，服务器要算十几秒）时柱子平着，不假装在跳。
   // 看不见（手机上播放页收起来、切到后台）就不画
   var fx = (function(){
     var cv = $('eq'), g = cv.getContext('2d');
-    var N = 36, ROWS = 6, lv = [], i;
+    var N = 32, ROWS = 6, lv = [], i;
     for(i = 0; i < N; i++) lv.push(0);
-    var ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    var an = null, buf = null, tried = false, raf = 0, rainbow = 20, last = 0;
+    var raf = 0, rainbow = 20, last = 0, data = null, want = null, retryT = 0;
     function visible(){ return !document.hidden && (!narrow.matches || $('stage').classList.contains('open')); }
-    function tryAnalyser(){
-      if(tried || ios) return;
-      tried = true;
-      try {
-        var AC = window.AudioContext || window.webkitAudioContext;
-        if(!AC) return;
-        var ctx = new AC(), src = ctx.createMediaElementSource(audio);
-        an = ctx.createAnalyser(); an.fftSize = 128; an.smoothingTimeConstant = .7;
-        src.connect(an); an.connect(ctx.destination);
-        buf = new Uint8Array(an.frequencyBinCount);
-        audio.addEventListener('play', function(){ if(ctx.state === 'suspended') ctx.resume(); });
-        if(ctx.state === 'suspended') ctx.resume();
-      } catch (e) { an = null; }
+    // 解包：'XV' + 版本 + 每秒帧数 + 频段数 + 两个值一个字节（高 4 位在前）
+    function parse(id, buf){
+      var b = new Uint8Array(buf);
+      if(b.length < 5 || b[0] !== 0x58 || b[1] !== 0x56 || b[2] !== 1) return null;
+      var fps = b[3], bands = b[4], n = (b.length - 5) * 2, vals = new Uint8Array(n);
+      for(var k = 5, j = 0; k < b.length; k++){ vals[j++] = b[k] >> 4; vals[j++] = b[k] & 15; }
+      return { id: id, fps: fps, bands: bands, frames: Math.floor(n / bands), vals: vals };
     }
-    function sample(t){
-      var k, v, sum = 0;
-      if(an){
-        an.getByteFrequencyData(buf);
-        for(k = 0; k < N; k++){
-          var b = Math.min(buf.length - 1, Math.floor(Math.pow(k / N, 1.6) * buf.length * .8) + 1);
-          v = buf[b] / 255; v = Math.pow(v, 1.4) * 1.15;
-          lv[k] = Math.max(Math.min(v, 1), lv[k] - .06);
+    function load(id, tries){
+      clearTimeout(retryT);
+      want = id;
+      if(data && data.id !== id) data = null;
+      if(data) return;
+      fetch('/v/' + id).then(function(r){
+        if(want !== id) return;
+        if(r.status === 503 && (tries || 0) < 6){ retryT = setTimeout(function(){ if(want === id) load(id, (tries || 0) + 1); }, 15000); return; }
+        if(!r.ok) return;
+        return r.arrayBuffer().then(function(buf){ if(want === id) data = parse(id, buf); });
+      }).catch(function(){
+        if(want === id && (tries || 0) < 6) retryT = setTimeout(function(){ load(id, (tries || 0) + 1); }, 15000);
+      });
+    }
+    // 按播放进度取一帧：16 个频段摊到 32 根柱子上（中间的插值）。上升立刻跟上，回落慢一点，看着不闪
+    function sample(){
+      var d = data && data.id === curId ? data : null, f = d ? Math.floor(audio.currentTime * d.fps) : -1;
+      for(var k = 0; k < N; k++){
+        var v = 0;
+        if(d && f >= 0 && f < d.frames){
+          var x = k / (N - 1) * (d.bands - 1), b0 = Math.floor(x), b1 = Math.min(d.bands - 1, b0 + 1), t = x - b0, base = f * d.bands;
+          v = (d.vals[base + b0] * (1 - t) + d.vals[base + b1] * t) / 15;
         }
-        for(k = 0; k < 4; k++) sum += buf[k] / 255;
-        return sum / 4;
+        lv[k] = v >= lv[k] ? v : Math.max(v, lv[k] - .09);
       }
-      // 模拟：几层不同快慢的波叠起来，再配一个约 2 下/秒的重拍
-      var beat = Math.pow(Math.max(0, Math.sin(t / 1000 * Math.PI * 2 * 1.9)), 6);
-      for(k = 0; k < N; k++){
-        var tilt = 1 - k / N * .55;
-        v = (.45 + .3 * Math.sin(t / 260 + k * .9) + .25 * Math.sin(t / 130 + k * 2.3 + 1)) * tilt * (.55 + .45 * beat * (k < 14 ? 1 : .5));
-        v = Math.max(0, Math.min(1, v));
-        lv[k] = v > lv[k] ? v : Math.max(v, lv[k] - .07);
-      }
-      return beat;
     }
     // f：0~1，音柱从左到右的位置。封面色：主色左右浮动一点；彩虹：一路渐变
     function color(f, light){
@@ -1109,7 +1108,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
       raf = 0;
       if(audio.paused || !visible()) return;
       var dt = last ? Math.min(100, t - last) : 16; last = t;
-      sample(t);
+      sample();
       rainbow = (rainbow + dt * .03) % 360;
       drawBars();
       raf = requestAnimationFrame(frame);
@@ -1117,7 +1116,6 @@ h1{font-size:20px;margin:0;line-height:1.2}
     function kick(){
       if(!visible()) return;
       if(reduceMotion.matches){ drawBars(); return; }
-      tryAnalyser();
       last = 0;
       if(!raf) raf = requestAnimationFrame(frame);
     }
@@ -1141,7 +1139,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     new MutationObserver(function(){ requestAnimationFrame(function(){ if(visible()){ refresh(); kick(); } }); })
       .observe($('stage'), { attributes: true, attributeFilter: ['class'] });
     refresh();
-    return { refresh: refresh };
+    return { refresh: refresh, load: load };
   })();
   audio.addEventListener('ended', function(){
     if(sleepEnd){ // 定时「播完这首」：到这儿就停

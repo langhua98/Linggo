@@ -36,6 +36,8 @@ const LIST_TTL_MS = 20 * 1000;
 const REC_TTL_MS = 60 * 1000;
 // 等流式服务回响应头的时间；等不到多半是它在休眠，先让播放页过会儿再试
 const STREAMER_WAIT_MS = 25 * 1000;
+// 算音柱数据要先把整首歌从 Telegram 取下来再解码，大文件要久一点
+const VIZ_WAIT_MS = 90 * 1000;
 // Telegram 给音乐文件生成的缩略图一般 20 KB 上下，超过这个大小就不当封面存
 const COVER_LIMIT = 512 * 1024;
 // 同一张图被这么多首歌当封面，就当它是别的频道的台标
@@ -99,6 +101,8 @@ export default {
       if (m) return await audio(request, env, Number(m[1]), url.searchParams.has('dl'));
       const c = path.match(/^\/c\/(\d{1,10})$/);
       if (c) return await cover(env, Number(c[1]), url.searchParams.get('art') === '1');
+      const v = path.match(/^\/v\/(\d{1,10})$/);
+      if (v) return await viz(env, Number(v[1]));
       const l = path.match(/^\/l\/(\d{1,10})$/);
       if (l) return await lyrics(env, Number(l[1]));
       return text('Not Found', 404);
@@ -321,6 +325,44 @@ async function cover(env, id, artOnly) {
   if (c.none || (artOnly && !c.own)) throw new HttpError(404, '这首没有封面', { 'Cache-Control': 'public, max-age=86400' });
   return new Response(fromBase64(c.b64), {
     headers: cors({ 'Content-Type': c.mime, 'Cache-Control': 'public, max-age=604800' }),
+  });
+}
+
+// ── 音柱数据 ─────────────────────────────────────────────────────
+// 每首歌各频段随时间的响度（格式见流式服务的 pack_viz），第一次请流式服务算，存下来以后直接给。
+// 网页按播放进度画音柱，iPhone 上也能跟着歌真的跳
+async function viz(env, id) {
+  const L = lib(env);
+  let b64 = await L.getViz(id);
+  if (b64 === null) {
+    if (!(await getRec(env, id))) throw new HttpError(404, '没有这首歌');
+    if (!streamerOn(env)) throw new HttpError(503, '暂时算不了', { 'Retry-After': '300' });
+    let res;
+    try {
+      res = await fetch(`${streamerBase(env)}/viz/${id}`, {
+        headers: { 'X-Key': env.STREAMER_KEY },
+        signal: AbortSignal.timeout(VIZ_WAIT_MS),
+      });
+    } catch {
+      throw new HttpError(503, '暂时算不了', { 'Retry-After': '30' });
+    }
+    // 流式服务自己的 404（JSON）才是「这首算不了」；Hugging Face 的错误页不算
+    if (res.status === 404 && (res.headers.get('Content-Type') || '').includes('json')) {
+      if (res.body) await res.body.cancel();
+      b64 = '';
+    } else {
+      const buf = res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+      if (!buf || buf.length < 5 || buf[0] !== 0x58 || buf[1] !== 0x56) {
+        if (res.body && !res.bodyUsed) await res.body.cancel();
+        throw new HttpError(503, '暂时算不了', { 'Retry-After': '30' });
+      }
+      b64 = toBase64(buf);
+    }
+    await L.putViz(id, b64);
+  }
+  if (!b64) throw new HttpError(404, '这首没有音柱数据', { 'Cache-Control': 'public, max-age=86400' });
+  return new Response(fromBase64(b64), {
+    headers: cors({ 'Content-Type': 'application/octet-stream', 'Cache-Control': 'public, max-age=2592000' }),
   });
 }
 
@@ -793,6 +835,8 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY, pos INTEGER NOT NULL, name TEXT NOT NULL, cover INTEGER NOT NULL DEFAULT 0, tracks TEXT NOT NULL)');
       // 别的频道的台标：搬来的歌自带的「封面」常是那个频道的标志，好多首共用同一张。记下来的图不再当封面
       this.sql.exec('CREATE TABLE IF NOT EXISTS logo_covers (data TEXT PRIMARY KEY)');
+      // 音柱数据：base64；空字符串表示确定算不了
+      this.sql.exec('CREATE TABLE IF NOT EXISTS viz (id INTEGER PRIMARY KEY, data TEXT NOT NULL)');
       this.dropSplitterLeftovers();
       const coversV = this.cfg('coversV');
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
@@ -856,10 +900,11 @@ export class Library extends DurableObject {
 
   async upsertTrack(rec) {
     const old = await this.getTrack(rec.id);
-    // 帖子里换了文件，旧封面、旧歌词就作废
+    // 帖子里换了文件，旧封面、旧歌词、旧音柱数据就作废
     if (!old || old.file_unique_id !== rec.file_unique_id) {
       this.sql.exec('DELETE FROM covers WHERE id = ?', rec.id);
       this.sql.exec('DELETE FROM lyrics WHERE id = ?', rec.id);
+      this.sql.exec('DELETE FROM viz WHERE id = ?', rec.id);
     }
     this.sql.exec(`INSERT INTO songs (id, rec, updated) VALUES (?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, updated = excluded.updated`,
@@ -870,6 +915,7 @@ export class Library extends DurableObject {
     this.sql.exec('DELETE FROM songs WHERE id = ?', id);
     this.sql.exec('DELETE FROM covers WHERE id = ?', id);
     this.sql.exec('DELETE FROM lyrics WHERE id = ?', id);
+    this.sql.exec('DELETE FROM viz WHERE id = ?', id);
   }
 
   async getSources() {
@@ -949,6 +995,15 @@ export class Library extends DurableObject {
   markLogo(data) {
     this.sql.exec('INSERT OR IGNORE INTO logo_covers (data) VALUES (?)', data);
     this.sql.exec('DELETE FROM covers WHERE data = ?', data);
+  }
+
+  async getViz(id) {
+    const r = this.sql.exec('SELECT data FROM viz WHERE id = ?', id).toArray()[0];
+    return r ? r.data : null;
+  }
+
+  async putViz(id, data) {
+    this.sql.exec('INSERT INTO viz (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data', id, data);
   }
 
   async getCover(id) {
