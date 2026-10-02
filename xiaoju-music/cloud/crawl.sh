@@ -10,6 +10,7 @@ fi
 source "$HOME/.xiaoju/env"
 export PATH="$HOME/.local/bin:$PATH"
 export DISPLAY="${DISPLAY:-:1}"  # 浏览器开在桌面上（Codespaces 的网页桌面是 :1）
+[ -S /tmp/.X11-unix/X1 ] && export DISPLAY=:1  # 有网页桌面就一定开在它上面，别开到看不见的地方
 OUT="$HOME/douyin-data"
 rm -rf "$OUT" && mkdir -p "$OUT"
 cd "$HOME/MediaCrawler" || { echo "没找到 MediaCrawler，重新运行一次安装命令"; exit 1; }
@@ -18,6 +19,20 @@ cd "$HOME/MediaCrawler" || { echo "没找到 MediaCrawler，重新运行一次�
 command -v node >/dev/null 2>&1 || { echo "== 先装 Node.js（一两分钟）=="; sudo apt-get update -y || true; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs; }
 # MediaCrawler 默认 CDP 模式要找本机装的 Chrome/Edge，云电脑上没有，浏览器就起不来；改用它自己装的 Chromium
 sed -i 's/^ENABLE_CDP_MODE = True/ENABLE_CDP_MODE = False/' config/base_config.py
+# 抖音首页打开后会自己再跳一次（反爬检查），MediaCrawler 没等跳完就读页面，报 Execution context was destroyed；
+# 让它打开首页后等页面稳定（最多 20 秒）再往下走
+python3 - <<'PY'
+p = 'media_platform/douyin/core.py'
+s = open(p, encoding='utf-8').read()
+old = 'await self.context_page.goto(self.index_url)\n'
+if '# xiaoju: settle' not in s and old in s:
+    i = s.index(old)
+    pad = s[s.rindex('\n', 0, i) + 1:i]
+    s = s.replace(old, old + pad + '# xiaoju: settle\n'
+                  + pad + 'try:\n' + pad + '    await self.context_page.wait_for_load_state("networkidle", timeout=20000)\n'
+                  + pad + 'except Exception:\n' + pad + '    pass\n' + pad + 'await asyncio.sleep(3)\n', 1)
+    open(p, 'w', encoding='utf-8').write(s)
+PY
 
 echo "== 马上会弹出浏览器，用抖音 App 扫码登录（要验证就在浏览器里完成）=="
 uv run main.py --platform dy --lt qrcode --type creator --creator_id "$CREATORS" \
