@@ -93,6 +93,25 @@ if '# xiaoju: keep' not in c and old in c:
                   '        note_details = [d if d is not None else p for d, p in zip(note_details, video_list)]\n'
                   '        for aweme_item in note_details:\n', 1)
     open(p3, 'w', encoding='utf-8').write(c)
+c = open(p3, encoding='utf-8').read()
+if '# xiaoju: light' not in c:
+    # 页面开久了会 Target crashed：容器里 /dev/shm 只有 64MB，抖音首页又一直在放视频把内存撑爆。
+    # 浏览器不用 /dev/shm、静音；页面里的视频音频一律不加载（抓列表用不着）
+    old = '                accept_downloads=True,\n'
+    if old in c:
+        c = c.replace(old, old + '                # xiaoju: light\n'
+                      '                args=["--disable-dev-shm-usage", "--mute-audio", "--autoplay-policy=user-gesture-required"],\n', 1)
+    old = '            self.context_page = await self.browser_context.new_page()\n'
+    if old in c:
+        pad = '            '
+        c = c.replace(old, old + pad + '# xiaoju: light\n'
+                      + pad + 'async def _xj_route(route):\n'
+                      + pad + '    if route.request.resource_type == "media":\n'
+                      + pad + '        await route.abort()\n'
+                      + pad + '    else:\n'
+                      + pad + '        await route.continue_()\n'
+                      + pad + 'await self.browser_context.route("**/*", _xj_route)\n', 1)
+    open(p3, 'w', encoding='utf-8').write(c)
 PY
 
 # 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）
