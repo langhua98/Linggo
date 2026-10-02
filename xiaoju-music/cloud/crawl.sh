@@ -181,6 +181,16 @@ if '# xiaoju: quality' not in c and old in c:
                   '        "xiaoju_images": [{"url_list": (i or {}).get("url_list"), "width": (i or {}).get("width"), "height": (i or {}).get("height")} for i in (aweme_item.get("images") or [])],\n', 1)
     open(p4, 'w', encoding='utf-8').write(c)
 c = open(p4, encoding='utf-8').read()
+old = '    # 教学版：创作者个人资料(昵称/性别/头像/签名/IP/粉丝数等)不再落库，防骚扰。\n    return\n'
+if '# xiaoju: progress' not in c and old in c:
+    # 进度要知道每个账号一共多少作品：MediaCrawler 拿到账号资料后不存了，这里只记昵称和作品数（都是频道主自己的号）
+    c = c.replace(old, old.replace('    return\n', '') + '    # xiaoju: progress\n'
+                  '    import json as _j, os as _o\n'
+                  '    _u = (creator or {}).get("user") or {}\n'
+                  '    with open(_o.path.expanduser("~/.xiaoju/creators.jsonl"), "a", encoding="utf-8") as _f:\n'
+                  '        _f.write(_j.dumps({"sec_uid": user_id, "name": _u.get("nickname") or "", "total": _u.get("aweme_count")}, ensure_ascii=False) + "\\n")\n', 1)
+    open(p4, 'w', encoding='utf-8').write(c)
+c = open(p4, encoding='utf-8').read()
 old = '        "note_download_url": ",".join(extract_image_urls(aweme_item)),\n'
 if '# xiaoju: account' not in c and old in c:
     # 作品属于哪个账号：MediaCrawler 把昵称打码、uid 做了哈希，频道里按账号贴标签要原样的 sec_uid 和昵称（都是频道主自己的号）
@@ -196,20 +206,50 @@ WIN="$HERE/win.sh"
 WINLOOP=$!
 trap 'kill $WINLOOP 2>/dev/null' EXIT
 
+# 进度：每 30 秒把在干什么、每个号一共多少、抓到多少、送了多少报给小橘（机器人里发「进度」看）。
+# 频道主在机器人里点了「停止」，小橘回 {"stop": true}：把抓取停掉，没送的不送了
+SENTF="$HOME/.xiaoju/sent"; echo 0 > "$SENTF"
+STOPF="$HOME/.xiaoju/stop"; rm -f "$STOPF"
+: > "$HOME/.xiaoju/creators.jsonl"
+report() {  # $1 = starting / running / done / stopped / failed
+  local mode=crawl names="$CREATORS" body resp
+  if [ -n "${XJ_SEARCH_MODE:-}" ]; then mode=search; names="$KW"; fi
+  body=$(python3 "$HERE/progress.py" "$1" "$mode" "$OUT" "$(cat "$SENTF" 2>/dev/null || echo 0)" "$names" 2>/dev/null) || return 0
+  resp=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" -H 'Content-Type: application/json' --data-binary "$body" "$API/dy-progress" 2>/dev/null)
+  if printf '%s' "$resp" | grep -q '"stop": *true' && [ ! -f "$STOPF" ]; then
+    touch "$STOPF"
+    echo "== 你在机器人里点了停止，正在停 =="
+    pkill -f 'main.py --platform dy' 2>/dev/null
+  fi
+  return 0
+}
+report starting
+
 # 搜索模式（search.sh）：在抖音里搜关键词，结果只送给小橘整理成链接清单私聊发频道主，不下载、不转发别人的视频
 if [ -n "${XJ_SEARCH_MODE:-}" ]; then
   echo "== 在抖音里搜：${KW//,/、}（每个词最多 ${XJ_SEARCH_MAX:-30} 条），只收集链接 =="
+  ( while sleep "${XJ_SEND_EVERY:-30}"; do report running; done ) &
+  REPLOOP=$!
+  trap 'kill $WINLOOP $REPLOOP 2>/dev/null' EXIT
   uv run main.py --platform dy --lt qrcode --type search --keywords "$KW" \
     --get_comment no --get_sub_comment no --get_media no --headless no \
     --save_data_option jsonl --crawler_max_notes_count "${XJ_SEARCH_MAX:-30}" --save_data_path "$OUT"
+  kill $REPLOOP 2>/dev/null; wait $REPLOOP 2>/dev/null
+  if [ -f "$STOPF" ]; then
+    report stopped
+    echo "== 停了，这次搜到的不发 =="
+    exit 0
+  fi
   F=$(find "$OUT" -name 'search_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
   if [ -z "$F" ] || [ ! -s "$F" ]; then
+    report failed
     echo "== 没搜到东西（登录过期了？抖音不让搜？）=="
     exit 1
   fi
   echo "== 搜到 $(wc -l < "$F") 条，发给小橘整理成链接清单 =="
   curl -sS -m 120 -X POST -H "X-Token: $TOKEN" -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$F" "$API/dy-search"
   echo
+  report done
   echo "== 好了，清单会私聊发给你 =="
   exit 0
 fi
@@ -217,7 +257,6 @@ fi
 # 边抓边转：MediaCrawler 抓一条往 jsonl 里写一行。后台每 30 秒把新写的几行送给小橘（X-Final: 0），
 # 小橘收到第一批就开始转，后面的接着排队；抓完再把剩下的连同「抓完了」（X-Final: 1）送过去。
 # 送成功才往前记（SENTF），没送成（小橘在忙、网不好）下次连同新的一起送；重复送的小橘会认出来不重收
-SENTF="$HOME/.xiaoju/sent"; echo 0 > "$SENTF"
 newest() { find "$OUT" -name 'creator_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-; }
 send() {  # $1 = 0 还在抓 / 1 抓完了
   local f n sent code
@@ -235,7 +274,7 @@ send() {  # $1 = 0 还在抓 / 1 抓完了
   echo "== 这批没送成（$code $(head -c 120 "$OUT/.resp" 2>/dev/null)），等下连同新的一起再送 =="
   return 1
 }
-( while sleep "${XJ_SEND_EVERY:-30}"; do send 0; done ) &
+( while sleep "${XJ_SEND_EVERY:-30}"; do send 0; report running; done ) &
 SENDLOOP=$!
 trap 'kill $WINLOOP $SENDLOOP 2>/dev/null' EXIT
 
@@ -245,11 +284,18 @@ uv run main.py --platform dy --lt qrcode --type creator --creator_id "$CREATORS"
   --save_data_option jsonl --crawler_max_notes_count 100000 --save_data_path "$OUT"
 
 kill $SENDLOOP 2>/dev/null; wait $SENDLOOP 2>/dev/null
+if [ -f "$STOPF" ]; then
+  report stopped
+  echo "== 停了。已经送给小橘的 $(cat "$SENTF") 条照常转（要连这些也停，在机器人里点「停止小橘转发」）=="
+  exit 0
+fi
 F=$(newest); N=0; [ -n "$F" ] && N=$(wc -l < "$F")
 if [ "$N" = 0 ] && [ "$(cat "$SENTF")" = 0 ]; then
+  report failed
   echo "== 没抓到作品（登录没成功？）。关掉这个窗口，再双击图标重来一次 =="
   exit 1
 fi
 echo "== 抓完了，一共 $N 条，把剩下的送给小橘 =="
 for i in $(seq 10); do send 1 && break; sleep 30; done
+report done
 echo "== 好了。作品在陆续转进「小橘视频」，全部转完机器人会通知你。这个窗口可以关了 =="

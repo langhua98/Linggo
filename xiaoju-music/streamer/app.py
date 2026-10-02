@@ -941,6 +941,16 @@ async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子�
     return out
 
 
+@app.post('/douyin/stop')
+async def douyin_stop(request: Request):
+    """频道主在机器人里点「停止」：正在跑的抖音任务（转作品、同步）停下。已经发进频道的不动"""
+    check_key(request)
+    if douyin_job and douyin_job.running():
+        douyin_job.task.cancel()
+        return {'stopped': True}
+    return {'stopped': False}
+
+
 @app.post('/douyin/delete')
 async def douyin_delete(request: Request):
     """{target, ids: [消息号]}：删掉视频频道里转过的抖音视频帖（换最高画质重转用：删了以后查重认不出，下次就重新转）。

@@ -134,7 +134,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve|douyin\/import|douyin\/status)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve|douyin\/import|douyin\/status|douyin\/stop)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -145,6 +145,7 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
     if (m[1] === 'douyin/status') return Response.json(bot.dyStatus || { status: 'idle' });
+    if (m[1] === 'douyin/stop') return Response.json({ stopped: !!bot.dyStatus });
     if (m[1] === 'douyin/import') {
       if (body.final && body.text === '') return Response.json({ ok: true, total: 0, video: 0, images: 0, added: 0, started: false });
       if (!/aweme_id/.test(body.text)) return Response.json({ detail: '文件里没认出抖音作品' }, { status: 400 });
@@ -1130,6 +1131,38 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.equal((await post(tok, 'nothing')).status, 400);
   await dm(OWNER, '搜抖音 清空');
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
+});
+
+await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每个号抓了多少、小橘转了多少；点按钮停', async () => {
+  await dm(OWNER, '进度');
+  assert.match(lastSay().text, /云电脑：还没报过进度[\s\S]*小橘：现在没在转/);
+  await dm(OWNER, '云电脑');
+  const tok = await lib.getConfig('cloudTok');
+  const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
+  const rep = (body, t2 = tok) => req('/dy-progress', { method: 'POST', headers: { 'X-Token': t2, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await rep({ phase: 'running' }, 'wrong')).status, 403);
+  const p = { phase: 'running', mode: 'crawl', sent: 40, got: 52, accounts: [{ sec_uid: sec, name: '丁', total: 300, got: 52 }, { sec_uid: 'S2', name: '冰美人💍', total: null, got: 0 }] };
+  assert.deepEqual(await jsonOf(await rep(p)), { ok: true, stop: false });
+  bot.dyStatus = { status: 'running', mode: 'import', total: 40, posted: [{}, {}], skipped: [{}], failed: [] };
+  await dm(OWNER, '进度');
+  const msg = lastSay();
+  assert.match(msg.text, /云电脑（抓自己的号）：正在抓（\d+ 秒前）\n1\. #[^：]+：抓了 52 \/ 共 300\n2\. #冰美人：抓了 0\n一共抓了 52 条，送给小橘 40 条/);
+  assert.match(msg.text, /小橘（转云电脑送来的作品）：进行中\n新转进频道 2 条，已有跳过 1 条，失败 0 条\n收到 40 条，还有 37 条排着队/);
+  assert.deepEqual(msg.reply_markup.inline_keyboard.flat().map(b => b.callback_data), ['prg:r', 'prg:cloud', 'prg:post']);
+  const press = async data => hook({ update_id: 901, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: { message_id: 78, chat: { id: OWNER, type: 'private' } } } });
+  await press('prg:cloud');
+  assert.equal(await lib.getConfig('dyStop'), '1');
+  assert.deepEqual(await jsonOf(await rep(p)), { ok: true, stop: true }, '云电脑下次报进度就收到停');
+  assert.match(bot.out.filter(o => o.method === 'editMessageText').at(-1).text, /已经叫它停了/);
+  await rep({ ...p, phase: 'stopped' });
+  assert.equal(await lib.getConfig('dyStop'), '0', '停下以后清掉，下次打开照常抓');
+  await press('prg:post');
+  assert.ok(bot.toStreamer.some(x => x.path === 'douyin/stop'));
+  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /小橘停了/);
+  await rep({ phase: 'running', mode: 'search', keywords: ['舞蹈'], per: { 舞蹈: 7 }, got: 7, sent: 0 });
+  await dm(OWNER, '进度');
+  assert.match(lastSay().text, /云电脑（搜索）：正在抓[\s\S]*「舞蹈」搜到 7 条/);
+  bot.dyStatus = null;
 });
 
 await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视频频道', async () => {

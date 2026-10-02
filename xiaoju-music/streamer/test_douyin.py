@@ -1173,3 +1173,21 @@ def test_retag_rewrites_only_untagged_captions(monkeypatch):
     asyncio.run(appmod.douyin_retag(VIDEO_CHANNEL, 3, item))  # 没见过的消息：不动
     assert edits == [(1, caption(item))] and '#主号' in edits[0][1]
     assert appmod.clean_tags({'S1': '小号💍', 'S2': '!!!', 'S3': None}) == {'S1': '小号'}
+
+
+def test_stop_endpoint_cancels_the_running_job(monkeypatch):
+    async def go():
+        job = DouyinJob(web=None, send_video=None, posted_ids=None)
+        job.task = asyncio.create_task(asyncio.sleep(30))
+        monkeypatch.setattr(appmod, 'douyin_job', job)
+        monkeypatch.setenv('STREAMER_KEY', 'k1')
+        from httpx import ASGITransport, AsyncClient
+        async with AsyncClient(transport=ASGITransport(app=appmod.app), base_url='http://t') as c:
+            r1 = await c.post('/douyin/stop', headers={'X-Key': 'k1'})
+            await asyncio.sleep(0)
+            r2 = await c.post('/douyin/stop', headers={'X-Key': 'k1'})
+            r3 = await c.post('/douyin/stop')
+        return r1.json(), r2.json(), r3.status_code, job.task.cancelled()
+
+    a, b, code, cancelled = asyncio.run(go())
+    assert a == {'stopped': True} and b == {'stopped': False} and code in (401, 403) and cancelled

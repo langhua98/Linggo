@@ -106,6 +106,7 @@ export default {
       if (path === '/dy-import' && method === 'POST') return await cloudImport(request, env);
       if (path === '/dy-cloud-config' && method === 'POST') return await cloudConfig(request, env);
       if (path === '/dy-search' && method === 'POST') return await cloudSearchResult(request, env);
+      if (path === '/dy-progress' && method === 'POST') return await cloudProgress(request, env);
       if (path.startsWith('/dl/') && method === 'POST') {
         const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
         if (m2) return await douyinLoginApi(env, m2[1], 'start');
@@ -1228,6 +1229,7 @@ async function streamerCall(env, path, body) {
 const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 
 搜 歌名或歌手 —— 去来源频道里找，点按钮就搬
+进度 —— 看云电脑抓到哪了（每个号一共多少、抓了多少、送了多少）、小橘转了多少，可以点按钮停下
 搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词，把结果整理成链接清单私聊发你（点链接在抖音里看，不下载别人的视频）
 搬 @频道名 100 —— 从这个频道搬 100 首中文歌（查重），搬完告诉你
 找 歌名 —— 在小橘音乐里找这首，可以加进/移出歌单、删除
@@ -1270,6 +1272,7 @@ async function botUpdate(env, update, origin) {
   if (isOwner) {
     let c;
     if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());
+    if (/^进度$/.test(t)) return ownerProgress(env, chat);
     if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
@@ -1411,6 +1414,19 @@ async function botButton(env, cb, owner, origin) {
     await ack('已转到视频频道');
     // 去掉按钮，免得再点一次又发一遍
     return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: '✅ 已转到视频频道' });
+  }
+  if (kind === 'prg') { // 进度面板：刷新 / 停云电脑 / 停小橘
+    let tip = '';
+    if (a === 'cloud') {
+      await L.setConfig('dyStop', '1');
+      tip = '好，云电脑下次报进度时（半分钟内）停下';
+    } else if (a === 'post') {
+      let r = null;
+      try { r = await streamerCall(env, '/douyin/stop', {}); } catch {}
+      tip = !r || r.status !== 200 ? '小橘的服务没连上，过一会儿再点' : r.data.stopped ? '小橘停了（已经发进频道的不动）' : '小橘现在没在转';
+    }
+    await ack(tip);
+    return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: await progressText(env), reply_markup: { inline_keyboard: PROGRESS_KB } });
   }
   if (kind === 'dys') { // 搜索清单里点「📤 转 N」：这条交给流式服务按最高画质转进视频频道（频道里已有的跳过）
     if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
@@ -1690,6 +1706,82 @@ function compactSearchRow(r) {
     };
   }
   return out;
+}
+
+// ── 进度：云电脑每 30 秒报一次（POST /dy-progress，X-Token），记在 dyCloud；频道主发「进度」看，点按钮停 ──
+const CLOUD_PHASE = { starting: '刚开始（开浏览器、等登录）', running: '正在抓', done: '抓完了', stopped: '停了', failed: '没抓到（登录过期？）' };
+
+async function cloudProgress(request, env) {
+  const L = lib(env), tok = await L.getConfig('cloudTok');
+  if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对' }, 403);
+  let p;
+  try { p = await request.json(); } catch { return json({ error: '格式不对' }, 400); }
+  if (!p || typeof p !== 'object') return json({ error: '格式不对' }, 400);
+  const keep = { phase: String(p.phase || ''), mode: p.mode === 'search' ? 'search' : 'crawl', sent: Number(p.sent) || 0, got: Number(p.got) || 0,
+    accounts: (Array.isArray(p.accounts) ? p.accounts : []).slice(0, 30).map(a => ({
+      sec_uid: String(a.sec_uid || ''), name: String(a.name || '').slice(0, 40), total: Number.isFinite(a.total) ? a.total : null, got: Number(a.got) || 0,
+    })),
+    keywords: (Array.isArray(p.keywords) ? p.keywords : []).slice(0, 10).map(String), per: p.per && typeof p.per === 'object' ? p.per : {},
+    at: Date.now() };
+  await L.setConfig('dyCloud', JSON.stringify(keep));
+  const stop = (await L.getConfig('dyStop')) === '1';
+  if (['done', 'stopped', 'failed'].includes(keep.phase)) await L.setConfig('dyStop', '0');
+  return json({ ok: true, stop });
+}
+
+function ago(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前` : `${Math.round(s / 3600)} 小时前`;
+}
+
+async function progressText(env) {
+  const L = lib(env), lines = ['📊 进度', ''];
+  let c = null;
+  try { c = JSON.parse((await L.getConfig('dyCloud')) || 'null'); } catch {}
+  if (!c) {
+    lines.push('☁️ 云电脑：还没报过进度（打开云电脑就会开始抓）');
+  } else {
+    const quiet = Date.now() - c.at > 3 * 60 * 1000 && !['done', 'stopped', 'failed'].includes(c.phase);
+    lines.push(`☁️ 云电脑（${c.mode === 'search' ? '搜索' : '抓自己的号'}）：${CLOUD_PHASE[c.phase] || c.phase}${quiet ? '——不过已经好久没报了，可能云电脑停了或关了' : ''}（${ago(Date.now() - c.at)}）`);
+    if (c.mode === 'search') {
+      for (const k of c.keywords) lines.push(`· 「${k}」搜到 ${(c.per || {})[k] || 0} 条`);
+    } else {
+      const seen = await douyinTagMap(L, 'douyinTagsSeen'), mine = await douyinTagMap(L, 'douyinTags');
+      c.accounts.forEach((a, i) => {
+        const tag = mine[a.sec_uid] || seen[a.sec_uid] || douyinHashtag(a.name);
+        const total = a.total == null ? '' : ` / 共 ${a.total}`;
+        lines.push(`${i + 1}. ${tag ? '#' + tag : '（还不知道名字）'}：抓了 ${a.got}${total}${a.total && a.got >= a.total ? ' ✅' : ''}`);
+      });
+      lines.push(`一共抓了 ${c.got} 条，送给小橘 ${c.sent} 条`);
+    }
+    if ((await L.getConfig('dyStop')) === '1') lines.push('⏹ 已经叫它停了，下次报进度时（半分钟内）停下');
+  }
+  lines.push('');
+  let st = null;
+  if (streamerOn(env)) {
+    try { st = (await streamerCall(env, '/douyin/status')).data; } catch {}
+  }
+  if (!st || !st.status || st.status === 'idle') {
+    lines.push('🍊 小橘：现在没在转');
+  } else {
+    const n = k => (Array.isArray(st[k]) ? st[k].length : 0);
+    const doneN = n('posted') + n('skipped') + n('failed');
+    const what = st.mode === 'import' ? '转云电脑送来的作品' : st.mode === 'mirror' ? '同步公开主页' : st.mode === 'one' ? '转单条作品' : st.mode;
+    const state = { running: '进行中', done: '转完了', stopped: '停了', error: `出错了（${st.error || ''}）` }[st.status] || st.status;
+    lines.push(`🍊 小橘（${what}）：${state}`);
+    if (st.mode === 'import' || st.mode === 'mirror') {
+      lines.push(`新转进频道 ${n('posted')} 条，已有跳过 ${n('skipped')} 条，失败 ${n('failed')} 条`);
+      if (st.mode === 'import' && st.status === 'running') lines.push(`收到 ${st.total || 0} 条，还有 ${Math.max(0, (st.total || 0) - doneN)} 条排着队`);
+    }
+  }
+  return lines.join('\n');
+}
+
+const PROGRESS_KB = [[{ text: '🔄 刷新', callback_data: 'prg:r' }],
+  [{ text: '⏹ 停止云电脑抓取', callback_data: 'prg:cloud' }, { text: '⏹ 停止小橘转发', callback_data: 'prg:post' }]];
+
+async function ownerProgress(env, chat) {
+  return say(env, chat, await progressText(env), PROGRESS_KB);
 }
 
 // 数字好读：12345 → 1.2万
