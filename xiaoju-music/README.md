@@ -125,7 +125,8 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
      -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"TRACKS\",\"namespace_id\":\"$KV\"},{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_ID\",\"text\":\"-1003817921075\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_USERNAME\",\"text\":\"xiaojumusic\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"$STREAMER_URL\"},{\"type\":\"plain_text\",\"name\":\"VIDEO_CHANNEL_ID\",\"text\":\"-1004292843233\"}]};type=application/json" \
      -F 'worker.js=@xiaoju-music/worker.js;type=application/javascript+module' \
      -F 'page.html=@xiaoju-music/page.html;type=text/plain' \
-     -F 'admin.html=@xiaoju-music/admin.html;type=text/plain'
+     -F 'admin.html=@xiaoju-music/admin.html;type=text/plain' \
+     -F 'douyin-login.html=@xiaoju-music/douyin-login.html;type=text/plain'
    ```
 
    `page.html`、`admin.html` 以 `text/plain` 上传，就是 Workers 的文本模块，`worker.js` 里 `import` 进来当字符串用。
@@ -218,6 +219,8 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     再给一条 `bash xiaoju-music/cloud/crawl.sh <上传令牌> <账号,…>`（令牌是 config `cloudTok`）。频道主在 iPad Safari 里开
     网页桌面，终端里粘贴命令，在桌面弹出的浏览器里自己扫码登录（验证也在那里做）；`crawl.sh` 跑 MediaCrawler（creator、
     jsonl）后把文件 POST 到 Worker 的 `/dy-import`（`X-Token`），转给 `/douyin/import` 逐条下载、发进视频频道。
+    粘贴过一次以后令牌存在云电脑的 `~/.xiaoju/env`，devcontainer 的 `postAttachCommand`（`cloud/codespace-auto.sh`）
+    每次打开都自动跑 `crawl.sh`（`flock` 防重复）；MediaCrawler 自己存登录状态，没过期就不用再扫码。
     自己有 VPS 的话 `cloud/setup.sh <令牌> <账号>` 一键装 XFCE + xrdp（RDP 连），桌面放「抓抖音发给小橘」。
     也可以手动把导出文件发给机器人。抖音账号和验证全程只在频道主自己的机器上。
   - 视频频道的数字 id 用流式服务 `GET /channels/owned?title=小橘视频` 查（只在频道主自己建的频道里按名字找，不列别的聊天）。

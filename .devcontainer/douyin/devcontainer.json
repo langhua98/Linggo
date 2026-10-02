@@ -9,5 +9,7 @@
   "forwardPorts": [6080],
   "portsAttributes": { "6080": { "label": "桌面（扫码登录在这里）", "onAutoForward": "openBrowser" } },
   "postCreateCommand": "bash xiaoju-music/cloud/codespace-setup.sh",
+  // 粘贴过一次机器人给的命令以后，每次打开都自动开抓
+  "postAttachCommand": "bash xiaoju-music/cloud/codespace-auto.sh",
   "hostRequirements": { "cpus": 2, "memory": "4gb" }
 }

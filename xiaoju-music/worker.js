@@ -1601,7 +1601,8 @@ async function ownerCloud(env, chat) {
     '3. 回到网页编辑器下面的「TERMINAL（终端）」，把下一条消息整条粘贴进去回车',
     '4. 桌面上会弹出抖音登录页，用手机抖音扫码（要验证就在那里做），抓完自动发回小橘',
     '',
-    '用完在 github.com/codespaces 里把它删掉，免得占免费额度。下一条命令里有你的上传令牌，别发给别人。',
+    '只要粘贴这一次。用完在 github.com/codespaces 里点「⋯ → Stop codespace」停掉（别删）；以后想抓新作品，打开它就自动开抓，登录没过期连码都不用扫。',
+    '下一条命令里有你的上传令牌，别发给别人。',
   ].join('\n'));
   return say(env, chat, `bash xiaoju-music/cloud/crawl.sh ${tok} ${ids}`);
 }
