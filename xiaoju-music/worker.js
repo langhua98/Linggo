@@ -1226,34 +1226,76 @@ async function streamerCall(env, path, body) {
   return { status: res.status, data };
 }
 
-const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
+const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮；左下角「菜单」里也有。全部功能：
 
+📊 进度
+进度 —— 云电脑抓到哪了（每个号一共多少、抓了多少、送了多少）、小橘转了多少；可以点按钮停下
+
+🎬 抖音（视频频道「小橘视频」）
+转抖音视频 —— 把你自己抖音账号的作品（视频和图文）都转进视频频道，已有的跳过
+云电脑 —— 打开云电脑的链接：在云电脑上登录抖音，抓你所有账号的全部作品，按最高画质边抓边转进频道
+添加抖音账号 主页分享链接 —— 再加一个你自己的号（小号），转作品、自动同步都会带上它
+账号标签 —— 每个号在频道里的标签（点标签只看这个号）；「账号标签 2 小美」给第 2 个号改名
+抖音自动同步 开 / 关 —— 每 30 分钟看一次你的抖音公开主页，有新作品自动转进频道
+抖音视频的分享链接 —— 把这条转进视频频道
+抖音主页的分享链接 —— 把这个号作品的链接整理给你
+发一个视频文件 —— 点按钮转进视频频道
+
+🔎 抖音搜索
+搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词，结果按点赞排好私聊发你（链接、文件地址），每条有「📤 转 N」按钮，点了转进视频频道
+搜抖音 —— 看还有哪些词排着队；「搜抖音 清空」清掉
+
+🎵 音乐（小橘音乐）
 搜 歌名或歌手 —— 去来源频道里找，点按钮就搬
-进度 —— 看云电脑抓到哪了（每个号一共多少、抓了多少、送了多少）、小橘转了多少，可以点按钮停下
-搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词，把结果整理成链接清单私聊发你（点链接在抖音里看，不下载别人的视频）
 搬 @频道名 100 —— 从这个频道搬 100 首中文歌（查重），搬完告诉你
 找 歌名 —— 在小橘音乐里找这首，可以加进/移出歌单、删除
 统计 —— 歌库和这几天搬歌的情况
-贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），可以在后面加数量，比如「网址 30」
+贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），后面可以加数量，比如「网址 30」
 搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
-抖音视频的分享链接 —— 不登录解析，把这条视频转到视频频道
-抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
-转抖音视频 —— 把你自己抖音账号能看到的作品（视频和图文）都转到视频频道，已有的跳过
-添加抖音账号 主页分享链接 —— 再加一个你自己的账号（比如小号），转抖音视频、自动同步都会带上它
-账号标签 —— 看每个抖音账号在视频频道里的标签（点标签只看这个号的作品）；「账号标签 2 小美」给第 2 个号改名
-登录抖音 —— 发你一个登录页，扫码登录后作品列表能看全（包括最新的）
-抖音自动同步 开 / 关 —— 每 30 分钟检查一次你的抖音，有新作品自动转到视频频道
-发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
-发 MediaCrawler 导出的作品文件（.jsonl / .json）—— 里面的作品全部转进视频频道
-云电脑 —— 给你云电脑的一键安装命令（在云电脑上登录抖音、抓全部作品、自动发回小橘）
-
-直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
-新搬进来的歌会按类型自动放进对应的歌单。`;
+直接发歌名 —— 和听众一样找这首歌，库里没有就自动搬进来（新歌按类型自动进歌单）`;
 
 const PUBLIC_HELP = `你好，这里是小橘音乐 🍊
 发一个歌名给我（可以加上歌手名），我帮你找。找到了会给你一个链接，点开就能听。`;
 
 const tooLong = s => s.length > 60;
+
+// 频道主的菜单：输入框下面常驻的按钮（点了等于发对应的文字），和左下角「菜单」里的 / 命令
+const OWNER_KEYBOARD = {
+  keyboard: [['📊 进度', '🎬 转抖音视频'], ['🔎 搜抖音', '🏷 账号标签'], ['☁️ 云电脑', '📈 统计'], ['🎵 搬运设置', '❓ 帮助']],
+  resize_keyboard: true, is_persistent: true,
+};
+const OWNER_COMMANDS = [
+  ['progress', '📊 进度：云电脑抓到哪、小橘转了多少，可以停下'],
+  ['douyin', '🎬 把你抖音号的作品转进视频频道'],
+  ['cloud', '☁️ 云电脑：抓你所有账号的全部作品（最高画质）'],
+  ['search', '🔎 抖音搜索（发「搜抖音 关键词」）'],
+  ['tags', '🏷 账号标签：频道里按账号分类'],
+  ['stats', '📈 歌库和搬歌统计'],
+  ['harvest', '🎵 搬运设置'],
+  ['help', '❓ 全部功能'],
+];
+const OWNER_ALIAS = {
+  '📊 进度': '进度', '🎬 转抖音视频': '转抖音视频', '🔎 搜抖音': '搜抖音', '🏷 账号标签': '账号标签', '☁️ 云电脑': '云电脑',
+  '📈 统计': '统计', '🎵 搬运设置': '搬运设置', '❓ 帮助': '帮助',
+  '/progress': '进度', '/douyin': '转抖音视频', '/cloud': '云电脑', '/search': '搜抖音', '/tags': '账号标签',
+  '/stats': '统计', '/harvest': '搬运设置',
+};
+const COMMANDS_VERSION = '1';
+
+// 频道主的「菜单」命令只设给频道主自己看（听众那边不变）；版本变了才重设
+async function ensureOwnerCommands(env, owner) {
+  const L = lib(env);
+  if ((await L.getConfig('cmdsVer')) === COMMANDS_VERSION) return;
+  const r = await tg(env, 'setMyCommands', {
+    commands: OWNER_COMMANDS.map(([command, description]) => ({ command, description })),
+    scope: { type: 'chat', chat_id: owner },
+  });
+  if (r.ok) await L.setConfig('cmdsVer', COMMANDS_VERSION);
+}
+
+function ownerHelp(env, chat) {
+  return tg(env, 'sendMessage', { chat_id: chat, text: HELP, disable_web_page_preview: true, reply_markup: OWNER_KEYBOARD });
+}
 
 async function botUpdate(env, update, origin) {
   const owner = await ownerId(env);
@@ -1266,9 +1308,13 @@ async function botUpdate(env, update, origin) {
   if (isOwner && env.VIDEO_CHANNEL_ID && (m.video || (m.document && /^video\//.test(m.document.mime_type || '')))) {
     return say(env, chat, '要把这个视频转到视频频道吗？', [[{ text: '📤 转到视频频道', callback_data: `fv:${m.message_id}` }]]);
   }
-  const t = (m.text || '').trim();
-  if (!t) return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
-  if (/^\/(start|help)\b/.test(t) || t === '帮助') return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
+  let t = (m.text || '').trim();
+  if (isOwner) {
+    try { await ensureOwnerCommands(env, owner); } catch {}
+    t = t.replace(/^(\/\w+)@\w+/, '$1');  // 群里点菜单会带 @机器人名
+    t = OWNER_ALIAS[t] || t;
+  }
+  if (!t || /^\/(start|help)\b/.test(t) || t === '帮助') return isOwner ? ownerHelp(env, chat) : say(env, chat, PUBLIC_HELP);
   if (isOwner) {
     let c;
     if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());

@@ -172,7 +172,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ ok: true });
   }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
-  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage)$/))) {
+  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage|setMyCommands)$/))) {
     const body = JSON.parse(init.body);
     if (m[1] === 'copyMessage' && bot.copyFail) return Response.json({ ok: false, error_code: 400, description: bot.copyFail });
     if (m[1] === 'getChatAdministrators') {
@@ -1163,6 +1163,30 @@ await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每�
   await dm(OWNER, '进度');
   assert.match(lastSay().text, /云电脑（搜索）：正在抓[\s\S]*「舞蹈」搜到 7 条/);
   bot.dyStatus = null;
+});
+
+await t('频道主的菜单：常驻按钮和 / 命令（只设给频道主），点了等于发对应的文字；听众看不到', async () => {
+  await lib.setConfig('cmdsVer', '');
+  await dm(OWNER, '/start');
+  const set = bot.out.filter(o => o.method === 'setMyCommands').at(-1);
+  assert.deepEqual(set.scope, { type: 'chat', chat_id: OWNER });
+  assert.ok(set.commands.some(c => c.command === 'progress'));
+  const help = lastSay();
+  assert.match(help.text, /📊 进度[\s\S]*🎬 抖音[\s\S]*🔎 抖音搜索[\s\S]*🎵 音乐/);
+  assert.deepEqual(help.reply_markup.keyboard[0], ['📊 进度', '🎬 转抖音视频']);
+  const n = bot.out.filter(o => o.method === 'setMyCommands').length;
+  await dm(OWNER, '❓ 帮助');
+  assert.equal(bot.out.filter(o => o.method === 'setMyCommands').length, n, '设过一次就不再设');
+  assert.match(lastSay().text, /全部功能/);
+  await dm(OWNER, '📊 进度');
+  assert.match(lastSay().text, /📊 进度/);
+  await dm(OWNER, '/tags@xiaoju_music_bot');
+  assert.match(lastSay().text, /标签/);
+  await dm(OWNER, '🔎 搜抖音');
+  assert.match(lastSay().text, /搜抖音/);
+  await dm(FAN + 6, '/start');
+  assert.ok(!lastSay().reply_markup, '听众没有频道主的按钮');
+  assert.doesNotMatch(lastSay().text, /转抖音视频/);
 });
 
 await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视频频道', async () => {
