@@ -1586,6 +1586,15 @@ const CODESPACE_URL = 'https://codespaces.new/langhua98/Linggo?devcontainer_path
 const CLOUD_GH_USER = 'langhua98';
 
 async function cloudConfig(request, env) {
+  // 已经领过上传令牌的云电脑：带 X-Token 来，每次开抓前拿最新的账号名单（后来加的小号也能抓到）
+  const xt = request.headers.get('X-Token') || '';
+  if (xt) {
+    const L = lib(env), tok = await L.getConfig('cloudTok');
+    if (!tok || !sameString(xt, tok)) return json({ error: '令牌不对' }, 403);
+    const selves = await douyinSelves(L);
+    if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
+    return json({ token: tok, creators: selves.join(',') });
+  }
   const gh = (request.headers.get('Authorization') || '').replace(/^(Bearer|token)\s+/i, '');
   if (!gh) return json({ error: '没带 GitHub 令牌' }, 401);
   let login = '';

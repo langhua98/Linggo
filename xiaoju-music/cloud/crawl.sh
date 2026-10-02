@@ -9,6 +9,14 @@ if [ $# -ge 2 ]; then
   chmod 600 "$HOME/.xiaoju/env"
 fi
 source "$HOME/.xiaoju/env"
+# 每次开抓前找小橘要最新的账号名单（在机器人里「添加抖音账号」加的小号这样也能抓到）；要不到就用上次存的
+NEW=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" "$API/dy-cloud-config" 2>/dev/null \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("creators",""))' 2>/dev/null)
+if [ -n "$NEW" ] && [ "$NEW" != "$CREATORS" ]; then
+  CREATORS="$NEW"
+  printf 'TOKEN=%q\nCREATORS=%q\nAPI=%q\n' "$TOKEN" "$CREATORS" "$API" > "$HOME/.xiaoju/env"
+fi
+echo "== 这次抓 $(printf '%s' "$CREATORS" | tr ',' '\n' | grep -c .) 个抖音账号 =="
 export PATH="$HOME/.local/bin:$PATH"
 export DISPLAY="${DISPLAY:-:1}"  # 浏览器开在桌面上（Codespaces 的网页桌面是 :1）
 [ -S /tmp/.X11-unix/X1 ] && export DISPLAY=:1  # 有网页桌面就一定开在它上面，别开到看不见的地方

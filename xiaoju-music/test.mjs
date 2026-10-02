@@ -1078,6 +1078,10 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   assert.equal((await cfg('gh-other')).status, 403);
   assert.equal((await cfg('bad')).status, 403);
   assert.equal((await cfg('')).status, 401);
+  // 云电脑带上传令牌拿最新账号名单
+  const byTok = t => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': t } });
+  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec });
+  assert.equal((await byTok('wrong')).status, 403);
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {
