@@ -716,6 +716,12 @@ def rank_requests(q, results):
     DJ 版、伴奏、片段之类，用户没提就往后排；太短（片段）、太长（串烧）的不要。"""
     nq = norm(q)
     want_flavor = bool(FLAVOR.search(q))
+    # 同一个歌名，哪个歌手出现得多（好几个频道都传了）多半就是原唱；只出现一次的多是翻唱
+    fame = {}
+    for r in results:
+        t, a = clean_names(r.get('title', ''), r.get('performer', ''))
+        k = (norm(t), norm(a))
+        fame[k] = fame.get(k, 0) + 1
     out = []
     for r in results:
         t, a = clean_names(r.get('title', ''), r.get('performer', ''))
@@ -734,6 +740,9 @@ def rank_requests(q, results):
             continue
         if FLAVOR.search(t) and not want_flavor:
             score -= 30
+        score += min(15, 3 * (fame.get((nt, na), 1) - 1))
+        if (r.get('duration') or 0) < 120:
+            score -= 10  # 不到两分钟的多是片段、试听
         if is_chinese(t + a):
             score += 3
         if score >= 50:

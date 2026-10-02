@@ -1450,6 +1450,8 @@ function genresOf(t) {
   const text = t.title + ' ' + t.artist, out = new Set();
   for (const [name, re] of GENRE_WORDS) if (re.test(text)) out.add(name);
   for (const [name, list] of Object.entries(GENRE_ARTISTS)) if (t.artist && list.some(a => t.artist.includes(a))) out.add(name);
+  // 没写歌手的长串烧、「某某专属定制」之类：DJ 频道打的混音，放 DJ 劲爆
+  if (!out.size && !t.artist && ((t.duration || 0) >= 600 || /专属|定制|vol\.?\s*\d|私货|全中文|全英文|全粤语|连版/i.test(t.title))) out.add('DJ 劲爆');
   if (!out.size && t.artist) out.add('华语流行');
   return [...out];
 }

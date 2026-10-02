@@ -559,3 +559,11 @@ def test_auto_and_fulfill_endpoints_need_key_and_login(monkeypatch):
     assert client.post('/auto/start', json={}, headers={'X-Key': 'k1'}).status_code == 409
     assert client.get('/auto/status', headers={'X-Key': 'k1'}).json() == {'status': 'idle'}
     assert client.post('/fulfill', json={'q': 'x', 'chat_id': 1}, headers={'X-Key': 'k1'}).status_code == 409
+
+
+def test_request_ranking_prefers_the_artist_most_channels_have():
+    res = [{'title': '发如雪', 'performer': '小黑', 'duration': 180}]
+    res += [{'title': '发如雪', 'performer': '周杰伦', 'duration': 299} for _ in range(4)]
+    res += [{'title': '发如雪', 'performer': '某人', 'duration': 70}]
+    assert appmod.rank_requests('发如雪', res)[0]['performer'] == '周杰伦'
+    assert appmod.rank_requests('发如雪', res)[-1]['performer'] == '某人'

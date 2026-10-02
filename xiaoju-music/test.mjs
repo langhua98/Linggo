@@ -574,8 +574,9 @@ await t('新歌自动分歌单：按歌名关键词和歌手放进对应歌单�
   await post(904, '超重低音车载串烧', '');
   await post(905, '无名小曲', '某个新人');
   await post(906, '想你的夜 (Live)', '关喆');
+  await post(907, '闽A轩少专属Vol.3', '');
   const pl = Object.fromEntries((await lib.listPlaylists()).map(p => [p.name, p.tracks]));
-  assert.deepEqual(pl['DJ 劲爆'], [904, 901]);
+  assert.deepEqual(pl['DJ 劲爆'], [907, 904, 901]);
   assert.deepEqual(pl['经典老歌'], [901, 1], '放在最前面，原来的不动');
   assert.deepEqual(pl['粤语金曲'], [901]);
   assert.deepEqual(pl['华语流行'], [905, 902], '对不上关键词、有歌手名的进华语流行');
@@ -587,7 +588,7 @@ await t('新歌自动分歌单：按歌名关键词和歌手放进对应歌单�
   await lib.removeFromPlaylist(902, '华语流行');
   await hook({ edited_channel_post: audioPost(902, { file_id: addFile(bytesOf(10, 902)), file_size: 10, title: '晴天', performer: '周杰伦' }) });
   assert.ok(!(await lib.listPlaylists()).find(p => p.name === '华语流行').tracks.includes(902));
-  for (const id of [901, 902, 903, 904, 905, 906]) await admin('remove', { track: id });
+  for (const id of [901, 902, 903, 904, 905, 906, 907]) await admin('remove', { track: id });
   await admin('playlists', { playlists: [] });
 });
 
