@@ -10,7 +10,8 @@ if command -v xrandr >/dev/null 2>&1 && ! xrandr 2>/dev/null | grep -q 'current 
 fi
 # 底下那条黄色任务栏用不上，还老挡住验证框的按钮：直接藏掉（只改一次，让 fluxbox 重新读配置）
 F="$HOME/.fluxbox/init"
-if [ -f "$F" ] && ! grep -q '^session.screen0.toolbar.visible:[[:space:]]*false' "$F"; then
+mkdir -p "$HOME/.fluxbox"; touch "$F"
+if ! grep -q '^session.screen0.toolbar.visible:[[:space:]]*false' "$F"; then
   sed -i '/^session.screen0.toolbar.visible:/d' "$F"
   echo 'session.screen0.toolbar.visible: false' >> "$F"
   pkill -HUP -x fluxbox 2>/dev/null && sleep 2
