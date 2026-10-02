@@ -201,6 +201,24 @@ if '# xiaoju: account' not in c and old in c:
                   '        "xiaoju_sec_uid": (aweme_item.get("author") or {}).get("sec_uid") or "",\n'
                   '        "xiaoju_nickname": (aweme_item.get("author") or {}).get("nickname") or "",\n', 1)
     open(p4, 'w', encoding='utf-8').write(c)
+# 只抓新的：开抓前 crawl.sh 把视频频道里已经有的作品号写进 ~/.xiaoju/known.txt。翻作品列表时转过的不要
+# （不读详情、不送），翻到一整页（置顶的不算）全是转过的，说明更早的也都转过了，这个号就到此为止
+c = open(p2, encoding='utf-8').read()
+old = '            aweme_list = aweme_post_res.get("aweme_list") if aweme_post_res.get("aweme_list") else []\n'
+if '# xiaoju: incremental' not in c and old in c:
+    c = c.replace(old, old + '            # xiaoju: incremental\n'
+                  '            if getattr(self, "_xj_known", None) is None:\n'
+                  '                import os as _xo\n'
+                  '                _kf = _xo.path.expanduser("~/.xiaoju/known.txt")\n'
+                  '                self._xj_known = set(open(_kf).read().split()) if _xo.path.exists(_kf) else set()\n'
+                  '            if self._xj_known:\n'
+                  '                # 置顶的（旧作品顶在最前）、私密和仅好友可见的（本来就不转，频道里永远没有）不算\n'
+                  '                _plain = [a for a in aweme_list if not a.get("is_top") and not any((a.get("status") or {}).get(k) for k in ("is_private", "private_status", "friends_status"))]\n'
+                  '                if _plain and all(str(a.get("aweme_id")) in self._xj_known for a in _plain):\n'
+                  '                    posts_has_more = 0\n'
+                  '                    utils.logger.info(f"[xiaoju] {sec_user_id} 这一页全是转过的，这个号只抓到这里")\n'
+                  '                aweme_list = [a for a in aweme_list if str(a.get("aweme_id")) not in self._xj_known]\n', 1)
+    open(p2, 'w', encoding='utf-8').write(c)
 PY
 
 # 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）
@@ -255,6 +273,17 @@ if [ -n "${XJ_SEARCH_MODE:-}" ]; then
   report done
   echo "== 好了，清单会私聊发给你 =="
   exit 0
+fi
+
+# 只抓新的：找小橘要视频频道里已经有的作品号。要全部重抓一遍（比如给旧帖补标签）就 XJ_FULL=1 bash …
+: > "$HOME/.xiaoju/known.txt"
+if [ -z "${XJ_FULL:-}" ]; then
+  curl -sS -m 180 -X POST -H "X-Token: $TOKEN" "$API/dy-known" 2>/dev/null \
+    | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin).get("ids") or []))' > "$HOME/.xiaoju/known.txt" 2>/dev/null
+  K=$(grep -c . "$HOME/.xiaoju/known.txt" 2>/dev/null || echo 0)
+  if [ "$K" -gt 0 ]; then echo "== 频道里已经有 $K 条，这次只抓新的 =="; else echo "== 没拿到频道里已有的作品，这次全部抓一遍（转过的小橘会跳过）=="; fi
+else
+  echo "== 全部重抓一遍（转过的小橘会跳过，旧帖顺便补标签）=="
 fi
 
 # 边抓边转：MediaCrawler 抓一条往 jsonl 里写一行。后台每 30 秒把新写的几行送给小橘（X-Final: 0），

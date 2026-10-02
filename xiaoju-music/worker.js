@@ -107,6 +107,7 @@ export default {
       if (path === '/dy-cloud-config' && method === 'POST') return await cloudConfig(request, env);
       if (path === '/dy-search' && method === 'POST') return await cloudSearchResult(request, env);
       if (path === '/dy-progress' && method === 'POST') return await cloudProgress(request, env);
+      if (path === '/dy-known' && method === 'POST') return await cloudKnown(request, env);
       if (path.startsWith('/dl/') && method === 'POST') {
         const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
         if (m2) return await douyinLoginApi(env, m2[1], 'start');
@@ -1773,6 +1774,24 @@ function compactSearchRow(r) {
     };
   }
   return out;
+}
+
+// 云电脑开抓前要一份「视频频道里已经有的作品号」：转过的不再抓，某个号翻到一整页都是转过的就停（只抓新的）。
+// 频道里删掉的帖子不在里面，下次就会重新抓、重新转（换最高画质就是这么做的）
+async function cloudKnown(request, env) {
+  const L = lib(env), tok = await L.getConfig('cloudTok');
+  if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对' }, 403);
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return json({ error: '视频频道没配置' }, 500);
+  try {
+    const r = await fetch(`${streamerBase(env)}/douyin/posted?target=${encodeURIComponent(env.VIDEO_CHANNEL_ID)}`, {
+      headers: { 'X-Key': env.STREAMER_KEY }, signal: AbortSignal.timeout(150000),  // 翻一遍频道要一会儿
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !Array.isArray(data.ids)) return json({ error: data.detail || '小橘没给' }, 502);
+    return json({ ids: data.ids });
+  } catch {
+    return json({ error: '小橘的服务正在唤醒' }, 503);
+  }
 }
 
 // ── 进度：云电脑每 30 秒报一次（POST /dy-progress，X-Token），记在 dyCloud；频道主发「进度」看，点按钮停 ──

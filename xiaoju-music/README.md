@@ -231,6 +231,9 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
   - **搜抖音 → 链接清单**：`搜抖音 舞蹈` 把词排进 `dySearchQueue`；云电脑打开时抓完作品接着 `cloud/search.sh`
     （MediaCrawler 的 search 模式），结果 POST `/dy-search`，Worker 按点赞排好、私聊发频道主分享链接和文件地址（登记过的号标 👤），每条带「📤 转 N」按钮（`dys:<作品号>`，作品数据存 config `dySearchRows`，最近 150 条），频道主点了才交给 `/douyin/import` 按最高画质转进视频频道。
     只私聊发链接，不下载、不转进频道（批量转进频道的只有登记过的账号）。
+  - **只抓新的**：crawl.sh 开抓前 POST `/dy-known`（Worker 转给流式服务 `GET /douyin/posted`，翻一遍视频频道）拿已有的作品号
+    写进 `~/.xiaoju/known.txt`；补丁让 MediaCrawler 翻作品列表时扔掉转过的（不读详情、不送），一整页（置顶、私密、仅好友
+    的不算）全是转过的就停这个号。频道里删掉的帖子不在里面，下次会重抓重转。`XJ_FULL=1` 全部重抓（给旧帖补标签用）。
   - **进度**：crawl.sh 每 30 秒用 `cloud/progress.py` 算一次（每个号一共多少作品——补丁让 MediaCrawler 拿到账号资料时把昵称、
     作品数写进 `~/.xiaoju/creators.jsonl`；抓了多少——结果文件里 `xiaoju_sec_uid` 是它的行；送了多少），POST `/dy-progress`
     存进 config `dyCloud`。机器人发「进度」看云电脑和流式服务（`/douyin/status`）两边；按钮「⏹ 停止云电脑抓取」设 `dyStop`，

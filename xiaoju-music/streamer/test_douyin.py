@@ -1191,3 +1191,15 @@ def test_stop_endpoint_cancels_the_running_job(monkeypatch):
 
     a, b, code, cancelled = asyncio.run(go())
     assert a == {'stopped': True} and b == {'stopped': False} and code in (401, 403) and cancelled
+
+
+def test_posted_ids_endpoint(monkeypatch):
+    async def posted(target, limit=20000):
+        return {'7600000000000000002': 5, '7600000000000000001': 4}
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    monkeypatch.setattr(appmod, 'douyin_posted', posted)
+    monkeypatch.setattr(appmod, 'user_client', object())
+    c = TestClient(appmod.app)
+    r = c.get('/douyin/posted', params={'target': str(VIDEO_CHANNEL)}, headers={'X-Key': 'k1'})
+    assert r.json() == {'ids': ['7600000000000000001', '7600000000000000002']}
+    assert c.get('/douyin/posted', params={'target': str(VIDEO_CHANNEL)}).status_code in (401, 403)

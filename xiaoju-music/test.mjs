@@ -115,6 +115,10 @@ globalThis.fetch = async (input, init = {}) => {
     const who = { 'gh-owner': 'langhua98', 'gh-other': 'someone' }[headers.get('Authorization').replace('Bearer ', '')];
     return who ? Response.json({ login: who }) : Response.json({ message: 'Bad credentials' }, { status: 401 });
   }
+  if (url.startsWith(STREAMER + '/douyin/posted?')) {
+    assert.equal(headers.get('X-Key'), SKEY);
+    return Response.json({ ids: ['7600000000000000001', '7600000000000000002'] });
+  }
   if (url.startsWith('https://lrclib.net/api/search?')) {
     if (mode.lrclib === 'down') return new Response('oops', { status: 500 });
     assert.match(headers.get('User-Agent'), /xiaoju-music/);
@@ -1143,6 +1147,10 @@ await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每�
   const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
   const rep = (body, t2 = tok) => req('/dy-progress', { method: 'POST', headers: { 'X-Token': t2, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal((await rep({ phase: 'running' }, 'wrong')).status, 403);
+  // 只抓新的：云电脑开抓前要一份频道里已有的作品号
+  const known = t2 => req('/dy-known', { method: 'POST', headers: { 'X-Token': t2 } });
+  assert.deepEqual(await jsonOf(await known(tok)), { ids: ['7600000000000000001', '7600000000000000002'] });
+  assert.equal((await known('wrong')).status, 403);
   const p = { phase: 'running', mode: 'crawl', sent: 40, got: 52, accounts: [{ sec_uid: sec, name: '丁', total: 300, got: 52 }, { sec_uid: 'S2', name: '冰美人💍', total: null, got: 0 }] };
   assert.deepEqual(await jsonOf(await rep(p)), { ok: true, stop: false });
   bot.dyStatus = { status: 'running', mode: 'import', total: 40, posted: [{}, {}], skipped: [{}], failed: [] };

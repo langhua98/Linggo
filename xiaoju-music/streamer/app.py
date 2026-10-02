@@ -941,6 +941,18 @@ async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子�
     return out
 
 
+@app.get('/douyin/posted')
+async def douyin_posted_ids(target: str, request: Request):
+    """视频频道里已经转过的抖音作品号（云电脑开抓前要一份：转过的不再抓，翻到全是转过的那页就停）"""
+    check_key(request)
+    t = parse_target(target)
+    if t is None:
+        raise HTTPException(400, '没设置视频频道')
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    return {'ids': sorted(await douyin_posted(t))}
+
+
 @app.post('/douyin/stop')
 async def douyin_stop(request: Request):
     """频道主在机器人里点「停止」：正在跑的抖音任务（转作品、同步）停下。已经发进频道的不动"""
