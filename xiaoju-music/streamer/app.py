@@ -10,6 +10,8 @@ Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里�
 开了「禁止保存内容」的频道 Telegram 不让转，这里也不去绕。登录走 POST /login/code、/login/verify，
 搬歌走 /copy/start、/copy/status、/copy/stop。
 
+抖音视频转到频道（不登录抖音，见 douyin/）：POST /douyin/link 转一条分享链接，GET /douyin/status 看上一次的结果。
+
 环境变量（在 Space 的 Settings → Variables and secrets 里设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
   TG_BOT_TOKEN              机器人 token（和 Worker 里的是同一个）
@@ -25,6 +27,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import time
 from contextlib import asynccontextmanager
 
@@ -36,7 +39,8 @@ from telethon.errors import ChatForwardsRestrictedError, FileReferenceExpiredErr
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
-from telethon.tl.types import DocumentAttributeAudio, InputMessagesFilterMusic, InputMessagesFilterPhotos, InputPeerNotifySettings
+from telethon.tl.types import (DocumentAttributeAudio, DocumentAttributeVideo, InputMessagesFilterMusic, InputMessagesFilterPhotos,
+                               InputPeerNotifySettings)
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -460,9 +464,13 @@ from harvest.job import Harvester
 from harvest.net import Http
 from harvest import license as harvest_license
 from harvest.sites import ADAPTERS as HARVEST_SITES
+from douyin import links as dy_links
+from douyin.job import DouyinJob
+from douyin.web import DouyinWeb
 
 streamer = None
 harvester = None    # 授权音频搬运（贴网址搬）
+douyin_job = None   # 抖音视频转到频道
 bot_client = None   # 机器人账号（取文件、发通知）
 user_client = None  # 频道主账号（搬歌用），没登录时为 None
 copier = None
@@ -519,6 +527,8 @@ async def lifespan(app):
         return sent.id
 
     harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
+    global douyin_job
+    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, find_posted=douyin_find_posted, say=bot_say)
     log.info('logged in to Telegram as a bot')
 
     async def fetch_message(channel, message_id):
@@ -557,6 +567,8 @@ async def lifespan(app):
     try:
         yield
     finally:
+        if douyin_job and douyin_job.running():
+            douyin_job.task.cancel()
         if copier:
             copier.stop()
         if user_client:
@@ -759,6 +771,81 @@ async def harvest_start(request: Request):
 async def harvest_status(request: Request):
     check_key(request)
     return harvester.state if harvester else {'status': 'idle'}
+
+
+# ── 抖音视频转到频道（不登录；逻辑在 douyin/ 里）────────────────────────
+
+def remux_faststart(src, dst):
+    """把索引（moov）挪到文件开头，Telegram 才能边下边播；顺便确认是个完好的视频。不行返回 False"""
+    try:
+        r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-c', 'copy', '-movflags', '+faststart', dst],
+                           capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0
+
+
+def video_thumb(src, dst):
+    """第一秒的画面缩成长边 320 的 JPEG（Telegram 对视频缩略图的要求）。不行返回 False"""
+    try:
+        r = subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', '0.5', '-i', src, '-frames:v', '1', '-q:v', '5',
+                            '-vf', "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'", dst], capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and os.path.exists(dst) and 0 < os.path.getsize(dst) < 200 * 1024
+
+
+async def douyin_send_video(data, item, src, text):
+    """发进频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
+    client = user_client or bot_client
+    with tempfile.TemporaryDirectory() as d:
+        raw, mp4, jpg = (os.path.join(d, n) for n in ('raw.mp4', f'douyin_{item["id"]}.mp4', 'thumb.jpg'))
+        with open(raw, 'wb') as f:
+            f.write(data)
+        path = mp4 if await asyncio.to_thread(remux_faststart, raw, mp4) else raw
+        thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
+        sent = await client.send_file(
+            target_channel(), path, caption=text, thumb=thumb, supports_streaming=True, link_preview=False,
+            attributes=[DocumentAttributeVideo(duration=item['seconds'], w=src.get('width') or item['width'] or 720,
+                                               h=src.get('height') or item['height'] or 1280, supports_streaming=True)])
+    return sent.id
+
+
+async def douyin_find_posted(aweme_id):
+    """频道里已经有这条（帖子说明里的原视频链接带着作品号）→ 那条帖子的消息号；机器人不能搜，没登录就不查"""
+    if user_client is None:
+        return None
+    async for m in user_client.iter_messages(target_channel(), search=aweme_id, limit=5):
+        if aweme_id in (m.message or ''):
+            return m.id
+    return None
+
+
+@app.post('/douyin/link')
+async def douyin_link(request: Request):
+    """{text: 分享文字或链接, notify}。是作品就在后台转到频道（转好、转不了都会通知 notify）→ {id}。
+    认不出、是主页链接 → 400 带原因；正在转别的 → 409"""
+    check_key(request)
+    body = await request.json()
+    try:
+        got = await dy_links.resolve(str(body.get('text', ''))[:2000])
+    except Exception:  # noqa: BLE001 — 短链接打不开
+        raise HTTPException(502, '抖音短链接打不开')
+    if not got:
+        raise HTTPException(400, '没认出抖音视频链接')
+    if got[0] == 'user':
+        raise HTTPException(400, '这是主页链接，要发某一条视频的分享链接')
+    try:
+        douyin_job.start(got[1], notify=body.get('notify') or None)
+    except RuntimeError:
+        raise HTTPException(409, 'already running')
+    return {'id': got[1]}
+
+
+@app.get('/douyin/status')
+async def douyin_status(request: Request):
+    check_key(request)
+    return douyin_job.state if douyin_job else {'status': 'idle'}
 
 
 # ── 求歌：听众私聊机器人一个歌名，库里没有时到来源频道里找一首最像的搬进来 ──

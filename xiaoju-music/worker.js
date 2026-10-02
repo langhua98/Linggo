@@ -1203,6 +1203,8 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 统计 —— 歌库和这几天搬歌的情况
 贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），可以在后面加数量，比如「网址 30」
 搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
+抖音视频的分享链接 —— 不登录解析，把这条视频转到频道
+发一个视频文件 —— 点按钮转到频道（抖音解析不了的时候用）
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
 新搬进来的歌会按类型自动放进对应的歌单。`;
@@ -1217,6 +1219,10 @@ async function botUpdate(env, update, origin) {
   if (update.callback_query) return botButton(env, update.callback_query, owner, origin);
   const m = update.message;
   const chat = m.chat.id, isOwner = owner && m.from && m.from.id === owner;
+  // 频道主发来视频文件：问一句要不要转到频道（不自动发，免得发错）
+  if (isOwner && (m.video || (m.document && /^video\//.test(m.document.mime_type || '')))) {
+    return say(env, chat, '要把这个视频转到小橘音乐频道吗？', [[{ text: '📤 转到频道', callback_data: `fv:${m.message_id}` }]]);
+  }
   const t = (m.text || '').trim();
   if (!t) return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
   if (/^\/(start|help)\b/.test(t) || t === '帮助') return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
@@ -1226,6 +1232,7 @@ async function botUpdate(env, update, origin) {
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
+    if (DOUYIN_LINK.test(t)) return ownerDouyin(env, chat, t);
     if ((c = /(https?:\/\/\S+)(?:\s+(\d{1,3}))?/.exec(t))) return ownerHarvest(env, chat, c[1], c[2] ? Number(c[2]) : 0);
     if (/^搬运设置$/.test(t)) return showHarvest(env, chat);
     if ((c = /^搬运数量\s*(\d{1,3})$/.exec(t))) return setHarvestLimit(env, chat, Number(c[1]));
@@ -1346,6 +1353,16 @@ async function botButton(env, cb, owner, origin) {
   if (!owner || !cb.from || cb.from.id !== owner) return ack('只有频道主能用');
   const [kind, a, b] = String(cb.data || '').split(':');
   const L = lib(env);
+  if (kind === 'fv') { // 频道主发来的视频：原样复制到频道
+    const r = await tg(env, 'copyMessage', { chat_id: env.CHANNEL_ID, from_chat_id: chat, message_id: Number(a) });
+    if (!r.ok) {
+      await ack();
+      return say(env, chat, `没转成：${r.description || '未知原因'}`);
+    }
+    await ack('已转到频道');
+    // 去掉按钮，免得再点一次又发一遍
+    return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: '✅ 已转到小橘音乐频道' });
+  }
   if (kind === 'hs' || kind === 'hl') { // 搬运设置里点开关：网站 / 授权
     const h = await L.getHarvest();
     const list = kind === 'hs' ? h.sites : h.licenses;
@@ -1481,6 +1498,24 @@ async function ownerHarvest(env, chat, url, n) {
   if (r.status === 409) return say(env, chat, '正在搬别的网址，等那边搬完再来（搬完会通知你）');
   if (r.status !== 200) return say(env, chat, '搬运服务正在唤醒，过一两分钟再发一次网址');
   return say(env, chat, `开始从${r.data.site || '这个网站'}搬，最多 ${settings.limit} 首。每首都会检查授权，搬完告诉你结果 👌`);
+}
+
+// ── 抖音视频转到频道：频道主发分享链接，流式服务不登录解析、下载、发进频道（在 streamer/douyin/ 里），好了通知 ──
+// 不做「自动发现新视频」：抖音网页版不给没登录的人看账号最新的作品，见 streamer/douyin/job.py
+const DOUYIN_LINK = /https?:\/\/(?:[\w-]+\.)*(?:douyin|iesdouyin)\.com\//i;
+
+async function ownerDouyin(env, chat, t) {
+  if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/link', { text: t, notify: chat });
+  } catch {
+    return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
+  }
+  if (r.status === 400 || r.status === 502) return say(env, chat, r.data.detail || '这个链接认不出来');
+  if (r.status === 409) return say(env, chat, '正在转上一条，好了会告诉你，之后再发这条');
+  if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
+  return say(env, chat, '收到 👌 正在解析这条抖音视频，大约半分钟，转好了告诉你');
 }
 
 function rows(buttons, per = 2) {

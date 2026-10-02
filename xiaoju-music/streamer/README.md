@@ -37,6 +37,9 @@ Telethon 以 `receive_updates=False` 登录：这个会话只调用、不订阅�
 - `GET /`：健康检查
 - `GET /stream/<消息号>`：请求头 `X-Key`，可带 `Range`；返回 200（整个文件）、206（一段）、
   403（密钥不对）、404（频道里没有这条音频）、416（范围超出文件）
+- `POST /douyin/link`（`X-Key`）：`{text: 抖音分享文字或链接, notify: 通知谁}` → `{id: 作品号}`，在后台不登录解析、
+  下载、发进频道；认不出、是主页链接 → 400，正在转别的 → 409。`GET /douyin/status` 看上一次的结果
+  （`blocked: true` 是被抖音风控拦了，比如弹了滑块验证）。用到 Chromium（Dockerfile 里 `playwright install --with-deps chromium`）。
 
 ## 为什么不在这里跑官方的 telegram-bot-api（`--local` 模式）
 

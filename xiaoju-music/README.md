@@ -99,8 +99,8 @@ Telegram 的 webhook（见下方「重设 webhook」）。
 Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复用了这个原本做抖音链接解析代理的 Space
 （原来的代码在它的 Git 历史里，提交 `031d368d79`）。
 
-更新代码：把 `streamer/` 下的 `app.py`、`Dockerfile`、`requirements.txt`、`README.md` 推到这个 Space 的仓库，
-Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
+更新代码：把 `streamer/` 下的 `app.py`、`Dockerfile`、`requirements.txt`、`README.md` 和 `harvest/`、`douyin/` 两个目录
+推到这个 Space 的仓库，Space 会自动重新构建（装 Chromium 那一步第一次要几分钟）。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
 填上面的地址，两边的 `STREAMER_KEY` 设成同一个值。
 
 ## 改完代码后
@@ -131,7 +131,8 @@ Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/RE
    `page.html`、`admin.html` 以 `text/plain` 上传，就是 Workers 的文本模块，`worker.js` 里 `import` 进来当字符串用。
    也可以在本目录用 `wrangler deploy`（`wrangler.toml` 已写好绑定、迁移和 `.html` 文本模块规则，secret 不受影响）。
 
-3. 改了流式服务：把 `streamer/` 下那四个文件推到 `langhua1998/douyin-proxy` 这个 Space 的仓库，Space 会自动重新构建。
+3. 改了流式服务：把 `streamer/` 下的 `app.py`、`Dockerfile`、`requirements.txt`、`README.md` 和 `harvest/`、`douyin/`
+   两个目录（不要测试文件）推到 `langhua1998/douyin-proxy` 这个 Space 的仓库，Space 会自动重新构建。
 
 ## 日常维护
 
@@ -193,6 +194,18 @@ Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/RE
   `/auto/status`，把每个来源频道「看到的最大消息号」合进 config 的 `auto.state`，再 `/auto/start`：每个频道只看
   比上次新的帖子（`min_id`），最多 30 首；第一次只看最新 10 首；禁止转发、出错的频道跳过。搬完机器人私聊频道主。
   手动跑一次：`POST /admin/api/auto-run`；看记录：`GET /admin/api/auto-state`。
+- **抖音视频转到频道**（频道主私聊机器人）：
+  - 发抖音视频的分享链接（整段分享文字也行）→ 流式服务 `/douyin/link`：`douyin/links.py` 认链接（短链接跳一次），
+    `web.py` 用无头 Chromium **不登录**打开抖音网页版，接口签名交给页面自己的安全脚本（不自己算 a_bogus），
+    `items.py` 挑不带水印的 H.264，`job.py` 下载、ffmpeg 挪 moov 到开头 + 截缩略图、用频道主账号发进频道
+    （说明里写文案、`📹 抖音 @作者 · 日期` 和原视频链接；发之前按作品号在频道里搜，已有的不重发），好了/失败都私聊通知。
+  - 发一个视频文件 → 机器人问一句，点「📤 转到频道」才 `copyMessage` 到频道（原样复制，不经流式服务，一定能成）。
+  - 2026 年 10 月实测的两道坎（所以**没有**做「账号发了新视频自动转」）：
+    1. 抖音网页版不给没登录的人看账号**最新**的作品：作品列表接口里最新的几条被藏起来，返回里带
+       `not_login_module`（「登录看更多最新作品」），按月份查也是空的——自动发现正好看不到要第一时间转的那几条。
+    2. 单条作品的详情接口从海外机房 IP（Hugging Face）打开会弹**滑块验证**（风控），拿不到；不去做验证码。
+       检测到验证码请求（`verify.zijieapi.com/captcha/get`）就立刻停下，机器人回复原因并提示直接发视频文件。
+  - 抖音 cookie 存在 Space 的 `/tmp/douyin-state.json`（下次接着当同一个访客，重启就没了），不登录任何抖音账号。
 
   定时任务的设置（部署脚本不会动它，改时间才需要）：
 

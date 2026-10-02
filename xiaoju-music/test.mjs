@@ -52,7 +52,7 @@ const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); retur
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
 const calls = [];
 const OWNER = 777, FAN = 555;
-const bot = { out: [], toStreamer: [], search: [], pickId: 0, autoStatus: { status: 'idle' }, adminAsks: 0, copyBusy: false, streamerDown: false };
+const bot = { out: [], toStreamer: [], search: [], pickId: 0, autoStatus: { status: 'idle' }, adminAsks: 0, copyBusy: false, streamerDown: false, copyFail: '' };
 const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok', viz: 'ok' };
 // 模拟歌词来源：LRCLIB 的歌词库，网易云的歌和歌词
 const lrclibDb = [];
@@ -129,7 +129,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -139,6 +139,11 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/pick') return Response.json({ new_ids: [bot.pickId] });
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
+    if (m[1] === 'douyin/link') {
+      if (/\/user\//.test(body.text)) return Response.json({ detail: '这是主页链接，要发某一条视频的分享链接' }, { status: 400 });
+      if (bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
+      return Response.json({ id: '7691335977760321704' });
+    }
     if (m[1] === 'harvest') {
       if (/example\.com/.test(body.url)) return Response.json({ detail: '这个网站还不支持' }, { status: 400 });
       if (bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
@@ -147,8 +152,9 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ ok: true });
   }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
-  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText)$/))) {
+  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage)$/))) {
     const body = JSON.parse(init.body);
+    if (m[1] === 'copyMessage' && bot.copyFail) return Response.json({ ok: false, error_code: 400, description: bot.copyFail });
     if (m[1] === 'getChatAdministrators') {
       assert.equal(String(body.chat_id), String(CHANNEL));
       bot.adminAsks++;
@@ -925,6 +931,48 @@ await t('贴网址搬运：搬运设置可以开关网站和授权、改数量�
   assert.deepEqual([st.sites, st.limit, st.playlist], [['archive'], 30, '']);
   for (const id of [980, 981, 982]) await admin('remove', { track: id });
   await admin('playlists', { playlists: [] });
+});
+
+await t('抖音：频道主发分享链接 → 交给流式服务解析转发；主页链接、正在转别的都说清楚；发视频文件 → 点按钮复制到频道', async () => {
+  const share = '2.58 复制打开抖音，看看【丁的作品】特效一用谁都不认  https://v.douyin.com/-Ghr0VeGTpA/ :0pm C@H.iC Uyt:/ 02/20';
+  await dm(OWNER, share);
+  const d = bot.toStreamer.at(-1);
+  assert.deepEqual([d.path, d.body.text, d.body.notify], ['douyin/link', share, OWNER]);
+  assert.match(lastSay().text, /正在解析这条抖音视频/);
+  await dm(OWNER, 'https://www.douyin.com/user/MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng');
+  assert.equal(lastSay().text, '这是主页链接，要发某一条视频的分享链接');
+  bot.copyBusy = true;
+  await dm(OWNER, 'https://www.douyin.com/video/7691335977760321704');
+  assert.match(lastSay().text, /正在转上一条/);
+  bot.copyBusy = false;
+  bot.streamerDown = true;
+  await dm(OWNER, share);
+  assert.match(lastSay().text, /正在唤醒/);
+  bot.streamerDown = false;
+  // 听众发抖音链接不会触发转发
+  const n = bot.toStreamer.filter(x => x.path === 'douyin/link').length;
+  await dm(FAN + 2, 'https://v.douyin.com/-Ghr0VeGTpA/');
+  assert.equal(bot.toStreamer.filter(x => x.path === 'douyin/link').length, n);
+  // 发视频文件：先问，点了才复制到频道，复制完把按钮去掉
+  const video = (from, extra) => hook({ update_id: 4, message: { message_id: 77, from: { id: from }, chat: { id: from, type: 'private' }, ...extra } });
+  await video(OWNER, { video: { file_id: 'V1', mime_type: 'video/mp4', duration: 12 } });
+  assert.deepEqual(lastSay().reply_markup.inline_keyboard, [[{ text: '📤 转到频道', callback_data: 'fv:77' }]]);
+  assert.ok(!bot.out.some(o => o.method === 'copyMessage'), '没点按钮不发');
+  await press(OWNER, 'fv:77');
+  const copy = bot.out.filter(o => o.method === 'copyMessage').at(-1);
+  assert.deepEqual([String(copy.chat_id), copy.from_chat_id, copy.message_id], [String(CHANNEL), OWNER, 77]);
+  assert.equal(bot.out.filter(o => o.method === 'editMessageText').at(-1).text, '✅ 已转到小橘音乐频道');
+  await video(OWNER, { document: { file_id: 'D1', mime_type: 'video/quicktime', file_name: 'a.mov' } });
+  assert.equal(lastSay().reply_markup.inline_keyboard[0][0].callback_data, 'fv:77');
+  bot.copyFail = 'Bad Request: message to copy not found';
+  await press(OWNER, 'fv:77');
+  assert.match(lastSay().text, /没转成：Bad Request: message to copy not found/);
+  bot.copyFail = '';
+  const copies = bot.out.filter(o => o.method === 'copyMessage').length;
+  await press(FAN, 'fv:77'); // 别人按没用
+  await video(FAN, { video: { file_id: 'V2', mime_type: 'video/mp4' } }); // 听众发视频不问
+  assert.equal(bot.out.filter(o => o.method === 'copyMessage').length, copies);
+  assert.match(lastSay().text, /发一个歌名给我/);
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {
