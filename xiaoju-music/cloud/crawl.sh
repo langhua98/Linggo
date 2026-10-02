@@ -15,7 +15,7 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 cd "$HOME/MediaCrawler" || { echo "没找到 MediaCrawler，重新运行一次安装命令"; exit 1; }
 
 # MediaCrawler 用 execjs 跑抖音的签名脚本，要有 Node.js（Codespaces 的 Python 镜像里没有）
-command -v node >/dev/null 2>&1 || { echo "== 先装 Node.js（一两分钟）=="; sudo apt-get update -y && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs; }
+command -v node >/dev/null 2>&1 || { echo "== 先装 Node.js（一两分钟）=="; sudo apt-get update -y || true; sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs; }
 # MediaCrawler 默认 CDP 模式要找本机装的 Chrome/Edge，云电脑上没有，浏览器就起不来；改用它自己装的 Chromium
 sed -i 's/^ENABLE_CDP_MODE = True/ENABLE_CDP_MODE = False/' config/base_config.py
 
