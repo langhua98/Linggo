@@ -14,6 +14,9 @@ OUT="$HOME/douyin-data"
 rm -rf "$OUT" && mkdir -p "$OUT"
 cd "$HOME/MediaCrawler" || { echo "没找到 MediaCrawler，重新运行一次安装命令"; exit 1; }
 
+# MediaCrawler 默认 CDP 模式要找本机装的 Chrome/Edge，云电脑上没有，浏览器就起不来；改用它自己装的 Chromium
+sed -i 's/^ENABLE_CDP_MODE = True/ENABLE_CDP_MODE = False/' config/base_config.py
+
 echo "== 马上会弹出浏览器，用抖音 App 扫码登录（要验证就在浏览器里完成）=="
 uv run main.py --platform dy --lt qrcode --type creator --creator_id "$CREATORS" \
   --get_comment no --get_sub_comment no --get_media no --headless no \
