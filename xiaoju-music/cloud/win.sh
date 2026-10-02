@@ -18,6 +18,9 @@ if ! grep -q '^session.screen0.toolbar.visible:[[:space:]]*false' "$F"; then
 fi
 n=0
 for w in $(xdotool search --onlyvisible --class 'chrom' 2>/dev/null); do
+  # 已经摆好的就别动它（反复改窗口大小没必要，也可能惹浏览器出问题）
+  g=$(xdotool getwindowgeometry "$w" 2>/dev/null | tr -d '\n')
+  case "$g" in *"Position: 0,0"*"Geometry: 1920x1170"*) n=$((n + 1)); continue ;; esac
   xdotool windowmove "$w" 0 0 windowsize "$w" 1920 1170 >/dev/null 2>&1 && n=$((n + 1))
 done
 [ "${1:-}" = quiet ] || echo "== 摆好了 $n 个浏览器窗口，去桌面刷新看看 =="

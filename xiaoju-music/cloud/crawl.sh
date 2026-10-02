@@ -112,6 +112,26 @@ if '# xiaoju: light' not in c:
                       + pad + '        await route.continue_()\n'
                       + pad + 'await self.browser_context.route("**/*", _xj_route)\n', 1)
     open(p3, 'w', encoding='utf-8').write(c)
+c = open(p2, encoding='utf-8').read()
+old = '        local_storage: Dict = await self.playwright_page.evaluate("() => window.localStorage")  # type: ignore\n'
+if '# xiaoju: crash-safe' not in c and old in c:
+    # 每个请求都要去页面里读 localStorage（拿 msToken）。抖音首页太重，在小云电脑上开久了页面会崩（Target crashed），
+    # 一崩整个抓取就停。改成：读到就记下；页面崩了用记下的那份，还没记过就新开一页重读
+    c = c.replace(old, '        # xiaoju: crash-safe\n'
+                  '        try:\n'
+                  '            local_storage: Dict = await self.playwright_page.evaluate("() => window.localStorage")  # type: ignore\n'
+                  '            self._xj_ls = local_storage\n'
+                  '        except Exception as _e:\n'
+                  '            local_storage = getattr(self, "_xj_ls", None)\n'
+                  '            if local_storage is None:\n'
+                  '                utils.logger.info(f"[xiaoju] 页面崩了，新开一页：{str(_e)[:80]}")\n'
+                  '                _pg = await self.playwright_page.context.new_page()\n'
+                  '                await _pg.goto("https://www.douyin.com/", timeout=60000)\n'
+                  '                await asyncio.sleep(5)\n'
+                  '                self.playwright_page = _pg\n'
+                  '                local_storage = await _pg.evaluate("() => window.localStorage")\n'
+                  '                self._xj_ls = local_storage\n', 1)
+    open(p2, 'w', encoding='utf-8').write(c)
 PY
 
 # 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）
