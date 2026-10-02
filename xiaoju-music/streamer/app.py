@@ -958,13 +958,27 @@ async def douyin_link(request: Request):
     return {'kind': kind, 'sec_uid': value} if kind == 'user' else {'kind': kind, 'id': value}
 
 
+@app.post('/douyin/resolve')
+async def douyin_resolve(request: Request):
+    """{text: 分享文字或链接} → {kind: 'user'|'aweme', id}。只认链接，不开浏览器（机器人加账号用）"""
+    check_key(request)
+    try:
+        got = await dy_links.resolve(str((await request.json()).get('text', ''))[:2000])
+    except Exception:  # noqa: BLE001
+        raise HTTPException(502, '抖音短链接打不开')
+    if not got:
+        raise HTTPException(400, '没认出抖音链接')
+    return {'kind': got[0], 'id': got[1]}
+
+
 @app.post('/douyin/mirror')
 async def douyin_mirror(request: Request):
     """{sec_uid, target, notify}：把这个账号能看到的视频转到 target 频道（旧的先发，已有的跳过），跑完通知。正在跑别的 → 409"""
     check_key(request)
     body = await request.json()
-    sec_uid = str(body.get('sec_uid', '')).strip()
-    if not dy_links.USER.search('/user/' + sec_uid) or len(sec_uid) > 140:
+    sec_uids = body.get('sec_uids') or [body.get('sec_uid', '')]
+    sec_uids = [str(x).strip() for x in sec_uids][:10]
+    if not sec_uids or not all(dy_links.USER.search('/user/' + x) and len(x) <= 140 for x in sec_uids):
         raise HTTPException(400, 'bad sec_uid')
     target = parse_target(body.get('target'))
     if target is None:
@@ -973,7 +987,7 @@ async def douyin_mirror(request: Request):
         raise HTTPException(409, 'logging in')
     restore_state(body.get('state'))
     try:
-        douyin_job.start_mirror(sec_uid, notify=body.get('notify') or None, target=target, quiet=bool(body.get('quiet')))
+        douyin_job.start_mirror(sec_uids, notify=body.get('notify') or None, target=target, quiet=bool(body.get('quiet')))
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return {'ok': True}

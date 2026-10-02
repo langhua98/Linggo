@@ -566,7 +566,7 @@ def test_mirror_endpoint(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
     started = []
     job = DouyinJob(web=None, send_video=None, posted_ids=None)
-    monkeypatch.setattr(job, 'start_mirror', lambda sec_uid, notify=None, target=None, quiet=False: started.append((sec_uid, notify, target, quiet)))
+    monkeypatch.setattr(job, 'start_mirror', lambda sec_uids, notify=None, target=None, quiet=False: started.append((sec_uids, notify, target, quiet)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
     c = TestClient(appmod.app)
     key = {'X-Key': 'k1'}
@@ -574,7 +574,7 @@ def test_mirror_endpoint(monkeypatch):
     assert c.post('/douyin/mirror', json={'sec_uid': 'nope', 'target': '-1001234567890'}, headers=key).status_code == 400
     assert c.post('/douyin/mirror', json={'sec_uid': SEC}, headers=key).json()['detail'] == '没设置视频频道'
     r = c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': '-1001234567890', 'notify': 42}, headers=key)
-    assert r.status_code == 200 and started == [(SEC, 42, VIDEO_CHANNEL, False)]
+    assert r.status_code == 200 and started == [([SEC], 42, VIDEO_CHANNEL, False)]
     c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': '-1001234567890', 'quiet': True}, headers=key)
     assert started[-1][3] is True
 
@@ -891,3 +891,36 @@ def test_douyin_jobs_wait_while_logging_in(monkeypatch):
     c = TestClient(appmod.app)
     r = c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': str(VIDEO_CHANNEL)}, headers={'X-Key': 'k1'})
     assert r.status_code == 409
+
+
+def test_mirror_several_accounts_and_one_blocked_does_not_stop_the_others():
+    SEC2 = 'MS4wLjABAAAAsmallaccount0123456789'
+
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            if sec_uid == SEC2 + 'X':
+                raise Blocked('风控')
+            aid = '1' if sec_uid == SEC else '2'
+            a = aweme(aweme_id=aid, desc='作品' + aid, create_time=1790000000 + int(aid))
+            a['author'] = {'nickname': '丁' if aid == '1' else '小号', 'sec_uid': sec_uid}
+            return [normalize(a)], {'hidden_newest': aid == '2', 'truncated': False}
+
+    sent = []
+
+    async def send_video(data, item, src, text, target):
+        sent.append(item['id'])
+        return 10 + len(sent)
+
+    async def posted_ids(target):
+        return {}
+
+    async def go(accounts):
+        job = DouyinJob(web=Web(), send_video=send_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(accounts, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go([SEC, SEC2, SEC2 + 'X']))
+    assert sent == ['1', '2'] and st['name'] == '丁、@小号' and st['hidden_newest'] and st['blocked_accounts'] == 1
+    st = asyncio.run(go([SEC2 + 'X']))
+    assert st['status'] == 'error' and st['blocked']

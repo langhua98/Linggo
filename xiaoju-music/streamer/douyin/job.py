@@ -48,9 +48,10 @@ class DouyinJob:
         self._begin(lambda: self._collect(sec_uid, limit, notify), mode='collect', sec_uid=sec_uid, name='',
                     links=[], hidden_newest=False, truncated=False)
 
-    def start_mirror(self, sec_uid, notify=None, target=None, quiet=False):
-        """quiet：定时自动同步用，没转新的、也没出错就不发消息"""
-        self._begin(lambda: self._mirror(sec_uid, notify, target, quiet), mode='mirror', sec_uid=sec_uid, target=target, name='',
+    def start_mirror(self, sec_uids, notify=None, target=None, quiet=False):
+        """sec_uids：频道主自己的一个或几个账号。quiet：定时自动同步用，没转新的、也没出错就不发消息"""
+        sec_uids = [sec_uids] if isinstance(sec_uids, str) else list(sec_uids)
+        self._begin(lambda: self._mirror(sec_uids, notify, target, quiet), mode='mirror', sec_uids=sec_uids, target=target, name='',
                     posted=[], skipped=[], failed=[], other=0, hidden_newest=False, truncated=False)
 
     async def _post(self, w, item, target, done):
@@ -66,15 +67,30 @@ class DouyinJob:
             done[item['id']] = await self.send_video(data, item, src, caption(item), target)
         return done[item['id']], True
 
-    async def _mirror(self, sec_uid, notify, target, quiet=False):
-        """采集这个账号能看到的作品，视频和图文按发布顺序（旧的先）转进频道，已有的跳过"""
+    async def _mirror(self, sec_uids, notify, target, quiet=False):
+        """采集这几个账号能看到的作品，视频和图文按发布顺序（旧的先）转进频道，已有的跳过。
+        某个账号这次没拿到（风控）不影响别的账号；全都没拿到才算出错"""
         st = self.state
         try:
             done = await self.posted_ids(target)
             async with self.web() as w:
-                items, info = await w.posts(sec_uid)
-                st.update(info)
-                st['name'] = next((i['author'] for i in items if i['author']), '')
+                items, names, blocked = [], [], []
+                for sec_uid in sec_uids:
+                    try:
+                        got, info = await w.posts(sec_uid)
+                    except Blocked as e:
+                        blocked.append(str(e))
+                        continue
+                    items += got
+                    st['hidden_newest'] = st['hidden_newest'] or info['hidden_newest']
+                    st['truncated'] = st['truncated'] or info['truncated']
+                    name = next((i['author'] for i in got if i['author']), '')
+                    if name:
+                        names.append(name)
+                if blocked and len(blocked) == len(sec_uids):
+                    raise Blocked(blocked[0])
+                st['blocked_accounts'] = len(blocked)
+                st['name'] = '、@'.join(names)
                 st['other'] = sum(i['kind'] not in ('video', 'images') for i in items)
                 for item in sorted((i for i in items if i['kind'] in ('video', 'images') and i.get('public', True)),
                                    key=lambda i: i['time']):

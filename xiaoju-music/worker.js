@@ -270,11 +270,18 @@ async function adminApi(request, env, url) {
   if (action === 'douyin-self') {
     if (request.method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const sec = String(body.sec_uid || '').trim();
-      if (!/^MS4wLjABAAAA[\w-]{10,120}$/.test(sec)) return json({ error: '参数不对' }, 400);
-      await lib(env).setConfig('douyinSelf', sec);
+      const list = body.sec_uids !== undefined ? body.sec_uids : [...await douyinSelves(lib(env)), body.sec_uid];
+      const clean = [...new Set((Array.isArray(list) ? list : []).map(x => String(x || '').trim()))];
+      if (!clean.length || clean.length > 10 || !clean.every(x => SEC_UID.test(x))) return json({ error: '参数不对' }, 400);
+      await lib(env).setConfig('douyinSelf', JSON.stringify(clean));
     }
-    return json({ sec_uid: (await lib(env).getConfig('douyinSelf')) || '' });
+    return json({ sec_uids: await douyinSelves(lib(env)) });
+  }
+  // 抖音自动同步开关（和机器人里「抖音自动同步 开/关」一样）：POST {on: true|false}
+  if (action === 'douyin-auto' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    await lib(env).setConfig('douyinAuto', body.on ? '1' : '0');
+    return json({ on: !!body.on });
   }
   // 手动跑一次「夜里自动搬」（测试、或者想马上搬）
   if (action === 'auto-run' && request.method === 'POST') return json(await nightly(env));
@@ -1226,6 +1233,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 抖音视频的分享链接 —— 不登录解析，把这条视频转到视频频道
 抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
 转抖音视频 —— 把你自己抖音账号能看到的作品（视频和图文）都转到视频频道，已有的跳过
+添加抖音账号 主页分享链接 —— 再加一个你自己的账号（比如小号），转抖音视频、自动同步都会带上它
 登录抖音 —— 发你一个登录页，扫码登录后作品列表能看全（包括最新的）
 抖音自动同步 开 / 关 —— 每 30 分钟检查一次你的抖音，有新作品自动转到视频频道
 发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
@@ -1256,6 +1264,7 @@ async function botUpdate(env, update, origin) {
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
+    if (/^添加抖音账号/.test(t)) return ownerDouyinAdd(env, chat, t); // 带着主页链接，要在下一条之前认
     if (DOUYIN_LINK.test(t)) return ownerDouyin(env, chat, t);
     if (/^转抖音视频$/.test(t)) return ownerDouyinMirror(env, chat);
     if (/^登录抖音$/.test(t)) return ownerDouyinLogin(env, chat, origin);
@@ -1548,16 +1557,44 @@ async function ownerDouyin(env, chat, t) {
   return say(env, chat, '收到 👌 正在解析这条抖音视频，大约半分钟，转好了告诉你');
 }
 
+const SEC_UID = /^MS4wLjABAAAA[\w-]{10,120}$/;
+
+// 频道主自己的抖音账号（可以有几个，比如主号和小号）。以前只存一个字符串，兼容
+async function douyinSelves(L) {
+  const raw = (await L.getConfig('douyinSelf')) || '';
+  if (!raw) return [];
+  try { const a = JSON.parse(raw); if (Array.isArray(a)) return a; } catch {}
+  return [raw];
+}
+
+// 「添加抖音账号 <主页分享链接>」：加一个频道主自己的账号（小号）
+async function ownerDouyinAdd(env, chat, text) {
+  if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/resolve', { text });
+  } catch {
+    return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
+  }
+  if (r.status !== 200) return say(env, chat, r.data.detail || '没认出这个链接');
+  if (r.data.kind !== 'user') return say(env, chat, '这是作品链接。要发账号主页的分享链接（抖音里点「我」→ 右上角 ··· →「分享主页」→ 复制链接）');
+  const L = lib(env), list = await douyinSelves(L);
+  if (list.includes(r.data.id)) return say(env, chat, '这个账号已经在里面了 👌');
+  if (list.length >= 10) return say(env, chat, '最多 10 个账号');
+  await L.setConfig('douyinSelf', JSON.stringify([...list, r.data.id]));
+  return say(env, chat, `✅ 加好了，现在有 ${list.length + 1} 个抖音账号。发「转抖音视频」马上转一次；开了自动同步的话之后会自动转`);
+}
+
 // 「转抖音视频」：把频道主自己的抖音账号（config 的 douyinSelf，管理接口 douyin-self 设）能看到的作品（视频和图文）都转到视频频道。
 // 只认频道主自己的账号：别人的作品不批量搬
 async function ownerDouyinMirror(env, chat) {
   if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
   if (!env.VIDEO_CHANNEL_ID) return say(env, chat, '还没设置视频频道');
-  const self = await lib(env).getConfig('douyinSelf');
-  if (!self) return say(env, chat, '还没设置你自己的抖音账号');
+  const selves = await douyinSelves(lib(env));
+  if (!selves.length) return say(env, chat, '还没设置你自己的抖音账号');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/mirror', { sec_uid: self, target: env.VIDEO_CHANNEL_ID, notify: chat, state: (await lib(env).getConfig('douyinState')) || '' });
+    r = await streamerCall(env, '/douyin/mirror', { sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: chat, state: (await lib(env).getConfig('douyinState')) || '' });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
   }
@@ -1566,18 +1603,18 @@ async function ownerDouyinMirror(env, chat) {
   return say(env, chat, '收到 👌 正在把你抖音上能看到的作品（视频和图文）转到视频频道（不登录），转好了告诉你');
 }
 
-// 每 30 分钟：频道主开了「抖音自动同步」就把自己账号的新作品转到视频频道（没新的不打扰）。
-// 要先「登录抖音」：没登录时抖音藏起最新的作品，自动同步就看不到新的
+// 每 30 分钟：频道主开了「抖音自动同步」就把自己账号（可以几个）公开列表里的新作品转到视频频道（没新的不打扰）。
+// 不登录：抖音对没登录的人藏起最新的几条、只给第一页，新作品要等它出现在公开列表里才转得到
 const DOUYIN_CRON = '*/30 * * * *';
 
 async function douyinTick(env) {
   if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, why: 'not configured' };
   const L = lib(env);
   if ((await L.getConfig('douyinAuto')) !== '1') return { ok: false, why: 'off' };
-  const self = await L.getConfig('douyinSelf');
-  if (!self) return { ok: false, why: 'no account' };
+  const selves = await douyinSelves(L);
+  if (!selves.length) return { ok: false, why: 'no account' };
   const { status } = await streamerCall(env, '/douyin/mirror', {
-    sec_uid: self, target: env.VIDEO_CHANNEL_ID, notify: await ownerId(env), quiet: true, state: (await L.getConfig('douyinState')) || '',
+    sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: await ownerId(env), quiet: true, state: (await L.getConfig('douyinState')) || '',
   });
   return { ok: status === 200, status };
 }
@@ -1627,10 +1664,10 @@ async function douyinLoginApi(env, token, action) {
 
 async function ownerDouyinAuto(env, chat, on) {
   const L = lib(env);
-  if (on && !(await L.getConfig('douyinSelf'))) return say(env, chat, '还没设置你自己的抖音账号');
+  if (on && !(await douyinSelves(L)).length) return say(env, chat, '还没设置你自己的抖音账号');
   await L.setConfig('douyinAuto', on ? '1' : '0');
   return say(env, chat, on
-    ? '✅ 抖音自动同步开了：每 30 分钟看一次，有新作品自动转到视频频道（没登录抖音的话，最新的几条看不到，先发「登录抖音」）'
+    ? '✅ 抖音自动同步开了：每 30 分钟看一次你的抖音公开主页，有新作品自动转到视频频道。刚发的作品抖音会先对外藏一阵，出现在公开主页上以后才转得到'
     : '抖音自动同步关了');
 }
 

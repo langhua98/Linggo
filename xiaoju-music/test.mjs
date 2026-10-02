@@ -130,7 +130,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -140,6 +140,11 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/pick') return Response.json({ new_ids: [bot.pickId] });
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
+    if (m[1] === 'douyin/resolve') {
+      if (/\/user\/(\w+)/.test(body.text)) return Response.json({ kind: 'user', id: 'MS4wLjABAAAA' + body.text.match(/\/user\/(\w+)/)[1] });
+      if (/video/.test(body.text)) return Response.json({ kind: 'aweme', id: '123456789' });
+      return Response.json({ detail: '没认出抖音链接' }, { status: 400 });
+    }
     if (m[1] === 'douyin/link') {
       if (!/douyin\.com/.test(body.text)) return Response.json({ detail: '没认出抖音链接' }, { status: 400 });
       if (bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
@@ -984,11 +989,21 @@ await t('转抖音视频：只转频道主自己的抖音账号（管理接口�
   assert.equal((await admin('douyin-self', { sec_uid: 'not-a-sec-uid' })).status, 400);
   assert.equal((await admin('douyin-self', { sec_uid: 'x' }, 'wrong-key')).status, 401);
   const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
-  assert.deepEqual(await jsonOf(await admin('douyin-self', { sec_uid: sec })), { sec_uid: sec });
-  assert.deepEqual(await jsonOf(await admin('douyin-self')), { sec_uid: sec });
+  assert.deepEqual(await jsonOf(await admin('douyin-self', { sec_uid: sec })), { sec_uids: [sec] });
+  assert.deepEqual(await jsonOf(await admin('douyin-self')), { sec_uids: [sec] });
   await dm(OWNER, '转抖音视频');
   const r = bot.toStreamer.at(-1);
-  assert.deepEqual([r.path, r.body.sec_uid, r.body.target, r.body.notify], ['douyin/mirror', sec, String(VIDEO_CHANNEL), OWNER]);
+  assert.deepEqual([r.path, r.body.sec_uids, r.body.target, r.body.notify], ['douyin/mirror', [sec], String(VIDEO_CHANNEL), OWNER]);
+  // 加小号：发主页链接
+  await dm(OWNER, '添加抖音账号 https://www.douyin.com/user/SmallAccount1234567');
+  assert.match(lastSay().text, /加好了，现在有 2 个抖音账号/);
+  await dm(OWNER, '添加抖音账号 https://www.douyin.com/user/SmallAccount1234567');
+  assert.match(lastSay().text, /已经在里面了/);
+  await dm(OWNER, '添加抖音账号 https://www.douyin.com/video/123456789');
+  assert.match(lastSay().text, /这是作品链接/);
+  await dm(OWNER, '转抖音视频');
+  assert.deepEqual(bot.toStreamer.at(-1).body.sec_uids, [sec, 'MS4wLjABAAAASmallAccount1234567']);
+  await admin('douyin-self', { sec_uids: [sec] });
   assert.match(lastSay().text, /正在把你抖音上能看到的作品（视频和图文）转到视频频道/);
   const n = bot.toStreamer.length;
   await dm(FAN + 3, '转抖音视频'); // 听众发这个只当求歌
