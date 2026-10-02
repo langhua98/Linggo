@@ -1,0 +1,141 @@
+"""频道主登录自己的抖音账号（频道主同意的）。
+
+没登录时抖音藏起账号最新的作品、只给第一页；登录后作品列表能看全，自动同步才做得成。
+在 Worker 的登录页（/douyin-login）上扫码：无头浏览器打开抖音搜索页（会自己弹出扫码登录框），二维码从页面
+取二维码的接口里拿（最清楚，取不到再截图），登录页显示出来，频道主用抖音 App 扫、在手机上确认 → 出现登录
+cookie（sessionid）就算登上了。cookie 由这边自己存进 STATE_FILE（频道主不用碰 cookie），DouyinWeb 每次都带着它；
+Worker 再取走存一份，Space 重启后写回来。密码不经过这里。弹滑块验证就停下，不去做验证码。"""
+
+import asyncio
+import base64
+import json
+import logging
+import os
+
+from .web import CAPTCHA, STATE_FILE
+
+log = logging.getLogger('streamer.douyin')
+
+LOGIN_PAGE = 'https://www.douyin.com/search/%E7%83%AD%E9%97%A8'  # 搜索页：没登录会自己弹出扫码登录框
+QR_SELECTORS = ["xpath=//div[contains(@class,'web-login-scan-code')]", "xpath=//div[contains(@class,'qrcode')]"]
+SESSION_COOKIES = ('sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt')
+WAIT_SECONDS = 180
+
+
+def logged_in(cookies):
+    return any(c.get('name') in SESSION_COOKIES and c.get('value') for c in cookies)
+
+
+def state_logged_in(path=STATE_FILE):
+    try:
+        with open(path) as f:
+            return logged_in(json.load(f).get('cookies') or [])
+    except (OSError, ValueError):
+        return False
+
+
+def restore_state(text, path=STATE_FILE):
+    """Worker 存的那份登录 cookie 写回 STATE_FILE（Space 重启后 /tmp 清空了）。本地已经是登录状态就不动"""
+    if not text or state_logged_in(path):
+        return False
+    try:
+        if not logged_in(json.loads(text).get('cookies') or []):
+            return False
+    except ValueError:
+        return False
+    _write(path, text)
+    return True
+
+
+def _write(path, text):
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+class QrLogin:
+    """start() 之后 state：running → qr_ready（图在 self.qr_png）→ done / error"""
+
+    def __init__(self, *, web, wait=WAIT_SECONDS, poll=3.0, qr_wait=30):
+        self.web, self.wait, self.poll, self.qr_wait = web, wait, poll, qr_wait
+        self.task = None
+        self.qr_png = None
+        self.state = {'status': 'idle'}
+
+    def running(self):
+        return self.task is not None and not self.task.done()
+
+    def start(self):
+        if self.running():
+            raise RuntimeError('already running')
+        self.qr_png = None
+        self.state = {'status': 'running', 'qr_ready': False, 'error': ''}
+        self.task = asyncio.create_task(self._run())
+
+    async def _run(self):
+        st = self.state
+        try:
+            async with self.web() as w:  # 退出时 DouyinWeb 会把 cookie 存进 STATE_FILE
+                if logged_in(await w.ctx.cookies()):
+                    st['status'] = 'done'
+                    return
+                page = await w.ctx.new_page()
+                captcha = asyncio.Event()
+                qr = asyncio.get_running_loop().create_future()
+
+                async def on_response(res):
+                    if CAPTCHA.search(res.url):
+                        captcha.set()
+                    if 'qrcode' in res.url and not qr.done():
+                        try:
+                            data = (await res.json()).get('data') or {}
+                            if data.get('qrcode') and not qr.done():
+                                qr.set_result(base64.b64decode(data['qrcode']))
+                        except Exception:  # noqa: BLE001 — 不是 JSON（比如二维码图片本身）
+                            pass
+
+                page.on('response', on_response)
+                await page.goto(LOGIN_PAGE, wait_until='domcontentloaded', timeout=45000)
+                try:
+                    png = await asyncio.wait_for(asyncio.shield(qr), self.qr_wait)
+                    st['qr'] = 'api'
+                except asyncio.TimeoutError:
+                    png = await self._screenshot_qr(page)
+                    st['qr'] = 'element' if png else 'page'
+                self.qr_png = png or await page.screenshot()
+                st['qr_ready'] = True
+                for _ in range(int(self.wait / self.poll)):
+                    await asyncio.sleep(self.poll)
+                    if logged_in(await w.ctx.cookies()):
+                        await asyncio.sleep(3)  # 让页面把剩下的 cookie 写完
+                        st['status'] = 'done'
+                        return
+                    if captcha.is_set():
+                        st['status'], st['error'] = 'error', '抖音要求滑块验证，这边没法继续'
+                        return
+                st['status'], st['error'] = 'error', '3 分钟内没扫码，二维码过期了'
+        except asyncio.CancelledError:
+            st['status'] = 'stopped'
+        except Exception as e:  # noqa: BLE001
+            log.exception('douyin login failed')
+            st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'[:200]
+
+    async def _screenshot_qr(self, page):
+        """接口里没拿到二维码：等框里的二维码真的画出来（不只是抖音图标）再截那一块"""
+        try:
+            await page.wait_for_function(
+                "() => [...document.querySelectorAll('img,canvas')].some(e => {"
+                " const r = e.getBoundingClientRect(); return r.width > 120 && r.width < 400"
+                " && Math.abs(r.width - r.height) < 10 && (e.tagName === 'CANVAS' || e.naturalWidth > 100) })",
+                timeout=15000)
+        except Exception:  # noqa: BLE001
+            return None
+        for sel in QR_SELECTORS:
+            try:
+                el = await page.query_selector(sel)
+                if el and await el.is_visible():
+                    return await el.screenshot()
+            except Exception:  # noqa: BLE001
+                pass
+        return None

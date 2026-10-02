@@ -48,8 +48,9 @@ class DouyinJob:
         self._begin(lambda: self._collect(sec_uid, limit, notify), mode='collect', sec_uid=sec_uid, name='',
                     links=[], hidden_newest=False, truncated=False)
 
-    def start_mirror(self, sec_uid, notify=None, target=None):
-        self._begin(lambda: self._mirror(sec_uid, notify, target), mode='mirror', sec_uid=sec_uid, target=target, name='',
+    def start_mirror(self, sec_uid, notify=None, target=None, quiet=False):
+        """quiet：定时自动同步用，没转新的、也没出错就不发消息"""
+        self._begin(lambda: self._mirror(sec_uid, notify, target, quiet), mode='mirror', sec_uid=sec_uid, target=target, name='',
                     posted=[], skipped=[], failed=[], other=0, hidden_newest=False, truncated=False)
 
     async def _post(self, w, item, target, done):
@@ -65,7 +66,7 @@ class DouyinJob:
             done[item['id']] = await self.send_video(data, item, src, caption(item), target)
         return done[item['id']], True
 
-    async def _mirror(self, sec_uid, notify, target):
+    async def _mirror(self, sec_uid, notify, target, quiet=False):
         """采集这个账号能看到的作品，视频和图文按发布顺序（旧的先）转进频道，已有的跳过"""
         st = self.state
         try:
@@ -75,7 +76,8 @@ class DouyinJob:
                 st.update(info)
                 st['name'] = next((i['author'] for i in items if i['author']), '')
                 st['other'] = sum(i['kind'] not in ('video', 'images') for i in items)
-                for item in sorted((i for i in items if i['kind'] in ('video', 'images')), key=lambda i: i['time']):
+                for item in sorted((i for i in items if i['kind'] in ('video', 'images') and i.get('public', True)),
+                                   key=lambda i: i['time']):
                     row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
                     try:
                         row['msg'], fresh = await self._post(w, item, target, done)
@@ -87,10 +89,12 @@ class DouyinJob:
                     if fresh:
                         await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流
             st['status'] = 'done'
-            await self._tell(notify, mirror_report(st))
+            if not quiet or st['posted'] or st['failed']:
+                await self._tell(notify, mirror_report(st))
         except Blocked as e:
             st['status'], st['blocked'], st['error'] = 'error', True, str(e)
-            await self._tell(notify, f'这次没拿到作品列表（{e}）。过一会儿再试')
+            if not quiet:
+                await self._tell(notify, f'这次没拿到作品列表（{e}）。过一会儿再试')
         except asyncio.CancelledError:
             st['status'] = 'stopped'
         except Exception as e:  # noqa: BLE001
@@ -105,7 +109,7 @@ class DouyinJob:
                 items, info = await w.posts(sec_uid, limit)
             st['name'] = next((i['author'] for i in items if i['author']), '')
             st['links'] = [{'id': i['id'], 'url': i['url'], 'kind': i['kind'], 'time': i['time'], 'desc': i['desc'][:60]}
-                           for i in items]
+                           for i in items if i.get('public', True)]
             st.update(info)
             st['status'] = 'done'
             for text in links_report(st):

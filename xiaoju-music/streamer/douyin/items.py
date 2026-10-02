@@ -67,7 +67,10 @@ def normalize(a):
     else:
         kind = 'other'
     aweme_id = str(a.get('aweme_id') or '')
+    st = a.get('status') or {}
     return {
+        # 登录后看自己的主页，列表里会有私密、仅好友可见的作品：这些不转
+        'public': not (st.get('is_private') or st.get('private_status') or st.get('friends_status')),
         'id': aweme_id,
         'kind': kind,
         'url': share_url(aweme_id, kind),

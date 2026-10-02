@@ -566,7 +566,7 @@ def test_mirror_endpoint(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
     started = []
     job = DouyinJob(web=None, send_video=None, posted_ids=None)
-    monkeypatch.setattr(job, 'start_mirror', lambda sec_uid, notify=None, target=None: started.append((sec_uid, notify, target)))
+    monkeypatch.setattr(job, 'start_mirror', lambda sec_uid, notify=None, target=None, quiet=False: started.append((sec_uid, notify, target, quiet)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
     c = TestClient(appmod.app)
     key = {'X-Key': 'k1'}
@@ -574,7 +574,9 @@ def test_mirror_endpoint(monkeypatch):
     assert c.post('/douyin/mirror', json={'sec_uid': 'nope', 'target': '-1001234567890'}, headers=key).status_code == 400
     assert c.post('/douyin/mirror', json={'sec_uid': SEC}, headers=key).json()['detail'] == '没设置视频频道'
     r = c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': '-1001234567890', 'notify': 42}, headers=key)
-    assert r.status_code == 200 and started == [(SEC, 42, VIDEO_CHANNEL)]
+    assert r.status_code == 200 and started == [(SEC, 42, VIDEO_CHANNEL, False)]
+    c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': '-1001234567890', 'quiet': True}, headers=key)
+    assert started[-1][3] is True
 
 
 def test_parse_target():
@@ -740,3 +742,152 @@ def test_flood_retry_waits_and_tries_again(monkeypatch):
         return 'ok'
 
     assert asyncio.run(appmod.flood_retry(send)) == 'ok' and slept == [8] and len(tries) == 2
+
+
+# ── 登录 ──
+
+class LoginWeb:
+    def __init__(self, logged_after=None, captcha=False, qr_api=True):
+        self.logged_after, self.captcha, self.qr_api, self.polls = logged_after, captcha, qr_api, 0
+        self.ctx = self
+
+    def __call__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def cookies(self):
+        self.polls += 1
+        ok = self.logged_after is not None and self.polls > self.logged_after
+        return [{'name': 'ttwid', 'value': 'x'}] + ([{'name': 'sessionid', 'value': 'abc'}] if ok else [])
+
+    async def new_page(self):
+        return LoginPage(self)
+
+
+class LoginPage:
+    def __init__(self, web):
+        self.web, self.handler = web, None
+
+    def on(self, event, handler):
+        self.handler = handler
+
+    async def goto(self, url, **kw):
+        import base64 as b64
+        if self.web.qr_api:
+            body = {'data': {'qrcode': b64.b64encode(b'QRPNG').decode()}}
+            await self.handler(type('R', (), {'url': 'https://sso.douyin.com/get_qrcode/?x', 'json': lambda s: _aw(body)})())
+        if self.web.captcha:
+            await self.handler(type('R', (), {'url': 'https://verify.zijieapi.com/captcha/get?x'})())
+
+    async def wait_for_function(self, js, timeout=None):
+        return None
+
+    async def query_selector(self, sel):
+        return QrEl()
+
+    async def screenshot(self):
+        return b'page'
+
+
+async def _aw(v):
+    return v
+
+
+class QrEl:
+    async def is_visible(self):
+        return True
+
+    async def screenshot(self):
+        return b'qr-element'
+
+
+def run_login(web):
+    from douyin.login import QrLogin
+    import douyin.login as L
+
+    async def go():
+        lg = QrLogin(web=web, wait=0.05, poll=0.01, qr_wait=0.05)
+        lg.start()
+        await lg.task
+        return lg
+
+    real_sleep = L.asyncio.sleep
+
+    async def fast(s):
+        await real_sleep(0)
+
+    L.asyncio.sleep = fast
+    try:
+        return asyncio.run(go())
+    finally:
+        L.asyncio.sleep = real_sleep
+
+
+def test_login_gets_the_qr_from_the_api_and_waits_for_the_scan():
+    lg = run_login(LoginWeb(logged_after=2))
+    assert lg.qr_png == b'QRPNG' and lg.state['qr'] == 'api' and lg.state['status'] == 'done'
+
+
+def test_login_falls_back_to_the_rendered_qr():
+    lg = run_login(LoginWeb(logged_after=2, qr_api=False))
+    assert lg.qr_png == b'qr-element' and lg.state['qr'] == 'element'
+
+
+def test_login_times_out_or_stops_on_captcha():
+    lg = run_login(LoginWeb(logged_after=None))
+    assert lg.state['status'] == 'error' and '过期' in lg.state['error']
+    lg = run_login(LoginWeb(logged_after=None, captcha=True))
+    assert '滑块验证' in lg.state['error']
+
+
+def test_restore_state(tmp_path):
+    from douyin.login import restore_state, state_logged_in
+    good = '{"cookies": [{"name": "sessionid", "value": "abc"}], "origins": []}'
+    path = str(tmp_path / 'state.json')
+    assert restore_state(good, path) and state_logged_in(path)
+    assert not restore_state(good, path), '已经是登录状态就不动'
+    assert not restore_state('{"cookies": []}', str(tmp_path / 'x.json'))
+    assert not restore_state('not json', str(tmp_path / 'y.json'))
+    assert not restore_state('', str(tmp_path / 'z.json'))
+
+
+def test_login_endpoints(monkeypatch, tmp_path):
+    from douyin.login import QrLogin
+    import douyin.login as L
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    lg = QrLogin(web=None)
+    lg.qr_png = b'QR'
+    monkeypatch.setattr(appmod, 'douyin_login', lg)
+    monkeypatch.setattr(appmod, 'douyin_job', DouyinJob(web=None, send_video=None, posted_ids=None))
+    path = str(tmp_path / 'state.json')
+    monkeypatch.setattr(appmod, 'state_logged_in', lambda: L.state_logged_in(path))
+    monkeypatch.setattr(appmod, 'DOUYIN_STATE_FILE', path)
+    c = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    assert c.get('/douyin/login/qr').status_code == 403
+    assert c.get('/douyin/login/qr', headers=key).content == b'QR'
+    assert c.get('/douyin/login/status', headers=key).json()['logged_in'] is False
+    assert c.get('/douyin/login/state', headers=key).status_code == 404
+    L.restore_state('{"cookies": [{"name": "sessionid", "value": "abc"}]}', path)
+    assert c.get('/douyin/login/status', headers=key).json()['logged_in'] is True
+    assert 'sessionid' in c.get('/douyin/login/state', headers=key).text
+
+
+def test_private_works_are_not_mirrored_or_listed():
+    assert normalize(aweme())['public'] is True
+    assert normalize(aweme(status={'private_status': 1}))['public'] is False
+    assert normalize(aweme(status={'is_private': True}))['public'] is False
+
+
+def test_douyin_jobs_wait_while_logging_in(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    monkeypatch.setattr(appmod, 'douyin_job', DouyinJob(web=None, send_video=None, posted_ids=None))
+    monkeypatch.setattr(appmod, 'douyin_login', type('L', (), {'running': lambda self: True})())
+    c = TestClient(appmod.app)
+    r = c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': str(VIDEO_CHANNEL)}, headers={'X-Key': 'k1'})
+    assert r.status_code == 409

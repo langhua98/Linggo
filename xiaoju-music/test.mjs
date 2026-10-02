@@ -130,7 +130,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -993,6 +993,28 @@ await t('转抖音视频：只转频道主自己的抖音账号（管理接口�
   const n = bot.toStreamer.length;
   await dm(FAN + 3, '转抖音视频'); // 听众发这个只当求歌
   assert.ok(bot.toStreamer.slice(n).every(x => x.path !== 'douyin/mirror'));
+});
+
+await t('登录抖音、抖音自动同步：定时任务只在开了时转，带 quiet', async () => {
+  await dm(OWNER, '登录抖音');
+  assert.match(lastSay().text, /\/douyin-login#[0-9a-f]{36}/);
+  const tok = lastSay().text.match(/#([0-9a-f]{36})/)[1];
+  assert.equal((await req('/dl/' + 'f'.repeat(36) + '/status')).status, 403);
+  assert.equal((await req('/douyin-login')).status, 200);
+  assert.ok(tok);
+  const n = bot.toStreamer.length;
+  await worker.scheduled({ cron: '*/30 * * * *' }, env, { waitUntil: p => p });
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(bot.toStreamer.length, n, '没开自动同步不转');
+  await dm(OWNER, '抖音自动同步 开');
+  assert.match(lastSay().text, /自动同步开了/);
+  let done;
+  await worker.scheduled({ cron: '*/30 * * * *' }, env, { waitUntil: p => { done = p; } });
+  await done;
+  const r = bot.toStreamer.at(-1);
+  assert.deepEqual([r.path, r.body.target, r.body.quiet, r.body.notify], ['douyin/mirror', String(VIDEO_CHANNEL), true, OWNER]);
+  await dm(OWNER, '抖音自动同步 关');
+  assert.equal(await lib.getConfig('douyinAuto'), '0');
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {

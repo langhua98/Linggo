@@ -27,6 +27,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import PAGE from './page.html';
 import ADMIN_PAGE from './admin.html';
+import DOUYIN_LOGIN_PAGE from './douyin-login.html';
 
 const TG = 'https://api.telegram.org';
 // 官方 Bot API 的 getFile 只能取 20 MB 以内的文件，更大的走流式服务
@@ -87,7 +88,8 @@ class HttpError extends Error {
 export default {
   // 每天北京时间凌晨 3 点（UTC 19:00）：自动去来源频道搬新歌
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(nightly(env).catch(() => {}));
+    if (controller.cron === DOUYIN_CRON) ctx.waitUntil(douyinTick(env).catch(() => {}));
+    else ctx.waitUntil(nightly(env).catch(() => {}));
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -101,9 +103,16 @@ export default {
         return method === 'POST' ? await webhook(request, env, ctx) : text('Method Not Allowed', 405);
       }
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
+      if (path.startsWith('/dl/') && method === 'POST') {
+        const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
+        if (m2) return await douyinLoginApi(env, m2[1], 'start');
+      }
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
       if (path === '/') return html(PAGE, method);
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
+      if (path === '/douyin-login') return html(DOUYIN_LOGIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
+      const dl = path.match(/^\/dl\/([\w-]{20,64})\/(start|status|qr)$/);
+      if (dl) return await douyinLoginApi(env, dl[1], dl[2]);
       if (path === '/api/tracks') return await trackList(env);
       const m = path.match(/^\/a\/(\d{1,10})(?:\.[a-z0-9]{1,5})?$/i);
       if (m) return await audio(request, env, Number(m[1]), url.searchParams.has('dl'));
@@ -1217,6 +1226,8 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 抖音视频的分享链接 —— 不登录解析，把这条视频转到视频频道
 抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
 转抖音视频 —— 把你自己抖音账号能看到的作品（视频和图文）都转到视频频道，已有的跳过
+登录抖音 —— 发你一个登录页，扫码登录后作品列表能看全（包括最新的）
+抖音自动同步 开 / 关 —— 每 30 分钟检查一次你的抖音，有新作品自动转到视频频道
 发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
@@ -1247,6 +1258,8 @@ async function botUpdate(env, update, origin) {
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
     if (DOUYIN_LINK.test(t)) return ownerDouyin(env, chat, t);
     if (/^转抖音视频$/.test(t)) return ownerDouyinMirror(env, chat);
+    if (/^登录抖音$/.test(t)) return ownerDouyinLogin(env, chat, origin);
+    if ((c = /^抖音自动同步\s*(开|关)$/.exec(t))) return ownerDouyinAuto(env, chat, c[1] === '开');
     if ((c = /(https?:\/\/\S+)(?:\s+(\d{1,3}))?/.exec(t))) return ownerHarvest(env, chat, c[1], c[2] ? Number(c[2]) : 0);
     if (/^搬运设置$/.test(t)) return showHarvest(env, chat);
     if ((c = /^搬运数量\s*(\d{1,3})$/.exec(t))) return setHarvestLimit(env, chat, Number(c[1]));
@@ -1524,7 +1537,7 @@ async function ownerDouyin(env, chat, t) {
   if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/link', { text: t, notify: chat, target: env.VIDEO_CHANNEL_ID || '' });
+    r = await streamerCall(env, '/douyin/link', { text: t, notify: chat, target: env.VIDEO_CHANNEL_ID || '', state: (await lib(env).getConfig('douyinState')) || '' });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
   }
@@ -1544,13 +1557,74 @@ async function ownerDouyinMirror(env, chat) {
   if (!self) return say(env, chat, '还没设置你自己的抖音账号');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/mirror', { sec_uid: self, target: env.VIDEO_CHANNEL_ID, notify: chat });
+    r = await streamerCall(env, '/douyin/mirror', { sec_uid: self, target: env.VIDEO_CHANNEL_ID, notify: chat, state: (await lib(env).getConfig('douyinState')) || '' });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
   }
   if (r.status === 409) return say(env, chat, '正在处理上一个链接，好了会告诉你，之后再发');
   if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
   return say(env, chat, '收到 👌 正在把你抖音上能看到的作品（视频和图文）转到视频频道（不登录），转好了告诉你');
+}
+
+// 每 30 分钟：频道主开了「抖音自动同步」就把自己账号的新作品转到视频频道（没新的不打扰）。
+// 要先「登录抖音」：没登录时抖音藏起最新的作品，自动同步就看不到新的
+const DOUYIN_CRON = '*/30 * * * *';
+
+async function douyinTick(env) {
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, why: 'not configured' };
+  const L = lib(env);
+  if ((await L.getConfig('douyinAuto')) !== '1') return { ok: false, why: 'off' };
+  const self = await L.getConfig('douyinSelf');
+  if (!self) return { ok: false, why: 'no account' };
+  const { status } = await streamerCall(env, '/douyin/mirror', {
+    sec_uid: self, target: env.VIDEO_CHANNEL_ID, notify: await ownerId(env), quiet: true, state: (await L.getConfig('douyinState')) || '',
+  });
+  return { ok: status === 200, status };
+}
+
+async function ownerDouyinLogin(env, chat, origin) {
+  if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
+  const t = [...crypto.getRandomValues(new Uint8Array(18))].map(x => x.toString(16).padStart(2, '0')).join('');
+  await lib(env).setConfig('dlTok', JSON.stringify({ t, exp: Date.now() + 15 * 60 * 1000 }));
+  return say(env, chat, `打开这个页面登录抖音（15 分钟内有效，只能你用）：\n${origin}/douyin-login#${t}\n\n页面上点「获取二维码」，用抖音 App 扫一扫。手机上打开的话，长按二维码存到相册，再在抖音「扫一扫」里选相册。登录信息由服务器自己保存。`);
+}
+
+// 登录页的接口：/dl/<一次性令牌>/start|status|qr，转给流式服务。登上了就把 cookie 取回来存一份（Space 重启后靠它）
+async function douyinLoginApi(env, token, action) {
+  const L = lib(env);
+  const tok = JSON.parse((await L.getConfig('dlTok')) || '{}');
+  if (!tok.t || !sameString(token, tok.t) || Date.now() > tok.exp) return json({ error: '链接过期了，在机器人里再发一次「登录抖音」' }, 403);
+  const call = (p, init = {}) => fetch(`${streamerBase(env)}${p}`, {
+    ...init, headers: { 'X-Key': env.STREAMER_KEY, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(BOT_WAIT_MS),
+  });
+  try {
+    if (action === 'start') {
+      const r = await call('/douyin/login', { method: 'POST', body: '{}' });
+      return json(r.ok ? { ok: true } : { error: r.status === 409 ? '服务器正忙，过一会儿再点' : '服务器正在唤醒，一分钟后再点' }, r.ok ? 200 : 503);
+    }
+    if (action === 'qr') {
+      const r = await call('/douyin/login/qr');
+      if (!r.ok) return json({ error: 'no qr' }, 404);
+      return new Response(r.body, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' } });
+    }
+    const st = await (await call('/douyin/login/status')).json();
+    if (st.logged_in) {
+      const r = await call('/douyin/login/state');
+      if (r.ok) await L.setConfig('douyinState', await r.text());
+    }
+    return json({ status: st.status, qr_ready: !!st.qr_ready, logged_in: !!st.logged_in, error: st.error || '' });
+  } catch {
+    return json({ error: '服务器正在唤醒，一分钟后再试' }, 503);
+  }
+}
+
+async function ownerDouyinAuto(env, chat, on) {
+  const L = lib(env);
+  if (on && !(await L.getConfig('douyinSelf'))) return say(env, chat, '还没设置你自己的抖音账号');
+  await L.setConfig('douyinAuto', on ? '1' : '0');
+  return say(env, chat, on
+    ? '✅ 抖音自动同步开了：每 30 分钟看一次，有新作品自动转到视频频道（没登录抖音的话，最新的几条看不到，先发「登录抖音」）'
+    : '抖音自动同步关了');
 }
 
 function rows(buttons, per = 2) {

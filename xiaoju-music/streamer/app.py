@@ -469,11 +469,13 @@ from harvest import license as harvest_license
 from harvest.sites import ADAPTERS as HARVEST_SITES
 from douyin import links as dy_links
 from douyin.job import DouyinJob
-from douyin.web import DouyinWeb, DownloadError as DouyinDownloadError
+from douyin.login import QrLogin, restore_state, state_logged_in
+from douyin.web import STATE_FILE as DOUYIN_STATE_FILE, DouyinWeb, DownloadError as DouyinDownloadError
 
 streamer = None
 harvester = None    # 授权音频搬运（贴网址搬）
 douyin_job = None   # 抖音视频转到频道
+douyin_login = None  # 频道主扫码登录抖音
 bot_client = None   # 机器人账号（取文件、发通知）
 user_client = None  # 频道主账号（搬歌用），没登录时为 None
 copier = None
@@ -533,6 +535,10 @@ async def lifespan(app):
     global douyin_job
     douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, send_images=douyin_send_images,
                            posted_ids=douyin_posted, say=bot_say)
+    # 抖音登录：Worker 的登录页上扫码。登录 cookie 在 /tmp，Space 重启就没了，
+    # Worker 存了一份，每次调抖音接口都带上（state），这边缺了就写回去
+    global douyin_login
+    douyin_login = QrLogin(web=DouyinWeb)
     log.info('logged in to Telegram as a bot')
 
     async def fetch_message(channel, message_id):
@@ -939,6 +945,9 @@ async def douyin_link(request: Request):
     target = parse_target(body.get('target'))
     if kind == 'aweme' and target is None:
         raise HTTPException(400, '没设置视频频道')
+    if douyin_login and douyin_login.running():  # 登录和别的任务共用一份 cookie，不能同时跑
+        raise HTTPException(409, 'logging in')
+    restore_state(body.get('state'))
     try:
         if kind == 'user':
             douyin_job.start_collect(value, notify=notify)
@@ -960,11 +969,55 @@ async def douyin_mirror(request: Request):
     target = parse_target(body.get('target'))
     if target is None:
         raise HTTPException(400, '没设置视频频道')
+    if douyin_login and douyin_login.running():
+        raise HTTPException(409, 'logging in')
+    restore_state(body.get('state'))
     try:
-        douyin_job.start_mirror(sec_uid, notify=body.get('notify') or None, target=target)
+        douyin_job.start_mirror(sec_uid, notify=body.get('notify') or None, target=target, quiet=bool(body.get('quiet')))
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return {'ok': True}
+
+
+def douyin_busy():
+    """登录和别的抖音任务共用一份 cookie，不能同时跑"""
+    return (douyin_login and douyin_login.running()) or (douyin_job and douyin_job.running())
+
+
+@app.post('/douyin/login')
+async def douyin_login_start(request: Request):
+    """开始扫码登录（Worker 的登录页来调）。二维码在 GET /douyin/login/qr，进度在 GET /douyin/login/status"""
+    check_key(request)
+    if douyin_busy():
+        raise HTTPException(409, 'busy')
+    douyin_login.start()
+    return {'ok': True}
+
+
+@app.get('/douyin/login/status')
+async def douyin_login_status(request: Request):
+    check_key(request)
+    st = dict(douyin_login.state) if douyin_login else {'status': 'idle'}
+    st['logged_in'] = state_logged_in()
+    return st
+
+
+@app.get('/douyin/login/qr')
+async def douyin_login_qr(request: Request):
+    check_key(request)
+    if not douyin_login or not douyin_login.qr_png:
+        raise HTTPException(404)
+    return Response(content=douyin_login.qr_png, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/douyin/login/state')
+async def douyin_login_state(request: Request):
+    """登录后的 cookie（敏感，只给拿着 X-Key 的人）：Worker 取走存一份，Space 重启后靠它恢复"""
+    check_key(request)
+    if not os.path.exists(DOUYIN_STATE_FILE):
+        raise HTTPException(404)
+    with open(DOUYIN_STATE_FILE) as f:
+        return Response(content=f.read(), media_type='application/json')
 
 
 @app.get('/douyin/status')
