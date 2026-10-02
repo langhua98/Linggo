@@ -103,6 +103,7 @@ export default {
         return method === 'POST' ? await webhook(request, env, ctx) : text('Method Not Allowed', 405);
       }
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
+      if (path === '/dy-import' && method === 'POST') return await cloudImport(request, env);
       if (path.startsWith('/dl/') && method === 'POST') {
         const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
         if (m2) return await douyinLoginApi(env, m2[1], 'start');
@@ -1238,6 +1239,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 抖音自动同步 开 / 关 —— 每 30 分钟检查一次你的抖音，有新作品自动转到视频频道
 发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
 发 MediaCrawler 导出的作品文件（.jsonl / .json）—— 里面的作品全部转进视频频道
+云电脑 —— 给你云电脑的一键安装命令（在云电脑上登录抖音、抓全部作品、自动发回小橘）
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
 新搬进来的歌会按类型自动放进对应的歌单。`;
@@ -1267,6 +1269,7 @@ async function botUpdate(env, update, origin) {
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
+    if (/^云电脑$/.test(t)) return ownerCloud(env, chat);
     if (/^添加抖音账号/.test(t)) return ownerDouyinAdd(env, chat, t); // 带着主页链接，要在下一条之前认
     if (DOUYIN_LINK.test(t)) return ownerDouyin(env, chat, t);
     if (/^转抖音视频$/.test(t)) return ownerDouyinMirror(env, chat);
@@ -1568,6 +1571,45 @@ async function douyinSelves(L) {
   if (!raw) return [];
   try { const a = JSON.parse(raw); if (Array.isArray(a)) return a; } catch {}
   return [raw];
+}
+
+// 「云电脑」：给频道主一条一键安装命令（xiaoju-music/cloud/setup.sh），带上上传令牌和他自己的抖音账号。
+// 云电脑上 MediaCrawler 抓完，cloud/crawl.sh 把文件 POST 到 /dy-import（带 X-Token），这边转给流式服务
+const CLOUD_SETUP = 'https://raw.githubusercontent.com/langhua98/Linggo/main/xiaoju-music/cloud/setup.sh';
+
+async function cloudToken(L) {
+  let tok = await L.getConfig('cloudTok');
+  if (!tok) {
+    tok = [...crypto.getRandomValues(new Uint8Array(24))].map(x => x.toString(16).padStart(2, '0')).join('');
+    await L.setConfig('cloudTok', tok);
+  }
+  return tok;
+}
+
+async function ownerCloud(env, chat) {
+  const L = lib(env), selves = await douyinSelves(L);
+  if (!selves.length) return say(env, chat, '还没设置你自己的抖音账号');
+  const cmd = `bash <(curl -fsSL ${CLOUD_SETUP}) ${await cloudToken(L)} ${selves.join(',')}`;
+  await say(env, chat, '云电脑一键安装：SSH 登进你的云电脑后，把下一条消息整条复制粘贴进去回车。中途会让你设一个远程桌面密码，其余全自动。\n（这条命令里有你的上传令牌，别发给别人）');
+  return say(env, chat, cmd);
+}
+
+async function cloudImport(request, env) {
+  const L = lib(env), tok = await L.getConfig('cloudTok');
+  if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对：在机器人里重新发「云电脑」拿新命令' }, 403);
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return json({ error: '视频频道没配置' }, 500);
+  const body = await request.text();
+  if (body.length > 20 * 1024 * 1024) return json({ error: '文件太大' }, 413);
+  const owner = await ownerId(env);
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner });
+  } catch {
+    return json({ error: '小橘的服务正在唤醒，过两分钟再双击图标重发一次' }, 503);
+  }
+  if (r.status !== 200) return json({ error: r.data.detail || '小橘没收下，过一会儿再试' }, r.status === 409 ? 409 : 400);
+  if (owner) await say(env, owner, `☁️ 云电脑发来 ${r.data.total} 条作品（视频 ${r.data.video}、图文 ${r.data.images}），开始转进视频频道，已经有的跳过，转完告诉你`);
+  return json({ ok: true, total: r.data.total, video: r.data.video, images: r.data.images });
 }
 
 // MediaCrawler（频道主在自己的云电脑上登录抖音抓的）导出的 creator_contents 文件：交给流式服务逐条下载、发帖

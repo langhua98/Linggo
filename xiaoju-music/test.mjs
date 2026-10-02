@@ -1046,6 +1046,28 @@ await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视
   assert.match(lastSay().text, /文件里有 2 条作品（视频 1、图文 1）/);
 });
 
+await t('云电脑：发一键安装命令（带令牌和自己的账号）；云电脑带令牌上传文件 → 转进视频频道', async () => {
+  const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
+  await admin('douyin-self', { sec_uids: [sec] });
+  await dm(OWNER, '云电脑');
+  const cmd = lastSay().text;
+  const m = cmd.match(/^bash <\(curl -fsSL https:\/\/raw\.githubusercontent\.com\/langhua98\/Linggo\/main\/xiaoju-music\/cloud\/setup\.sh\) ([0-9a-f]{48}) (\S+)$/);
+  assert.ok(m, cmd);
+  assert.equal(m[2], sec);
+  await dm(OWNER, '云电脑');
+  assert.equal(lastSay().text, cmd, '令牌不变');
+  const up = (tok, body) => req('/dy-import', { method: 'POST', headers: { 'X-Token': tok }, body });
+  assert.equal((await up('wrong', '{"aweme_id": "1"}')).status, 403);
+  const r = await up(m[1], '{"aweme_id": "1", "desc": "x"}\n');
+  assert.deepEqual(await jsonOf(r), { ok: true, total: 2, video: 1, images: 1 });
+  const s2 = bot.toStreamer.at(-1);
+  assert.deepEqual([s2.path, s2.body.target, s2.body.notify], ['douyin/import', String(VIDEO_CHANNEL), OWNER]);
+  assert.match(lastSay().text, /云电脑发来 2 条作品/);
+  assert.equal((await up(m[1], 'nothing here')).status, 400);
+  await dm(FAN + 4, '云电脑');
+  assert.ok(!/setup\.sh/.test(lastSay().text), '听众拿不到命令');
+});
+
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {
   await admin('sources', { sources: ['VmoMusic', 'yinyue555'] });
   bot.autoStatus = { status: 'idle' };
