@@ -469,6 +469,7 @@ from harvest import license as harvest_license
 from harvest.sites import ADAPTERS as HARVEST_SITES
 from douyin import links as dy_links
 from douyin.job import DouyinJob
+from douyin.items import caption as dy_caption, hashtag as dy_hashtag
 from douyin.login import QrLogin, restore_state, state_logged_in
 from douyin.mcimport import parse_export
 from douyin.web import STATE_FILE as DOUYIN_STATE_FILE, DouyinWeb, DownloadError as DouyinDownloadError
@@ -534,7 +535,7 @@ async def lifespan(app):
 
     harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
     global douyin_job
-    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, send_images=douyin_send_images,
+    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, send_images=douyin_send_images, retag=douyin_retag,
                            posted_ids=douyin_posted, say=bot_say)
     # 抖音登录：Worker 的登录页上扫码。登录 cookie 在 /tmp，Space 重启就没了，
     # Worker 存了一份，每次调抖音接口都带上（state），这边缺了就写回去
@@ -909,6 +910,23 @@ async def douyin_send_images(images, item, text, target):
 DOUYIN_ID_IN_TEXT = re.compile(r'douyin\.com/(?:video|note)/(\d{8,24})')
 
 
+douyin_texts = {}  # 上次翻频道看到的 {消息号: 说明}：补账号标签时用，不用一条条再去取
+
+
+async def douyin_retag(target, msg_id, item):
+    """频道里已有的帖子，说明里还没有这个账号的标签：按现在的格式重写说明（带上 #标签），不重发。频道主账号才能改"""
+    text = douyin_texts.get(msg_id)
+    if user_client is None or text is None or f'#{item["tag"]}' in text:
+        return
+    new = dy_caption(item)
+    if new == text:
+        return
+    entity = await channel_entity(user_client, target)
+    await flood_retry(lambda: user_client.edit_message(entity, msg_id, new))
+    douyin_texts[msg_id] = new
+    await asyncio.sleep(1)  # 慢慢改，免得被限流
+
+
 async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子也多：多翻些才不重复转
     """target 频道里已经转过的抖音作品 → {作品号: 消息号}：翻最近 limit 条帖子，看说明里的原视频链接。
     不用 Telegram 的搜索：实测刚发的帖子搜不到链接里的作品号，查重落空、发了重复的。
@@ -919,6 +937,7 @@ async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子�
     async for m in user_client.iter_messages(await channel_entity(user_client, target), limit=limit):
         for aweme_id in DOUYIN_ID_IN_TEXT.findall(m.message or ''):
             out.setdefault(aweme_id, m.id)
+            douyin_texts[m.id] = m.message or ''
     return out
 
 
@@ -1009,6 +1028,13 @@ async def douyin_resolve(request: Request):
     return {'kind': got[0], 'id': got[1]}
 
 
+def clean_tags(raw):
+    """Worker 送来的 {sec_uid: 账号标签}（频道主起的名字）→ 只留像样的"""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k)[:140]: dy_hashtag(v) for k, v in list(raw.items())[:20] if dy_hashtag(v)}
+
+
 @app.post('/douyin/import')
 async def douyin_import(request: Request):
     """{text: MediaCrawler 导出的内容（一批或整个文件）, target, notify, final}：把里面的作品转进 target 频道。
@@ -1023,8 +1049,9 @@ async def douyin_import(request: Request):
     items = parse_export(str(body.get('text', '')))
     kinds = [i['kind'] for i in items]
     counts = {'total': len(items), 'video': kinds.count('video'), 'images': kinds.count('images')}
+    tags = clean_tags(body.get('tags'))
     if douyin_job.importing(target):
-        added = douyin_job.feed_import(items, final=final)
+        added = douyin_job.feed_import(items, final=final, tags=tags)
         return {'ok': True, **counts, 'added': added, 'started': False}
     if not items:
         if final and str(body.get('text', '')).strip() == '':
@@ -1032,7 +1059,7 @@ async def douyin_import(request: Request):
         raise HTTPException(400, '文件里没认出抖音作品（要 MediaCrawler 导出的 creator_contents 文件）')
     if douyin_busy():
         raise HTTPException(409, 'busy')
-    douyin_job.start_import(items, notify=body.get('notify') or None, target=target, final=final)
+    douyin_job.start_import(items, notify=body.get('notify') or None, target=target, final=final, tags=tags)
     return {'ok': True, **counts, 'added': len(items), 'started': True}
 
 
@@ -1052,7 +1079,8 @@ async def douyin_mirror(request: Request):
         raise HTTPException(409, 'logging in')
     restore_state(body.get('state'))
     try:
-        douyin_job.start_mirror(sec_uids, notify=body.get('notify') or None, target=target, quiet=bool(body.get('quiet')))
+        douyin_job.start_mirror(sec_uids, notify=body.get('notify') or None, target=target, quiet=bool(body.get('quiet')),
+                                tags=clean_tags(body.get('tags')))
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return {'ok': True}

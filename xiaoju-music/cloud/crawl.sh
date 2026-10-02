@@ -170,6 +170,14 @@ if '# xiaoju: quality' not in c and old in c:
                   '        "xiaoju_video": {k: (aweme_item.get("video") or {}).get(k) for k in ("bit_rate", "play_addr_h264", "play_addr", "width", "height", "duration")},\n'
                   '        "xiaoju_images": [{"url_list": (i or {}).get("url_list"), "width": (i or {}).get("width"), "height": (i or {}).get("height")} for i in (aweme_item.get("images") or [])],\n', 1)
     open(p4, 'w', encoding='utf-8').write(c)
+c = open(p4, encoding='utf-8').read()
+old = '        "note_download_url": ",".join(extract_image_urls(aweme_item)),\n'
+if '# xiaoju: account' not in c and old in c:
+    # 作品属于哪个账号：MediaCrawler 把昵称打码、uid 做了哈希，频道里按账号贴标签要原样的 sec_uid 和昵称（都是频道主自己的号）
+    c = c.replace(old, old + '        # xiaoju: account\n'
+                  '        "xiaoju_sec_uid": (aweme_item.get("author") or {}).get("sec_uid") or "",\n'
+                  '        "xiaoju_nickname": (aweme_item.get("author") or {}).get("nickname") or "",\n', 1)
+    open(p4, 'w', encoding='utf-8').write(c)
 PY
 
 # 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）

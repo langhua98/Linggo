@@ -5,7 +5,8 @@ video_download_url（play_addr，不带水印）、note_download_url（图文的
 导出格式默认 jsonl（一行一条），也支持 json（一个数组）。整理成 items.normalize 一样的样子，后面照常下载、发帖。
 
 video_download_url 只是抖音的默认画质。云电脑上的 crawl.sh 给 MediaCrawler 打了补丁，每条另存 xiaoju_video
-（作品的 video 里各档清晰度 bit_rate 等）和 xiaoju_images（每张图的全部地址）：有就用它们挑最高画质。"""
+（作品的 video 里各档清晰度 bit_rate 等）和 xiaoju_images（每张图的全部地址）：有就用它们挑最高画质；
+还有 xiaoju_sec_uid / xiaoju_nickname（作品属于哪个账号，频道里按账号贴标签用）。"""
 
 import json
 
@@ -53,7 +54,8 @@ def to_item(r):
     if video.startswith('http') and video not in [u for s in sources for u in s['urls']]:
         sources.append({'urls': [video], 'size': 0, 'width': 0, 'height': 0, 'h265': False})
     kind = 'images' if images else ('video' if sources else 'other')
-    name = str(r.get('nickname') or '')
+    # crawl.sh 另存了没打码的昵称和账号的 sec_uid（分账号贴标签用）；旧文件没有就用 MediaCrawler 的昵称（打码的不要）
+    name = str(r.get('xiaoju_nickname') or r.get('nickname') or '')
     try:
         t = int(r.get('create_time') or 0)
     except (TypeError, ValueError):
@@ -67,7 +69,7 @@ def to_item(r):
         'id': aweme_id, 'kind': kind, 'url': share_url(aweme_id, kind), 'public': True,
         'time': t, 'desc': str(r.get('desc') or r.get('title') or '').strip(),
         'author': '' if '*' in name else name,  # 新版 MediaCrawler 会把昵称打码，打码的就不写
-        'sec_uid': '', 'seconds': seconds,
+        'sec_uid': str(r.get('xiaoju_sec_uid') or ''), 'seconds': seconds,
         'width': best.get('width') or xv.get('width') or 0, 'height': best.get('height') or xv.get('height') or 0,
         'sources': sources if kind == 'video' else [],
         'images': images if kind == 'images' else [],

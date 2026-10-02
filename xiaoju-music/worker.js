@@ -1236,6 +1236,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
 转抖音视频 —— 把你自己抖音账号能看到的作品（视频和图文）都转到视频频道，已有的跳过
 添加抖音账号 主页分享链接 —— 再加一个你自己的账号（比如小号），转抖音视频、自动同步都会带上它
+账号标签 —— 看每个抖音账号在视频频道里的标签（点标签只看这个号的作品）；「账号标签 2 小美」给第 2 个号改名
 登录抖音 —— 发你一个登录页，扫码登录后作品列表能看全（包括最新的）
 抖音自动同步 开 / 关 —— 每 30 分钟检查一次你的抖音，有新作品自动转到视频频道
 发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
@@ -1272,6 +1273,7 @@ async function botUpdate(env, update, origin) {
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
     if (/^云电脑$/.test(t)) return ownerCloud(env, chat);
     if (/^添加抖音账号/.test(t)) return ownerDouyinAdd(env, chat, t); // 带着主页链接，要在下一条之前认
+    if ((c = /^账号标签(?:\s+(\d+)\s+(.+))?$/.exec(t))) return ownerDouyinTags(env, chat, c[1], c[2]);
     if (DOUYIN_LINK.test(t)) return ownerDouyin(env, chat, t);
     if (/^转抖音视频$/.test(t)) return ownerDouyinMirror(env, chat);
     if (/^登录抖音$/.test(t)) return ownerDouyinLogin(env, chat, origin);
@@ -1648,7 +1650,7 @@ async function cloudImport(request, env) {
   const owner = await ownerId(env);
   let r;
   try {
-    r = await streamerCall(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner, final });
+    r = await streamerCall(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner, final, tags: await douyinTagMap(L, 'douyinTags') });
   } catch {
     return json({ error: '小橘的服务正在唤醒，过两分钟再双击图标重发一次' }, 503);
   }
@@ -1675,7 +1677,7 @@ async function ownerDouyinImport(env, chat, doc) {
   }
   let r;
   try {
-    r = await streamerCall(env, '/douyin/import', { text: textBody, target: env.VIDEO_CHANNEL_ID, notify: chat });
+    r = await streamerCall(env, '/douyin/import', { text: textBody, target: env.VIDEO_CHANNEL_ID, notify: chat, tags: await douyinTagMap(lib(env), 'douyinTags') });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次文件');
   }
@@ -1700,7 +1702,7 @@ async function ownerDouyinAdd(env, chat, text) {
   if (list.includes(r.data.id)) return say(env, chat, '这个账号已经在里面了 👌');
   if (list.length >= 10) return say(env, chat, '最多 10 个账号');
   await L.setConfig('douyinSelf', JSON.stringify([...list, r.data.id]));
-  return say(env, chat, `✅ 加好了，现在有 ${list.length + 1} 个抖音账号。发「转抖音视频」马上转一次；开了自动同步的话之后会自动转`);
+  return say(env, chat, `✅ 加好了，现在有 ${list.length + 1} 个抖音账号。发「转抖音视频」马上转一次；开了自动同步的话之后会自动转。\n视频频道里每条帖子会带上账号标签（默认用抖音昵称），想改名发「账号标签」看看`);
 }
 
 // 「转抖音视频」：把频道主自己的抖音账号（config 的 douyinSelf，管理接口 douyin-self 设）能看到的作品（视频和图文）都转到视频频道。
@@ -1712,7 +1714,10 @@ async function ownerDouyinMirror(env, chat) {
   if (!selves.length) return say(env, chat, '还没设置你自己的抖音账号');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/mirror', { sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: chat, state: (await lib(env).getConfig('douyinState')) || '' });
+    r = await streamerCall(env, '/douyin/mirror', {
+      sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: chat, state: (await lib(env).getConfig('douyinState')) || '',
+      tags: await douyinTagMap(lib(env), 'douyinTags'),
+    });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
   }
@@ -1731,10 +1736,98 @@ async function douyinTick(env) {
   if ((await L.getConfig('douyinAuto')) !== '1') return { ok: false, why: 'off' };
   const selves = await douyinSelves(L);
   if (!selves.length) return { ok: false, why: 'no account' };
+  // 上一次转作品用的账号标签记下来（目录里要用），有新的就更新频道里置顶的目录
+  try {
+    if (await learnDouyinTags(env)) await douyinDirectory(env);
+  } catch {}
   const { status } = await streamerCall(env, '/douyin/mirror', {
     sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: await ownerId(env), quiet: true, state: (await L.getConfig('douyinState')) || '',
+    tags: await douyinTagMap(L, 'douyinTags'),
   });
   return { ok: status === 200, status };
+}
+
+// ── 视频频道按账号分类 ──
+// 每条帖子的说明里带 #账号标签（流式服务贴），在频道里点标签就只看这个号的作品。
+// 名字：频道主起的（config douyinTags: {sec_uid: 名字}）优先；没起就用抖音昵称（流式服务转作品时报回来，记在 douyinTagsSeen）。
+// 频道里置顶一条「目录」列出所有账号的标签（config dyDirMsg 是它的消息号，名字变了就改它）
+function douyinHashtag(name) {
+  return String(name || '').replace(/[^\p{L}\p{N}_]/gu, '').slice(0, 24);
+}
+
+async function douyinTagMap(L, key) {
+  try {
+    const o = JSON.parse((await L.getConfig(key)) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch {
+    return {};
+  }
+}
+
+// 流式服务上一次转作品时每个账号用的标签 → douyinTagsSeen。有变化返回 true
+async function learnDouyinTags(env) {
+  const { status, data } = await streamerCall(env, '/douyin/status');
+  const used = status === 200 && data && typeof data.tags_used === 'object' ? data.tags_used : null;
+  if (!used) return false;
+  const L = lib(env), seen = await douyinTagMap(L, 'douyinTagsSeen');
+  let changed = false;
+  for (const [k, v] of Object.entries(used)) {
+    const tag = douyinHashtag(v);
+    if (tag && seen[k] !== tag) { seen[k] = tag; changed = true; }
+  }
+  if (changed) await L.setConfig('douyinTagsSeen', JSON.stringify(seen));
+  return changed;
+}
+
+async function douyinTagList(L) {
+  const selves = await douyinSelves(L), mine = await douyinTagMap(L, 'douyinTags'), seen = await douyinTagMap(L, 'douyinTagsSeen');
+  return selves.map(id => ({ id, tag: mine[id] || seen[id] || '', custom: !!mine[id] }));
+}
+
+// 频道里置顶的目录：有就改，没有（或被删了）就发一条新的置顶
+async function douyinDirectory(env) {
+  if (!env.VIDEO_CHANNEL_ID) return;
+  const L = lib(env), list = await douyinTagList(L);
+  const text = ['📂 目录：点账号的标签，只看这个号的作品', '',
+    ...list.map((a, i) => `${i + 1}. ${a.tag ? '#' + a.tag : '（还没转过作品，转过以后这里会有标签）'}`),
+    '', '📹 是视频，🖼 是图文'].join('\n');
+  const old = Number(await L.getConfig('dyDirMsg')) || 0;
+  if (old) {
+    const r = await tg(env, 'editMessageText', { chat_id: env.VIDEO_CHANNEL_ID, message_id: old, text });
+    if (r.ok || /not modified/i.test(r.description || '')) return;
+  }
+  const r = await tg(env, 'sendMessage', { chat_id: env.VIDEO_CHANNEL_ID, text, disable_notification: true });
+  const id = r.ok && r.result && r.result.message_id;
+  if (!id) return;
+  await L.setConfig('dyDirMsg', String(id));
+  await tg(env, 'pinChatMessage', { chat_id: env.VIDEO_CHANNEL_ID, message_id: id, disable_notification: true });
+}
+
+// 「账号标签」看所有账号的标签；「账号标签 2 小美」给第 2 个账号改名。改完更新频道里的目录，以后的新帖用新名字，旧帖下次转作品时补上
+async function ownerDouyinTags(env, chat, n, name) {
+  const L = lib(env);
+  if (streamerOn(env)) {
+    try { await learnDouyinTags(env); } catch {}
+  }
+  let list = await douyinTagList(L);
+  if (!list.length) return say(env, chat, '还没设置你自己的抖音账号');
+  if (n) {
+    const i = Number(n) - 1, tag = douyinHashtag(name);
+    if (!list[i]) return say(env, chat, `没有第 ${n} 个账号（现在有 ${list.length} 个）`);
+    if (!tag) return say(env, chat, '名字里要有文字或数字（表情、空格、符号会被去掉）');
+    const mine = await douyinTagMap(L, 'douyinTags');
+    mine[list[i].id] = tag;
+    await L.setConfig('douyinTags', JSON.stringify(mine));
+    list = await douyinTagList(L);
+  }
+  await douyinDirectory(env);
+  return say(env, chat, [
+    n ? `✅ 第 ${n} 个账号的标签改成 #${list[Number(n) - 1].tag}` : '🏷 视频频道里每个抖音账号的标签（点标签只看这个号的作品）：',
+    '',
+    ...list.map((a, i) => `${i + 1}. ${a.tag ? '#' + a.tag : '（还没转过作品，转过以后默认用抖音昵称）'}${a.custom ? '' : a.tag ? '（抖音昵称）' : ''}`),
+    '',
+    '改名：发「账号标签 序号 名字」，比如「账号标签 2 小美」。新帖马上用新名字，旧帖下次转作品时自动补上；频道里置顶的目录也会跟着改',
+  ].join('\n'));
 }
 
 async function ownerDouyinLogin(env, chat, origin) {

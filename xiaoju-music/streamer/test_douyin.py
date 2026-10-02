@@ -281,7 +281,9 @@ def run_job(web, posted=None):
 def test_job_posts_the_video_and_tells_the_owner():
     st, said, sent = run_job(FakeWeb(normalize(aweme())))
     assert st['status'] == 'done' and st['fresh'] and st['msg'] == 2600
-    assert sent == [(b'mp4', '7691335977760321704', 1080, caption(normalize(aweme())), VIDEO_CHANNEL)]
+    # 说明里带账号标签（没起名就用抖音昵称）
+    assert sent == [(b'mp4', '7691335977760321704', 1080, caption({**normalize(aweme()), 'tag': '丁'}), VIDEO_CHANNEL)]
+    assert '📹 抖音 #丁 · 2026-09-30' in sent[0][3]
     assert said == [(42, '✅ 已转到视频频道：特效一用谁都不认')]
 
 
@@ -572,7 +574,7 @@ def test_mirror_endpoint(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
     started = []
     job = DouyinJob(web=None, send_video=None, posted_ids=None)
-    monkeypatch.setattr(job, 'start_mirror', lambda sec_uids, notify=None, target=None, quiet=False: started.append((sec_uids, notify, target, quiet)))
+    monkeypatch.setattr(job, 'start_mirror', lambda sec_uids, notify=None, target=None, quiet=False, tags=None: started.append((sec_uids, notify, target, quiet)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
     c = TestClient(appmod.app)
     key = {'X-Key': 'k1'}
@@ -1000,7 +1002,7 @@ def test_import_job_and_endpoint(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
     started = []
     job = DouyinJob(web=None, send_video=None, posted_ids=None)
-    monkeypatch.setattr(job, 'start_import', lambda items, notify=None, target=None, final=True: started.append((len(items), target, final)))
+    monkeypatch.setattr(job, 'start_import', lambda items, notify=None, target=None, final=True, tags=None: started.append((len(items), target, final)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
     monkeypatch.setattr(appmod, 'douyin_login', None)
     c = TestClient(appmod.app)
@@ -1105,3 +1107,69 @@ def test_delete_only_touches_douyin_video_posts(monkeypatch):
     monkeypatch.setattr(job, 'running', lambda: True)
     assert c.post('/douyin/delete', json={'target': str(VIDEO_CHANNEL), 'ids': [5]}, headers=key).status_code == 409
     assert c.post('/douyin/delete', json={'target': str(VIDEO_CHANNEL), 'ids': [5]}).status_code in (401, 403)
+
+
+
+def test_hashtag_keeps_only_clickable_characters():
+    from douyin.items import hashtag
+    assert hashtag('冰美人💍') == '冰美人' and hashtag('丁') == '丁' and hashtag('A b-c_1!') == 'Abc_1'
+    assert hashtag('') == '' and hashtag(None) == '' and len(hashtag('长' * 50)) == 24
+
+
+def test_posts_are_tagged_by_account_and_old_posts_get_the_tag_added():
+    """每条帖子带账号标签：频道主起的名字优先，没起就用昵称；频道里已有、还没标签的旧帖调 retag 补上（不重发）"""
+    import json as J
+    from douyin.mcimport import parse_export
+    sent, retagged = [], []
+
+    async def send_video(data, item, src, text, target):
+        sent.append(text)
+        return 500
+
+    async def posted_ids(target):
+        return {'7600000000000000009': 77}
+
+    async def retag(target, msg_id, item):
+        retagged.append((msg_id, item['tag']))
+
+    rows = [{**MC_ROW_VIDEO, 'aweme_id': '7600000000000000001', 'xiaoju_sec_uid': 'S_MAIN', 'xiaoju_nickname': '丁'},
+            {**MC_ROW_VIDEO, 'aweme_id': '7600000000000000002', 'xiaoju_sec_uid': 'S_ALT', 'xiaoju_nickname': '冰美人💍'},
+            {**MC_ROW_VIDEO, 'aweme_id': '7600000000000000009', 'xiaoju_sec_uid': 'S_ALT', 'xiaoju_nickname': '冰美人💍'}]
+
+    async def go():
+        job = DouyinJob(web=FakeWeb(), send_video=send_video, posted_ids=posted_ids, pause=0, retag=retag)
+        job.start_import(parse_export(J.dumps(rows)), target=VIDEO_CHANNEL, tags={'S_MAIN': '主号'})
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert ['#主号' in sent[0], '#冰美人' in sent[1]] == [True, True]
+    assert retagged == [(77, '冰美人')]
+    assert st['tags_used'] == {'S_MAIN': '主号', 'S_ALT': '冰美人'}
+
+
+def test_retag_rewrites_only_untagged_captions(monkeypatch):
+    from types import SimpleNamespace as NS
+    edits = []
+
+    class FakeClient:
+        async def edit_message(self, entity, msg_id, text):
+            edits.append((msg_id, text))
+
+    async def entity(client, target):
+        return target
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(appmod, 'user_client', FakeClient())
+    monkeypatch.setattr(appmod, 'channel_entity', entity)
+    monkeypatch.setattr(appmod.asyncio, 'sleep', no_sleep)
+    item = {**normalize(aweme()), 'tag': '主号'}
+    appmod.douyin_texts.clear()
+    appmod.douyin_texts.update({1: caption(normalize(aweme())), 2: caption(item)})
+    asyncio.run(appmod.douyin_retag(VIDEO_CHANNEL, 1, item))
+    asyncio.run(appmod.douyin_retag(VIDEO_CHANNEL, 2, item))  # 已经有标签：不动
+    asyncio.run(appmod.douyin_retag(VIDEO_CHANNEL, 3, item))  # 没见过的消息：不动
+    assert edits == [(1, caption(item))] and '#主号' in edits[0][1]
+    assert appmod.clean_tags({'S1': '小号💍', 'S2': '!!!', 'S3': None}) == {'S1': '小号'}

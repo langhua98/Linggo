@@ -98,12 +98,18 @@ def _u16(s):
     return len(s.encode('utf-16-le')) // 2
 
 
+def hashtag(name):
+    """账号名 → 能点的 Telegram 话题标签（不带 #）：只留文字、数字和下划线（表情、空格、符号去掉），最多 24 个字"""
+    return re.sub(r'[^\w]', '', str(name or ''))[:24]
+
+
 def caption(item, limit=CAPTION_LIMIT):
-    """频道帖子的说明：文案 + 来源（作者、发布日期、原视频链接）。链接里有作品号，查重也靠它。"""
+    """频道帖子的说明：文案 + 来源（账号标签或作者、发布日期、原视频链接）。链接里有作品号，查重也靠它。
+    item['tag']：账号的话题标签（不带 #），频道里点它就只看这个账号的帖子"""
     day = time.strftime('%Y-%m-%d', time.gmtime(item['time'] + 8 * 3600)) if item.get('time') else ''
     icon = '🖼' if item.get('kind') == 'images' else '📹'
     link = item.get('url') or share_url(item['id'], item.get('kind'))
-    who = f' @{item["author"]}' if item.get('author') else ''
+    who = f' #{item["tag"]}' if item.get('tag') else (f' @{item["author"]}' if item.get('author') else '')
     tail = f'{icon} 抖音{who}' + (f' · {day}' if day else '') + f'\n{link}'
     desc = item.get('desc') or ''
     room = limit - _u16(tail) - 2

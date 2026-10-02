@@ -134,7 +134,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve|douyin\/import)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve|douyin\/import|douyin\/status)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -144,6 +144,7 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/pick') return Response.json({ new_ids: [bot.pickId] });
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
+    if (m[1] === 'douyin/status') return Response.json(bot.dyStatus || { status: 'idle' });
     if (m[1] === 'douyin/import') {
       if (body.final && body.text === '') return Response.json({ ok: true, total: 0, video: 0, images: 0, added: 0, started: false });
       if (!/aweme_id/.test(body.text)) return Response.json({ detail: '文件里没认出抖音作品' }, { status: 400 });
@@ -170,7 +171,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ ok: true });
   }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
-  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage)$/))) {
+  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage)$/))) {
     const body = JSON.parse(init.body);
     if (m[1] === 'copyMessage' && bot.copyFail) return Response.json({ ok: false, error_code: 400, description: bot.copyFail });
     if (m[1] === 'getChatAdministrators') {
@@ -178,8 +179,11 @@ globalThis.fetch = async (input, init = {}) => {
       bot.adminAsks++;
       return Response.json({ ok: true, result: [{ status: 'administrator', user: { id: 1 } }, { status: 'creator', user: { id: OWNER } }] });
     }
+    if (m[1] === 'editMessageText' && bot.editGone && String(body.chat_id) === String(VIDEO_CHANNEL)) {
+      return Response.json({ ok: false, error_code: 400, description: 'Bad Request: message to edit not found' });
+    }
     bot.out.push({ method: m[1], ...body });
-    return Response.json({ ok: true, result: {} });
+    return Response.json({ ok: true, result: m[1] === 'sendMessage' ? { message_id: 9000 + bot.out.length } : {} });
   }
   if ((m = url.match(/\/bot[^/]+\/getFile\?file_id=(.+)$/))) {
     const f = files.get(decodeURIComponent(m[1]));
@@ -1041,6 +1045,37 @@ await t('登录抖音、抖音自动同步：定时任务只在开了时转，�
   assert.deepEqual([r.path, r.body.target, r.body.quiet, r.body.notify], ['douyin/mirror', String(VIDEO_CHANNEL), true, OWNER]);
   await dm(OWNER, '抖音自动同步 关');
   assert.equal(await lib.getConfig('douyinAuto'), '0');
+});
+
+await t('账号标签：视频频道按账号分类，默认用抖音昵称、可以改名；频道里置顶目录跟着改；转作品时把名字带给流式服务', async () => {
+  const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng', alt = 'MS4wLjABAAAASmallAccount1234567';
+  await admin('douyin-self', { sec_uids: [sec, alt] });
+  bot.dyStatus = { status: 'done', tags_used: { [sec]: '丁', [alt]: '冰美人' } };
+  await dm(OWNER, '账号标签');
+  assert.match(lastSay().text, /1\. #丁（抖音昵称）\n2\. #冰美人（抖音昵称）/);
+  const dir = bot.out.filter(o => o.method === 'sendMessage' && String(o.chat_id) === String(VIDEO_CHANNEL)).at(-1);
+  assert.match(dir.text, /📂 目录[\s\S]*1\. #丁\n2\. #冰美人/);
+  const pin = bot.out.filter(o => o.method === 'pinChatMessage').at(-1);
+  assert.equal(String(pin.chat_id), String(VIDEO_CHANNEL));
+  const dirId = pin.message_id;
+  await dm(OWNER, '账号标签 2 小美💍');
+  assert.match(lastSay().text, /第 2 个账号的标签改成 #小美/);
+  const ed = bot.out.filter(o => o.method === 'editMessageText' && String(o.chat_id) === String(VIDEO_CHANNEL)).at(-1);
+  assert.equal(ed.message_id, dirId);
+  assert.match(ed.text, /1\. #丁\n2\. #小美/);
+  bot.editGone = true;  // 目录被删了：发一条新的置顶
+  await dm(OWNER, '账号标签 1 主号');
+  bot.editGone = false;
+  assert.notEqual(bot.out.filter(o => o.method === 'pinChatMessage').at(-1).message_id, dirId);
+  assert.match(bot.out.filter(o => o.method === 'sendMessage' && String(o.chat_id) === String(VIDEO_CHANNEL)).at(-1).text, /1\. #主号\n2\. #小美/);
+  await dm(OWNER, '账号标签 9 x');
+  assert.match(lastSay().text, /没有第 9 个账号/);
+  await dm(OWNER, '账号标签 1 💍');
+  assert.match(lastSay().text, /要有文字或数字/);
+  await dm(OWNER, '转抖音视频');
+  assert.deepEqual(bot.toStreamer.filter(x => x.path === 'douyin/mirror').at(-1).body.tags, { [alt]: '小美', [sec]: '主号' });
+  bot.dyStatus = null;
+  await admin('douyin-self', { sec_uids: [sec] });
 });
 
 await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视频频道', async () => {

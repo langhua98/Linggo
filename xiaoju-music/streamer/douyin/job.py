@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 
-from .items import caption
+from .items import caption, hashtag
 from .web import Blocked, DownloadError, Gone
 
 log = logging.getLogger('streamer.douyin')
@@ -25,11 +25,13 @@ MAX_MESSAGES = 8
 
 class DouyinJob:
     def __init__(self, *, web, send_video, posted_ids, send_images=None, say=None, pause=3.0,
-                 import_idle=IMPORT_IDLE, poll=5.0):
+                 import_idle=IMPORT_IDLE, poll=5.0, retag=None):
+        # retag(频道, 消息号, 作品)：频道里已经有、但说明里还没有账号标签的旧帖，补上标签（改说明，不重发）
         # posted_ids(频道) → {作品号: 消息号}：频道里已经转过的（每次跑先翻一遍频道，查重靠它）
         self.web, self.send_video, self.send_images, self.posted_ids = web, send_video, send_images, posted_ids
         self.say, self.pause = say, pause
         self.import_idle, self.poll = import_idle, poll
+        self.retag, self.tags = retag, {}
         self._inbox, self._seen, self._final = [], set(), True
         self.task = None
         self.state = {'status': 'idle'}
@@ -48,7 +50,7 @@ class DouyinJob:
         self._begin(lambda: self._one(aweme_id, notify, target), mode='one', id=aweme_id, target=target, msg=None,
                     fresh=False, desc='')
 
-    def start_import(self, items, notify=None, target=None, final=True):
+    def start_import(self, items, notify=None, target=None, final=True, tags=None):
         """MediaCrawler 导出的作品（频道主自己登录抓的，见 mcimport.py）：转进频道，已有的跳过。
         边抓边转：final=False 表示云电脑还在抓，后面的批次用 feed_import 接着送进来，转完手上的就等下一批；
         等到 final（抓完了）或者 IMPORT_IDLE 没动静，收尾、通知频道主"""
@@ -56,14 +58,16 @@ class DouyinJob:
         self._seen = {i['id'] for i in items}
         self._begin(lambda: self._import(notify, target), mode='import', target=target, name='',
                     total=len(self._seen), posted=[], skipped=[], failed=[], other=0, hidden_newest=False,
-                    truncated=False)
+                    truncated=False, tags_used={})
+        self.tags = dict(tags or {})
 
     def importing(self, target):
         """正在给 target 频道边抓边转（还能往里送）"""
         return self.running() and self.state.get('mode') == 'import' and self.state.get('target') == target
 
-    def feed_import(self, items, final=False):
+    def feed_import(self, items, final=False, tags=None):
         """往正在跑的导入里再送一批（送过的作品号不重复收），返回新收下几条"""
+        self.tags.update(tags or {})
         new = [i for i in items if i['id'] not in self._seen]
         self._seen.update(i['id'] for i in new)
         self._inbox.extend(new)
@@ -115,16 +119,30 @@ class DouyinJob:
         self._begin(lambda: self._collect(sec_uid, limit, notify), mode='collect', sec_uid=sec_uid, name='',
                     links=[], hidden_newest=False, truncated=False)
 
-    def start_mirror(self, sec_uids, notify=None, target=None, quiet=False):
+    def start_mirror(self, sec_uids, notify=None, target=None, quiet=False, tags=None):
         """sec_uids：频道主自己的一个或几个账号。quiet：定时自动同步用，没转新的、也没出错就不发消息"""
         sec_uids = [sec_uids] if isinstance(sec_uids, str) else list(sec_uids)
         self._begin(lambda: self._mirror(sec_uids, notify, target, quiet), mode='mirror', sec_uids=sec_uids, target=target, name='',
-                    posted=[], skipped=[], failed=[], other=0, hidden_newest=False, truncated=False)
+                    posted=[], skipped=[], failed=[], other=0, hidden_newest=False, truncated=False, tags_used={})
+        self.tags = dict(tags or {})
+
+    def _label(self, item):
+        """给作品贴上账号标签：频道主起的名字优先（tags: sec_uid → 名字），没起就用抖音昵称"""
+        tag = self.tags.get(item.get('sec_uid') or '') or hashtag(item.get('author'))
+        item['tag'] = tag
+        if tag and item.get('sec_uid'):
+            self.state.setdefault('tags_used', {})[item['sec_uid']] = tag
 
     async def _post(self, w, item, target, done):
         """转一条作品到 target 频道：done（频道里已有的 {作品号: 消息号}）里有就跳过 → (帖子的消息号, 是不是新发的)。
         视频发视频，图文发成相册。发了就记进 done，同一次里不会再发"""
+        self._label(item)
         if item['id'] in done:
+            if self.retag and item.get('tag'):
+                try:
+                    await self.retag(target, done[item['id']], item)
+                except Exception:  # noqa: BLE001  补标签失败不影响转作品
+                    log.exception('retag failed')
             return done[item['id']], False
         if item['kind'] == 'images':
             images = await w.download_images(item)
