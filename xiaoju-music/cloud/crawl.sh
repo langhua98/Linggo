@@ -297,7 +297,13 @@ if [ -n "${XJ_SEARCH_MODE:-}" ]; then
     exit 1
   fi
   echo "== 搜完了，一共 $N 条，把剩下的发过去 =="
-  for i in $(seq 10); do send 1 && break; sleep 30; done
+  ok=""
+  for i in $(seq 10); do send 1 && { ok=1; break; }; sleep 30; done
+  if [ -z "$ok" ]; then
+    report failed
+    echo "== 清单没发成（上面有原因），过一会儿再运行一次 bash xiaoju-music/cloud/search.sh =="
+    exit 1
+  fi
   report done
   echo "== 好了，清单都私聊发给你了 =="
   exit 0
@@ -337,6 +343,12 @@ if [ "$N" = 0 ] && [ "$(cat "$SENTF")" = 0 ]; then
   exit 1
 fi
 echo "== 抓完了，一共 $N 条，把剩下的送给小橘 =="
-for i in $(seq 10); do send 1 && break; sleep 30; done
+ok=""
+for i in $(seq 10); do send 1 && { ok=1; break; }; sleep 30; done
+if [ -z "$ok" ]; then
+  report failed
+  echo "== 最后一批没送成（上面有原因），过一会儿再打开一次云电脑 =="
+  exit 1
+fi
 report done
 echo "== 好了。作品在陆续转进「小橘视频」，全部转完机器人会通知你。这个窗口可以关了 =="

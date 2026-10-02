@@ -1795,7 +1795,7 @@ async function cloudKnown(request, env) {
 }
 
 // ── 进度：云电脑每 30 秒报一次（POST /dy-progress，X-Token），记在 dyCloud；频道主发「进度」看，点按钮停 ──
-const CLOUD_PHASE = { starting: '刚开始（开浏览器、等登录）', running: '正在抓', done: '抓完了', stopped: '停了', failed: '没抓到（登录过期？）' };
+const CLOUD_PHASE = { starting: '刚开始（开浏览器、等登录）', running: '正在抓', done: '抓完了', stopped: '停了', failed: '没成（没抓到、登录过期，或者没发出去；看云电脑终端里的原因）' };
 
 async function cloudProgress(request, env) {
   const L = lib(env), tok = await L.getConfig('cloudTok');
