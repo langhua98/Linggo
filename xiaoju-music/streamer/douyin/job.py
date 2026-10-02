@@ -18,15 +18,19 @@ from .web import Blocked, DownloadError, Gone
 
 log = logging.getLogger('streamer.douyin')
 
+IMPORT_IDLE = 20 * 60  # 边抓边转：云电脑这么久没再送作品来、也没说抓完，就当它停了，收尾
 MESSAGE_LIMIT = 3500  # 一条消息放多少字的链接（Telegram 上限 4096）
 MAX_MESSAGES = 8
 
 
 class DouyinJob:
-    def __init__(self, *, web, send_video, posted_ids, send_images=None, say=None, pause=3.0):
+    def __init__(self, *, web, send_video, posted_ids, send_images=None, say=None, pause=3.0,
+                 import_idle=IMPORT_IDLE, poll=5.0):
         # posted_ids(频道) → {作品号: 消息号}：频道里已经转过的（每次跑先翻一遍频道，查重靠它）
         self.web, self.send_video, self.send_images, self.posted_ids = web, send_video, send_images, posted_ids
         self.say, self.pause = say, pause
+        self.import_idle, self.poll = import_idle, poll
+        self._inbox, self._seen, self._final = [], set(), True
         self.task = None
         self.state = {'status': 'idle'}
 
@@ -44,30 +48,60 @@ class DouyinJob:
         self._begin(lambda: self._one(aweme_id, notify, target), mode='one', id=aweme_id, target=target, msg=None,
                     fresh=False, desc='')
 
-    def start_import(self, items, notify=None, target=None):
-        """MediaCrawler 导出的作品（频道主自己登录抓的，见 mcimport.py）：按发布顺序转进频道，已有的跳过"""
-        self._begin(lambda: self._import(items, notify, target), mode='import', target=target, name='',
-                    total=len(items), posted=[], skipped=[], failed=[], other=0, hidden_newest=False, truncated=False)
+    def start_import(self, items, notify=None, target=None, final=True):
+        """MediaCrawler 导出的作品（频道主自己登录抓的，见 mcimport.py）：转进频道，已有的跳过。
+        边抓边转：final=False 表示云电脑还在抓，后面的批次用 feed_import 接着送进来，转完手上的就等下一批；
+        等到 final（抓完了）或者 IMPORT_IDLE 没动静，收尾、通知频道主"""
+        self._inbox, self._final = list(items), final
+        self._seen = {i['id'] for i in items}
+        self._begin(lambda: self._import(notify, target), mode='import', target=target, name='',
+                    total=len(self._seen), posted=[], skipped=[], failed=[], other=0, hidden_newest=False,
+                    truncated=False)
 
-    async def _import(self, items, notify, target):
+    def importing(self, target):
+        """正在给 target 频道边抓边转（还能往里送）"""
+        return self.running() and self.state.get('mode') == 'import' and self.state.get('target') == target
+
+    def feed_import(self, items, final=False):
+        """往正在跑的导入里再送一批（送过的作品号不重复收），返回新收下几条"""
+        new = [i for i in items if i['id'] not in self._seen]
+        self._seen.update(i['id'] for i in new)
+        self._inbox.extend(new)
+        self.state['total'] = self.state.get('total', 0) + len(new)
+        if final:
+            self._final = True
+        return len(new)
+
+    async def _import(self, notify, target):
         st = self.state
         try:
             done = await self.posted_ids(target)
-            st['other'] = sum(i['kind'] not in ('video', 'images') for i in items)
-            names = sorted({i['author'] for i in items if i['author']})
-            st['name'] = '、@'.join(names)
+            names, waited = set(), 0.0
             async with self.web() as w:
-                for item in sorted((i for i in items if i['kind'] in ('video', 'images')), key=lambda i: i['time']):
-                    row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
-                    try:
-                        row['msg'], fresh = await self._post(w, item, target, done)
-                    except (DownloadError, Gone) as e:
-                        row['reason'] = str(e)
-                        st['failed'].append(row)
+                while True:
+                    batch, self._inbox = self._inbox, []
+                    if not batch:
+                        if self._final or waited >= self.import_idle:
+                            break
+                        await asyncio.sleep(self.poll)
+                        waited += self.poll
                         continue
-                    (st['posted'] if fresh else st['skipped']).append(row)
-                    if fresh:
-                        await asyncio.sleep(self.pause)
+                    waited = 0.0
+                    st['other'] += sum(i['kind'] not in ('video', 'images') for i in batch)
+                    names |= {i['author'] for i in batch if i['author']}
+                    st['name'] = '、@'.join(sorted(names))
+                    # 同一批里旧的先发（批与批之间按云电脑抓到的顺序：抖音的作品列表是新的在前）
+                    for item in sorted((i for i in batch if i['kind'] in ('video', 'images')), key=lambda i: i['time']):
+                        row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
+                        try:
+                            row['msg'], fresh = await self._post(w, item, target, done)
+                        except (DownloadError, Gone) as e:
+                            row['reason'] = str(e)
+                            st['failed'].append(row)
+                            continue
+                        (st['posted'] if fresh else st['skipped']).append(row)
+                        if fresh:
+                            await asyncio.sleep(self.pause)
             st['status'] = 'done'
             await self._tell(notify, mirror_report(st))
         except asyncio.CancelledError:

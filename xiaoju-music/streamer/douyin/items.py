@@ -1,7 +1,9 @@
 """把抖音接口返回的一条作品整理成要用的几样东西：是视频还是图文、公开链接、发布时间、文案、下载地址。
 
-视频挑不带水印的 H.264：play_addr / bit_rate 里的都不带水印（带水印的是 download_addr，不用）；
-H.265 有的 Telegram 客户端放不了，排在最后。图文的每张图用 url_list（download_url_list 带水印，不用），JPEG 的地址排前面。"""
+视频挑清晰度最高的一档（频道主要最高画质）：bit_rate 里每一档都不带水印（带水印的是 download_addr，不用），
+按分辨率从高到低排，同一分辨率码率高的在前、H.264 在 H.265 前（H.265 个别 Telegram 客户端放不了，但更清楚的
+档位往往只有 H.265，清晰度优先）；play_addr 这类默认地址垫底当备用。
+图文的每张图用 url_list（download_url_list 带水印，不用），JPEG 的地址排前面。"""
 
 import re
 import time
@@ -18,14 +20,14 @@ def _h265(b):
 
 
 def video_sources(v):
-    """[{urls, size, width, height}]，好的在前：H.264 里画面最清楚、码率最高的一档，再是默认地址，H.265 最后。
-    每档的 urls 是几个 CDN 的同一个文件，一个不通换下一个。"""
+    """[{urls, size, width, height, h265}]，好的在前：分辨率最高的一档，同分辨率码率高的、H.264 的在前；
+    play_addr 这类默认地址（不一定是最高画质）放在最后当备用。每档的 urls 是几个 CDN 的同一个文件，一个不通换下一个。"""
     picked = []
     rates = [b for b in (v.get('bit_rate') or []) if isinstance(b, dict) and _urls(b.get('play_addr'))]
 
     def rank(b):
         a = b['play_addr']
-        return (not _h265(b), min(a.get('width') or 0, a.get('height') or 0), b.get('bit_rate') or 0)
+        return (min(a.get('width') or 0, a.get('height') or 0), not _h265(b), b.get('bit_rate') or 0)
 
     for b in sorted(rates, key=rank, reverse=True):
         a = b['play_addr']
@@ -36,9 +38,9 @@ def video_sources(v):
         if _urls(a):
             picked.append({'urls': _urls(a), 'size': a.get('data_size') or 0, 'width': a.get('width') or v.get('width') or 0,
                            'height': a.get('height') or v.get('height') or 0, 'h265': False})
-    # H.265 的放到最后；同一个文件（第一个地址一样）只留一份
+    # 同一个文件（第一个地址一样）只留一份
     out, seen = [], set()
-    for s in sorted(picked, key=lambda s: s['h265']):
+    for s in picked:
         if s['urls'][0] not in seen:
             seen.add(s['urls'][0])
             out.append(s)

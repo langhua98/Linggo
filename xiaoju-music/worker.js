@@ -1643,16 +1643,22 @@ async function cloudImport(request, env) {
   if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return json({ error: '视频频道没配置' }, 500);
   const body = await request.text();
   if (body.length > 20 * 1024 * 1024) return json({ error: '文件太大' }, 413);
+  // 边抓边转：云电脑每抓到一批就送一批（X-Final: 0），抓完送 X-Final: 1；不带这个头当一次送完
+  const final = request.headers.get('X-Final') !== '0';
   const owner = await ownerId(env);
   let r;
   try {
-    r = await streamerCall(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner });
+    r = await streamerCall(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner, final });
   } catch {
     return json({ error: '小橘的服务正在唤醒，过两分钟再双击图标重发一次' }, 503);
   }
   if (r.status !== 200) return json({ error: r.data.detail || '小橘没收下，过一会儿再试' }, r.status === 409 ? 409 : 400);
-  if (owner) await say(env, owner, `☁️ 云电脑发来 ${r.data.total} 条作品（视频 ${r.data.video}、图文 ${r.data.images}），开始转进视频频道，已经有的跳过，转完告诉你`);
-  return json({ ok: true, total: r.data.total, video: r.data.video, images: r.data.images });
+  if (owner && r.data.started) {
+    await say(env, owner, final
+      ? `☁️ 云电脑发来 ${r.data.total} 条作品（视频 ${r.data.video}、图文 ${r.data.images}），开始转进视频频道，已经有的跳过，转完告诉你`
+      : `☁️ 云电脑开始送作品过来了（先到 ${r.data.total} 条），边抓边转进视频频道，已经有的跳过，全部转完告诉你`);
+  }
+  return json({ ok: true, total: r.data.total, video: r.data.video, images: r.data.images, added: r.data.added ?? r.data.total, started: !!r.data.started });
 }
 
 // MediaCrawler（频道主在自己的云电脑上登录抖音抓的）导出的 creator_contents 文件：交给流式服务逐条下载、发帖

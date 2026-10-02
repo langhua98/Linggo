@@ -145,8 +145,11 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
     if (m[1] === 'douyin/import') {
+      if (body.final && body.text === '') return Response.json({ ok: true, total: 0, video: 0, images: 0, added: 0, started: false });
       if (!/aweme_id/.test(body.text)) return Response.json({ detail: '文件里没认出抖音作品' }, { status: 400 });
-      return Response.json({ ok: true, total: 2, video: 1, images: 1 });
+      const started = !bot.importing;
+      if (body.final === false) bot.importing = true;
+      return Response.json({ ok: true, total: 2, video: 1, images: 1, added: 2, started });
     }
     if (m[1] === 'douyin/resolve') {
       if (/\/user\/(\w+)/.test(body.text)) return Response.json({ kind: 'user', id: 'MS4wLjABAAAA' + body.text.match(/\/user\/(\w+)/)[1] });
@@ -1065,11 +1068,23 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   const up = (tok, body) => req('/dy-import', { method: 'POST', headers: { 'X-Token': tok }, body });
   assert.equal((await up('wrong', '{"aweme_id": "1"}')).status, 403);
   const r = await up(m[1], '{"aweme_id": "1", "desc": "x"}\n');
-  assert.deepEqual(await jsonOf(r), { ok: true, total: 2, video: 1, images: 1 });
+  assert.deepEqual(await jsonOf(r), { ok: true, total: 2, video: 1, images: 1, added: 2, started: true });
+  assert.equal(bot.toStreamer.at(-1).body.final, true, '不带 X-Final 当一次送完');
   const s2 = bot.toStreamer.at(-1);
   assert.deepEqual([s2.path, s2.body.target, s2.body.notify], ['douyin/import', String(VIDEO_CHANNEL), OWNER]);
   assert.match(lastSay().text, /云电脑发来 2 条作品/);
   assert.equal((await up(m[1], 'nothing here')).status, 400);
+  // 边抓边转：第一批告诉频道主开始了，后面的批次不再刷屏；最后送一个空的「抓完了」
+  const batch = (body, fin) => req('/dy-import', { method: 'POST', headers: { 'X-Token': m[1], 'X-Final': fin }, body });
+  const n0 = bot.out.filter(o => o.method === 'sendMessage').length;
+  assert.equal((await jsonOf(await batch('{"aweme_id": "2"}\n', '0'))).started, true);
+  assert.equal(bot.toStreamer.at(-1).body.final, false);
+  assert.match(lastSay().text, /边抓边转/);
+  assert.equal((await jsonOf(await batch('{"aweme_id": "3"}\n', '0'))).started, false);
+  assert.equal((await batch('', '1')).status, 200);
+  assert.equal(bot.toStreamer.at(-1).body.final, true);
+  assert.equal(bot.out.filter(o => o.method === 'sendMessage').length, n0 + 1, '只在开始时说一次');
+  bot.importing = false;
   await dm(FAN + 4, '云电脑');
   assert.ok(!/crawl\.sh/.test(lastSay().text), '听众拿不到命令');
   // 云电脑拿 Codespaces 自带的 GitHub 令牌领口令：只认仓库主人

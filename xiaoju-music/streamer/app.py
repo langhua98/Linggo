@@ -909,7 +909,7 @@ async def douyin_send_images(images, item, text, target):
 DOUYIN_ID_IN_TEXT = re.compile(r'douyin\.com/(?:video|note)/(\d{8,24})')
 
 
-async def douyin_posted(target, limit=3000):
+async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子也多：多翻些才不重复转
     """target 频道里已经转过的抖音作品 → {作品号: 消息号}：翻最近 limit 条帖子，看说明里的原视频链接。
     不用 Telegram 的搜索：实测刚发的帖子搜不到链接里的作品号，查重落空、发了重复的。
     机器人不能翻频道历史，没登录就当都没转过"""
@@ -985,20 +985,29 @@ async def douyin_resolve(request: Request):
 
 @app.post('/douyin/import')
 async def douyin_import(request: Request):
-    """{text: MediaCrawler 导出文件的内容, target, notify}：把里面的作品转进 target 频道。认不出 → 400；正在跑别的 → 409"""
+    """{text: MediaCrawler 导出的内容（一批或整个文件）, target, notify, final}：把里面的作品转进 target 频道。
+    边抓边转：云电脑每抓到一批就送一次（final=false），正在转的就接着收进队列；最后送 final=true（可以不带作品）
+    表示抓完了。不带 final 当作一次送完（旧的用法）。认不出 → 400；正在跑别的 → 409"""
     check_key(request)
     body = await request.json()
     target = parse_target(body.get('target'))
     if target is None:
         raise HTTPException(400, '没设置视频频道')
+    final = body.get('final', True) is not False
     items = parse_export(str(body.get('text', '')))
+    kinds = [i['kind'] for i in items]
+    counts = {'total': len(items), 'video': kinds.count('video'), 'images': kinds.count('images')}
+    if douyin_job.importing(target):
+        added = douyin_job.feed_import(items, final=final)
+        return {'ok': True, **counts, 'added': added, 'started': False}
     if not items:
+        if final and str(body.get('text', '')).strip() == '':
+            return {'ok': True, **counts, 'added': 0, 'started': False}  # 抓完的通知，但没有在转的：没事可做
         raise HTTPException(400, '文件里没认出抖音作品（要 MediaCrawler 导出的 creator_contents 文件）')
     if douyin_busy():
         raise HTTPException(409, 'busy')
-    douyin_job.start_import(items, notify=body.get('notify') or None, target=target)
-    kinds = [i['kind'] for i in items]
-    return {'ok': True, 'total': len(items), 'video': kinds.count('video'), 'images': kinds.count('images')}
+    douyin_job.start_import(items, notify=body.get('notify') or None, target=target, final=final)
+    return {'ok': True, **counts, 'added': len(items), 'started': True}
 
 
 @app.post('/douyin/mirror')

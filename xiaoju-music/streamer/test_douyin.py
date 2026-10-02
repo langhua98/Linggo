@@ -72,9 +72,15 @@ def aweme(**kw):
     return a
 
 
-def test_sources_prefer_the_clearest_h264_and_never_the_watermarked_one():
+def test_sources_prefer_the_highest_resolution_and_never_the_watermarked_one():
+    # 频道主要最高画质：分辨率最高的在前（哪怕只有 H.265），默认地址垫底
     firsts = [s['urls'][0] for s in video_sources(aweme()['video'])]
-    assert firsts == ['https://cdn/720', 'https://cdn/540', 'https://cdn/default', 'https://cdn/h265-1080']
+    assert firsts == ['https://cdn/h265-1080', 'https://cdn/720', 'https://cdn/540', 'https://cdn/default']
+    # 同一分辨率：H.264 在 H.265 前；都是 H.264 就码率高的在前
+    v = {'bit_rate': [rate('bytevc1_1080', 2000, 1080, 1920, 'https://cdn/h265'), rate('normal_1080_0', 1500, 1080, 1920, 'https://cdn/h264-lo'),
+                      rate('high_1080_0', 4000, 1080, 1920, 'https://cdn/h264-hi'), rate('2k', 8000, 1440, 2560, 'https://cdn/2k', h265=1)]}
+    v['bit_rate'][0]['is_h265'] = 1
+    assert [s['urls'][0] for s in video_sources(v)] == ['https://cdn/2k', 'https://cdn/h264-hi', 'https://cdn/h264-lo', 'https://cdn/h265']
     assert all('watermarked' not in u for s in video_sources(aweme()['video']) for u in s['urls'])
     # 默认地址和某一档是同一个文件时只留一份
     v = aweme()['video']
@@ -275,7 +281,7 @@ def run_job(web, posted=None):
 def test_job_posts_the_video_and_tells_the_owner():
     st, said, sent = run_job(FakeWeb(normalize(aweme())))
     assert st['status'] == 'done' and st['fresh'] and st['msg'] == 2600
-    assert sent == [(b'mp4', '7691335977760321704', 720, caption(normalize(aweme())), VIDEO_CHANNEL)]
+    assert sent == [(b'mp4', '7691335977760321704', 1080, caption(normalize(aweme())), VIDEO_CHANNEL)]
     assert said == [(42, '✅ 已转到视频频道：特效一用谁都不认')]
 
 
@@ -951,6 +957,21 @@ def test_parse_mediacrawler_jsonl_and_json():
     assert parse_export('') == [] and parse_export('[{"aweme_id": "abc"}]') == []
 
 
+def test_import_uses_every_quality_the_cloud_computer_saved():
+    """crawl.sh 让 MediaCrawler 另存了各档清晰度（xiaoju_video）和每张图的全部地址（xiaoju_images）：挑最高画质"""
+    import json as J
+    from douyin.mcimport import parse_export
+    v = aweme()['video']
+    row = {**MC_ROW_VIDEO, 'xiaoju_video': {k: v.get(k) for k in ('bit_rate', 'play_addr', 'duration', 'width', 'height')}}
+    it, = parse_export(J.dumps(row))
+    assert [s['urls'][0] for s in it['sources']][:2] == ['https://cdn/h265-1080', 'https://cdn/720']
+    assert it['sources'][-1]['urls'] == ['https://v26.douyinvod.com/a/play']  # MediaCrawler 自己挑的那个垫底
+    assert (it['seconds'], it['width'], it['height']) == (12, 1080, 1920)
+    note = {**MC_ROW_NOTE, 'xiaoju_images': [{'url_list': ['https://p/1.webp', 'https://p/1.jpeg'], 'width': 1080, 'height': 1440}]}
+    n, = parse_export(J.dumps(note))
+    assert n['kind'] == 'images' and n['images'] == [{'urls': ['https://p/1.jpeg', 'https://p/1.webp'], 'width': 1080, 'height': 1440}]
+
+
 def test_import_job_and_endpoint(monkeypatch):
     import json as J
     from douyin.mcimport import parse_export
@@ -979,11 +1000,73 @@ def test_import_job_and_endpoint(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
     started = []
     job = DouyinJob(web=None, send_video=None, posted_ids=None)
-    monkeypatch.setattr(job, 'start_import', lambda items, notify=None, target=None: started.append((len(items), target)))
+    monkeypatch.setattr(job, 'start_import', lambda items, notify=None, target=None, final=True: started.append((len(items), target, final)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
     monkeypatch.setattr(appmod, 'douyin_login', None)
     c = TestClient(appmod.app)
     key = {'X-Key': 'k1'}
     assert c.post('/douyin/import', json={'text': 'x', 'target': str(VIDEO_CHANNEL)}, headers=key).status_code == 400
     r = c.post('/douyin/import', json={'text': J.dumps([MC_ROW_VIDEO, MC_ROW_NOTE]), 'target': str(VIDEO_CHANNEL)}, headers=key)
-    assert r.json() == {'ok': True, 'total': 2, 'video': 1, 'images': 1} and started == [(2, VIDEO_CHANNEL)]
+    assert r.json() == {'ok': True, 'total': 2, 'video': 1, 'images': 1, 'added': 2, 'started': True}
+    assert started == [(2, VIDEO_CHANNEL, True)]
+    # 边抓边转：第一批 final=false 开始；没在转的时候只送一个「抓完了」（空的）→ 没事可做，不报错
+    r = c.post('/douyin/import', json={'text': J.dumps([MC_ROW_VIDEO]), 'target': str(VIDEO_CHANNEL), 'final': False}, headers=key)
+    assert r.json()['started'] is True and started[-1] == (1, VIDEO_CHANNEL, False)
+    r = c.post('/douyin/import', json={'text': '', 'target': str(VIDEO_CHANNEL), 'final': True}, headers=key)
+    assert r.status_code == 200 and r.json()['started'] is False and r.json()['added'] == 0
+
+
+def test_import_streams_batches_while_posting():
+    """边抓边转：第一批进来就开始转；转着的时候再送的批次接着转，重复的不收；送了「抓完了」、手上转完才收尾"""
+    import json as J
+    from douyin.mcimport import parse_export
+    sent, told = [], []
+    row = lambda i, t: {**MC_ROW_VIDEO, 'aweme_id': str(7600000000000000000 + i), 'create_time': t}
+
+    async def send_video(data, item, src, text, target):
+        sent.append(item['id'])
+        return len(sent)
+
+    async def posted_ids(target):
+        return {str(7600000000000000000 + 9): 99}  # 第 9 条频道里已经有了
+
+    async def say(chat, text):
+        told.append(text)
+
+    async def go():
+        job = DouyinJob(web=FakeWeb(), send_video=send_video, posted_ids=posted_ids, say=say, pause=0, poll=0.01,
+                        import_idle=5)
+        job.start_import(parse_export(J.dumps([row(1, 300), row(2, 200)])), notify=1, target=VIDEO_CHANNEL, final=False)
+        for _ in range(100):
+            if len(sent) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert sent == [str(7600000000000000002), str(7600000000000000001)]  # 同一批旧的先发
+        assert job.importing(VIDEO_CHANNEL) and not job.importing(-1) and job.state['status'] == 'running'  # 还在等下一批
+        assert job.feed_import(parse_export(J.dumps([row(2, 200), row(3, 100), row(9, 50)]))) == 2  # 第 2 条送过了
+        assert job.feed_import([], final=True) == 0
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert sent[2:] == [str(7600000000000000003)] and st['status'] == 'done' and st['total'] == 4
+    assert len(st['posted']) == 3 and len(st['skipped']) == 1 and len(told) == 1
+
+
+def test_import_gives_up_waiting_when_the_cloud_computer_goes_quiet():
+    import json as J
+    from douyin.mcimport import parse_export
+
+    async def send_video(data, item, src, text, target):
+        return 1
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=FakeWeb(), send_video=send_video, posted_ids=posted_ids, pause=0, poll=0.01, import_idle=0.05)
+        job.start_import(parse_export(J.dumps([MC_ROW_VIDEO])), target=VIDEO_CHANNEL, final=False)
+        await asyncio.wait_for(job.task, 2)
+        return job.state
+
+    assert asyncio.run(go())['status'] == 'done'

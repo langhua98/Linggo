@@ -31,7 +31,7 @@ CALL_JS = """async ({path, params}) => {
   const r = await fetch(path + '?' + new URLSearchParams(params), {credentials: 'include'});
   return {status: r.status, text: await r.text()};
 }"""
-MAX_VIDEO_BYTES = 300 * 1024 * 1024
+MAX_VIDEO_BYTES = 1024 * 1024 * 1024  # 要最高画质，长视频的高清档会很大（Telegram 用户号上传上限 2GB）
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # Telegram 照片的上限
 # 页面去取滑块验证码的请求：出现了就说明这次被风控拦了（不去做验证码）
 CAPTCHA = re.compile(r'verify\.zijieapi\.com/captcha/get|/verifycenter/captcha/v\d')
@@ -250,7 +250,7 @@ class DouyinWeb:
         last = '没有下载地址'
         for url in urls:
             try:
-                r = await self.ctx.request.get(url, headers={'Referer': 'https://www.douyin.com/'}, timeout=180000)
+                r = await self.ctx.request.get(url, headers={'Referer': 'https://www.douyin.com/'}, timeout=600000)  # 高清大文件给 10 分钟
             except Exception as e:  # noqa: BLE001
                 last = type(e).__name__
                 continue

@@ -159,6 +159,17 @@ if '# xiaoju: crash-safe' not in c and old in c:
                   '                local_storage = await _pg.evaluate("() => window.localStorage")\n'
                   '                self._xj_ls = local_storage\n', 1)
     open(p2, 'w', encoding='utf-8').write(c)
+
+# 最高画质：MediaCrawler 只存 video_download_url（play_addr，抖音的默认画质）。另存两样给小橘挑：
+# xiaoju_video = 作品 video 里的各档清晰度（bit_rate）和尺寸时长；xiaoju_images = 每张图的全部地址
+p4 = 'store/douyin/__init__.py'
+c = open(p4, encoding='utf-8').read()
+old = '        "note_download_url": ",".join(extract_image_urls(aweme_item)),\n'
+if '# xiaoju: quality' not in c and old in c:
+    c = c.replace(old, old + '        # xiaoju: quality\n'
+                  '        "xiaoju_video": {k: (aweme_item.get("video") or {}).get(k) for k in ("bit_rate", "play_addr_h264", "play_addr", "width", "height", "duration")},\n'
+                  '        "xiaoju_images": [{"url_list": (i or {}).get("url_list"), "width": (i or {}).get("width"), "height": (i or {}).get("height")} for i in (aweme_item.get("images") or [])],\n', 1)
+    open(p4, 'w', encoding='utf-8').write(c)
 PY
 
 # 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）
@@ -167,17 +178,42 @@ WIN="$HERE/win.sh"
 WINLOOP=$!
 trap 'kill $WINLOOP 2>/dev/null' EXIT
 
+# 边抓边转：MediaCrawler 抓一条往 jsonl 里写一行。后台每 30 秒把新写的几行送给小橘（X-Final: 0），
+# 小橘收到第一批就开始转，后面的接着排队；抓完再把剩下的连同「抓完了」（X-Final: 1）送过去。
+# 送成功才往前记（SENTF），没送成（小橘在忙、网不好）下次连同新的一起送；重复送的小橘会认出来不重收
+SENTF="$HOME/.xiaoju/sent"; echo 0 > "$SENTF"
+newest() { find "$OUT" -name 'creator_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-; }
+send() {  # $1 = 0 还在抓 / 1 抓完了
+  local f n sent code
+  f=$(newest); n=0; [ -n "$f" ] && n=$(wc -l < "$f")
+  sent=$(cat "$SENTF")
+  [ "$n" -le "$sent" ] && [ "$1" = 0 ] && return 0
+  if [ "$n" -gt "$sent" ]; then tail -n +"$((sent + 1))" "$f" | head -n "$((n - sent))" > "$OUT/.batch"; else : > "$OUT/.batch"; fi
+  code=$(curl -sS -m 120 -o "$OUT/.resp" -w '%{http_code}' -X POST -H "X-Token: $TOKEN" -H "X-Final: $1" \
+    -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$OUT/.batch" "$API/dy-import" 2>/dev/null)
+  if [ "$code" = 200 ]; then
+    echo "$n" > "$SENTF"
+    [ "$n" -gt "$sent" ] && echo "== 已送给小橘 $n 条（这批 $((n - sent)) 条），小橘在边收边转 =="
+    return 0
+  fi
+  echo "== 这批没送成（$code $(head -c 120 "$OUT/.resp" 2>/dev/null)），等下连同新的一起再送 =="
+  return 1
+}
+( while sleep "${XJ_SEND_EVERY:-30}"; do send 0; done ) &
+SENDLOOP=$!
+trap 'kill $WINLOOP $SENDLOOP 2>/dev/null' EXIT
+
 echo "== 马上会弹出浏览器，用抖音 App 扫码登录（要验证就在浏览器里完成）=="
 uv run main.py --platform dy --lt qrcode --type creator --creator_id "$CREATORS" \
   --get_comment no --get_sub_comment no --get_media no --headless no \
-  --save_data_option jsonl --crawler_max_notes_count 1000 --save_data_path "$OUT"
+  --save_data_option jsonl --crawler_max_notes_count 100000 --save_data_path "$OUT"
 
-FILE=$(find "$OUT" -name 'creator_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
-if [ -z "$FILE" ] || [ ! -s "$FILE" ]; then
+kill $SENDLOOP 2>/dev/null; wait $SENDLOOP 2>/dev/null
+F=$(newest); N=0; [ -n "$F" ] && N=$(wc -l < "$F")
+if [ "$N" = 0 ] && [ "$(cat "$SENTF")" = 0 ]; then
   echo "== 没抓到作品（登录没成功？）。关掉这个窗口，再双击图标重来一次 =="
   exit 1
 fi
-echo "== 抓到 $(wc -l < "$FILE") 条，发给小橘 =="
-curl -sS -X POST -H "X-Token: $TOKEN" -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$FILE" "$API/dy-import"
-echo
-echo "== 好了。作品会陆续转进「小橘视频」，转完机器人会通知你。这个窗口可以关了 =="
+echo "== 抓完了，一共 $N 条，把剩下的送给小橘 =="
+for i in $(seq 10); do send 1 && break; sleep 30; done
+echo "== 好了。作品在陆续转进「小橘视频」，全部转完机器人会通知你。这个窗口可以关了 =="

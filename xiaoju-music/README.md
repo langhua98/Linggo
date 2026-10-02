@@ -219,6 +219,11 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     再给一条 `bash xiaoju-music/cloud/crawl.sh <上传令牌> <账号,…>`（令牌是 config `cloudTok`）。频道主在 iPad Safari 里开
     网页桌面，终端里粘贴命令，在桌面弹出的浏览器里自己扫码登录（验证也在那里做）；`crawl.sh` 跑 MediaCrawler（creator、
     jsonl）后把文件 POST 到 Worker 的 `/dy-import`（`X-Token`），转给 `/douyin/import` 逐条下载、发进视频频道。
+    **边抓边转**：crawl.sh 每 30 秒把 jsonl 里新写的几行送一批（`X-Final: 0`），抓完送剩下的和 `X-Final: 1`；
+    流式服务第一批进来就开始转，后面的批次 `feed_import` 接着排队（重复的作品号不收），收到 final 或 20 分钟没动静才收尾、
+    发总结。**最高画质**：crawl.sh 给 MediaCrawler 的 store 打补丁，每条另存 `xiaoju_video`（各档 bit_rate）和
+    `xiaoju_images`，`mcimport` 用 `items.video_sources` 挑：分辨率最高的在前（同分辨率码率高、H.264 优先），
+    `video_download_url`（默认画质）垫底；单个视频上限 1GB。每次开抓前用 `X-Token` 找 `/dy-cloud-config` 要最新账号名单。
     不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找
     api.github.com 认出是仓库主人（`CLOUD_GH_USER`）才回上传令牌和账号。令牌存在云电脑的 `~/.xiaoju/env`，devcontainer 的 `postAttachCommand`（`cloud/codespace-auto.sh`）
     每次打开都自动跑 `crawl.sh`（`flock` 防重复）；MediaCrawler 自己存登录状态，没过期就不用再扫码。
