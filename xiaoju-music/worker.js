@@ -105,6 +105,7 @@ export default {
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
       if (path === '/dy-import' && method === 'POST') return await cloudImport(request, env);
       if (path === '/dy-cloud-config' && method === 'POST') return await cloudConfig(request, env);
+      if (path === '/dy-search' && method === 'POST') return await cloudSearchResult(request, env);
       if (path.startsWith('/dl/') && method === 'POST') {
         const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
         if (m2) return await douyinLoginApi(env, m2[1], 'start');
@@ -1227,6 +1228,7 @@ async function streamerCall(env, path, body) {
 const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 
 搜 歌名或歌手 —— 去来源频道里找，点按钮就搬
+搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词，把结果整理成链接清单私聊发你（点链接在抖音里看，不下载别人的视频）
 搬 @频道名 100 —— 从这个频道搬 100 首中文歌（查重），搬完告诉你
 找 歌名 —— 在小橘音乐里找这首，可以加进/移出歌单、删除
 统计 —— 歌库和这几天搬歌的情况
@@ -1267,6 +1269,7 @@ async function botUpdate(env, update, origin) {
   if (/^\/(start|help)\b/.test(t) || t === '帮助') return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
   if (isOwner) {
     let c;
+    if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());
     if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
@@ -1595,7 +1598,7 @@ async function cloudConfig(request, env) {
     if (!tok || !sameString(xt, tok)) return json({ error: '令牌不对' }, 403);
     const selves = await douyinSelves(L);
     if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
-    return json({ token: tok, creators: selves.join(',') });
+    return json({ token: tok, creators: selves.join(','), searches: await douyinSearchQueue(L) });
   }
   const gh = (request.headers.get('Authorization') || '').replace(/^(Bearer|token)\s+/i, '');
   if (!gh) return json({ error: '没带 GitHub 令牌' }, 401);
@@ -1609,7 +1612,90 @@ async function cloudConfig(request, env) {
   if (login.toLowerCase() !== CLOUD_GH_USER) return json({ error: '不是仓库主人的 GitHub 账号' }, 403);
   const L = lib(env), selves = await douyinSelves(L);
   if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
-  return json({ token: await cloudToken(L), creators: selves.join(',') });
+  return json({ token: await cloudToken(L), creators: selves.join(','), searches: await douyinSearchQueue(L) });
+}
+
+// ── 抖音搜索 → 链接清单 ──
+// 「搜抖音 舞蹈」：关键词记进 dySearchQueue；云电脑（MediaCrawler 的 search 模式，频道主自己登录的）下次打开时搜，
+// 结果 POST /dy-search（X-Token）。只整理成分享链接清单私聊发给频道主，点链接在抖音里看——别人的视频不下载、不转发
+async function douyinSearchQueue(L) {
+  try {
+    const a = JSON.parse((await L.getConfig('dySearchQueue')) || '[]');
+    return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function ownerDouyinSearch(env, chat, kw) {
+  const L = lib(env), q = await douyinSearchQueue(L);
+  if (!kw) {
+    return say(env, chat, q.length
+      ? `等云电脑去搜的词：${q.join('、')}\n打开云电脑就会自动搜；不想搜了发「搜抖音 清空」`
+      : '发「搜抖音 关键词」，比如「搜抖音 舞蹈」');
+  }
+  if (kw === '清空') {
+    await L.setConfig('dySearchQueue', '[]');
+    return say(env, chat, '清空了');
+  }
+  kw = kw.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').slice(0, 30);
+  if (!q.includes(kw)) q.push(kw);
+  await L.setConfig('dySearchQueue', JSON.stringify(q.slice(-10)));
+  return say(env, chat, [
+    `🔎 记下了「${kw}」${q.length > 1 ? `（一共 ${q.length} 个词等着搜：${q.join('、')}）` : ''}`,
+    '',
+    '搜索要用云电脑上登录的抖音：下次打开云电脑，抓完你的作品就会顺便搜，搜完把链接清单私聊发你。',
+    `云电脑正开着的话，在终端运行这个马上搜：\nbash xiaoju-music/cloud/search.sh`,
+  ].join('\n'));
+}
+
+// 数字好读：12345 → 1.2万
+function fmtCount(n) {
+  n = Number(n) || 0;
+  return n >= 10000 ? `${(n / 10000).toFixed(n >= 100000 ? 0 : 1)}万` : String(n);
+}
+
+async function cloudSearchResult(request, env) {
+  const L = lib(env), tok = await L.getConfig('cloudTok');
+  if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对' }, 403);
+  const body = await request.text();
+  if (body.length > 5 * 1024 * 1024) return json({ error: '文件太大' }, 413);
+  const groups = new Map(), seen = new Set();
+  for (const line of body.split('\n')) {
+    let r;
+    try { r = JSON.parse(line); } catch { continue; }
+    const id = String((r && r.aweme_id) || '');
+    if (!/^\d{8,24}$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    const kw = String(r.source_keyword || '').trim() || '（没标关键词）';
+    if (!groups.has(kw)) groups.set(kw, []);
+    const name = String(r.xiaoju_nickname || (String(r.nickname || '').includes('*') ? '' : r.nickname) || '');
+    const note = String(r.aweme_type || '') === '68' || String(r.note_download_url || '').startsWith('http');
+    groups.get(kw).push({
+      id, likes: Number(r.liked_count) || 0, name, note,
+      title: String(r.desc || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
+    });
+  }
+  const owner = await ownerId(env);
+  if (!groups.size) return json({ error: '文件里没认出搜索结果' }, 400);
+  for (const [kw, list] of groups) {
+    list.sort((a, b) => b.likes - a.likes);
+    const lines = list.slice(0, 50).map((x, i) => `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`);
+    const head = `🔎 抖音搜「${kw}」：${list.length} 条，按点赞排（点链接在抖音里看）`;
+    let chunk = head;
+    for (const l of lines) {
+      if ((chunk + '\n\n' + l).length > 3800) {
+        if (owner) await say(env, owner, chunk);
+        chunk = l;
+      } else {
+        chunk += '\n\n' + l;
+      }
+    }
+    if (owner) await say(env, owner, chunk);
+  }
+  const done = [...groups.keys()];
+  await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !done.includes(k))));
+  return json({ ok: true, keywords: done, total: seen.size });
 }
 
 async function cloudToken(L) {

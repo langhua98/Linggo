@@ -1078,6 +1078,39 @@ await t('账号标签：视频频道按账号分类，默认用抖音昵称、�
   await admin('douyin-self', { sec_uids: [sec] });
 });
 
+await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送回来 → 按点赞排的链接清单私聊发频道主（不下载、不转发）', async () => {
+  await dm(OWNER, '搜抖音 舞蹈');
+  assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*search\.sh/);
+  await dm(OWNER, '搜抖音 街舞');
+  assert.match(lastSay().text, /一共 2 个词等着搜：舞蹈、街舞/);
+  await dm(OWNER, '搜抖音');
+  assert.match(lastSay().text, /舞蹈、街舞/);
+  const n = bot.toStreamer.length;
+  await dm(FAN + 5, '搜抖音 舞蹈');  // 听众：不排队
+  assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['舞蹈', '街舞']);
+  await dm(OWNER, '云电脑');  // 生成云电脑的上传令牌
+  const tok = await lib.getConfig('cloudTok');
+  const cfg = await jsonOf(await req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok } }));
+  assert.deepEqual(cfg.searches, ['舞蹈', '街舞']);
+  const rows = [
+    { aweme_id: '7600000000000000001', desc: '低赞', liked_count: '12', source_keyword: '舞蹈', nickname: '甲*', xiaoju_nickname: '甲甲' },
+    { aweme_id: '7600000000000000002', desc: '高赞 舞蹈', liked_count: '123456', source_keyword: '舞蹈', nickname: '乙' },
+    { aweme_id: '7600000000000000002', desc: '重复', liked_count: '1', source_keyword: '舞蹈' },
+    { aweme_id: '7600000000000000003', desc: '图文', liked_count: '5', source_keyword: '舞蹈', aweme_type: '68', note_download_url: 'https://p/1.jpg' },
+  ].map(r => JSON.stringify(r)).join('\n') + '\nnot json\n';
+  const post = (t2, body) => req('/dy-search', { method: 'POST', headers: { 'X-Token': t2 }, body });
+  assert.equal((await post('wrong', rows)).status, 403);
+  assert.deepEqual(await jsonOf(await post(tok, rows)), { ok: true, keywords: ['舞蹈'], total: 3 });
+  const msg = lastSay();
+  assert.equal(msg.chat_id, OWNER);
+  assert.match(msg.text, /抖音搜「舞蹈」：3 条[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
+  assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '搜过的词出队');
+  assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '搜索结果不交给流式服务（不下载）');
+  assert.equal((await post(tok, 'nothing')).status, 400);
+  await dm(OWNER, '搜抖音 清空');
+  assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
+});
+
 await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视频频道', async () => {
   const fid = addFile(new TextEncoder().encode('{"aweme_id": "1", "desc": "x"}\n'));
   await hook({ update_id: 5, message: { message_id: 88, from: { id: OWNER }, chat: { id: OWNER, type: 'private' },
@@ -1124,13 +1157,13 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   assert.ok(!/crawl\.sh/.test(lastSay().text), '听众拿不到命令');
   // 云电脑拿 Codespaces 自带的 GitHub 令牌领口令：只认仓库主人
   const cfg = gh => req('/dy-cloud-config', { method: 'POST', headers: gh ? { Authorization: 'token ' + gh } : {} });
-  assert.deepEqual(await jsonOf(await cfg('gh-owner')), { token: m[1], creators: sec });
+  assert.deepEqual(await jsonOf(await cfg('gh-owner')), { token: m[1], creators: sec, searches: [] });
   assert.equal((await cfg('gh-other')).status, 403);
   assert.equal((await cfg('bad')).status, 403);
   assert.equal((await cfg('')).status, 401);
   // 云电脑带上传令牌拿最新账号名单
   const byTok = t => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': t } });
-  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec });
+  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec, searches: [] });
   assert.equal((await byTok('wrong')).status, 403);
 });
 

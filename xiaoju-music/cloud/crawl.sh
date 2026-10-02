@@ -10,13 +10,23 @@ if [ $# -ge 2 ]; then
 fi
 source "$HOME/.xiaoju/env"
 # 每次开抓前找小橘要最新的账号名单（在机器人里「添加抖音账号」加的小号这样也能抓到）；要不到就用上次存的
-NEW=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" "$API/dy-cloud-config" 2>/dev/null \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("creators",""))' 2>/dev/null)
+CFG=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" "$API/dy-cloud-config" 2>/dev/null)
+NEW=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("creators",""))' 2>/dev/null)
+# 机器人里「搜抖音 舞蹈」排队等搜的词（搜索模式用）
+QUEUE=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin).get("searches") or []))' 2>/dev/null)
 if [ -n "$NEW" ] && [ "$NEW" != "$CREATORS" ]; then
   CREATORS="$NEW"
   printf 'TOKEN=%q\nCREATORS=%q\nAPI=%q\n' "$TOKEN" "$CREATORS" "$API" > "$HOME/.xiaoju/env"
 fi
-echo "== 这次抓 $(printf '%s' "$CREATORS" | tr ',' '\n' | grep -c .) 个抖音账号 =="
+if [ -n "${XJ_SEARCH_MODE:-}" ]; then
+  KW="${XJ_SEARCH:-$QUEUE}"
+  if [ -z "$KW" ]; then
+    [ -n "${XJ_QUIET_EMPTY:-}" ] || echo "== 没有要搜的词。在机器人里发「搜抖音 舞蹈」，或者 bash xiaoju-music/cloud/search.sh 舞蹈 =="
+    exit 0
+  fi
+else
+  echo "== 这次抓 $(printf '%s' "$CREATORS" | tr ',' '\n' | grep -c .) 个抖音账号 =="
+fi
 export PATH="$HOME/.local/bin:$PATH"
 export DISPLAY="${DISPLAY:-:1}"  # 浏览器开在桌面上（Codespaces 的网页桌面是 :1）
 [ -S /tmp/.X11-unix/X1 ] && export DISPLAY=:1  # 有网页桌面就一定开在它上面，别开到看不见的地方
@@ -185,6 +195,24 @@ WIN="$HERE/win.sh"
 ( for _ in $(seq 360); do sleep 5; bash "$WIN" quiet; done ) >/dev/null 2>&1 &
 WINLOOP=$!
 trap 'kill $WINLOOP 2>/dev/null' EXIT
+
+# 搜索模式（search.sh）：在抖音里搜关键词，结果只送给小橘整理成链接清单私聊发频道主，不下载、不转发别人的视频
+if [ -n "${XJ_SEARCH_MODE:-}" ]; then
+  echo "== 在抖音里搜：${KW//,/、}（每个词最多 ${XJ_SEARCH_MAX:-30} 条），只收集链接 =="
+  uv run main.py --platform dy --lt qrcode --type search --keywords "$KW" \
+    --get_comment no --get_sub_comment no --get_media no --headless no \
+    --save_data_option jsonl --crawler_max_notes_count "${XJ_SEARCH_MAX:-30}" --save_data_path "$OUT"
+  F=$(find "$OUT" -name 'search_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
+  if [ -z "$F" ] || [ ! -s "$F" ]; then
+    echo "== 没搜到东西（登录过期了？抖音不让搜？）=="
+    exit 1
+  fi
+  echo "== 搜到 $(wc -l < "$F") 条，发给小橘整理成链接清单 =="
+  curl -sS -m 120 -X POST -H "X-Token: $TOKEN" -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$F" "$API/dy-search"
+  echo
+  echo "== 好了，清单会私聊发给你 =="
+  exit 0
+fi
 
 # 边抓边转：MediaCrawler 抓一条往 jsonl 里写一行。后台每 30 秒把新写的几行送给小橘（X-Final: 0），
 # 小橘收到第一批就开始转，后面的接着排队；抓完再把剩下的连同「抓完了」（X-Final: 1）送过去。

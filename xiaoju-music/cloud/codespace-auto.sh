@@ -34,3 +34,5 @@ exec 9>"$HOME/.xiaoju/lock"
 flock -n 9 || { echo "== 已经在抓了 =="; exit 0; }
 echo "== 小橘：开始抓。要扫码的话去「桌面」那个标签页 =="
 bash "$HERE/crawl.sh"
+# 机器人里「搜抖音 关键词」排了队的话，接着搜（没有就不出声）
+XJ_QUIET_EMPTY=1 bash "$HERE/search.sh"
