@@ -1475,21 +1475,29 @@ async function botButton(env, cb, owner, origin) {
     await ack(tip);
     return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: await progressText(env), reply_markup: { inline_keyboard: PROGRESS_KB } });
   }
-  if (kind === 'dys') { // 搜索清单里点「📤 转 N」：这条交给流式服务按最高画质转进视频频道（频道里已有的跳过）
+  if (kind === 'dys' || kind === 'dya') { // 搜索清单里点「📤 转 N」/「一键转这批里你的号」：交给流式服务按最高画质转进视频频道（已有的跳过）
     if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
-    const row = (await searchRows(L))[a];
-    if (!row) return ack('这条找不到了（地址过期），重新搜一次');
+    const all = await searchRows(L);
+    const ids = kind === 'dys' ? [a] : ((await douyinTagMap(L, 'dySearchBatches'))[a] || []);
+    const rows = ids.map(id => all[id]).filter(Boolean);
+    if (!rows.length) return ack('找不到了（地址过期），重新搜一次');
     let r;
     try {
       r = await streamerCall(env, '/douyin/import', {
-        text: JSON.stringify(row), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true, tags: await douyinTagMap(L, 'douyinTags'),
+        text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
+        tags: await douyinTagMap(L, 'douyinTags'),
       });
     } catch {
       return ack('小橘的服务正在唤醒，过一两分钟再点');
     }
     if (r.status === 409) return ack('小橘正在转别的，转完再点');
     if (r.status !== 200) return ack((r.data && r.data.detail) || '没转成');
-    return ack(r.data.started ? '开始转了，转好告诉你' : '排进去了，前面的转完就转它');
+    await ack(r.data.started ? '开始转了，转好告诉你；进度点「📊 进度」看' : '排进去了，前面的转完就转它；进度点「📊 进度」看');
+    // 点过的按钮改成「✅ 已排队」，一眼看出哪些点过了
+    const kb = (cb.message.reply_markup && cb.message.reply_markup.inline_keyboard) || [];
+    const marked = kb.map(row => row.map(btn => (btn.callback_data === cb.data
+      ? { ...btn, text: kind === 'dys' ? `✅ ${btn.text.replace(/^📤 转 /, '')} 已排队` : `✅ 已排队 ${rows.length} 条` } : btn)));
+    return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: cb.message.message_id, reply_markup: { inline_keyboard: marked } });
   }
   if (kind === 'hs' || kind === 'hl') { // 搬运设置里点开关：网站 / 授权
     const h = await L.getHarvest();
@@ -1896,6 +1904,7 @@ async function cloudSearchResult(request, env) {
   // 清单里每条带「📤 转 N」按钮：频道主挑出自己的作品点一下，就按最高画质转进视频频道。按钮要用的作品数据先存着
   const rows = await searchRows(L);
   let fresh = 0;
+  const ownIds = new Set();
   for (const line of body.split('\n')) {
     let r;
     try { r = JSON.parse(line); } catch { continue; }
@@ -1911,6 +1920,7 @@ async function cloudSearchResult(request, env) {
     const files = (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')])
       .map(u => u.trim()).filter(u => /^https?:\/\//.test(u));
     rows[id] = compactSearchRow(r);
+    if (own) ownIds.add(id);
     groups.get(kw).push({
       id, likes: Number(r.liked_count) || 0, name, note, own, files,
       title: String(r.desc || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
@@ -1918,13 +1928,22 @@ async function cloudSearchResult(request, env) {
   }
   const owner = await ownerId(env);
   if (!fresh && final && !Object.keys(nums).length && body.trim()) return json({ error: '文件里没认出搜索结果' }, 400);
+  // 一键转「这批里登记过的号」的作品：作品号太多塞不进按钮，存在 dySearchBatches 里，按钮只带批号
+  const batches = await douyinTagMap(L, 'dySearchBatches');
   const send = async (text, ids) => {
     if (!owner) return;
     const btns = ids.map(([n, id]) => ({ text: `📤 转 ${n}`, callback_data: `dys:${id}` }));
     const kb = [];
     for (let i = 0; i < btns.length; i += 5) kb.push(btns.slice(i, i + 5));
+    const own = ids.map(([, id]) => id).filter(id => ownIds.has(id));
+    if (own.length) {
+      const bid = Date.now().toString(36) + Object.keys(batches).length.toString(36);
+      batches[bid] = own;
+      kb.push([{ text: `📤 一键转这批里你的号（${own.length} 条）`, callback_data: `dya:${bid}` }]);
+    }
     await say(env, owner, text, kb.length ? kb : undefined);
   };
+
   for (const [kw, list] of groups) {
     list.sort((a, b) => b.likes - a.likes);  // 这一批里按点赞排
     const start = Number(nums[kw]) || 0;
@@ -1947,6 +1966,8 @@ async function cloudSearchResult(request, env) {
     await send(chunk, ids);
     nums[kw] = start + list.length;
   }
+  const bk = Object.keys(batches).slice(-50);
+  await L.setConfig('dySearchBatches', JSON.stringify(Object.fromEntries(bk.map(k => [k, batches[k]]))));
   const keep = Object.keys(rows).slice(-300);  // 只留最近 300 条（地址几个小时就失效，旧的留着也没用；再多存不下）
   await L.setConfig('dySearchRows', JSON.stringify(Object.fromEntries(keep.map(k => [k, rows[k]]))));
   const touched = Object.keys(nums);

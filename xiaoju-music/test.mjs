@@ -176,7 +176,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ ok: true });
   }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
-  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage|setMyCommands)$/))) {
+  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage|setMyCommands|editMessageReplyMarkup)$/))) {
     const body = JSON.parse(init.body);
     if (m[1] === 'copyMessage' && bot.copyFail) return Response.json({ ok: false, error_code: 400, description: bot.copyFail });
     if (m[1] === 'getChatAdministrators') {
@@ -1121,10 +1121,10 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '光收到搜索结果不转（频道主点按钮才转）');
   // 每条带「📤 转 N」按钮，点了就交给流式服务转进视频频道
   const kb = msg.reply_markup.inline_keyboard.flat();
-  assert.deepEqual(kb.map(b => b.text), ['📤 转 1', '📤 转 2', '📤 转 3', '📤 转 4']);
+  assert.deepEqual(kb.map(b => b.text), ['📤 转 1', '📤 转 2', '📤 转 3', '📤 转 4', '📤 一键转这批里你的号（1 条）']);
   assert.equal(kb[0].callback_data, 'dys:7600000000000000002');
   const press = async (from, data) => hook({ update_id: 900, callback_query: { id: 'cq' + data, from: { id: from }, data,
-    message: { message_id: 77, chat: { id: from, type: 'private' } } } });
+    message: { message_id: 77, chat: { id: from, type: 'private' }, reply_markup: msg.reply_markup } } });
   const m0 = bot.toStreamer.length;
   await press(FAN + 5, 'dys:7600000000000000004');
   assert.equal(bot.toStreamer.length, m0, '听众点不了');
@@ -1133,6 +1133,16 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.deepEqual([imp.path, imp.body.target, imp.body.final], ['douyin/import', String(VIDEO_CHANNEL), true]);
   assert.equal(JSON.parse(imp.body.text).video_download_url, 'https://v/mine.mp4');
   assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /开始转了/);
+  // 点过的按钮变成「✅ 已排队」
+  const mk = bot.out.filter(o => o.method === 'editMessageReplyMarkup').at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
+  assert.ok(mk.includes('✅ 4 已排队') && mk.includes('📤 转 1'));
+  // 一键转这批里登记过的号
+  const all = kb.at(-1).callback_data;
+  assert.match(all, /^dya:/);
+  await press(OWNER, all);
+  const imp2 = bot.toStreamer.at(-1);
+  assert.deepEqual(imp2.body.text.split('\n').map(l => JSON.parse(l).aweme_id), ['7600000000000000004']);
+  assert.ok(bot.out.filter(o => o.method === 'editMessageReplyMarkup').at(-1).reply_markup.inline_keyboard.flat().some(b => b.text === '✅ 已排队 1 条'));
   await press(OWNER, 'dys:7600000000000000999');
   assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /找不到了/);
   assert.equal((await post(tok, 'nothing')).status, 400);
