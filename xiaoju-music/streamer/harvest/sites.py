@@ -46,6 +46,15 @@ def _seconds(v):
         return 0.0
 
 
+def _title(title, artist):
+    """「作者 - 歌名」开头的作者去掉（文件名常这样起），歌名里只留歌名"""
+    if artist and title.lower().startswith(artist.lower()):
+        rest = title[len(artist):].lstrip(' -–—_:：')
+        if rest:
+            return rest
+    return title
+
+
 def _text(v):
     if isinstance(v, list):
         v = ', '.join(str(x) for x in v if x)
@@ -113,7 +122,7 @@ class Archive:
             use = derived.get(f['name'], f)
             artist = _text(f.get('artist') or f.get('creator') or md.get('creator'))
             out.append(Track(
-                title=_text(f.get('title')) or _stem(f['name']),
+                title=_title(_text(f.get('title')) or _stem(f['name']), artist),
                 artist=artist,
                 audio_url=f'https://archive.org/download/{quote(ident)}/{quote(use["name"])}',
                 license=lic, page_url=page,
@@ -158,9 +167,10 @@ class Commons:
                     return
                 n += 1
                 name = pg['title'][len('File:'):]
+                artist = _text(val('Artist'))
                 yield Track(
-                    title=_text(val('ObjectName')) or _stem(name),
-                    artist=_text(val('Artist')),
+                    title=_title(_text(val('ObjectName')) or _stem(name), artist),
+                    artist=artist,
                     audio_url=info.get('url') or '',
                     license=val('LicenseUrl') or val('LicenseShortName') or val('License'),
                     page_url=info.get('descriptionurl') or f'https://commons.wikimedia.org/wiki/{quote(pg["title"].replace(" ", "_"))}',

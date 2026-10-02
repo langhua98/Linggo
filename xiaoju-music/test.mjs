@@ -917,10 +917,13 @@ await t('贴网址搬运：搬运设置可以开关网站和授权、改数量�
   await dm(OWNER, '搬运歌单 自动');
   await hook({ channel_post: { ...audioPost(981, { file_id: addFile(bytesOf(10, 981)), file_size: 10, title: 'Piano', performer: 'Someone' }), caption } });
   pl = Object.fromEntries((await lib.listPlaylists()).map(p => [p.name, p.tracks]));
-  assert.deepEqual(pl['华语流行'], [981], '改回自动后按类型分');
+  assert.deepEqual(pl['华语流行'], [], '改回自动后按类型分；分不出类型的搬来的歌不硬塞华语流行');
+  await hook({ channel_post: { ...audioPost(982, { file_id: addFile(bytesOf(10, 982)), file_size: 10, title: 'Night Drive (DJ Remix)', performer: 'Someone' }), caption } });
+  pl = Object.fromEntries((await lib.listPlaylists()).map(p => [p.name, p.tracks]));
+  assert.ok(!pl['华语流行'].includes(982));
   const st = await lib.getHarvest();
   assert.deepEqual([st.sites, st.limit, st.playlist], [['archive'], 30, '']);
-  for (const id of [980, 981]) await admin('remove', { track: id });
+  for (const id of [980, 981, 982]) await admin('remove', { track: id });
   await admin('playlists', { playlists: [] });
 });
 

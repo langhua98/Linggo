@@ -174,7 +174,8 @@ async function webhook(request, env, ctx) {
       // 贴网址搬来的授权音频（帖子说明里有「授权：」「来源：」）：设置里指定了歌单就放那个歌单，没指定就按类型分
       const harvested = /^授权：/m.test(rec.caption) && /^来源：/m.test(rec.caption);
       const target = harvested ? (await lib(env).getHarvest()).playlist : '';
-      await lib(env).addToPlaylists(rec.id, target ? [target] : genresOf(summary(rec)));
+      // 搬来的多是外语、纯音乐：分不出类型时不硬塞「华语流行」，只留在「全部」
+      await lib(env).addToPlaylists(rec.id, target ? [target] : genresOf(summary(rec), !harvested));
     }
   } else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
   forget(post.message_id);
@@ -1551,14 +1552,14 @@ const GENRE_WORDS = [
 ];
 const NOT_A_SONG = /\.mp4|\bMV\b|综艺|音乐缘计划|伴奏|铃声|广告|会员|试听|片段|教学|有声书|相声|小品|Lyrics Video|Official Video/i;
 
-function genresOf(t) {
+function genresOf(t, fallback = true) {
   if (NOT_A_SONG.test(t.title)) return [];
   const text = t.title + ' ' + t.artist, out = new Set();
   for (const [name, re] of GENRE_WORDS) if (re.test(text)) out.add(name);
   for (const [name, list] of Object.entries(GENRE_ARTISTS)) if (t.artist && list.some(a => t.artist.includes(a))) out.add(name);
   // 没写歌手的长串烧、「某某专属定制」之类：DJ 频道打的混音，放 DJ 劲爆
   if (!out.size && !t.artist && ((t.duration || 0) >= 600 || /专属|定制|vol\.?\s*\d|私货|全中文|全英文|全粤语|连版/i.test(t.title))) out.add('DJ 劲爆');
-  if (!out.size && t.artist) out.add('华语流行');
+  if (fallback && !out.size && t.artist) out.add('华语流行');
   return [...out];
 }
 

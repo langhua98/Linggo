@@ -246,3 +246,10 @@ def test_harvest_endpoints(monkeypatch):
     assert r.status_code == 400 and r.json()['detail'] == '这个网站还不支持'
     assert c.post('/harvest', json={'url': 'not a url'}, headers=key).status_code == 400
     assert c.get('/harvest/status', headers=key).json() == {'status': 'idle'}
+
+
+def test_titles_drop_a_leading_author():
+    from harvest.sites import _title
+    assert _title('Kevin MacLeod - Erik Satie Gymnopedie No 1', 'Kevin MacLeod') == 'Erik Satie Gymnopedie No 1'
+    assert _title('Gymnopedie', 'Kevin MacLeod') == 'Gymnopedie'
+    assert _title('Kevin MacLeod', 'Kevin MacLeod') == 'Kevin MacLeod'

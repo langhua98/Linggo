@@ -508,10 +508,13 @@ async def lifespan(app):
     bot_client = client
 
     async def post_audio(data, filename, title, artist, seconds, text):
-        # 机器人自己发帖（它是频道管理员），大文件也能发；带上歌名、作者、时长，Telegram 才当成音乐
+        # 用频道主账号发帖：机器人收不到自己发的帖子，用它发的话 Worker 不会登记。
+        # 带上歌名、作者、时长，Telegram 才当成音乐；大文件也能发
+        if user_client is None:
+            raise RuntimeError('channel owner account not logged in')
         f = io.BytesIO(data)
         f.name = filename
-        sent = await client.send_file(target_channel(), f, caption=text, link_preview=False,
+        sent = await user_client.send_file(target_channel(), f, caption=text, link_preview=False,
                                       attributes=[DocumentAttributeAudio(duration=seconds, title=title[:64], performer=artist[:64])])
         return sent.id
 
