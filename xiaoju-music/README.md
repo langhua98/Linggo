@@ -229,8 +229,8 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     记进 `douyinTagsSeen`）。频道里置顶一条「📂 目录」（config `dyDirMsg`），名字变了就改它。频道里已有、说明里还没标签
     的帖子，转作品碰到时 `douyin_retag` 改说明补上，不重发。crawl.sh 另存 `xiaoju_sec_uid` / `xiaoju_nickname` 认账号。
   - **搜抖音 → 链接清单**：`搜抖音 舞蹈` 把词排进 `dySearchQueue`；云电脑打开时抓完作品接着 `cloud/search.sh`
-    （MediaCrawler 的 search 模式），结果 POST `/dy-search`，Worker 按点赞排好、私聊发频道主分享链接。
-    **只发链接，别人的视频不下载、不转发**（版权是作者的）。
+    （MediaCrawler 的 search 模式），结果 POST `/dy-search`，Worker 按点赞排好、私聊发频道主分享链接和文件地址（登记过的号标 👤）。
+    只私聊发链接，不下载、不转进频道（批量转进频道的只有登记过的账号）。
   - **换最高画质**：流式服务 `POST /douyin/delete {target, ids}` 删掉旧的抖音视频帖（只删说明里带抖音视频链接的视频，
     正在转作品时不删），之后查重认不出，下次就按最高画质重转。
     不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找

@@ -1660,7 +1660,8 @@ async function cloudSearchResult(request, env) {
   if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对' }, 403);
   const body = await request.text();
   if (body.length > 5 * 1024 * 1024) return json({ error: '文件太大' }, 413);
-  // 频道主自己的账号（douyinSelf）的作品：标出来，附上文件地址（自己的作品，版权是频道主的）。别人的只给链接
+  // 清单只私聊发给频道主一个人：每条附上文件地址（频道主说搜到的都是自己的号）；登记过的号（douyinSelf）标 👤。
+  // 只发链接，不下载、不转进频道——批量转进频道的仍然只有登记过的账号
   const mine = new Set(await douyinSelves(L));
   const groups = new Map(), seen = new Set();
   for (const line of body.split('\n')) {
@@ -1674,8 +1675,8 @@ async function cloudSearchResult(request, env) {
     const name = String(r.xiaoju_nickname || (String(r.nickname || '').includes('*') ? '' : r.nickname) || '');
     const note = String(r.aweme_type || '') === '68' || String(r.note_download_url || '').startsWith('http');
     const own = mine.has(String(r.xiaoju_sec_uid || ''));
-    const files = own ? (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')])
-      .map(u => u.trim()).filter(u => /^https?:\/\//.test(u)) : [];
+    const files = (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')])
+      .map(u => u.trim()).filter(u => /^https?:\/\//.test(u));
     groups.get(kw).push({
       id, likes: Number(r.liked_count) || 0, name, note, own, files,
       title: String(r.desc || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
@@ -1687,7 +1688,7 @@ async function cloudSearchResult(request, env) {
     list.sort((a, b) => b.likes - a.likes);
     const lines = list.slice(0, 50).map((x, i) => `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}${x.own ? ' 👤你的号' : ''}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`
       + (x.files.length ? `\n⬇️ 文件（几个小时内有效）：\n${x.files.slice(0, 9).join('\n')}` : ''));
-    const head = `🔎 抖音搜「${kw}」：${list.length} 条，按点赞排（点链接在抖音里看；👤 是你自己账号的作品，附文件地址）`;
+    const head = `🔎 抖音搜「${kw}」：${list.length} 条，按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）`;
     let chunk = head;
     for (const l of lines) {
       if ((chunk + '\n\n' + l).length > 3800) {

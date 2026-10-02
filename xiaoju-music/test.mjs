@@ -1105,9 +1105,9 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.deepEqual(await jsonOf(await post(tok, rows)), { ok: true, keywords: ['舞蹈'], total: 4 });
   const msg = lastSay();
   assert.equal(msg.chat_id, OWNER);
-  // 自己账号的作品：标出来、附文件地址；别人的（哪怕带了下载地址）只给链接
+  // 每条都附文件地址；登记过的号标 👤
   assert.match(msg.text, /4\. 📹 我自己的 ❤3 👤你的号\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000004\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/v\/mine\.mp4/);
-  assert.ok(!msg.text.includes('https://p/1.jpg'), '别人的图片地址不发');
+  assert.match(msg.text, /3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/p\/1\.jpg/, '每条都附文件地址');
   assert.match(msg.text, /抖音搜「舞蹈」：4 条[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '搜过的词出队');
   assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '搜索结果不交给流式服务（不下载）');
