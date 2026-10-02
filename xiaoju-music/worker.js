@@ -170,7 +170,12 @@ async function webhook(request, env, ctx) {
   if (rec) {
     const fresh = await lib(env).upsertTrack(rec);
     // 新进来的歌（不管是手动发的、夜里自动搬的还是机器人搬的）：按类型放进对应的歌单
-    if (fresh && update.channel_post) await lib(env).addToPlaylists(rec.id, genresOf(summary(rec)));
+    if (fresh && update.channel_post) {
+      // 贴网址搬来的授权音频（帖子说明里有「授权：」「来源：」）：设置里指定了歌单就放那个歌单，没指定就按类型分
+      const harvested = /^授权：/m.test(rec.caption) && /^来源：/m.test(rec.caption);
+      const target = harvested ? (await lib(env).getHarvest()).playlist : '';
+      await lib(env).addToPlaylists(rec.id, target ? [target] : genresOf(summary(rec)));
+    }
   } else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
   forget(post.message_id);
   return text('ok');
@@ -964,6 +969,13 @@ export class Library extends DurableObject {
     this.sql.exec('DELETE FROM viz WHERE id = ?', id);
   }
 
+  // 贴网址搬运的设置：开着的网站、接受的授权、每次最多几首、放进哪个歌单（空 = 按类型分）
+  async getHarvest() {
+    return { sites: ['archive', 'commons'], licenses: ['cc0', 'pd', 'by', 'by-sa', 'by-nc', 'by-nc-sa', 'by-nd', 'by-nc-nd'],
+      limit: 20, playlist: '', ...JSON.parse(this.cfg('harvest') || '{}') };
+  }
+  async setHarvest(v) { this.setCfg('harvest', JSON.stringify(v)); }
+
   async getConfig(k) { return this.cfg(k); }
   async setConfig(k, v) { this.setCfg(k, v); }
 
@@ -1188,6 +1200,8 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 搬 @频道名 100 —— 从这个频道搬 100 首中文歌（查重），搬完告诉你
 找 歌名 —— 在小橘音乐里找这首，可以加进/移出歌单、删除
 统计 —— 歌库和这几天搬歌的情况
+贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），可以在后面加数量，比如「网址 30」
+搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
 新搬进来的歌会按类型自动放进对应的歌单。`;
@@ -1211,6 +1225,10 @@ async function botUpdate(env, update, origin) {
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
+    if ((c = /(https?:\/\/\S+)(?:\s+(\d{1,3}))?/.exec(t))) return ownerHarvest(env, chat, c[1], c[2] ? Number(c[2]) : 0);
+    if (/^搬运设置$/.test(t)) return showHarvest(env, chat);
+    if ((c = /^搬运数量\s*(\d{1,3})$/.exec(t))) return setHarvestLimit(env, chat, Number(c[1]));
+    if ((c = /^搬运歌单\s*(.+)$/.exec(t))) return setHarvestPlaylist(env, chat, c[1].trim());
   }
   if (tooLong(t)) return say(env, chat, '歌名太长啦，发短一点（歌名，或者「歌名 歌手」）');
   return songRequest(env, chat, m.from ? m.from.id : chat, t, origin, isOwner);
@@ -1327,6 +1345,17 @@ async function botButton(env, cb, owner, origin) {
   if (!owner || !cb.from || cb.from.id !== owner) return ack('只有频道主能用');
   const [kind, a, b] = String(cb.data || '').split(':');
   const L = lib(env);
+  if (kind === 'hs' || kind === 'hl') { // 搬运设置里点开关：网站 / 授权
+    const h = await L.getHarvest();
+    const list = kind === 'hs' ? h.sites : h.licenses;
+    const valid = kind === 'hs' ? HARVEST_SITES : HARVEST_LICENSES;
+    if (!Object.hasOwn(valid, a)) return ack();
+    const on = !list.includes(a);
+    if (on) list.push(a); else list.splice(list.indexOf(a), 1);
+    await L.setHarvest(h);
+    await ack(`${valid[a]}：${on ? '开' : '关'}`);
+    return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, ...harvestPanel(h) });
+  }
   if (kind === 'p') { // 搬搜到的那首
     await ack('搬运中…');
     try {
@@ -1374,6 +1403,83 @@ async function botButton(env, cb, owner, origin) {
     return say(env, chat, `🗑 已删除：${nameOf(t)}`);
   }
   return ack();
+}
+
+// ── 贴网址搬授权音频（真正干活的在流式服务的 harvest/ 里：网站适配器、逐首授权检查、上传） ──
+const HARVEST_SITES = { archive: '互联网档案馆', commons: '维基共享资源' };
+const HARVEST_LICENSES = {
+  cc0: 'CC0 放弃版权', pd: '公有领域', by: 'CC BY', 'by-sa': 'CC BY-SA', 'by-nc': 'CC BY-NC',
+  'by-nc-sa': 'CC BY-NC-SA', 'by-nd': 'CC BY-ND', 'by-nc-nd': 'CC BY-NC-ND',
+};
+
+function harvestPanel(h) {
+  const lines = [
+    '搬运设置（点按钮开关）', '',
+    `每次最多搬：${h.limit} 首（发「搬运数量 30」改）`,
+    `搬到歌单：${h.playlist || '按类型自动分'}（发「搬运歌单 纯音乐」或「搬运歌单 自动」改）`, '',
+    '只搬下面打 ✅ 的网站和授权；每一首都会检查授权，没有允许转载授权的不搬。',
+  ];
+  const btn = (k, name, on, kind) => ({ text: `${on ? '✅' : '⬜️'} ${name}`, callback_data: `${kind}:${k}` });
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard: [
+      ...rows(Object.entries(HARVEST_SITES).map(([k, n]) => btn(k, n, h.sites.includes(k), 'hs'))),
+      ...rows(Object.entries(HARVEST_LICENSES).map(([k, n]) => btn(k, n, h.licenses.includes(k), 'hl'))),
+    ] },
+  };
+}
+
+async function showHarvest(env, chat) {
+  const p = harvestPanel(await lib(env).getHarvest());
+  return tg(env, 'sendMessage', { chat_id: chat, ...p, disable_web_page_preview: true });
+}
+
+async function setHarvestLimit(env, chat, n) {
+  const L = lib(env), h = await L.getHarvest();
+  h.limit = Math.max(1, Math.min(n, 200));
+  await L.setHarvest(h);
+  return say(env, chat, `好的，以后每次最多搬 ${h.limit} 首`);
+}
+
+async function setHarvestPlaylist(env, chat, name) {
+  const L = lib(env), h = await L.getHarvest();
+  if (name === '自动') {
+    h.playlist = '';
+    await L.setHarvest(h);
+    return say(env, chat, '好的，搬来的歌按类型自动分进歌单');
+  }
+  if (name.length > 40) return say(env, chat, '歌单名太长了');
+  const pls = await L.listPlaylists();
+  let made = false;
+  if (!pls.some(p => p.name === name)) { // 没有这个歌单就新建一个，排在最后
+    await L.setPlaylists([...pls.map(p => ({ id: p.id, name: p.name, cover: p.cover, tracks: p.tracks })), { name, tracks: [] }]);
+    listCache = null;
+    made = true;
+  }
+  h.playlist = name;
+  await L.setHarvest(h);
+  return say(env, chat, `好的，搬来的歌都放进「${name}」${made ? '（新建了这个歌单）' : ''}`);
+}
+
+async function ownerHarvest(env, chat, url, n) {
+  if (!streamerOn(env)) return say(env, chat, '搬运服务没配置');
+  const L = lib(env), settings = await L.getHarvest();
+  if (n) settings.limit = Math.max(1, Math.min(n, 200));
+  let r;
+  try {
+    r = await streamerCall(env, '/harvest', {
+      url, settings, notify: chat, existing: (await L.listTracks()).map(t => [t.title, t.artist]),
+    });
+  } catch {
+    return say(env, chat, '搬运服务正在唤醒，过一两分钟再发一次网址');
+  }
+  if (r.status === 400) {
+    const why = r.data.detail || '这个网址搬不了';
+    return say(env, chat, `${why}。${/不支持/.test(why) ? '现在支持：' + Object.values(HARVEST_SITES).join('、') + '。想加别的网站跟我说。' : ''}`);
+  }
+  if (r.status === 409) return say(env, chat, '正在搬别的网址，等那边搬完再来（搬完会通知你）');
+  if (r.status !== 200) return say(env, chat, '搬运服务正在唤醒，过一两分钟再发一次网址');
+  return say(env, chat, `开始从${r.data.site || '这个网站'}搬，最多 ${settings.limit} 首。每首都会检查授权，搬完告诉你结果 👌`);
 }
 
 function rows(buttons, per = 2) {
