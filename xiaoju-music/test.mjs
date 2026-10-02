@@ -1110,7 +1110,23 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.match(msg.text, /3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/p\/1\.jpg/, '每条都附文件地址');
   assert.match(msg.text, /抖音搜「舞蹈」：4 条[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '搜过的词出队');
-  assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '搜索结果不交给流式服务（不下载）');
+  assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '光收到搜索结果不转（频道主点按钮才转）');
+  // 每条带「📤 转 N」按钮，点了就交给流式服务转进视频频道
+  const kb = msg.reply_markup.inline_keyboard.flat();
+  assert.deepEqual(kb.map(b => b.text), ['📤 转 1', '📤 转 2', '📤 转 3', '📤 转 4']);
+  assert.equal(kb[0].callback_data, 'dys:7600000000000000002');
+  const press = async (from, data) => hook({ update_id: 900, callback_query: { id: 'cq' + data, from: { id: from }, data,
+    message: { message_id: 77, chat: { id: from, type: 'private' } } } });
+  const m0 = bot.toStreamer.length;
+  await press(FAN + 5, 'dys:7600000000000000004');
+  assert.equal(bot.toStreamer.length, m0, '听众点不了');
+  await press(OWNER, 'dys:7600000000000000004');
+  const imp = bot.toStreamer.at(-1);
+  assert.deepEqual([imp.path, imp.body.target, imp.body.final], ['douyin/import', String(VIDEO_CHANNEL), true]);
+  assert.equal(JSON.parse(imp.body.text).video_download_url, 'https://v/mine.mp4');
+  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /开始转了/);
+  await press(OWNER, 'dys:7600000000000000999');
+  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /找不到了/);
   assert.equal((await post(tok, 'nothing')).status, 400);
   await dm(OWNER, '搜抖音 清空');
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);

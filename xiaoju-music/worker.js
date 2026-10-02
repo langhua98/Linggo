@@ -1412,6 +1412,22 @@ async function botButton(env, cb, owner, origin) {
     // 去掉按钮，免得再点一次又发一遍
     return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: '✅ 已转到视频频道' });
   }
+  if (kind === 'dys') { // 搜索清单里点「📤 转 N」：这条交给流式服务按最高画质转进视频频道（频道里已有的跳过）
+    if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
+    const row = (await searchRows(L))[a];
+    if (!row) return ack('这条找不到了（地址过期），重新搜一次');
+    let r;
+    try {
+      r = await streamerCall(env, '/douyin/import', {
+        text: JSON.stringify(row), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true, tags: await douyinTagMap(L, 'douyinTags'),
+      });
+    } catch {
+      return ack('小橘的服务正在唤醒，过一两分钟再点');
+    }
+    if (r.status === 409) return ack('小橘正在转别的，转完再点');
+    if (r.status !== 200) return ack((r.data && r.data.detail) || '没转成');
+    return ack(r.data.started ? '开始转了，转好告诉你' : '排进去了，前面的转完就转它');
+  }
   if (kind === 'hs' || kind === 'hl') { // 搬运设置里点开关：网站 / 授权
     const h = await L.getHarvest();
     const list = kind === 'hs' ? h.sites : h.licenses;
@@ -1649,6 +1665,33 @@ async function ownerDouyinSearch(env, chat, kw) {
   ].join('\n'));
 }
 
+async function searchRows(L) {
+  try {
+    const o = JSON.parse((await L.getConfig('dySearchRows')) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch {
+    return {};
+  }
+}
+
+// 搜索结果的一条 → 转进频道要用的那几样（和 MediaCrawler 导出的格式一样，流式服务的 mcimport 认得），各档清晰度留着挑最高的
+function compactSearchRow(r) {
+  const addr = a => (a && typeof a === 'object' ? { url_list: (a.url_list || []).slice(0, 3), width: a.width, height: a.height, data_size: a.data_size } : undefined);
+  const v = r.xiaoju_video && typeof r.xiaoju_video === 'object' ? r.xiaoju_video : null;
+  const out = {};
+  for (const k of ['aweme_id', 'aweme_type', 'desc', 'create_time', 'nickname', 'xiaoju_nickname', 'xiaoju_sec_uid',
+    'video_download_url', 'note_download_url', 'cover_url', 'xiaoju_images']) if (r[k] !== undefined) out[k] = r[k];
+  if (v) {
+    out.xiaoju_video = {
+      width: v.width, height: v.height, duration: v.duration, play_addr: addr(v.play_addr), play_addr_h264: addr(v.play_addr_h264),
+      bit_rate: (Array.isArray(v.bit_rate) ? v.bit_rate : []).slice(0, 8).map(b => ({
+        bit_rate: b.bit_rate, is_h265: b.is_h265, gear_name: b.gear_name, play_addr: addr(b.play_addr),
+      })),
+    };
+  }
+  return out;
+}
+
 // 数字好读：12345 → 1.2万
 function fmtCount(n) {
   n = Number(n) || 0;
@@ -1664,6 +1707,8 @@ async function cloudSearchResult(request, env) {
   // 只发链接，不下载、不转进频道——批量转进频道的仍然只有登记过的账号
   const mine = new Set(await douyinSelves(L));
   const groups = new Map(), seen = new Set();
+  // 清单里每条带「📤 转 N」按钮：频道主挑出自己的作品点一下，就按最高画质转进视频频道。按钮要用的作品数据先存着
+  const rows = await searchRows(L);
   for (const line of body.split('\n')) {
     let r;
     try { r = JSON.parse(line); } catch { continue; }
@@ -1677,6 +1722,7 @@ async function cloudSearchResult(request, env) {
     const own = mine.has(String(r.xiaoju_sec_uid || ''));
     const files = (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')])
       .map(u => u.trim()).filter(u => /^https?:\/\//.test(u));
+    rows[id] = compactSearchRow(r);
     groups.get(kw).push({
       id, likes: Number(r.liked_count) || 0, name, note, own, files,
       title: String(r.desc || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
@@ -1689,17 +1735,28 @@ async function cloudSearchResult(request, env) {
     const lines = list.slice(0, 50).map((x, i) => `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}${x.own ? ' 👤你的号' : ''}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`
       + (x.files.length ? `\n⬇️ 文件（几个小时内有效）：\n${x.files.slice(0, 9).join('\n')}` : ''));
     const head = `🔎 抖音搜「${kw}」：${list.length} 条，按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）`;
-    let chunk = head;
-    for (const l of lines) {
+    const send = async (text, ids) => {
+      if (!owner) return;
+      const btns = ids.map(([n, id]) => ({ text: `📤 转 ${n}`, callback_data: `dys:${id}` }));
+      const kb = [];
+      for (let i = 0; i < btns.length; i += 5) kb.push(btns.slice(i, i + 5));
+      await say(env, owner, text, kb.length ? kb : undefined);
+    };
+    let chunk = head, ids = [];
+    for (const [i, l] of lines.entries()) {
       if ((chunk + '\n\n' + l).length > 3800) {
-        if (owner) await say(env, owner, chunk);
+        await send(chunk, ids);
         chunk = l;
+        ids = [];
       } else {
         chunk += '\n\n' + l;
       }
+      ids.push([i + 1, list[i].id]);
     }
-    if (owner) await say(env, owner, chunk);
+    await send(chunk, ids);
   }
+  const keep = Object.keys(rows).slice(-150);  // 只留最近 150 条（地址几个小时就失效，旧的留着也没用）
+  await L.setConfig('dySearchRows', JSON.stringify(Object.fromEntries(keep.map(k => [k, rows[k]]))));
   const done = [...groups.keys()];
   await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !done.includes(k))));
   return json({ ok: true, keywords: done, total: seen.size });
