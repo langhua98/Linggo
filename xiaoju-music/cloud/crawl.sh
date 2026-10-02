@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 小橘 · 抓自己抖音账号的全部作品，抓完自动发给小橘（由 setup.sh 放到 ~/.xiaoju/，桌面图标调用）
 set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
 # 带参数（Codespaces：bash crawl.sh <令牌> <账号1,账号2>）就记下来；不带就用 setup.sh 存的
 if [ $# -ge 2 ]; then
   mkdir -p "$HOME/.xiaoju"
@@ -52,6 +53,12 @@ s = s.replace('最多等 10 分钟', '最多等 30 分钟')
 s = s.replace('stop=stop_after_attempt(600), wait=wait_fixed(1)', 'stop=stop_after_attempt(1800), wait=wait_fixed(1)')
 open(p, 'w', encoding='utf-8').write(s)
 PY
+
+# 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）
+WIN="$HERE/win.sh"
+( for _ in $(seq 360); do sleep 5; bash "$WIN" quiet; done ) >/dev/null 2>&1 &
+WINLOOP=$!
+trap 'kill $WINLOOP 2>/dev/null' EXIT
 
 echo "== 马上会弹出浏览器，用抖音 App 扫码登录（要验证就在浏览器里完成）=="
 uv run main.py --platform dy --lt qrcode --type creator --creator_id "$CREATORS" \
