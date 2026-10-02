@@ -90,8 +90,9 @@ class Archive:
                 yield t
 
     async def _search(self, q, limit, http):
+        # 只列出标了授权的条目（没标的反正过不了授权检查），免得翻一大堆都被跳过
         d = await http.get_json('https://archive.org/advancedsearch.php',
-                                {'q': q, 'fl[]': 'identifier', 'rows': str(max(5, min(limit, 200))), 'output': 'json',
+                                {'q': f'({q}) AND licenseurl:*', 'fl[]': 'identifier', 'rows': str(max(5, min(limit, 200))), 'output': 'json',
                                  'sort[]': 'downloads desc'})
         return [x['identifier'] for x in ((d.get('response') or {}).get('docs') or []) if x.get('identifier')]
 
@@ -170,9 +171,9 @@ class Commons:
 ADAPTERS = [Archive(), Commons()]
 
 
-def adapter_for(url, enabled):
-    """这个网址归哪个适配器管；enabled 是频道主在设置里开着的网站 key。不支持或没开 → None。"""
+def find_adapter(url):
+    """这个网址归哪个适配器管；还不支持的网站返回 None。开没开由调用的地方按设置判断。"""
     for a in ADAPTERS:
         if a.match(url):
-            return a if a.key in set(enabled or ()) else None
+            return a
     return None

@@ -20,6 +20,7 @@ Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里�
 
 import asyncio
 import hmac
+import io
 import logging
 import os
 import re
@@ -35,7 +36,7 @@ from telethon.errors import ChatForwardsRestrictedError, FileReferenceExpiredErr
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
-from telethon.tl.types import InputMessagesFilterMusic, InputMessagesFilterPhotos, InputPeerNotifySettings
+from telethon.tl.types import DocumentAttributeAudio, InputMessagesFilterMusic, InputMessagesFilterPhotos, InputPeerNotifySettings
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -455,7 +456,13 @@ def make_client(env):
     return TelegramClient(StringSession(), int(env['TG_API_ID']), env['TG_API_HASH'], receive_updates=False)
 
 
+from harvest.job import Harvester
+from harvest.net import Http
+from harvest import license as harvest_license
+from harvest.sites import ADAPTERS as HARVEST_SITES
+
 streamer = None
+harvester = None    # 授权音频搬运（贴网址搬）
 bot_client = None   # 机器人账号（取文件、发通知）
 user_client = None  # 频道主账号（搬歌用），没登录时为 None
 copier = None
@@ -497,8 +504,18 @@ async def lifespan(app):
     env = os.environ
     client = make_client(env)
     await client.start(bot_token=env['TG_BOT_TOKEN'])
-    global bot_client
+    global bot_client, harvester
     bot_client = client
+
+    async def post_audio(data, filename, title, artist, seconds, text):
+        # 机器人自己发帖（它是频道管理员），大文件也能发；带上歌名、作者、时长，Telegram 才当成音乐
+        f = io.BytesIO(data)
+        f.name = filename
+        sent = await client.send_file(target_channel(), f, caption=text, link_preview=False,
+                                      attributes=[DocumentAttributeAudio(duration=seconds, title=title[:64], performer=artist[:64])])
+        return sent.id
+
+    harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
     log.info('logged in to Telegram as a bot')
 
     async def fetch_message(channel, message_id):
@@ -703,6 +720,42 @@ async def auto_status(request: Request):
         return {'status': 'idle'}
     st = copier.state
     return {k: st.get(k) for k in ('status', 'mode', 'run_id', 'sources', 'copied', 'error')}
+
+
+# ── 授权音频搬运：贴网址，每首检查授权，允许转载的发进频道（逻辑在 harvest/ 里）──
+
+@app.get('/harvest/options')
+async def harvest_options(request: Request):
+    """搬运设置里能选的：支持的网站、认得的授权。"""
+    check_key(request)
+    return {'sites': [{'key': a.key, 'name': a.name} for a in HARVEST_SITES],
+            'licenses': [{'key': k, 'name': v} for k, v in harvest_license.LABELS.items()]}
+
+
+@app.post('/harvest')
+async def harvest_start(request: Request):
+    """{url, settings: {sites, licenses, limit}, existing, notify}。网址不支持或网站关着 → 400 带原因；正在搬 → 409。"""
+    check_key(request)
+    if harvester is None:
+        raise HTTPException(409, 'not ready')
+    body = await request.json()
+    url = str(body.get('url', '')).strip()
+    if not re.match(r'^https?://', url):
+        raise HTTPException(400, '不是网址')
+    existing = [(str(t), str(a)) for t, a in body.get('existing', [])]
+    try:
+        harvester.start(url, body.get('settings') or {}, existing, notify=body.get('notify') or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError:
+        raise HTTPException(409, 'already running')
+    return {'ok': True, 'site': harvester.state.get('site')}
+
+
+@app.get('/harvest/status')
+async def harvest_status(request: Request):
+    check_key(request)
+    return harvester.state if harvester else {'status': 'idle'}
 
 
 # ── 求歌：听众私聊机器人一个歌名，库里没有时到来源频道里找一首最像的搬进来 ──
