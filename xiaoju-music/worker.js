@@ -21,7 +21,8 @@
 //
 // 绑定：LIB（Durable Object）、TRACKS（旧 KV，只在第一次启动时迁移数据用）、
 //       TG_BOT_TOKEN / TG_WEBHOOK_SECRET / ADMIN_KEY / STREAMER_KEY（secret）、
-//       CHANNEL_ID / CHANNEL_USERNAME / STREAMER_URL（普通变量；STREAMER_URL 为空则大文件不能播放）
+//       CHANNEL_ID / CHANNEL_USERNAME / STREAMER_URL（普通变量；STREAMER_URL 为空则大文件不能播放）、
+//       VIDEO_CHANNEL_ID（视频频道「小橘视频」，私有频道的数字 id：抖音视频、频道主发来的视频文件都转到这里，不进音乐频道）
 
 import { DurableObject } from 'cloudflare:workers';
 import PAGE from './page.html';
@@ -255,6 +256,16 @@ async function adminApi(request, env, url) {
     const saved = await lib(env).setPlaylists(list.map(p => ({ id: p.id, name: p.name.trim(), cover: p.cover, tracks: [...new Set(p.tracks)] })));
     listCache = null;
     return json({ ok: true, playlists: saved });
+  }
+  // 频道主自己的抖音账号（「转抖音视频」只转这个账号的）：GET 取，POST {sec_uid} 设
+  if (action === 'douyin-self') {
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const sec = String(body.sec_uid || '').trim();
+      if (!/^MS4wLjABAAAA[\w-]{10,120}$/.test(sec)) return json({ error: '参数不对' }, 400);
+      await lib(env).setConfig('douyinSelf', sec);
+    }
+    return json({ sec_uid: (await lib(env).getConfig('douyinSelf')) || '' });
   }
   // 手动跑一次「夜里自动搬」（测试、或者想马上搬）
   if (action === 'auto-run' && request.method === 'POST') return json(await nightly(env));
@@ -1203,9 +1214,10 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 统计 —— 歌库和这几天搬歌的情况
 贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），可以在后面加数量，比如「网址 30」
 搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
-抖音视频的分享链接 —— 不登录解析，把这条视频转到频道
+抖音视频的分享链接 —— 不登录解析，把这条视频转到视频频道
 抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
-发一个视频文件 —— 点按钮转到频道（抖音解析不了的时候用）
+转抖音视频 —— 把你自己抖音账号能看到的视频都转到视频频道（已有的跳过）
+发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
 新搬进来的歌会按类型自动放进对应的歌单。`;
@@ -1220,9 +1232,9 @@ async function botUpdate(env, update, origin) {
   if (update.callback_query) return botButton(env, update.callback_query, owner, origin);
   const m = update.message;
   const chat = m.chat.id, isOwner = owner && m.from && m.from.id === owner;
-  // 频道主发来视频文件：问一句要不要转到频道（不自动发，免得发错）
-  if (isOwner && (m.video || (m.document && /^video\//.test(m.document.mime_type || '')))) {
-    return say(env, chat, '要把这个视频转到小橘音乐频道吗？', [[{ text: '📤 转到频道', callback_data: `fv:${m.message_id}` }]]);
+  // 频道主发来视频文件：问一句要不要转到视频频道（不自动发，免得发错）
+  if (isOwner && env.VIDEO_CHANNEL_ID && (m.video || (m.document && /^video\//.test(m.document.mime_type || '')))) {
+    return say(env, chat, '要把这个视频转到视频频道吗？', [[{ text: '📤 转到视频频道', callback_data: `fv:${m.message_id}` }]]);
   }
   const t = (m.text || '').trim();
   if (!t) return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
@@ -1234,6 +1246,7 @@ async function botUpdate(env, update, origin) {
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
     if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
     if (DOUYIN_LINK.test(t)) return ownerDouyin(env, chat, t);
+    if (/^转抖音视频$/.test(t)) return ownerDouyinMirror(env, chat);
     if ((c = /(https?:\/\/\S+)(?:\s+(\d{1,3}))?/.exec(t))) return ownerHarvest(env, chat, c[1], c[2] ? Number(c[2]) : 0);
     if (/^搬运设置$/.test(t)) return showHarvest(env, chat);
     if ((c = /^搬运数量\s*(\d{1,3})$/.exec(t))) return setHarvestLimit(env, chat, Number(c[1]));
@@ -1354,15 +1367,16 @@ async function botButton(env, cb, owner, origin) {
   if (!owner || !cb.from || cb.from.id !== owner) return ack('只有频道主能用');
   const [kind, a, b] = String(cb.data || '').split(':');
   const L = lib(env);
-  if (kind === 'fv') { // 频道主发来的视频：原样复制到频道
-    const r = await tg(env, 'copyMessage', { chat_id: env.CHANNEL_ID, from_chat_id: chat, message_id: Number(a) });
+  if (kind === 'fv') { // 频道主发来的视频：原样复制到视频频道
+    if (!env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
+    const r = await tg(env, 'copyMessage', { chat_id: env.VIDEO_CHANNEL_ID, from_chat_id: chat, message_id: Number(a) });
     if (!r.ok) {
       await ack();
       return say(env, chat, `没转成：${r.description || '未知原因'}`);
     }
-    await ack('已转到频道');
+    await ack('已转到视频频道');
     // 去掉按钮，免得再点一次又发一遍
-    return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: '✅ 已转到小橘音乐频道' });
+    return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: '✅ 已转到视频频道' });
   }
   if (kind === 'hs' || kind === 'hl') { // 搬运设置里点开关：网站 / 授权
     const h = await L.getHarvest();
@@ -1510,7 +1524,7 @@ async function ownerDouyin(env, chat, t) {
   if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/link', { text: t, notify: chat });
+    r = await streamerCall(env, '/douyin/link', { text: t, notify: chat, target: env.VIDEO_CHANNEL_ID || '' });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
   }
@@ -1519,6 +1533,24 @@ async function ownerDouyin(env, chat, t) {
   if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
   if (r.data.kind === 'user') return say(env, chat, '收到 👌 正在采集这个账号的作品链接（不登录），大约半分钟，采好了发给你');
   return say(env, chat, '收到 👌 正在解析这条抖音视频，大约半分钟，转好了告诉你');
+}
+
+// 「转抖音视频」：把频道主自己的抖音账号（config 的 douyinSelf，管理接口 douyin-self 设）能看到的视频都转到视频频道。
+// 只认频道主自己的账号：别人的作品不批量搬
+async function ownerDouyinMirror(env, chat) {
+  if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
+  if (!env.VIDEO_CHANNEL_ID) return say(env, chat, '还没设置视频频道');
+  const self = await lib(env).getConfig('douyinSelf');
+  if (!self) return say(env, chat, '还没设置你自己的抖音账号');
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/mirror', { sec_uid: self, target: env.VIDEO_CHANNEL_ID, notify: chat });
+  } catch {
+    return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
+  }
+  if (r.status === 409) return say(env, chat, '正在处理上一个链接，好了会告诉你，之后再发');
+  if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
+  return say(env, chat, '收到 👌 正在把你抖音上能看到的视频转到视频频道（不登录），转好了告诉你');
 }
 
 function rows(buttons, per = 2) {

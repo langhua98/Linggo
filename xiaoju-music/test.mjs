@@ -12,6 +12,7 @@ const ADMIN = 'admin-key-123';
 const SKEY = 'streamer-key-456';
 const STREAMER = 'https://streamer.example';
 const CHANNEL = -1003817921075;
+const VIDEO_CHANNEL = -1004292843233;
 const MB = 1024 * 1024;
 const LIMIT = 20 * MB;
 
@@ -129,7 +130,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -185,7 +186,7 @@ const oldTracks = [
 bigFiles.set(12, bytesOf(25 * MB, 12));
 const env = {
   TG_BOT_TOKEN: TOKEN, TG_WEBHOOK_SECRET: HOOK, ADMIN_KEY: ADMIN, STREAMER_KEY: SKEY, STREAMER_URL: STREAMER + '/',
-  CHANNEL_ID: String(CHANNEL), CHANNEL_USERNAME: 'xiaojumusic', TRACKS: makeKV(oldTracks),
+  CHANNEL_ID: String(CHANNEL), CHANNEL_USERNAME: 'xiaojumusic', VIDEO_CHANNEL_ID: String(VIDEO_CHANNEL), TRACKS: makeKV(oldTracks),
 };
 const lib = await makeLibrary(env);
 env.LIB = { idFromName: n => n, get: () => lib };
@@ -938,7 +939,7 @@ await t('抖音：频道主发作品链接 → 交给流式服务解析转发；
   const share = '2.58 复制打开抖音，看看【丁的作品】特效一用谁都不认  https://v.douyin.com/-Ghr0VeGTpA/ :0pm C@H.iC Uyt:/ 02/20';
   await dm(OWNER, share);
   const d = bot.toStreamer.at(-1);
-  assert.deepEqual([d.path, d.body.text, d.body.notify], ['douyin/link', share, OWNER]);
+  assert.deepEqual([d.path, d.body.text, d.body.notify, d.body.target], ['douyin/link', share, OWNER, String(VIDEO_CHANNEL)]);
   assert.match(lastSay().text, /正在解析这条抖音视频/);
   await dm(OWNER, 'https://www.douyin.com/user/MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng');
   assert.equal(bot.toStreamer.at(-1).path, 'douyin/link');
@@ -958,12 +959,12 @@ await t('抖音：频道主发作品链接 → 交给流式服务解析转发；
   // 发视频文件：先问，点了才复制到频道，复制完把按钮去掉
   const video = (from, extra) => hook({ update_id: 4, message: { message_id: 77, from: { id: from }, chat: { id: from, type: 'private' }, ...extra } });
   await video(OWNER, { video: { file_id: 'V1', mime_type: 'video/mp4', duration: 12 } });
-  assert.deepEqual(lastSay().reply_markup.inline_keyboard, [[{ text: '📤 转到频道', callback_data: 'fv:77' }]]);
+  assert.deepEqual(lastSay().reply_markup.inline_keyboard, [[{ text: '📤 转到视频频道', callback_data: 'fv:77' }]]);
   assert.ok(!bot.out.some(o => o.method === 'copyMessage'), '没点按钮不发');
   await press(OWNER, 'fv:77');
   const copy = bot.out.filter(o => o.method === 'copyMessage').at(-1);
-  assert.deepEqual([String(copy.chat_id), copy.from_chat_id, copy.message_id], [String(CHANNEL), OWNER, 77]);
-  assert.equal(bot.out.filter(o => o.method === 'editMessageText').at(-1).text, '✅ 已转到小橘音乐频道');
+  assert.deepEqual([String(copy.chat_id), copy.from_chat_id, copy.message_id], [String(VIDEO_CHANNEL), OWNER, 77], '视频进视频频道，不进音乐频道');
+  assert.equal(bot.out.filter(o => o.method === 'editMessageText').at(-1).text, '✅ 已转到视频频道');
   await video(OWNER, { document: { file_id: 'D1', mime_type: 'video/quicktime', file_name: 'a.mov' } });
   assert.equal(lastSay().reply_markup.inline_keyboard[0][0].callback_data, 'fv:77');
   bot.copyFail = 'Bad Request: message to copy not found';
@@ -975,6 +976,23 @@ await t('抖音：频道主发作品链接 → 交给流式服务解析转发；
   await video(FAN, { video: { file_id: 'V2', mime_type: 'video/mp4' } }); // 听众发视频不问
   assert.equal(bot.out.filter(o => o.method === 'copyMessage').length, copies);
   assert.match(lastSay().text, /发一个歌名给我/);
+});
+
+await t('转抖音视频：只转频道主自己的抖音账号（管理接口设），转到视频频道；没设账号时说清楚', async () => {
+  await dm(OWNER, '转抖音视频');
+  assert.equal(lastSay().text, '还没设置你自己的抖音账号');
+  assert.equal((await admin('douyin-self', { sec_uid: 'not-a-sec-uid' })).status, 400);
+  assert.equal((await admin('douyin-self', { sec_uid: 'x' }, 'wrong-key')).status, 401);
+  const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
+  assert.deepEqual(await jsonOf(await admin('douyin-self', { sec_uid: sec })), { sec_uid: sec });
+  assert.deepEqual(await jsonOf(await admin('douyin-self')), { sec_uid: sec });
+  await dm(OWNER, '转抖音视频');
+  const r = bot.toStreamer.at(-1);
+  assert.deepEqual([r.path, r.body.sec_uid, r.body.target, r.body.notify], ['douyin/mirror', sec, String(VIDEO_CHANNEL), OWNER]);
+  assert.match(lastSay().text, /正在把你抖音上能看到的视频转到视频频道/);
+  const n = bot.toStreamer.length;
+  await dm(FAN + 3, '转抖音视频'); // 听众发这个只当求歌
+  assert.ok(bot.toStreamer.slice(n).every(x => x.path !== 'douyin/mirror'));
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {

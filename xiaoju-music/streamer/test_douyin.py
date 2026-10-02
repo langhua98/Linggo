@@ -12,6 +12,7 @@ from douyin.web import Blocked, DouyinWeb, DownloadError, Gone
 
 SHARE = '2.58 复制打开抖音，看看【丁的作品】特效一用谁都不认  https://v.douyin.com/-Ghr0VeGTpA/ :0pm C@H.iC Uyt:/ 02/20'
 SEC = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng'
+VIDEO_CHANNEL = -1001234567890
 
 
 # ── 链接 ──
@@ -237,19 +238,20 @@ class FakeWeb:
 def run_job(web, posted=None):
     said, sent = [], []
 
-    async def send_video(data, item, src, text):
-        sent.append((data, item['id'], src['width'], text))
+    async def send_video(data, item, src, text, target):
+        sent.append((data, item['id'], src['width'], text, target))
         return 2600
 
-    async def find_posted(aweme_id):
-        return posted
+    async def posted_ids(target):
+        assert target == VIDEO_CHANNEL
+        return {'7691335977760321704': posted} if posted else {}
 
     async def say(chat, text):
         said.append((chat, text))
 
     async def go():
-        job = DouyinJob(web=web, send_video=send_video, find_posted=find_posted, say=say)
-        job.start('7691335977760321704', notify=42)
+        job = DouyinJob(web=web, send_video=send_video, posted_ids=posted_ids, say=say)
+        job.start('7691335977760321704', notify=42, target=VIDEO_CHANNEL)
         try:
             job.start('1', notify=42)
             raise AssertionError('second job should be refused')
@@ -264,8 +266,8 @@ def run_job(web, posted=None):
 def test_job_posts_the_video_and_tells_the_owner():
     st, said, sent = run_job(FakeWeb(normalize(aweme())))
     assert st['status'] == 'done' and st['fresh'] and st['msg'] == 2600
-    assert sent == [(b'mp4', '7691335977760321704', 720, caption(normalize(aweme())))]
-    assert said == [(42, '✅ 已转到频道：特效一用谁都不认')]
+    assert sent == [(b'mp4', '7691335977760321704', 720, caption(normalize(aweme())), VIDEO_CHANNEL)]
+    assert said == [(42, '✅ 已转到视频频道：特效一用谁都不认')]
 
 
 def test_job_skips_what_the_channel_already_has_without_opening_douyin():
@@ -291,8 +293,8 @@ def test_job_reports_why_it_could_not():
 def test_douyin_link_endpoint(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
     started = []
-    job = DouyinJob(web=None, send_video=None, find_posted=None)
-    monkeypatch.setattr(job, 'start', lambda aweme_id, notify=None: started.append((aweme_id, notify)))
+    job = DouyinJob(web=None, send_video=None, posted_ids=None)
+    monkeypatch.setattr(job, 'start', lambda aweme_id, notify=None, target=None: started.append((aweme_id, notify, target)))
     monkeypatch.setattr(job, 'start_collect', lambda sec_uid, notify=None: started.append(('collect', sec_uid, notify)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
 
@@ -306,19 +308,21 @@ def test_douyin_link_endpoint(monkeypatch):
     key = {'X-Key': 'k1'}
     assert c.post('/douyin/link', json={'text': SHARE}).status_code == 403
     r = c.post('/douyin/link', json={'text': SHARE, 'notify': 42}, headers=key)
+    assert r.status_code == 400 and r.json()['detail'] == '没设置视频频道'  # 作品链接一定要说发去哪个频道
+    r = c.post('/douyin/link', json={'text': SHARE, 'notify': 42, 'target': str(VIDEO_CHANNEL)}, headers=key)
     assert r.status_code == 200 and r.json() == {'kind': 'aweme', 'id': '7691335977760321704'}
     r = c.post('/douyin/link', json={'text': 'https://www.douyin.com/user/x', 'notify': 42}, headers=key)
     assert r.status_code == 200 and r.json() == {'kind': 'user', 'sec_uid': SEC}
-    assert started == [('7691335977760321704', 42), ('collect', SEC, 42)]
+    assert started == [('7691335977760321704', 42, VIDEO_CHANNEL), ('collect', SEC, 42)]
     assert c.post('/douyin/link', json={'text': 'hello'}, headers=key).status_code == 400
     assert c.get('/douyin/status', headers=key).json() == {'status': 'idle'}
 
 
 def test_douyin_link_busy(monkeypatch):
     monkeypatch.setenv('STREAMER_KEY', 'k1')
-    job = DouyinJob(web=None, send_video=None, find_posted=None)
+    job = DouyinJob(web=None, send_video=None, posted_ids=None)
 
-    def busy(aweme_id, notify=None):
+    def busy(aweme_id, notify=None, target=None):
         raise RuntimeError('already running')
 
     monkeypatch.setattr(job, 'start', busy)
@@ -328,7 +332,7 @@ def test_douyin_link_busy(monkeypatch):
         return 'aweme', '1234567890'
 
     monkeypatch.setattr(appmod.dy_links, 'resolve', fake_resolve)
-    r = TestClient(appmod.app).post('/douyin/link', json={'text': 'x'}, headers={'X-Key': 'k1'})
+    r = TestClient(appmod.app).post('/douyin/link', json={'text': 'x', 'target': str(VIDEO_CHANNEL)}, headers={'X-Key': 'k1'})
     assert r.status_code == 409
 
 
@@ -467,7 +471,7 @@ def test_collect_job_reports_the_links():
         said.append(text)
 
     async def go():
-        job = DouyinJob(web=Web(), send_video=None, find_posted=None, say=say)
+        job = DouyinJob(web=Web(), send_video=None, posted_ids=None, say=say)
         job.start_collect(SEC, notify=42)
         await job.task
         return job.state
@@ -491,3 +495,136 @@ def test_links_report_splits_long_lists():
     assert len(out) > 1 and all(len(m) <= MESSAGE_LIMIT for m in out)
     assert sum(m.count('https://www.douyin.com/video/') for m in out) == 120
     assert links_report({'name': '丁', 'links': []})[0].endswith('这个账号没有公开作品。')
+
+
+# ── 把账号能看到的视频转进视频频道 ──
+
+def test_mirror_posts_the_videos_oldest_first_and_skips_what_is_there():
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            return ([normalize(aweme(aweme_id='300', desc='新的', create_time=1790000300)),
+                     normalize(aweme(aweme_id='100', desc='旧的', create_time=1790000100)),
+                     normalize(aweme(aweme_id='200', desc='已经有了', create_time=1790000200)),
+                     normalize(aweme(aweme_id='400', desc='图文', images=[{}]))],
+                    {'hidden_newest': True, 'truncated': False})
+
+        async def download(self, item):
+            if item['id'] == '300':
+                raise DownloadError('HTTP 403')
+            return b'mp4', item['sources'][0]
+
+    sent, said = [], []
+
+    async def send_video(data, item, src, text, target):
+        sent.append((item['id'], target))
+        return 5000 + len(sent)
+
+    async def posted_ids(target):
+        return {'200': 77, '999': 78}
+
+    async def say(chat, text):
+        said.append(text)
+
+    async def go():
+        job = DouyinJob(web=Web(), send_video=send_video, posted_ids=posted_ids, say=say, pause=0)
+        job.start_mirror(SEC, notify=42, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert st['status'] == 'done' and sent == [('100', VIDEO_CHANNEL)]
+    assert [r['id'] for r in st['posted']] == ['100'] and [r['id'] for r in st['skipped']] == ['200']
+    assert [(r['id'], r['reason']) for r in st['failed']] == [('300', 'HTTP 403')]
+    text = said[0]
+    assert text.startswith('📤 抖音 @丁：转进视频频道 1 条视频')
+    assert '已经有的 1 条跳过' in text and '新的：HTTP 403' in text and '图文作品 1 条没转' in text
+    assert '最新的几条' in text and '第一页以后' not in text
+
+
+def test_mirror_endpoint(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    started = []
+    job = DouyinJob(web=None, send_video=None, posted_ids=None)
+    monkeypatch.setattr(job, 'start_mirror', lambda sec_uid, notify=None, target=None: started.append((sec_uid, notify, target)))
+    monkeypatch.setattr(appmod, 'douyin_job', job)
+    c = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    assert c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': '-1001234567890'}).status_code == 403
+    assert c.post('/douyin/mirror', json={'sec_uid': 'nope', 'target': '-1001234567890'}, headers=key).status_code == 400
+    assert c.post('/douyin/mirror', json={'sec_uid': SEC}, headers=key).json()['detail'] == '没设置视频频道'
+    r = c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': '-1001234567890', 'notify': 42}, headers=key)
+    assert r.status_code == 200 and started == [(SEC, 42, VIDEO_CHANNEL)]
+
+
+def test_parse_target():
+    assert appmod.parse_target('-1001234567890') == -1001234567890
+    assert appmod.parse_target(-1001234567890) == -1001234567890
+    assert appmod.parse_target('@xiaojuvideo') == 'xiaojuvideo'
+    for bad in (None, '', '123', '-5', 'a b', '@x', '1001234567890'):
+        assert appmod.parse_target(bad) is None
+
+
+def test_channels_owned_only_returns_own_channels_matching_the_title(monkeypatch):
+    from types import SimpleNamespace as NS
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+
+    class Client:
+        async def iter_dialogs(self):
+            for e in [NS(id=111, broadcast=True, creator=True, title='小橘🍊视频', username=None),
+                      NS(id=222, broadcast=True, creator=False, title='小橘视频 粉丝站', username='fan'),  # 不是自己建的
+                      NS(id=333, broadcast=False, creator=True, title='小橘视频群', username=None),  # 群，不是频道
+                      NS(id=444, broadcast=True, creator=True, title='小橘🍊音乐', username='xiaojumusic')]:
+                yield NS(entity=e)
+
+    monkeypatch.setattr(appmod, 'user_client', Client())
+    c = TestClient(appmod.app)
+    r = c.get('/channels/owned', params={'title': '小橘视频'}, headers={'X-Key': 'k1'})
+    assert r.json() == {'channels': [{'id': -100111, 'title': '小橘🍊视频', 'username': None}]}
+    assert c.get('/channels/owned', params={'title': '小'}, headers={'X-Key': 'k1'}).status_code == 400
+
+
+def test_mirror_never_posts_the_same_video_twice_in_one_run():
+    """列表里同一条出现两次（置顶又在正常位置）也只发一次"""
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            it = normalize(aweme(aweme_id='100', desc='置顶的'))
+            return [it, dict(it)], {'hidden_newest': False, 'truncated': False}
+
+    sent = []
+
+    async def send_video(data, item, src, text, target):
+        sent.append(item['id'])
+        return 10
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=Web(), send_video=send_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert sent == ['100'] and len(st['posted']) == 1 and len(st['skipped']) == 1
+
+
+def test_douyin_posted_reads_work_ids_from_captions(monkeypatch):
+    from types import SimpleNamespace as NS
+
+    class Client:
+        async def get_input_entity(self, target):
+            return target
+
+        async def iter_messages(self, entity, limit=None):
+            for m in [NS(id=5, message='新的\n\n📹 抖音 @丁 · 2026-06-04\nhttps://www.douyin.com/video/7647364906534950114'),
+                      NS(id=4, message=None),  # 没有说明的帖子
+                      NS(id=3, message='图文 https://www.douyin.com/note/7675967931876579407'),
+                      NS(id=2, message='旧的同一条 https://www.douyin.com/video/7647364906534950114')]:
+                yield m
+
+    monkeypatch.setattr(appmod, 'user_client', Client())
+    got = asyncio.run(appmod.douyin_posted(-1004292843233))
+    assert got == {'7647364906534950114': 5, '7675967931876579407': 3}
+    monkeypatch.setattr(appmod, 'user_client', None)
+    assert asyncio.run(appmod.douyin_posted(-1004292843233)) == {}

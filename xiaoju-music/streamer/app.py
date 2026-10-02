@@ -10,8 +10,9 @@ Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里�
 开了「禁止保存内容」的频道 Telegram 不让转，这里也不去绕。登录走 POST /login/code、/login/verify，
 搬歌走 /copy/start、/copy/status、/copy/stop。
 
-抖音（不登录，见 douyin/）：POST /douyin/link 发作品链接 → 转进频道，发主页链接 → 采集这个账号全部作品的链接；
-GET /douyin/status 看上一次的结果（采集到的链接也在里面）。
+抖音（不登录，见 douyin/）：POST /douyin/link 发作品链接 → 转进视频频道，发主页链接 → 采集这个账号作品的链接；
+POST /douyin/mirror 把一个账号能看到的视频都转进视频频道；GET /douyin/status 看上一次的结果（采集到的链接也在里面）。
+视频频道由 Worker 在请求里给（target），不发进音乐频道。
 
 环境变量（在 Space 的 Settings → Variables and secrets 里设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
@@ -529,7 +530,7 @@ async def lifespan(app):
 
     harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
     global douyin_job
-    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, find_posted=douyin_find_posted, say=bot_say)
+    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, posted_ids=douyin_posted, say=bot_say)
     log.info('logged in to Telegram as a bot')
 
     async def fetch_message(channel, message_id):
@@ -796,9 +797,31 @@ def video_thumb(src, dst):
     return r.returncode == 0 and os.path.exists(dst) and 0 < os.path.getsize(dst) < 200 * 1024
 
 
-async def douyin_send_video(data, item, src, text):
-    """发进频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
+def parse_target(v):
+    """抖音视频发去哪个频道：私有频道是 -100 开头的数字 id，公开频道也可以写用户名；认不出 → None"""
+    s = str(v if v is not None else '').strip()
+    if re.fullmatch(r'-100\d{5,15}', s):
+        return int(s)
+    if re.fullmatch(r'@?[A-Za-z]\w{3,63}', s):
+        return s.lstrip('@')
+    return None
+
+
+async def channel_entity(client, target):
+    """频道 → 能发帖的实体。刚建的私有频道还不在会话缓存里（缓存是启动时从聊天列表填的）：刷新一次再找"""
+    try:
+        return await client.get_input_entity(target)
+    except ValueError:
+        if client is user_client:
+            await client.get_dialogs()
+            return await client.get_input_entity(target)
+        return await client.get_entity(target)  # 机器人没有聊天列表，按 id 直接问
+
+
+async def douyin_send_video(data, item, src, text, target):
+    """发进 target 频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
     client = user_client or bot_client
+    chat = await channel_entity(client, target)
     with tempfile.TemporaryDirectory() as d:
         raw, mp4, jpg = (os.path.join(d, n) for n in ('raw.mp4', f'douyin_{item["id"]}.mp4', 'thumb.jpg'))
         with open(raw, 'wb') as f:
@@ -806,27 +829,50 @@ async def douyin_send_video(data, item, src, text):
         path = mp4 if await asyncio.to_thread(remux_faststart, raw, mp4) else raw
         thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
         sent = await client.send_file(
-            target_channel(), path, caption=text, thumb=thumb, supports_streaming=True, link_preview=False,
+            chat, path, caption=text, thumb=thumb, supports_streaming=True, link_preview=False,
             attributes=[DocumentAttributeVideo(duration=item['seconds'], w=src.get('width') or item['width'] or 720,
                                                h=src.get('height') or item['height'] or 1280, supports_streaming=True)])
     return sent.id
 
 
-async def douyin_find_posted(aweme_id):
-    """频道里已经有这条（帖子说明里的原视频链接带着作品号）→ 那条帖子的消息号；机器人不能搜，没登录就不查"""
+DOUYIN_ID_IN_TEXT = re.compile(r'douyin\.com/(?:video|note)/(\d{8,24})')
+
+
+async def douyin_posted(target, limit=3000):
+    """target 频道里已经转过的抖音作品 → {作品号: 消息号}：翻最近 limit 条帖子，看说明里的原视频链接。
+    不用 Telegram 的搜索：实测刚发的帖子搜不到链接里的作品号，查重落空、发了重复的。
+    机器人不能翻频道历史，没登录就当都没转过"""
     if user_client is None:
-        return None
-    async for m in user_client.iter_messages(target_channel(), search=aweme_id, limit=5):
-        if aweme_id in (m.message or ''):
-            return m.id
-    return None
+        return {}
+    out = {}
+    async for m in user_client.iter_messages(await channel_entity(user_client, target), limit=limit):
+        for aweme_id in DOUYIN_ID_IN_TEXT.findall(m.message or ''):
+            out.setdefault(aweme_id, m.id)
+    return out
+
+
+@app.get('/channels/owned')
+async def channels_owned(title: str, request: Request):
+    """频道主自己建的频道里、名字含 title 的那几个（找新建私有频道的数字 id 用）。只回对得上的，不列别的聊天"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    q = norm(title)
+    if len(q) < 2:
+        raise HTTPException(400, 'title too short')
+    out = []
+    async for d in user_client.iter_dialogs():
+        e = d.entity
+        if getattr(e, 'broadcast', False) and getattr(e, 'creator', False) and q in norm(getattr(e, 'title', '')):
+            out.append({'id': int(f'-100{e.id}'), 'title': e.title, 'username': getattr(e, 'username', None)})
+    return {'channels': out}
 
 
 @app.post('/douyin/link')
 async def douyin_link(request: Request):
-    """{text: 分享文字或链接, notify}，在后台跑，跑完通知 notify：
-    作品链接 → 转到频道 → {kind: 'aweme', id}；主页链接 → 采集这个账号全部作品的链接 → {kind: 'user', sec_uid}。
-    认不出 → 400；正在跑别的 → 409"""
+    """{text: 分享文字或链接, target: 视频发去的频道, notify}，在后台跑，跑完通知 notify：
+    作品链接 → 转到 target 频道 → {kind: 'aweme', id}；主页链接 → 采集这个账号作品的链接 → {kind: 'user', sec_uid}。
+    认不出、作品链接却没给 target → 400；正在跑别的 → 409"""
     check_key(request)
     body = await request.json()
     try:
@@ -837,14 +883,35 @@ async def douyin_link(request: Request):
         raise HTTPException(400, '没认出抖音链接')
     kind, value = got
     notify = body.get('notify') or None
+    target = parse_target(body.get('target'))
+    if kind == 'aweme' and target is None:
+        raise HTTPException(400, '没设置视频频道')
     try:
         if kind == 'user':
             douyin_job.start_collect(value, notify=notify)
         else:
-            douyin_job.start(value, notify=notify)
+            douyin_job.start(value, notify=notify, target=target)
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return {'kind': kind, 'sec_uid': value} if kind == 'user' else {'kind': kind, 'id': value}
+
+
+@app.post('/douyin/mirror')
+async def douyin_mirror(request: Request):
+    """{sec_uid, target, notify}：把这个账号能看到的视频转到 target 频道（旧的先发，已有的跳过），跑完通知。正在跑别的 → 409"""
+    check_key(request)
+    body = await request.json()
+    sec_uid = str(body.get('sec_uid', '')).strip()
+    if not dy_links.USER.search('/user/' + sec_uid) or len(sec_uid) > 140:
+        raise HTTPException(400, 'bad sec_uid')
+    target = parse_target(body.get('target'))
+    if target is None:
+        raise HTTPException(400, '没设置视频频道')
+    try:
+        douyin_job.start_mirror(sec_uid, notify=body.get('notify') or None, target=target)
+    except RuntimeError:
+        raise HTTPException(409, 'already running')
+    return {'ok': True}
 
 
 @app.get('/douyin/status')

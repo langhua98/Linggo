@@ -37,11 +37,14 @@ Telethon 以 `receive_updates=False` 登录：这个会话只调用、不订阅�
 - `GET /`：健康检查
 - `GET /stream/<消息号>`：请求头 `X-Key`，可带 `Range`；返回 200（整个文件）、206（一段）、
   403（密钥不对）、404（频道里没有这条音频）、416（范围超出文件）
-- `POST /douyin/link`（`X-Key`）：`{text: 抖音分享文字或链接, notify: 通知谁}`，在后台不登录跑，跑完通知：
-  作品链接 → 解析、下载、发进频道，回 `{kind: "aweme", id}`；主页链接 → 采集这个账号作品的公开链接，回
-  `{kind: "user", sec_uid}`。认不出 → 400，正在跑别的 → 409。`GET /douyin/status` 看上一次的结果：采集到的链接在
-  `links` 里；`hidden_newest` / `truncated` 是抖音没给没登录的人看的部分（最新的几条 / 第一页以后）；
-  `blocked: true` 是被抖音风控拦了（比如弹了滑块验证）。用到 Chromium（Dockerfile 里 `playwright install --with-deps chromium`）。
+- `POST /douyin/link`（`X-Key`）：`{text: 抖音分享文字或链接, target: 视频频道, notify: 通知谁}`，在后台不登录跑，跑完通知：
+  作品链接 → 解析、下载、发进 `target` 频道，回 `{kind: "aweme", id}`；主页链接 → 采集这个账号作品的公开链接，回
+  `{kind: "user", sec_uid}`。认不出、作品链接没给 `target` → 400，正在跑别的 → 409。
+- `POST /douyin/mirror`（`X-Key`）：`{sec_uid, target, notify}`，把这个账号能看到的视频转进 `target` 频道（旧的先发，已有的跳过）。
+- `GET /douyin/status`：上一次的结果。采集到的链接在 `links` 里；`hidden_newest` / `truncated` 是抖音没给没登录的人看的部分
+  （最新的几条 / 第一页以后）；`blocked: true` 是被抖音风控拦了（比如弹了滑块验证）。
+- `GET /channels/owned?title=`：频道主自己建的频道里名字含 `title` 的（找私有频道的数字 id 用）。
+- 抖音这几个用到 Chromium（Dockerfile 里 `playwright install --with-deps chromium`）。
 
 ## 为什么不在这里跑官方的 telegram-bot-api（`--local` 模式）
 

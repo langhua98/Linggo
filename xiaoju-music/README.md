@@ -85,7 +85,7 @@ UTF-8、GBK、UTF-16 编码都认；配上之后可以把频道里的这条 `.lr
 | Durable Object | 绑定名 `LIB`，类 `Library`（SQLite，迁移标签 `v1`），位置提示 `apac` |
 | KV（旧） | `xiaoju-music-tracks`，id=`738216f3f7d64f1ab143128406d1b35e`，绑定名 `TRACKS`，只用于迁移 |
 | Secret | `TG_BOT_TOKEN`、`TG_WEBHOOK_SECRET`、`ADMIN_KEY`、`STREAMER_KEY` |
-| 普通变量 | `CHANNEL_ID=-1003817921075`、`CHANNEL_USERNAME=xiaojumusic`、`STREAMER_URL`（流式服务地址，空＝大文件不能播放） |
+| 普通变量 | `CHANNEL_ID=-1003817921075`、`CHANNEL_USERNAME=xiaojumusic`、`STREAMER_URL`（流式服务地址，空＝大文件不能播放）、`VIDEO_CHANNEL_ID=-1004292843233`（视频频道「小橘视频」） |
 | Telegram webhook | `…/tg-webhook`，`allowed_updates=["channel_post","edited_channel_post"]` |
 
 **secret 绝不能写进仓库**（这个仓库是公开的，GitHub Pages 会把它原样发布出去）。
@@ -122,7 +122,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
    STREAMER_URL=https://langhua1998-douyin-proxy.hf.space      # 没部署流式服务就写空字符串
    curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/xiaoju-music" \
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-     -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"TRACKS\",\"namespace_id\":\"$KV\"},{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_ID\",\"text\":\"-1003817921075\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_USERNAME\",\"text\":\"xiaojumusic\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"$STREAMER_URL\"}]};type=application/json" \
+     -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"TRACKS\",\"namespace_id\":\"$KV\"},{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_ID\",\"text\":\"-1003817921075\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_USERNAME\",\"text\":\"xiaojumusic\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"$STREAMER_URL\"},{\"type\":\"plain_text\",\"name\":\"VIDEO_CHANNEL_ID\",\"text\":\"-1004292843233\"}]};type=application/json" \
      -F 'worker.js=@xiaoju-music/worker.js;type=application/javascript+module' \
      -F 'page.html=@xiaoju-music/page.html;type=text/plain' \
      -F 'admin.html=@xiaoju-music/admin.html;type=text/plain'
@@ -194,15 +194,22 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
   `/auto/status`，把每个来源频道「看到的最大消息号」合进 config 的 `auto.state`，再 `/auto/start`：每个频道只看
   比上次新的帖子（`min_id`），最多 30 首；第一次只看最新 10 首；禁止转发、出错的频道跳过。搬完机器人私聊频道主。
   手动跑一次：`POST /admin/api/auto-run`；看记录：`GET /admin/api/auto-state`。
-- **抖音视频转到频道**（频道主私聊机器人）：
+- **抖音视频转到视频频道**（频道主私聊机器人）。视频都发到单独的私有频道「小橘视频」（Worker 变量 `VIDEO_CHANNEL_ID`，
+  机器人是那里的管理员），**不进音乐频道**；Worker 每次把它作为 `target` 传给流式服务。
   - 发抖音视频的分享链接（整段分享文字也行）→ 流式服务 `/douyin/link`：`douyin/links.py` 认链接（短链接跳一次），
     `web.py` 用无头 Chromium **不登录**打开抖音网页版，接口签名交给页面自己的安全脚本（不自己算 a_bogus），
-    `items.py` 挑不带水印的 H.264，`job.py` 下载、ffmpeg 挪 moov 到开头 + 截缩略图、用频道主账号发进频道
-    （说明里写文案、`📹 抖音 @作者 · 日期` 和原视频链接；发之前按作品号在频道里搜，已有的不重发），好了/失败都私聊通知。
+    `items.py` 挑不带水印的 H.264，`job.py` 下载、ffmpeg 挪 moov 到开头 + 截缩略图、用频道主账号发进视频频道
+    （说明里写文案、`📹 抖音 @作者 · 日期` 和原视频链接），好了/失败都私聊通知。
   - 发抖音**主页**的分享链接 → 同一个接口采集这个账号作品的公开链接（视频 `douyin.com/video/<作品号>`，
     图文 `douyin.com/note/<作品号>`，解析网站都认），机器人按视频、图文分开发给频道主；结果也在 `/douyin/status` 里。
     从 Hugging Face 连着跑 3 次都成功（每次约 24 秒）。
-  - 发一个视频文件 → 机器人问一句，点「📤 转到频道」才 `copyMessage` 到频道（原样复制，不经流式服务，一定能成）。
+  - `转抖音视频` → `/douyin/mirror`：把频道主**自己的**抖音账号（config 的 `douyinSelf`，用
+    `POST /admin/api/douyin-self {"sec_uid": ...}` 设；现在是抖音号 43947139）能看到的视频按发布顺序转进视频频道。
+    下载地址就在作品列表里（不带水印的那个），不经第三方解析网站。只认自己的账号：别人的作品不批量搬。
+  - 查重：每次先把视频频道翻一遍（最近 3000 条），从帖子说明的原视频链接里认出转过的作品号，已有的跳过。
+    **不要**改回 Telegram 搜索：实测刚发的帖子搜不到链接里的作品号，查重落空、发了重复的（已删掉）。
+  - 发一个视频文件 → 机器人问一句，点「📤 转到视频频道」才 `copyMessage` 过去（原样复制，不经流式服务，一定能成）。
+  - 视频频道的数字 id 用流式服务 `GET /channels/owned?title=小橘视频` 查（只在频道主自己建的频道里按名字找，不列别的聊天）。
   - 2026 年 10 月实测，没登录时抖音只给看一部分（所以**没有**做「账号发了新视频自动转」）：
     1. 账号**最新**的几条作品被藏起来：作品列表返回里带 `not_login_module`（「登录看更多最新作品」），
        按月份查也是空的——自动发现正好看不到要第一时间转的那几条。

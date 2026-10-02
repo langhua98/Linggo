@@ -72,8 +72,8 @@
 - **`xiaoju-music/`**：「小橘音乐」——把用户的 Telegram 频道 @xiaojumusic 里的音频变成
   网页直接播放的 Cloudflare Worker（线上 `https://xiaoju-music.langhua98.workers.dev`，数据在
   Durable Object 里）；超过 20 MB 的文件由 `streamer/`（Python + Telethon，走 MTProto）按 Range 现取现传，
-  用户明确选了「只用流式，不切片」；同一个服务里还有 `streamer/douyin/`（无头 Chromium 不登录：作品链接 → 视频转进频道，
-  主页链接 → 采集作品公开链接；实测抖音对没登录的访客藏起最新作品、只给第一页、单条详情对机房 IP 弹滑块验证，所以没做
+  用户明确选了「只用流式，不切片」；同一个服务里还有 `streamer/douyin/`（无头 Chromium 不登录：作品链接 → 视频转进私有视频频道「小橘视频」，
+  主页链接 → 采集作品公开链接，「转抖音视频」→ 频道主自己账号的视频批量转过去；实测抖音对没登录的访客藏起最新作品、只给第一页、单条详情对机房 IP 弹滑块验证，所以没做
   自动同步，详见 README）。它跑在复用的 Hugging Face Space `langhua1998/douyin-proxy` 上
   （免费账号新建 Docker Space 要 PRO）。**和阅读器没有任何代码共享、
   引用关系**，只是借这个仓库存代码；不在 `sw.js` 的 `SHELL` 里。结构、绑定、重新部署和日常维护见

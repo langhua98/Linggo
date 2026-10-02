@@ -14,6 +14,8 @@ CHANNEL_ID = "-1003817921075"
 CHANNEL_USERNAME = "xiaojumusic"
 # 大文件流式服务（streamer/，部署在 Hugging Face Space）的地址；留空则超过 20 MB 的歌不能播放
 STREAMER_URL = "https://langhua1998-douyin-proxy.hf.space"
+# 视频频道「小橘视频」（私有频道，没有用户名，只能用数字 id）：抖音视频、频道主发来的视频文件转到这里
+VIDEO_CHANNEL_ID = "-1004292843233"
 
 # 更早版本存歌单用的 KV：Durable Object 第一次启动时从这里迁移数据，之后不再读写
 [[kv_namespaces]]

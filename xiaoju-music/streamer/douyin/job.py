@@ -2,8 +2,11 @@
 
 - collect：采集一个账号作品的公开链接（不登录）。没登录时抖音只给看一部分：账号最新的几条作品被藏起来
   （作品列表接口返回里写着「登录看更多最新作品」），而且只给第一页（18 条），这些采不到的结果里如实标出来。
-- one：把一条作品转进频道（频道主把分享链接发给机器人）：解析 → 下载 → 发帖。发之前按作品号在频道里搜，
-  已有的不重发。单条作品的详情接口从机房 IP 打开常弹滑块验证，弹了就停下、告诉频道主（不去做验证码）。"""
+- mirror：采集之后把其中的视频转进频道（旧的先发）。下载地址作品列表里就有（不带水印的那个），不用再解析。
+- one：把一条作品转进频道（频道主把分享链接发给机器人）：解析 → 下载 → 发帖。单条作品的详情接口从机房 IP
+  打开常弹滑块验证，弹了就停下、告诉频道主（不去做验证码）。
+查重：每次先把频道翻一遍，从帖子说明的原视频链接里认出转过的作品号，已有的不重发（不用 Telegram 的搜索，
+实测搜不到链接里的作品号）。"""
 
 import asyncio
 import logging
@@ -19,8 +22,9 @@ MAX_MESSAGES = 8
 
 
 class DouyinJob:
-    def __init__(self, *, web, send_video, find_posted, say=None):
-        self.web, self.send_video, self.find_posted, self.say = web, send_video, find_posted, say
+    def __init__(self, *, web, send_video, posted_ids, say=None, pause=3.0):
+        # posted_ids(频道) → {作品号: 消息号}：频道里已经转过的（每次跑先翻一遍频道，查重靠它）
+        self.web, self.send_video, self.posted_ids, self.say, self.pause = web, send_video, posted_ids, say, pause
         self.task = None
         self.state = {'status': 'idle'}
 
@@ -33,13 +37,60 @@ class DouyinJob:
         self.state = {'status': 'running', 'blocked': False, 'error': '', **info}
         self.task = asyncio.create_task(run())
 
-    def start(self, aweme_id, notify=None):
+    def start(self, aweme_id, notify=None, target=None):
         aweme_id = str(aweme_id)
-        self._begin(lambda: self._one(aweme_id, notify), mode='one', id=aweme_id, msg=None, fresh=False, desc='')
+        self._begin(lambda: self._one(aweme_id, notify, target), mode='one', id=aweme_id, target=target, msg=None,
+                    fresh=False, desc='')
 
     def start_collect(self, sec_uid, limit=300, notify=None):
         self._begin(lambda: self._collect(sec_uid, limit, notify), mode='collect', sec_uid=sec_uid, name='',
                     links=[], hidden_newest=False, truncated=False)
+
+    def start_mirror(self, sec_uid, notify=None, target=None):
+        self._begin(lambda: self._mirror(sec_uid, notify, target), mode='mirror', sec_uid=sec_uid, target=target, name='',
+                    posted=[], skipped=[], failed=[], images=0, hidden_newest=False, truncated=False)
+
+    async def _post(self, w, item, target, done):
+        """转一条视频到 target 频道：done（频道里已有的 {作品号: 消息号}）里有就跳过 → (帖子的消息号, 是不是新发的)。
+        发了就记进 done，同一次里不会再发"""
+        if item['id'] in done:
+            return done[item['id']], False
+        data, src = await w.download(item)
+        done[item['id']] = await self.send_video(data, item, src, caption(item), target)
+        return done[item['id']], True
+
+    async def _mirror(self, sec_uid, notify, target):
+        """采集这个账号能看到的作品，视频按发布顺序（旧的先）转进频道，已有的跳过"""
+        st = self.state
+        try:
+            done = await self.posted_ids(target)
+            async with self.web() as w:
+                items, info = await w.posts(sec_uid)
+                st.update(info)
+                st['name'] = next((i['author'] for i in items if i['author']), '')
+                st['images'] = sum(i['kind'] == 'images' for i in items)
+                for item in sorted((i for i in items if i['kind'] == 'video'), key=lambda i: i['time']):
+                    row = {'id': item['id'], 'desc': item['desc'][:60], 'time': item['time']}
+                    try:
+                        row['msg'], fresh = await self._post(w, item, target, done)
+                    except (DownloadError, Gone) as e:
+                        row['reason'] = str(e)
+                        st['failed'].append(row)
+                        continue
+                    (st['posted'] if fresh else st['skipped']).append(row)
+                    if fresh:
+                        await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流
+            st['status'] = 'done'
+            await self._tell(notify, mirror_report(st))
+        except Blocked as e:
+            st['status'], st['blocked'], st['error'] = 'error', True, str(e)
+            await self._tell(notify, f'这次没拿到作品列表（{e}）。过一会儿再试')
+        except asyncio.CancelledError:
+            st['status'] = 'stopped'
+        except Exception as e:  # noqa: BLE001
+            log.exception('douyin mirror failed')
+            st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'[:200]
+            await self._tell(notify, f'转视频的时候出错了（{type(e).__name__}），已转 {len(st["posted"])} 条')
 
     async def _collect(self, sec_uid, limit, notify):
         st = self.state
@@ -63,12 +114,12 @@ class DouyinJob:
             st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'[:200]
             await self._tell(notify, f'采集的时候出错了（{type(e).__name__}）')
 
-    async def _one(self, aweme_id, notify):
+    async def _one(self, aweme_id, notify, target):
         st = self.state
         try:
-            old = await self.find_posted(aweme_id)
-            if old:
-                st['status'], st['msg'] = 'done', old
+            done = await self.posted_ids(target)
+            if aweme_id in done:  # 频道里已经有了就不去碰抖音
+                st['status'], st['msg'] = 'done', done[aweme_id]
                 await self._tell(notify, '这条视频频道里已经有了 👌')
                 return
             async with self.web() as w:
@@ -78,22 +129,21 @@ class DouyinJob:
                     st['status'], st['error'] = 'error', '这是图文作品，现在只转视频'
                     await self._tell(notify, '这条是图文作品，现在只转视频 🙏')
                     return
-                data, src = await w.download(item)
-            st['msg'] = await self.send_video(data, item, src, caption(item))
-            st['status'], st['fresh'] = 'done', True
-            await self._tell(notify, f'✅ 已转到频道：{item["desc"][:60] or aweme_id}')
+                st['msg'], st['fresh'] = await self._post(w, item, target, done)
+            st['status'] = 'done'
+            await self._tell(notify, f'✅ 已转到视频频道：{item["desc"][:60] or aweme_id}' if st['fresh'] else '这条视频频道里已经有了 👌')
         except Blocked as e:
             st['status'], st['blocked'], st['error'] = 'error', True, str(e)
-            await self._tell(notify, f'这次抖音没让我拿到这条视频（{e}）。\n过几分钟再发一次链接试试；急的话直接把视频文件发给我，我帮你转到频道。')
+            await self._tell(notify, f'这次抖音没让我拿到这条视频（{e}）。\n过几分钟再发一次链接试试；急的话直接把视频文件发给我，我帮你转到视频频道。')
         except (Gone, DownloadError) as e:
             st['status'], st['error'] = 'error', str(e)
-            await self._tell(notify, f'这条视频转不了：{e}\n可以直接把视频文件发给我，我帮你转到频道。')
+            await self._tell(notify, f'这条视频转不了：{e}\n可以直接把视频文件发给我，我帮你转到视频频道。')
         except asyncio.CancelledError:
             st['status'] = 'stopped'
         except Exception as e:  # noqa: BLE001
             log.exception('douyin job failed')
             st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'[:200]
-            await self._tell(notify, f'转这条视频的时候出错了（{type(e).__name__}）。可以直接把视频文件发给我，我帮你转到频道。')
+            await self._tell(notify, f'转这条视频的时候出错了（{type(e).__name__}）。可以直接把视频文件发给我，我帮你转到视频频道。')
 
     async def _tell(self, chat, text):
         if chat and self.say:
@@ -105,6 +155,22 @@ class DouyinJob:
 
 def _day(ts):
     return time.strftime('%Y-%m-%d', time.gmtime(ts + 8 * 3600)) if ts else '????-??-??'
+
+
+def mirror_report(st):
+    lines = [f'📤 抖音 @{st["name"] or "?"}：转进视频频道 {len(st["posted"])} 条视频']
+    lines += [f'· {_day(r["time"])} {r["desc"][:30]}' for r in st['posted']]
+    if st['skipped']:
+        lines.append(f'频道里已经有的 {len(st["skipped"])} 条跳过')
+    if st['failed']:
+        lines += ['没转成的：'] + [f'· {_day(r["time"])} {r["desc"][:20]}：{r["reason"]}' for r in st['failed']]
+    if st.get('images'):
+        lines.append(f'图文作品 {st["images"]} 条没转（只转视频）')
+    if st.get('hidden_newest') or st.get('truncated'):
+        lines.append('⚠️ 抖音不给没登录的人看' + '、'.join(x for x, on in (('最新的几条', st.get('hidden_newest')),
+                                                                ('第一页以后的', st.get('truncated'))) if on)
+                     + '作品，那些没转到；可以把视频文件直接发给我，点按钮转到频道。')
+    return '\n'.join(lines)
 
 
 def links_report(st):
