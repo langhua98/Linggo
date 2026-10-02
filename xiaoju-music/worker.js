@@ -104,6 +104,7 @@ export default {
       }
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
       if (path === '/dy-import' && method === 'POST') return await cloudImport(request, env);
+      if (path === '/dy-cloud-config' && method === 'POST') return await cloudConfig(request, env);
       if (path.startsWith('/dl/') && method === 'POST') {
         const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
         if (m2) return await douyinLoginApi(env, m2[1], 'start');
@@ -1580,6 +1581,26 @@ const CLOUD_SETUP = 'https://raw.githubusercontent.com/langhua98/Linggo/main/xia
 // GitHub Codespaces：用仓库里 .devcontainer/douyin 的配置开一台带网页桌面的云电脑（不用绑卡）
 const CODESPACE_URL = 'https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer%2Fdouyin%2Fdevcontainer.json';
 
+// 云电脑领口令（手机网页版终端粘贴不了）：Codespaces 里自带频道主的 GitHub 令牌，拿它找 GitHub 认人，
+// 是仓库主人本人（CLOUD_GH_USER）才给上传令牌和抖音账号；GitHub 令牌只转给 api.github.com，不存
+const CLOUD_GH_USER = 'langhua98';
+
+async function cloudConfig(request, env) {
+  const gh = (request.headers.get('Authorization') || '').replace(/^(Bearer|token)\s+/i, '');
+  if (!gh) return json({ error: '没带 GitHub 令牌' }, 401);
+  let login = '';
+  try {
+    const r = await fetch('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${gh}`, Accept: 'application/vnd.github+json', 'User-Agent': 'xiaoju-music' },
+    });
+    if (r.ok) login = String((await r.json()).login || '');
+  } catch {}
+  if (login.toLowerCase() !== CLOUD_GH_USER) return json({ error: '不是仓库主人的 GitHub 账号' }, 403);
+  const L = lib(env), selves = await douyinSelves(L);
+  if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
+  return json({ token: await cloudToken(L), creators: selves.join(',') });
+}
+
 async function cloudToken(L) {
   let tok = await L.getConfig('cloudTok');
   if (!tok) {
@@ -1598,10 +1619,10 @@ async function ownerCloud(env, chat) {
     '',
     `1. 用 iPad 的 Safari 打开这个链接，点绿色的「Create codespace」，等它装好（第一次大约 5～10 分钟）：\n${CODESPACE_URL}`,
     '2. 装好后在下面「PORTS（端口）」里打开 6080「桌面」，密码 xiaoju，这就是云电脑的桌面',
-    '3. 回到网页编辑器下面的「TERMINAL（终端）」，把下一条消息整条粘贴进去回车',
-    '4. 桌面上会弹出抖音登录页，用手机抖音扫码（要验证就在那里做），抓完自动发回小橘',
+    '3. 不用粘贴：装好它会自己开始抓（手机上没动静就把网页刷新一下）',
+    '4. 桌面上会弹出抖音登录页，用手机抖音扫码（要验证就在那里做；手机打开的话先截屏，再用抖音扫一扫里的相册），抓完自动发回小橘',
     '',
-    '只要粘贴这一次。用完在 github.com/codespaces 里点「⋯ → Stop codespace」停掉（别删）；以后想抓新作品，打开它就自动开抓，登录没过期连码都不用扫。',
+    '万一没自己开始，就把下一条消息粘贴进网页编辑器下面的「TERMINAL（终端）」回车。用完在 github.com/codespaces 里点「⋯ → Stop codespace」停掉（别删）；以后想抓新作品，打开它就自动开抓，登录没过期连码都不用扫。',
     '下一条命令里有你的上传令牌，别发给别人。',
   ].join('\n'));
   return say(env, chat, `bash xiaoju-music/cloud/crawl.sh ${tok} ${ids}`);

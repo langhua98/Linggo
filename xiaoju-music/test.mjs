@@ -111,6 +111,10 @@ globalThis.fetch = async (input, init = {}) => {
     if (mode.streamer === 'short') return new Response(f.slice(0, 10), { status: headers.get('Range') ? 206 : 200, headers: { 'Content-Length': '10' } });
     return serve(f, headers.get('Range'), { 'Content-Type': 'application/octet-stream' });
   }
+  if (url === 'https://api.github.com/user') {
+    const who = { 'gh-owner': 'langhua98', 'gh-other': 'someone' }[headers.get('Authorization').replace('Bearer ', '')];
+    return who ? Response.json({ login: who }) : Response.json({ message: 'Bad credentials' }, { status: 401 });
+  }
   if (url.startsWith('https://lrclib.net/api/search?')) {
     if (mode.lrclib === 'down') return new Response('oops', { status: 500 });
     assert.match(headers.get('User-Agent'), /xiaoju-music/);
@@ -1068,6 +1072,12 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   assert.equal((await up(m[1], 'nothing here')).status, 400);
   await dm(FAN + 4, '云电脑');
   assert.ok(!/crawl\.sh/.test(lastSay().text), '听众拿不到命令');
+  // 云电脑拿 Codespaces 自带的 GitHub 令牌领口令：只认仓库主人
+  const cfg = gh => req('/dy-cloud-config', { method: 'POST', headers: gh ? { Authorization: 'token ' + gh } : {} });
+  assert.deepEqual(await jsonOf(await cfg('gh-owner')), { token: m[1], creators: sec });
+  assert.equal((await cfg('gh-other')).status, 403);
+  assert.equal((await cfg('bad')).status, 403);
+  assert.equal((await cfg('')).status, 401);
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {

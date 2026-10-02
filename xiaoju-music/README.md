@@ -219,7 +219,8 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     再给一条 `bash xiaoju-music/cloud/crawl.sh <上传令牌> <账号,…>`（令牌是 config `cloudTok`）。频道主在 iPad Safari 里开
     网页桌面，终端里粘贴命令，在桌面弹出的浏览器里自己扫码登录（验证也在那里做）；`crawl.sh` 跑 MediaCrawler（creator、
     jsonl）后把文件 POST 到 Worker 的 `/dy-import`（`X-Token`），转给 `/douyin/import` 逐条下载、发进视频频道。
-    粘贴过一次以后令牌存在云电脑的 `~/.xiaoju/env`，devcontainer 的 `postAttachCommand`（`cloud/codespace-auto.sh`）
+    不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找
+    api.github.com 认出是仓库主人（`CLOUD_GH_USER`）才回上传令牌和账号。令牌存在云电脑的 `~/.xiaoju/env`，devcontainer 的 `postAttachCommand`（`cloud/codespace-auto.sh`）
     每次打开都自动跑 `crawl.sh`（`flock` 防重复）；MediaCrawler 自己存登录状态，没过期就不用再扫码。
     自己有 VPS 的话 `cloud/setup.sh <令牌> <账号>` 一键装 XFCE + xrdp（RDP 连），桌面放「抓抖音发给小橘」。
     也可以手动把导出文件发给机器人。抖音账号和验证全程只在频道主自己的机器上。

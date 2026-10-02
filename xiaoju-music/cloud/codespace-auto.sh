@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 # 小橘 · Codespaces 一打开就自动抓（devcontainer 的 postAttachCommand 调用）。
-# 第一次还没有令牌：只提示去粘贴机器人「云电脑」给的命令；粘贴过一次（存进 ~/.xiaoju/env）以后，
-# 每次打开这台云电脑都自动跑 crawl.sh。MediaCrawler 会记住登录状态，没过期就连码都不用扫。
+# 第一次还没有令牌：拿 Codespaces 自带的 GitHub 令牌找小橘领（领不到才提示粘贴机器人「云电脑」给的命令）；
+# 有了令牌（存进 ~/.xiaoju/env）以后，每次打开这台云电脑都自动跑 crawl.sh。MediaCrawler 会记住登录状态，没过期就连码都不用扫。
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+API=https://xiaoju-music.langhua98.workers.dev
+if [ ! -s "$HOME/.xiaoju/env" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+  # 第一次：用 Codespaces 自带的 GitHub 令牌找小橘领上传令牌和抖音账号（手机网页版终端粘贴不了）
+  CFG=$(curl -sS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" "$API/dy-cloud-config" || true)
+  TOK=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
+  IDS=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("creators",""))' 2>/dev/null)
+  if [ -n "$TOK" ] && [ -n "$IDS" ]; then
+    mkdir -p "$HOME/.xiaoju"
+    printf 'TOKEN=%q\nCREATORS=%q\nAPI=%q\n' "$TOK" "$IDS" "$API" > "$HOME/.xiaoju/env"
+    chmod 600 "$HOME/.xiaoju/env"
+  else
+    echo "== 没领到口令：$CFG =="
+  fi
+fi
 if [ ! -s "$HOME/.xiaoju/env" ]; then
   echo "== 第一次用：在 Telegram 给小橘发「云电脑」，把第二条消息粘贴到下面的终端里回车 =="
   exit 0
