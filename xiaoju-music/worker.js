@@ -1237,6 +1237,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 登录抖音 —— 发你一个登录页，扫码登录后作品列表能看全（包括最新的）
 抖音自动同步 开 / 关 —— 每 30 分钟检查一次你的抖音，有新作品自动转到视频频道
 发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
+发 MediaCrawler 导出的作品文件（.jsonl / .json）—— 里面的作品全部转进视频频道
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
 新搬进来的歌会按类型自动放进对应的歌单。`;
@@ -1251,6 +1252,8 @@ async function botUpdate(env, update, origin) {
   if (update.callback_query) return botButton(env, update.callback_query, owner, origin);
   const m = update.message;
   const chat = m.chat.id, isOwner = owner && m.from && m.from.id === owner;
+  // 频道主发来 MediaCrawler 导出的作品文件（.json / .jsonl）：里面的作品全部转进视频频道
+  if (isOwner && m.document && /\.(jsonl?|txt)$/i.test(m.document.file_name || '')) return ownerDouyinImport(env, chat, m.document);
   // 频道主发来视频文件：问一句要不要转到视频频道（不自动发，免得发错）
   if (isOwner && env.VIDEO_CHANNEL_ID && (m.video || (m.document && /^video\//.test(m.document.mime_type || '')))) {
     return say(env, chat, '要把这个视频转到视频频道吗？', [[{ text: '📤 转到视频频道', callback_data: `fv:${m.message_id}` }]]);
@@ -1565,6 +1568,30 @@ async function douyinSelves(L) {
   if (!raw) return [];
   try { const a = JSON.parse(raw); if (Array.isArray(a)) return a; } catch {}
   return [raw];
+}
+
+// MediaCrawler（频道主在自己的云电脑上登录抖音抓的）导出的 creator_contents 文件：交给流式服务逐条下载、发帖
+async function ownerDouyinImport(env, chat, doc) {
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return say(env, chat, '解析服务或视频频道没配置');
+  if ((doc.file_size || 0) > BOT_DOWNLOAD_LIMIT) return say(env, chat, '文件超过 20 MB，拆成几个再发');
+  let textBody;
+  try {
+    const res = await fetchFile(env, doc.file_id, null);
+    if (!res.ok) throw new Error(String(res.status));
+    textBody = await res.text();
+  } catch {
+    return say(env, chat, '这个文件取不下来，再发一次试试');
+  }
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/import', { text: textBody, target: env.VIDEO_CHANNEL_ID, notify: chat });
+  } catch {
+    return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次文件');
+  }
+  if (r.status === 400) return say(env, chat, r.data.detail || '文件里没认出抖音作品');
+  if (r.status === 409) return say(env, chat, '正在处理别的抖音任务，好了以后再发一次文件');
+  if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次文件');
+  return say(env, chat, `收到 👌 文件里有 ${r.data.total} 条作品（视频 ${r.data.video}、图文 ${r.data.images}），开始转进视频频道，已经有的跳过，转完告诉你`);
 }
 
 // 「添加抖音账号 <主页分享链接>」：加一个频道主自己的账号（小号）

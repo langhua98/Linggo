@@ -101,7 +101,8 @@ def caption(item, limit=CAPTION_LIMIT):
     day = time.strftime('%Y-%m-%d', time.gmtime(item['time'] + 8 * 3600)) if item.get('time') else ''
     icon = '🖼' if item.get('kind') == 'images' else '📹'
     link = item.get('url') or share_url(item['id'], item.get('kind'))
-    tail = f'{icon} 抖音 @{item.get("author") or "?"}' + (f' · {day}' if day else '') + f'\n{link}'
+    who = f' @{item["author"]}' if item.get('author') else ''
+    tail = f'{icon} 抖音{who}' + (f' · {day}' if day else '') + f'\n{link}'
     desc = item.get('desc') or ''
     room = limit - _u16(tail) - 2
     if _u16(desc) > room:

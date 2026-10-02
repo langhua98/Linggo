@@ -44,6 +44,39 @@ class DouyinJob:
         self._begin(lambda: self._one(aweme_id, notify, target), mode='one', id=aweme_id, target=target, msg=None,
                     fresh=False, desc='')
 
+    def start_import(self, items, notify=None, target=None):
+        """MediaCrawler 导出的作品（频道主自己登录抓的，见 mcimport.py）：按发布顺序转进频道，已有的跳过"""
+        self._begin(lambda: self._import(items, notify, target), mode='import', target=target, name='',
+                    total=len(items), posted=[], skipped=[], failed=[], other=0, hidden_newest=False, truncated=False)
+
+    async def _import(self, items, notify, target):
+        st = self.state
+        try:
+            done = await self.posted_ids(target)
+            st['other'] = sum(i['kind'] not in ('video', 'images') for i in items)
+            names = sorted({i['author'] for i in items if i['author']})
+            st['name'] = '、@'.join(names)
+            async with self.web() as w:
+                for item in sorted((i for i in items if i['kind'] in ('video', 'images')), key=lambda i: i['time']):
+                    row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
+                    try:
+                        row['msg'], fresh = await self._post(w, item, target, done)
+                    except (DownloadError, Gone) as e:
+                        row['reason'] = str(e)
+                        st['failed'].append(row)
+                        continue
+                    (st['posted'] if fresh else st['skipped']).append(row)
+                    if fresh:
+                        await asyncio.sleep(self.pause)
+            st['status'] = 'done'
+            await self._tell(notify, mirror_report(st))
+        except asyncio.CancelledError:
+            st['status'] = 'stopped'
+        except Exception as e:  # noqa: BLE001
+            log.exception('douyin import failed')
+            st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'[:200]
+            await self._tell(notify, f'转作品的时候出错了（{type(e).__name__}），已转 {len(st["posted"])} 条')
+
     def start_collect(self, sec_uid, limit=300, notify=None):
         self._begin(lambda: self._collect(sec_uid, limit, notify), mode='collect', sec_uid=sec_uid, name='',
                     links=[], hidden_newest=False, truncated=False)
@@ -189,7 +222,7 @@ KIND_NAMES = {'video': '视频', 'images': '图文'}
 def mirror_report(st):
     posted = st['posted']
     counts = '、'.join(f'{name} {n}' for k, name in KIND_NAMES.items() if (n := sum(r.get('kind') == k for r in posted)))
-    lines = [f'📤 抖音 @{st["name"] or "?"}：转进视频频道 {len(posted)} 条' + (f'（{counts}）' if counts else '')]
+    lines = [f'📤 抖音{" @" + st["name"] if st["name"] else ""}：转进视频频道 {len(posted)} 条' + (f'（{counts}）' if counts else '')]
     lines += [f'· {_day(r["time"])} [{KIND_NAMES.get(r.get("kind"), "?")}] {r["desc"][:30]}' for r in posted]
     if st['skipped']:
         lines.append(f'频道里已经有的 {len(st["skipped"])} 条跳过')

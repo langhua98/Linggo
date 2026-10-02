@@ -130,7 +130,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
   // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
-  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global|harvest|douyin\/link|douyin\/mirror|douyin\/login|douyin\/resolve|douyin\/import)(?:\?(.*))?$/)) || url === STREAMER + '/') {
     if (bot.streamerDown) throw new TypeError('fetch failed');
     if (url === STREAMER + '/') return Response.json({ ok: true });
     assert.equal(headers.get('X-Key'), SKEY);
@@ -140,6 +140,10 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/pick') return Response.json({ new_ids: [bot.pickId] });
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
+    if (m[1] === 'douyin/import') {
+      if (!/aweme_id/.test(body.text)) return Response.json({ detail: '文件里没认出抖音作品' }, { status: 400 });
+      return Response.json({ ok: true, total: 2, video: 1, images: 1 });
+    }
     if (m[1] === 'douyin/resolve') {
       if (/\/user\/(\w+)/.test(body.text)) return Response.json({ kind: 'user', id: 'MS4wLjABAAAA' + body.text.match(/\/user\/(\w+)/)[1] });
       if (/video/.test(body.text)) return Response.json({ kind: 'aweme', id: '123456789' });
@@ -1030,6 +1034,16 @@ await t('登录抖音、抖音自动同步：定时任务只在开了时转，�
   assert.deepEqual([r.path, r.body.target, r.body.quiet, r.body.notify], ['douyin/mirror', String(VIDEO_CHANNEL), true, OWNER]);
   await dm(OWNER, '抖音自动同步 关');
   assert.equal(await lib.getConfig('douyinAuto'), '0');
+});
+
+await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视频频道', async () => {
+  const fid = addFile(new TextEncoder().encode('{"aweme_id": "1", "desc": "x"}\n'));
+  await hook({ update_id: 5, message: { message_id: 88, from: { id: OWNER }, chat: { id: OWNER, type: 'private' },
+    document: { file_id: fid, file_name: 'creator_contents_2026-10-03.jsonl', mime_type: 'application/octet-stream', file_size: 30 } } });
+  const r = bot.toStreamer.at(-1);
+  assert.deepEqual([r.path, r.body.target, r.body.notify], ['douyin/import', String(VIDEO_CHANNEL), OWNER]);
+  assert.match(r.body.text, /aweme_id/);
+  assert.match(lastSay().text, /文件里有 2 条作品（视频 1、图文 1）/);
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {

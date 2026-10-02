@@ -924,3 +924,66 @@ def test_mirror_several_accounts_and_one_blocked_does_not_stop_the_others():
     assert sent == ['1', '2'] and st['name'] == '丁、@小号' and st['hidden_newest'] and st['blocked_accounts'] == 1
     st = asyncio.run(go([SEC2 + 'X']))
     assert st['status'] == 'error' and st['blocked']
+
+
+# ── MediaCrawler 导出的文件 ──
+
+MC_ROW_VIDEO = {'aweme_id': '7647364906534950114', 'aweme_type': '0', 'desc': '视频一', 'create_time': 1780000000,
+                'nickname': '丁', 'video_download_url': 'https://v26.douyinvod.com/a/play', 'note_download_url': '',
+                'cover_url': 'https://p/c.jpg'}
+MC_ROW_NOTE = {'aweme_id': '7675967931876579407', 'desc': '图文一', 'create_time': 1781000000, 'nickname': '冰***💍',
+               'video_download_url': 'https://v26.douyinvod.com/music.mp3',
+               'note_download_url': 'https://p/1.jpeg,https://p/2.jpeg'}
+
+
+def test_parse_mediacrawler_jsonl_and_json():
+    import json as J
+    from douyin.mcimport import parse_export
+    jsonl = '\n'.join(J.dumps(r, ensure_ascii=False) for r in (MC_ROW_VIDEO, MC_ROW_NOTE, MC_ROW_VIDEO)) + '\nnot json\n'
+    items = parse_export(jsonl)
+    assert [(i['id'], i['kind']) for i in items] == [('7647364906534950114', 'video'), ('7675967931876579407', 'images')]
+    v, n = items
+    assert v['sources'][0]['urls'] == ['https://v26.douyinvod.com/a/play'] and v['author'] == '丁'
+    assert [x['urls'][0] for x in n['images']] == ['https://p/1.jpeg', 'https://p/2.jpeg'] and n['author'] == ''
+    assert n['url'] == 'https://www.douyin.com/note/7675967931876579407'
+    assert caption(n).endswith('🖼 抖音 · 2026-06-09\nhttps://www.douyin.com/note/7675967931876579407')
+    assert [i['id'] for i in parse_export(J.dumps([MC_ROW_NOTE]))] == ['7675967931876579407']
+    assert parse_export('') == [] and parse_export('[{"aweme_id": "abc"}]') == []
+
+
+def test_import_job_and_endpoint(monkeypatch):
+    import json as J
+    from douyin.mcimport import parse_export
+    sent = []
+
+    async def send_video(data, item, src, text, target):
+        sent.append(('video', item['id']))
+        return 1
+
+    async def send_images(images, item, text, target):
+        sent.append(('images', item['id'], len(images)))
+        return 2
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=FakeWeb(), send_video=send_video, send_images=send_images, posted_ids=posted_ids, pause=0)
+        job.start_import(parse_export(J.dumps([MC_ROW_NOTE, MC_ROW_VIDEO])), target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert st['status'] == 'done' and sent == [('video', '7647364906534950114'), ('images', '7675967931876579407', 2)]
+
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    started = []
+    job = DouyinJob(web=None, send_video=None, posted_ids=None)
+    monkeypatch.setattr(job, 'start_import', lambda items, notify=None, target=None: started.append((len(items), target)))
+    monkeypatch.setattr(appmod, 'douyin_job', job)
+    monkeypatch.setattr(appmod, 'douyin_login', None)
+    c = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    assert c.post('/douyin/import', json={'text': 'x', 'target': str(VIDEO_CHANNEL)}, headers=key).status_code == 400
+    r = c.post('/douyin/import', json={'text': J.dumps([MC_ROW_VIDEO, MC_ROW_NOTE]), 'target': str(VIDEO_CHANNEL)}, headers=key)
+    assert r.json() == {'ok': True, 'total': 2, 'video': 1, 'images': 1} and started == [(2, VIDEO_CHANNEL)]

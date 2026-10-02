@@ -470,6 +470,7 @@ from harvest.sites import ADAPTERS as HARVEST_SITES
 from douyin import links as dy_links
 from douyin.job import DouyinJob
 from douyin.login import QrLogin, restore_state, state_logged_in
+from douyin.mcimport import parse_export
 from douyin.web import STATE_FILE as DOUYIN_STATE_FILE, DouyinWeb, DownloadError as DouyinDownloadError
 
 streamer = None
@@ -785,6 +786,16 @@ async def harvest_status(request: Request):
 
 # ── 抖音视频转到频道（不登录；逻辑在 douyin/ 里）────────────────────────
 
+def probe_seconds(path):
+    """视频有几秒（MediaCrawler 导出的作品不带时长）；量不出 → 0"""
+    try:
+        r = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
+                           capture_output=True, text=True, timeout=60)
+        return round(float(r.stdout.strip()))
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return 0
+
+
 def remux_faststart(src, dst):
     """把索引（moov）挪到文件开头，Telegram 才能边下边播；顺便确认是个完好的视频。不行返回 False"""
     try:
@@ -846,10 +857,11 @@ async def douyin_send_video(data, item, src, text, target):
         with open(raw, 'wb') as f:
             f.write(data)
         path = mp4 if await asyncio.to_thread(remux_faststart, raw, mp4) else raw
+        seconds = item['seconds'] or await asyncio.to_thread(probe_seconds, path)
         thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
         sent = await flood_retry(lambda: client.send_file(
             chat, path, caption=text, thumb=thumb, supports_streaming=True, link_preview=False,
-            attributes=[DocumentAttributeVideo(duration=item['seconds'], w=src.get('width') or item['width'] or 720,
+            attributes=[DocumentAttributeVideo(duration=seconds, w=src.get('width') or item['width'] or 720,
                                                h=src.get('height') or item['height'] or 1280, supports_streaming=True)]))
     return sent.id
 
@@ -969,6 +981,24 @@ async def douyin_resolve(request: Request):
     if not got:
         raise HTTPException(400, '没认出抖音链接')
     return {'kind': got[0], 'id': got[1]}
+
+
+@app.post('/douyin/import')
+async def douyin_import(request: Request):
+    """{text: MediaCrawler 导出文件的内容, target, notify}：把里面的作品转进 target 频道。认不出 → 400；正在跑别的 → 409"""
+    check_key(request)
+    body = await request.json()
+    target = parse_target(body.get('target'))
+    if target is None:
+        raise HTTPException(400, '没设置视频频道')
+    items = parse_export(str(body.get('text', '')))
+    if not items:
+        raise HTTPException(400, '文件里没认出抖音作品（要 MediaCrawler 导出的 creator_contents 文件）')
+    if douyin_busy():
+        raise HTTPException(409, 'busy')
+    douyin_job.start_import(items, notify=body.get('notify') or None, target=target)
+    kinds = [i['kind'] for i in items]
+    return {'ok': True, 'total': len(items), 'video': kinds.count('video'), 'images': kinds.count('images')}
 
 
 @app.post('/douyin/mirror')
