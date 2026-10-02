@@ -234,6 +234,11 @@ class FakeWeb:
             raise self.download_error
         return b'mp4', item['sources'][0]
 
+    async def download_images(self, item):
+        if self.download_error:
+            raise self.download_error
+        return [b'jpg%d' % n for n in range(len(item['images']))]
+
 
 def run_job(web, posted=None):
     said, sent = [], []
@@ -241,6 +246,10 @@ def run_job(web, posted=None):
     async def send_video(data, item, src, text, target):
         sent.append((data, item['id'], src['width'], text, target))
         return 2600
+
+    async def send_images(images, item, text, target):
+        sent.append((images, item['id'], text, target))
+        return 2700
 
     async def posted_ids(target):
         assert target == VIDEO_CHANNEL
@@ -250,7 +259,7 @@ def run_job(web, posted=None):
         said.append((chat, text))
 
     async def go():
-        job = DouyinJob(web=web, send_video=send_video, posted_ids=posted_ids, say=say)
+        job = DouyinJob(web=web, send_video=send_video, send_images=send_images, posted_ids=posted_ids, say=say)
         job.start('7691335977760321704', notify=42, target=VIDEO_CHANNEL)
         try:
             job.start('1', notify=42)
@@ -284,8 +293,12 @@ def test_job_reports_why_it_could_not():
     assert not st['blocked'] and '转不了：作品不存在' in said[0][1]
     st, said, _ = run_job(FakeWeb(normalize(aweme()), download_error=DownloadError('HTTP 403')))
     assert st['status'] == 'error' and 'HTTP 403' in said[0][1]
-    st, said, sent = run_job(FakeWeb(normalize(aweme(images=[{'url_list': ['x']}]))))
-    assert sent == [] and '图文' in said[0][1]
+    note = normalize(aweme(images=[{'url_list': ['https://p/1.webp']}, {'url_list': ['https://p/2.jpeg']}]))
+    st, said, sent = run_job(FakeWeb(note))
+    assert sent == [([b'jpg0', b'jpg1'], '7691335977760321704', caption(note), VIDEO_CHANNEL)] and st['msg'] == 2700
+    assert said == [(42, '✅ 已转到视频频道：特效一用谁都不认')]
+    st, said, sent = run_job(FakeWeb(normalize(aweme(video={}, images=None))))  # 不是视频也不是图文
+    assert sent == [] and '转不了' in said[0][1]
 
 
 # ── 接口 ──
@@ -505,7 +518,9 @@ def test_mirror_posts_the_videos_oldest_first_and_skips_what_is_there():
             return ([normalize(aweme(aweme_id='300', desc='新的', create_time=1790000300)),
                      normalize(aweme(aweme_id='100', desc='旧的', create_time=1790000100)),
                      normalize(aweme(aweme_id='200', desc='已经有了', create_time=1790000200)),
-                     normalize(aweme(aweme_id='400', desc='图文', images=[{}]))],
+                     normalize(aweme(aweme_id='400', desc='图文', create_time=1790000400,
+                                     images=[{'url_list': ['https://p/a.jpeg']}, {'url_list': ['https://p/b.webp']}])),
+                     normalize(aweme(aweme_id='500', desc='直播回放', video={}, images=None))],
                     {'hidden_newest': True, 'truncated': False})
 
         async def download(self, item):
@@ -516,7 +531,11 @@ def test_mirror_posts_the_videos_oldest_first_and_skips_what_is_there():
     sent, said = [], []
 
     async def send_video(data, item, src, text, target):
-        sent.append((item['id'], target))
+        sent.append(('video', item['id'], target))
+        return 5000 + len(sent)
+
+    async def send_images(images, item, text, target):
+        sent.append(('images', item['id'], target, len(images)))
         return 5000 + len(sent)
 
     async def posted_ids(target):
@@ -526,18 +545,20 @@ def test_mirror_posts_the_videos_oldest_first_and_skips_what_is_there():
         said.append(text)
 
     async def go():
-        job = DouyinJob(web=Web(), send_video=send_video, posted_ids=posted_ids, say=say, pause=0)
+        job = DouyinJob(web=Web(), send_video=send_video, send_images=send_images, posted_ids=posted_ids, say=say, pause=0)
         job.start_mirror(SEC, notify=42, target=VIDEO_CHANNEL)
         await job.task
         return job.state
 
     st = asyncio.run(go())
-    assert st['status'] == 'done' and sent == [('100', VIDEO_CHANNEL)]
-    assert [r['id'] for r in st['posted']] == ['100'] and [r['id'] for r in st['skipped']] == ['200']
+    assert st['status'] == 'done'
+    assert sent == [('video', '100', VIDEO_CHANNEL), ('images', '400', VIDEO_CHANNEL, 2)], '旧的先发，图文发成相册'
+    assert [r['id'] for r in st['posted']] == ['100', '400'] and [r['id'] for r in st['skipped']] == ['200']
     assert [(r['id'], r['reason']) for r in st['failed']] == [('300', 'HTTP 403')]
     text = said[0]
-    assert text.startswith('📤 抖音 @丁：转进视频频道 1 条视频')
-    assert '已经有的 1 条跳过' in text and '新的：HTTP 403' in text and '图文作品 1 条没转' in text
+    assert text.startswith('📤 抖音 @丁：转进视频频道 2 条（视频 1、图文 1）')
+    assert '[图文] 图文' in text and '[视频] 旧的' in text
+    assert '已经有的 1 条跳过' in text and '新的：HTTP 403' in text and '还有 1 条不是视频也不是图文' in text
     assert '最新的几条' in text and '第一页以后' not in text
 
 
@@ -628,3 +649,94 @@ def test_douyin_posted_reads_work_ids_from_captions(monkeypatch):
     assert got == {'7647364906534950114': 5, '7675967931876579407': 3}
     monkeypatch.setattr(appmod, 'user_client', None)
     assert asyncio.run(appmod.douyin_posted(-1004292843233)) == {}
+
+
+# ── 图文 ──
+
+def test_image_sources_keep_order_and_prefer_jpeg():
+    imgs = [{'url_list': ['https://a/1.webp', 'https://b/1.jpeg'], 'download_url_list': ['https://wm/1'], 'width': 1080, 'height': 1440},
+            {'url_list': []},  # 没地址的跳过
+            {'url_list': ['https://a/2~tplv-dy-aweme-images:q75.webp']}]
+    from douyin.items import image_sources
+    got = image_sources(imgs)
+    assert [g['urls'] for g in got] == [['https://b/1.jpeg', 'https://a/1.webp'], ['https://a/2~tplv-dy-aweme-images:q75.webp']]
+    assert got[0]['width'] == 1080
+    note = normalize(aweme(images=imgs))
+    assert note['kind'] == 'images' and len(note['images']) == 2
+    assert all('wm' not in u for i in note['images'] for u in i['urls']), '带水印的不用'
+    assert caption(note) == ('特效一用谁都不认\n\n🖼 抖音 @丁 · 2026-09-30\nhttps://www.douyin.com/note/7691335977760321704')
+    assert normalize(aweme())['images'] == []
+
+
+def test_download_images_gets_every_picture_or_none():
+    note = normalize(aweme(images=[{'url_list': ['https://p/1.jpeg', 'https://q/1.jpeg']}, {'url_list': ['https://p/2.webp']}]))
+    w = web_with({'https://p/1.jpeg': FakeResponse(status=404), 'https://q/1.jpeg': FakeResponse(kind='image/jpeg', body=b'1' * 5000),
+                  'https://p/2.webp': FakeResponse(kind='image/webp', body=b'2' * 3000)})
+    assert asyncio.run(w.download_images(note)) == [b'1' * 5000, b'2' * 3000]
+    w = web_with({'https://p/1.jpeg': FakeResponse(kind='image/jpeg', body=b'1' * 5000)})  # 第二张拿不到
+    try:
+        asyncio.run(w.download_images(note))
+        raise AssertionError('should fail')
+    except DownloadError as e:
+        assert '第 2 张' in str(e)
+
+
+class FakeTelegram:
+    def __init__(self, reject_photos=False):
+        self.calls, self.reject_photos = [], reject_photos
+
+    async def get_input_entity(self, target):
+        return target
+
+    async def send_file(self, chat, files, caption=None, link_preview=None, force_document=False):
+        self.calls.append((chat, files if isinstance(files, str) else list(files), caption, force_document))
+        if self.reject_photos and not force_document:
+            from telethon.errors import PhotoInvalidDimensionsError
+            raise PhotoInvalidDimensionsError(request=None)
+        from types import SimpleNamespace as NS
+        return [NS(id=31), NS(id=32)] if isinstance(files, list) else NS(id=30)
+
+
+def test_send_images_as_an_album_with_the_caption(monkeypatch):
+    tg = FakeTelegram()
+    monkeypatch.setattr(appmod, 'user_client', tg)
+    monkeypatch.setattr(appmod, 'to_photo', lambda data: (data, '.jpg') if data != b'bad' else None)
+    note = normalize(aweme(images=[{'url_list': ['x']}] * 2))
+    assert asyncio.run(appmod.douyin_send_images([b'a', b'b'], note, 'cap', VIDEO_CHANNEL)) == 31
+    chat, files, cap, as_doc = tg.calls[-1]
+    assert chat == VIDEO_CHANNEL and len(files) == 2 and files[0].endswith('_01.jpg') and cap == 'cap' and not as_doc
+    assert asyncio.run(appmod.douyin_send_images([b'a'], note, 'cap', VIDEO_CHANNEL)) == 30  # 一张：不发成相册
+    assert isinstance(tg.calls[-1][1], str)
+    try:
+        asyncio.run(appmod.douyin_send_images([b'a', b'bad'], note, 'cap', VIDEO_CHANNEL))
+        raise AssertionError('should fail')
+    except DownloadError as e:
+        assert '第 2 张' in str(e)
+
+
+def test_send_images_falls_back_to_files_when_telegram_rejects_the_photos(monkeypatch):
+    tg = FakeTelegram(reject_photos=True)
+    monkeypatch.setattr(appmod, 'user_client', tg)
+    monkeypatch.setattr(appmod, 'to_photo', lambda data: (data, '.jpg'))
+    note = normalize(aweme(images=[{'url_list': ['x']}] * 2))
+    assert asyncio.run(appmod.douyin_send_images([b'a', b'b'], note, 'cap', VIDEO_CHANNEL)) == 31
+    assert [c[3] for c in tg.calls] == [False, True]
+
+
+def test_flood_retry_waits_and_tries_again(monkeypatch):
+    from telethon.errors import FloodWaitError
+    slept, tries = [], []
+
+    async def fake_sleep(n):
+        slept.append(n)
+
+    monkeypatch.setattr(appmod.asyncio, 'sleep', fake_sleep)
+
+    async def send():
+        tries.append(1)
+        if len(tries) < 2:
+            e = FloodWaitError(request=None, capture=7)
+            raise e
+        return 'ok'
+
+    assert asyncio.run(appmod.flood_retry(send)) == 'ok' and slept == [8] and len(tries) == 2

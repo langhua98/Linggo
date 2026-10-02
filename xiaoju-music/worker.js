@@ -1216,7 +1216,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
 抖音视频的分享链接 —— 不登录解析，把这条视频转到视频频道
 抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
-转抖音视频 —— 把你自己抖音账号能看到的视频都转到视频频道（已有的跳过）
+转抖音视频 —— 把你自己抖音账号能看到的作品（视频和图文）都转到视频频道，已有的跳过
 发一个视频文件 —— 点按钮转到视频频道（抖音解析不了的时候用）
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
@@ -1535,7 +1535,7 @@ async function ownerDouyin(env, chat, t) {
   return say(env, chat, '收到 👌 正在解析这条抖音视频，大约半分钟，转好了告诉你');
 }
 
-// 「转抖音视频」：把频道主自己的抖音账号（config 的 douyinSelf，管理接口 douyin-self 设）能看到的视频都转到视频频道。
+// 「转抖音视频」：把频道主自己的抖音账号（config 的 douyinSelf，管理接口 douyin-self 设）能看到的作品（视频和图文）都转到视频频道。
 // 只认频道主自己的账号：别人的作品不批量搬
 async function ownerDouyinMirror(env, chat) {
   if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
@@ -1550,7 +1550,7 @@ async function ownerDouyinMirror(env, chat) {
   }
   if (r.status === 409) return say(env, chat, '正在处理上一个链接，好了会告诉你，之后再发');
   if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次');
-  return say(env, chat, '收到 👌 正在把你抖音上能看到的视频转到视频频道（不登录），转好了告诉你');
+  return say(env, chat, '收到 👌 正在把你抖音上能看到的作品（视频和图文）转到视频频道（不登录），转好了告诉你');
 }
 
 function rows(buttons, per = 2) {

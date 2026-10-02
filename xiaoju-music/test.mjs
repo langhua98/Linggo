@@ -989,7 +989,7 @@ await t('转抖音视频：只转频道主自己的抖音账号（管理接口�
   await dm(OWNER, '转抖音视频');
   const r = bot.toStreamer.at(-1);
   assert.deepEqual([r.path, r.body.sec_uid, r.body.target, r.body.notify], ['douyin/mirror', sec, String(VIDEO_CHANNEL), OWNER]);
-  assert.match(lastSay().text, /正在把你抖音上能看到的视频转到视频频道/);
+  assert.match(lastSay().text, /正在把你抖音上能看到的作品（视频和图文）转到视频频道/);
   const n = bot.toStreamer.length;
   await dm(FAN + 3, '转抖音视频'); // 听众发这个只当求歌
   assert.ok(bot.toStreamer.slice(n).every(x => x.path !== 'douyin/mirror'));

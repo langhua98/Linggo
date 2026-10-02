@@ -37,7 +37,8 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
-from telethon.errors import ChatForwardsRestrictedError, FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
+from telethon.errors import (ChatForwardsRestrictedError, FileReferenceExpiredError, FloodWaitError, ImageProcessFailedError,
+                             PhotoExtInvalidError, PhotoInvalidDimensionsError, PhotoSaveFileInvalidError, SessionPasswordNeededError)
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
@@ -468,7 +469,7 @@ from harvest import license as harvest_license
 from harvest.sites import ADAPTERS as HARVEST_SITES
 from douyin import links as dy_links
 from douyin.job import DouyinJob
-from douyin.web import DouyinWeb
+from douyin.web import DouyinWeb, DownloadError as DouyinDownloadError
 
 streamer = None
 harvester = None    # 授权音频搬运（贴网址搬）
@@ -530,7 +531,8 @@ async def lifespan(app):
 
     harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
     global douyin_job
-    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, posted_ids=douyin_posted, say=bot_say)
+    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, send_images=douyin_send_images,
+                           posted_ids=douyin_posted, say=bot_say)
     log.info('logged in to Telegram as a bot')
 
     async def fetch_message(channel, message_id):
@@ -818,6 +820,17 @@ async def channel_entity(client, target):
         return await client.get_entity(target)  # 机器人没有聊天列表，按 id 直接问
 
 
+async def flood_retry(send, tries=3):
+    """发帖碰上 Telegram 限流（FloodWait）：等它说的秒数再发，最多等 10 分钟"""
+    for i in range(tries):
+        try:
+            return await send()
+        except FloodWaitError as e:
+            if i == tries - 1 or e.seconds > 600:
+                raise
+            await asyncio.sleep(e.seconds + 1)
+
+
 async def douyin_send_video(data, item, src, text, target):
     """发进 target 频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
     client = user_client or bot_client
@@ -828,11 +841,51 @@ async def douyin_send_video(data, item, src, text, target):
             f.write(data)
         path = mp4 if await asyncio.to_thread(remux_faststart, raw, mp4) else raw
         thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
-        sent = await client.send_file(
+        sent = await flood_retry(lambda: client.send_file(
             chat, path, caption=text, thumb=thumb, supports_streaming=True, link_preview=False,
             attributes=[DocumentAttributeVideo(duration=item['seconds'], w=src.get('width') or item['width'] or 720,
-                                               h=src.get('height') or item['height'] or 1280, supports_streaming=True)])
+                                               h=src.get('height') or item['height'] or 1280, supports_streaming=True)]))
     return sent.id
+
+
+def to_photo(data):
+    """图 → (字节, 扩展名)，Telegram 能当照片发的格式。JPEG、PNG 原样；别的（抖音常给 WebP，Telegram 不当照片）用
+    ffmpeg 转成 JPEG。转不了 → None"""
+    if data[:3] == b'\xff\xd8\xff':
+        return data, '.jpg'
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return data, '.png'
+    try:
+        r = subprocess.run(['ffmpeg', '-v', 'error', '-i', 'pipe:0', '-frames:v', '1', '-q:v', '2', '-f', 'mjpeg', 'pipe:1'],
+                           input=data, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (r.stdout, '.jpg') if r.returncode == 0 and r.stdout[:3] == b'\xff\xd8\xff' else None
+
+
+PHOTO_REJECTED = (PhotoInvalidDimensionsError, PhotoSaveFileInvalidError, ImageProcessFailedError, PhotoExtInvalidError)
+
+
+async def douyin_send_images(images, item, text, target):
+    """图文发进 target 频道：发成相册（一组最多 10 张，多了 Telethon 自动分组；说明在第一张上），返回第一条的消息号。
+    长得太夸张的长图 Telegram 不收当照片：那就整条当文件发"""
+    client = user_client or bot_client
+    chat = await channel_entity(client, target)
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for n, data in enumerate(images, 1):
+            got = await asyncio.to_thread(to_photo, data)
+            if got is None:
+                raise DouyinDownloadError(f'第 {n} 张图的格式认不出')
+            paths.append(os.path.join(d, f'douyin_{item["id"]}_{n:02d}{got[1]}'))
+            with open(paths[-1], 'wb') as f:
+                f.write(got[0])
+        files = paths if len(paths) > 1 else paths[0]  # 只有一张就别发成相册
+        try:
+            sent = await flood_retry(lambda: client.send_file(chat, files, caption=text, link_preview=False))
+        except PHOTO_REJECTED:
+            sent = await flood_retry(lambda: client.send_file(chat, files, caption=text, link_preview=False, force_document=True))
+    return (sent[0] if isinstance(sent, list) else sent).id
 
 
 DOUYIN_ID_IN_TEXT = re.compile(r'douyin\.com/(?:video|note)/(\d{8,24})')

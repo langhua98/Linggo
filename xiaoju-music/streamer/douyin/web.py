@@ -32,6 +32,7 @@ CALL_JS = """async ({path, params}) => {
   return {status: r.status, text: await r.text()};
 }"""
 MAX_VIDEO_BYTES = 300 * 1024 * 1024
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # Telegram 照片的上限
 # 页面去取滑块验证码的请求：出现了就说明这次被风控拦了（不去做验证码）
 CAPTCHA = re.compile(r'verify\.zijieapi\.com/captcha/get|/verifycenter/captcha/v\d')
 CAPTCHA_MSG = '抖音弹了滑块验证（风控）'
@@ -115,8 +116,8 @@ class Tab:
 
 
 class DouyinWeb:
-    """async with DouyinWeb() as w: items, hidden = await w.posts(sec_uid)；item = await w.detail(作品号)；
-    data, src = await w.download(item)"""
+    """async with DouyinWeb() as w: items, info = await w.posts(sec_uid)；item = await w.detail(作品号)；
+    data, src = await w.download(item)（视频）；images = await w.download_images(item)（图文）"""
 
     def __init__(self, state_file=STATE_FILE, warmup=10.0, tries=4, gap=4.0, call_timeout=20, extra_args=()):
         self.state_file, self.warmup, self.tries, self.gap, self.call_timeout = state_file, warmup, tries, gap, call_timeout
@@ -244,32 +245,53 @@ class DouyinWeb:
             raise Gone(why or '这条作品看不了（可能删了或设了私密）')
         return normalize(a)
 
+    async def _get_file(self, urls, kinds, min_bytes, max_bytes):
+        """几个 CDN 地址一个个试，拿到内容类型对得上、大小合理的文件 → (字节, None)；都不行 → (None, 最后一个原因)"""
+        last = '没有下载地址'
+        for url in urls:
+            try:
+                r = await self.ctx.request.get(url, headers={'Referer': 'https://www.douyin.com/'}, timeout=180000)
+            except Exception as e:  # noqa: BLE001
+                last = type(e).__name__
+                continue
+            try:
+                kind = r.headers.get('content-type', '')
+                if r.status != 200 or not kind.startswith(kinds):
+                    last = f'HTTP {r.status} {kind}'.strip()
+                    continue
+                if int(r.headers.get('content-length') or 0) > max_bytes:
+                    last = '文件太大'
+                    continue
+                data = await r.body()
+            finally:
+                await r.dispose()
+            if len(data) < min_bytes or len(data) > max_bytes:
+                last = f'文件大小不对（{len(data)} 字节）'
+                continue
+            return data, None
+        return None, last
+
     async def download(self, item, max_bytes=MAX_VIDEO_BYTES):
-        """按 video_sources 的顺序一个个试，返回视频文件的字节和用的是哪一档"""
+        """视频：按 video_sources 的顺序一档档试 → (视频的字节, 用的是哪一档)"""
         last = '没有下载地址'
         for src in item['sources']:
             if src['size'] and src['size'] > max_bytes:
-                last = '视频太大'
+                last = '文件太大'
                 continue
-            for url in src['urls']:
-                try:
-                    r = await self.ctx.request.get(url, headers={'Referer': 'https://www.douyin.com/'}, timeout=180000)
-                except Exception as e:  # noqa: BLE001
-                    last = type(e).__name__
-                    continue
-                try:
-                    kind = r.headers.get('content-type', '')
-                    if r.status != 200 or not (kind.startswith('video/') or kind.startswith('application/octet-stream')):
-                        last = f'HTTP {r.status} {kind}'.strip()
-                        continue
-                    if int(r.headers.get('content-length') or 0) > max_bytes:
-                        last = '视频太大'
-                        continue
-                    data = await r.body()
-                finally:
-                    await r.dispose()
-                if len(data) < 10 * 1024 or len(data) > max_bytes:
-                    last = f'文件大小不对（{len(data)} 字节）'
-                    continue
+            data, why = await self._get_file(src['urls'], ('video/', 'application/octet-stream'), 10 * 1024, max_bytes)
+            if data is not None:
                 return data, src
+            last = why
         raise DownloadError(last)
+
+    async def download_images(self, item, max_bytes=MAX_IMAGE_BYTES):
+        """图文：每张图 → [字节]，按原来的顺序。有一张拿不到就整条不转（免得发出去缺图）"""
+        out = []
+        for n, img in enumerate(item['images'], 1):
+            data, why = await self._get_file(img['urls'], ('image/', 'application/octet-stream'), 1024, max_bytes)
+            if data is None:
+                raise DownloadError(f'第 {n} 张图下载不了（{why}）')
+            out.append(data)
+        if not out:
+            raise DownloadError('这条图文没有图')
+        return out

@@ -1,11 +1,11 @@
 """把抖音接口返回的一条作品整理成要用的几样东西：是视频还是图文、公开链接、发布时间、文案、下载地址。
 
-下载地址挑不带水印的 H.264：play_addr / bit_rate 里的都不带水印（带水印的是 download_addr，不用）；
-H.265 有的 Telegram 客户端放不了，排在最后。"""
+视频挑不带水印的 H.264：play_addr / bit_rate 里的都不带水印（带水印的是 download_addr，不用）；
+H.265 有的 Telegram 客户端放不了，排在最后。图文的每张图用 url_list（download_url_list 带水印，不用），JPEG 的地址排前面。"""
 
+import re
 import time
 
-DOUYIN_VIDEO = 'https://www.douyin.com/video/'
 CAPTION_LIMIT = 1024  # Telegram 帖子说明的上限（按 UTF-16 算）
 
 
@@ -45,6 +45,16 @@ def video_sources(v):
     return out
 
 
+def image_sources(images):
+    """图文的每张图 → [{urls, width, height}]，按原来的顺序。每张的 urls 是几个 CDN 的同一张图，JPEG 的排前面"""
+    out = []
+    for img in images or []:
+        urls = sorted(_urls(img), key=lambda u: not re.search(r'jpe?g', u, re.I))
+        if urls:
+            out.append({'urls': urls, 'width': img.get('width') or 0, 'height': img.get('height') or 0})
+    return out
+
+
 def normalize(a):
     v = a.get('video') or {}
     author = a.get('author') or {}
@@ -69,6 +79,7 @@ def normalize(a):
         'width': v.get('width') or 0,
         'height': v.get('height') or 0,
         'sources': sources,
+        'images': image_sources(a.get('images')) if kind == 'images' else [],
         'cover': (_urls(v.get('origin_cover')) or _urls(v.get('cover')) or [''])[0],
     }
 
@@ -85,7 +96,9 @@ def _u16(s):
 def caption(item, limit=CAPTION_LIMIT):
     """频道帖子的说明：文案 + 来源（作者、发布日期、原视频链接）。链接里有作品号，查重也靠它。"""
     day = time.strftime('%Y-%m-%d', time.gmtime(item['time'] + 8 * 3600)) if item.get('time') else ''
-    tail = f'📹 抖音 @{item.get("author") or "?"}' + (f' · {day}' if day else '') + f'\n{DOUYIN_VIDEO}{item["id"]}'
+    icon = '🖼' if item.get('kind') == 'images' else '📹'
+    link = item.get('url') or share_url(item['id'], item.get('kind'))
+    tail = f'{icon} 抖音 @{item.get("author") or "?"}' + (f' · {day}' if day else '') + f'\n{link}'
     desc = item.get('desc') or ''
     room = limit - _u16(tail) - 2
     if _u16(desc) > room:
