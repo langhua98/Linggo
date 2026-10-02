@@ -891,3 +891,38 @@ def test_douyin_jobs_wait_while_logging_in(monkeypatch):
     c = TestClient(appmod.app)
     r = c.post('/douyin/mirror', json={'sec_uid': SEC, 'target': str(VIDEO_CHANNEL)}, headers={'X-Key': 'k1'})
     assert r.status_code == 409
+
+
+# ── 快捷指令转来的分享页 ──
+
+def test_parse_share_html_reads_router_data_and_drops_the_watermark():
+    from douyin.share import parse_share_html
+    import json as J
+    item = aweme()
+    item['video']['play_addr'] = {'url_list': ['https://aweme.snssdk.com/aweme/v1/playwm/?video_id=v1']}
+    item['video'].pop('bit_rate')
+    html = '<script>window._ROUTER_DATA = ' + J.dumps({'loaderData': {'video_(id)/page': {
+        'videoInfoRes': {'item_list': [item]}}}}) + '</script>'
+    it = parse_share_html(html)
+    assert it['id'] == '7691335977760321704' and it['kind'] == 'video'
+    assert all('/playwm/' not in u for s in it['sources'] for u in s['urls'])
+    assert parse_share_html('<html>抱歉出错了</html>') is None
+    assert parse_share_html('<script>window._ROUTER_DATA = {"loaderData": {"video_(id)/page": null}}</script>') is None
+
+
+def test_share_endpoint(monkeypatch):
+    import json as J
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    started = []
+    job = DouyinJob(web=None, send_video=None, posted_ids=None)
+    monkeypatch.setattr(job, 'start_item', lambda item, notify=None, target=None: started.append((item['id'], target)))
+    monkeypatch.setattr(appmod, 'douyin_job', job)
+    monkeypatch.setattr(appmod, 'douyin_login', None)
+    html = '<script>window._ROUTER_DATA = ' + J.dumps({'loaderData': {'p': {'videoInfoRes': {'item_list': [aweme()]}}}}) + '</script>'
+    c = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    assert c.post('/douyin/share', json={'html': html, 'target': str(VIDEO_CHANNEL)}).status_code == 403
+    r = c.post('/douyin/share', json={'html': '<html></html>', 'target': str(VIDEO_CHANNEL)}, headers=key)
+    assert r.status_code == 400 and '没有作品数据' in r.json()['detail']
+    r = c.post('/douyin/share', json={'html': html, 'target': str(VIDEO_CHANNEL)}, headers=key)
+    assert r.status_code == 200 and started == [('7691335977760321704', VIDEO_CHANNEL)]

@@ -44,6 +44,33 @@ class DouyinJob:
         self._begin(lambda: self._one(aweme_id, notify, target), mode='one', id=aweme_id, target=target, msg=None,
                     fresh=False, desc='')
 
+    def start_item(self, item, notify=None, target=None):
+        """已经拿到作品数据（快捷指令从手机上取的分享页）：直接下载、发帖"""
+        self._begin(lambda: self._item(item, notify, target), mode='share', id=item['id'], target=target, msg=None,
+                    fresh=False, desc=item['desc'][:60])
+
+    async def _item(self, item, notify, target):
+        st = self.state
+        try:
+            done = await self.posted_ids(target)
+            if item['id'] in done:
+                st['status'], st['msg'] = 'done', done[item['id']]
+                await self._tell(notify, '这条频道里已经有了 👌')
+                return
+            async with self.web() as w:
+                st['msg'], st['fresh'] = await self._post(w, item, target, done)
+            st['status'] = 'done'
+            await self._tell(notify, f'✅ 已转到视频频道：{item["desc"][:60] or item["id"]}')
+        except (DownloadError, Gone) as e:
+            st['status'], st['error'] = 'error', str(e)
+            await self._tell(notify, f'这条转不了：{e}')
+        except asyncio.CancelledError:
+            st['status'] = 'stopped'
+        except Exception as e:  # noqa: BLE001
+            log.exception('douyin share failed')
+            st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'[:200]
+            await self._tell(notify, f'转这条的时候出错了（{type(e).__name__}）')
+
     def start_collect(self, sec_uid, limit=300, notify=None):
         self._begin(lambda: self._collect(sec_uid, limit, notify), mode='collect', sec_uid=sec_uid, name='',
                     links=[], hidden_newest=False, truncated=False)

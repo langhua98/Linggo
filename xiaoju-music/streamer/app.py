@@ -470,6 +470,7 @@ from harvest.sites import ADAPTERS as HARVEST_SITES
 from douyin import links as dy_links
 from douyin.job import DouyinJob
 from douyin.login import QrLogin, restore_state, state_logged_in
+from douyin.share import parse_share_html
 from douyin.web import STATE_FILE as DOUYIN_STATE_FILE, DouyinWeb, DownloadError as DouyinDownloadError
 
 streamer = None
@@ -956,6 +957,26 @@ async def douyin_link(request: Request):
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return {'kind': kind, 'sec_uid': value} if kind == 'user' else {'kind': kind, 'id': value}
+
+
+@app.post('/douyin/share')
+async def douyin_share(request: Request):
+    """{html: 手机上打开的分享页, text: 分享文字, target, notify}：iOS 快捷指令转来的。页面里有作品就转进 target 频道；
+    没有 → 400（让快捷指令那边提示）；正在跑别的 → 409"""
+    check_key(request)
+    body = await request.json()
+    target = parse_target(body.get('target'))
+    if target is None:
+        raise HTTPException(400, '没设置视频频道')
+    item = parse_share_html(str(body.get('html', ''))[:5_000_000])
+    if item is None:
+        raise HTTPException(400, '页面里没有作品数据')
+    if item['kind'] not in ('video', 'images') or not (item['sources'] or item['images']):
+        raise HTTPException(400, '这条作品里没有能下载的视频或图片')
+    if douyin_busy():
+        raise HTTPException(409, 'busy')
+    douyin_job.start_item(item, notify=body.get('notify') or None, target=target)
+    return {'ok': True, 'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60]}
 
 
 @app.post('/douyin/mirror')
