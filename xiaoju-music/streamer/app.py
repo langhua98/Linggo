@@ -1010,6 +1010,16 @@ async def douyin_login_qr(request: Request):
     return Response(content=douyin_login.qr_png, media_type='image/png', headers={'Cache-Control': 'no-store'})
 
 
+@app.get('/douyin/login/shot')
+async def douyin_login_shot(request: Request):
+    """服务器那边登录页现在的截图"""
+    check_key(request)
+    png = await douyin_login.screenshot() if douyin_login else None
+    if not png:
+        raise HTTPException(404)
+    return Response(content=png, media_type='image/png', headers={'Cache-Control': 'no-store'})
+
+
 @app.get('/douyin/login/state')
 async def douyin_login_state(request: Request):
     """登录后的 cookie（敏感，只给拿着 X-Key 的人）：Worker 取走存一份，Space 重启后靠它恢复"""

@@ -840,7 +840,7 @@ def test_login_falls_back_to_the_rendered_qr():
 
 def test_login_times_out_or_stops_on_captcha():
     lg = run_login(LoginWeb(logged_after=None))
-    assert lg.state['status'] == 'error' and '过期' in lg.state['error']
+    assert lg.state['status'] == 'error' and '没登上' in lg.state['error']
     lg = run_login(LoginWeb(logged_after=None, captcha=True))
     assert '滑块验证' in lg.state['error']
 

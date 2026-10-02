@@ -19,7 +19,9 @@ log = logging.getLogger('streamer.douyin')
 LOGIN_PAGE = 'https://www.douyin.com/search/%E7%83%AD%E9%97%A8'  # 搜索页：没登录会自己弹出扫码登录框
 QR_SELECTORS = ["xpath=//div[contains(@class,'web-login-scan-code')]", "xpath=//div[contains(@class,'qrcode')]"]
 SESSION_COOKIES = ('sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt')
-WAIT_SECONDS = 180
+WAIT_SECONDS = 300
+# check_qrconnect 返回的 status
+SCAN_STATUS = {'1': '等待扫码', '2': '已扫码，等手机上确认', '3': '已确认', '4': '已取消', '5': '已过期'}
 
 
 def logged_in(cookies):
@@ -61,7 +63,14 @@ class QrLogin:
         self.web, self.wait, self.poll, self.qr_wait = web, wait, poll, qr_wait
         self.task = None
         self.qr_png = None
+        self.page = None
         self.state = {'status': 'idle'}
+
+    async def screenshot(self):
+        """服务器那边登录页现在的样子（排查卡在哪）"""
+        if self.page is None or self.page.is_closed():
+            return None
+        return await self.page.screenshot()
 
     def running(self):
         return self.task is not None and not self.task.done()
@@ -87,11 +96,24 @@ class QrLogin:
                 async def on_response(res):
                     if CAPTCHA.search(res.url):
                         captcha.set()
-                    if 'qrcode' in res.url and not qr.done():
+                    if 'qrconnect' in res.url:  # 页面每隔一会儿问一次扫码进度
                         try:
                             data = (await res.json()).get('data') or {}
-                            if data.get('qrcode') and not qr.done():
-                                qr.set_result(base64.b64decode(data['qrcode']))
+                            st['scan'] = SCAN_STATUS.get(str(data.get('status')), str(data.get('status')))
+                            if data.get('redirect_url') or data.get('verify_ticket'):
+                                st['scan_extra'] = 'verify' if data.get('verify_ticket') else 'redirect'
+                        except Exception:  # noqa: BLE001
+                            pass
+                    elif 'qrcode' in res.url:
+                        try:
+                            data = (await res.json()).get('data') or {}
+                            if data.get('qrcode'):
+                                png = base64.b64decode(data['qrcode'])
+                                if qr.done():  # 过期后页面自己换了新码：换上新的
+                                    self.qr_png = png
+                                    st['qr_version'] = st.get('qr_version', 1) + 1
+                                else:
+                                    qr.set_result(png)
                         except Exception:  # noqa: BLE001 — 不是 JSON（比如二维码图片本身）
                             pass
 
@@ -105,8 +127,14 @@ class QrLogin:
                     st['qr'] = 'element' if png else 'page'
                 self.qr_png = png or await page.screenshot()
                 st['qr_ready'] = True
+                self.page = page
                 for _ in range(int(self.wait / self.poll)):
                     await asyncio.sleep(self.poll)
+                    if st.get('scan') == '已过期':  # 二维码过期：点一下刷新（抖音登录框里点二维码就换新的）
+                        try:
+                            await page.click("xpath=//div[contains(@class,'web-login-scan-code')]", timeout=3000)
+                        except Exception:  # noqa: BLE001
+                            pass
                     if logged_in(await w.ctx.cookies()):
                         await asyncio.sleep(3)  # 让页面把剩下的 cookie 写完
                         st['status'] = 'done'
@@ -114,7 +142,7 @@ class QrLogin:
                     if captcha.is_set():
                         st['status'], st['error'] = 'error', '抖音要求滑块验证，这边没法继续'
                         return
-                st['status'], st['error'] = 'error', '3 分钟内没扫码，二维码过期了'
+                st['status'], st['error'] = 'error', '5 分钟内没登上'
         except asyncio.CancelledError:
             st['status'] = 'stopped'
         except Exception as e:  # noqa: BLE001

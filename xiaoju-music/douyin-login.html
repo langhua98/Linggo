@@ -18,9 +18,10 @@ button:disabled{opacity:.5}
 <button id="go">获取二维码</button>
 <div id="box"><img id="qr" alt="二维码"><p>用抖音 App 首页左上角「扫一扫」扫码，在手机上点确认。<br>在手机上看这个页面的话：长按二维码存到相册，再到「扫一扫」里选相册。</p></div>
 <p id="msg"></p>
+<details id="dbg" style="display:none;margin-top:16px"><summary>服务器那边现在的画面</summary><img id="shot" style="width:100%;border-radius:8px;margin-top:8px"></details>
 </main><script>
 const t = location.hash.slice(1), $ = id => document.getElementById(id);
-let timer = null;
+let timer = null, qv = 0;
 function msg(s){ $('msg').textContent = s; }
 async function api(a, post){ const r = await fetch(`/dl/${t}/${a}`, post ? {method:'POST'} : {}); return r.json(); }
 async function poll(){
@@ -28,7 +29,8 @@ async function poll(){
     const s = await api('status');
     if (s.error && !s.status) { msg(s.error); return stop(); }
     if (s.logged_in) { $('box').style.display='none'; msg('✅ 登录成功，服务器已保存。可以关掉这个页面了'); return stop(); }
-    if (s.qr_ready && !$('qr').src) { $('qr').src = `/dl/${t}/qr?ts=${Date.now()}`; $('box').style.display='block'; msg('等你扫码…'); }
+    if (s.qr_ready && (!$('qr').src || s.qr_version !== qv)) { qv = s.qr_version; $('qr').src = `/dl/${t}/qr?ts=${Date.now()}`; $('box').style.display='block'; }
+    if (s.qr_ready) { msg(s.scan ? '扫码状态：' + s.scan : '等你扫码…'); $('dbg').style.display='block'; if ($('dbg').open) $('shot').src = `/dl/${t}/shot?ts=${Date.now()}`; }
     if (s.status === 'error') { msg('没登上：' + s.error + '。可以再点一次「获取二维码」'); return stop(); }
   } catch(e) {}
   timer = setTimeout(poll, 2000);

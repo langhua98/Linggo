@@ -111,7 +111,7 @@ export default {
       if (path === '/') return html(PAGE, method);
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
       if (path === '/douyin-login') return html(DOUYIN_LOGIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
-      const dl = path.match(/^\/dl\/([\w-]{20,64})\/(start|status|qr)$/);
+      const dl = path.match(/^\/dl\/([\w-]{20,64})\/(start|status|qr|shot)$/);
       if (dl) return await douyinLoginApi(env, dl[1], dl[2]);
       if (path === '/api/tracks') return await trackList(env);
       const m = path.match(/^\/a\/(\d{1,10})(?:\.[a-z0-9]{1,5})?$/i);
@@ -1608,8 +1608,8 @@ async function douyinLoginApi(env, token, action) {
       }
       return json({ error: '服务器正在唤醒，一分钟后再点' }, 503);
     }
-    if (action === 'qr') {
-      const r = await call('/douyin/login/qr');
+    if (action === 'qr' || action === 'shot') {
+      const r = await call(action === 'qr' ? '/douyin/login/qr' : '/douyin/login/shot');
       if (!r.ok) return json({ error: 'no qr' }, 404);
       return new Response(r.body, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' } });
     }
@@ -1618,7 +1618,8 @@ async function douyinLoginApi(env, token, action) {
       const r = await call('/douyin/login/state');
       if (r.ok) await L.setConfig('douyinState', await r.text());
     }
-    return json({ status: st.status, qr_ready: !!st.qr_ready, logged_in: !!st.logged_in, error: st.error || '' });
+    return json({ status: st.status, qr_ready: !!st.qr_ready, logged_in: !!st.logged_in, error: st.error || '',
+      scan: st.scan || '', qr_version: st.qr_version || 1 });
   } catch {
     return json({ error: '服务器正在唤醒，一分钟后再试' }, 503);
   }
