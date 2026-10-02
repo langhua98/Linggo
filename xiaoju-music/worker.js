@@ -1796,9 +1796,10 @@ async function progressText(env) {
       c.accounts.forEach((a, i) => {
         const tag = mine[a.sec_uid] || seen[a.sec_uid] || douyinHashtag(a.name);
         const total = a.total == null ? '' : ` / 共 ${a.total}`;
-        lines.push(`${i + 1}. ${tag ? '#' + tag : '（还不知道名字）'}：抓了 ${a.got}${total}${a.total && a.got >= a.total ? ' ✅' : ''}`);
+        const turn = a.total == null && !a.got;  // 云电脑按顺序一个号一个号抓，没轮到的还不知道名字和作品数
+        lines.push(`${i + 1}. ${tag ? '#' + tag : '（这个号）'}：${turn ? '还没轮到' : `这次抓了 ${a.got}${total}${a.total && a.got >= a.total ? ' ✅' : ''}`}`);
       });
-      lines.push(`一共抓了 ${c.got} 条，送给小橘 ${c.sent} 条`);
+      lines.push(`这次一共抓了 ${c.got} 条，送给小橘 ${c.sent} 条（以前转过的不算在里面；频道里已有的会跳过）`);
     }
     if ((await L.getConfig('dyStop')) === '1') lines.push('⏹ 已经叫它停了，下次报进度时（半分钟内）停下');
   }

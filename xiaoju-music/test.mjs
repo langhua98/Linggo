@@ -1146,7 +1146,7 @@ await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每�
   bot.dyStatus = { status: 'running', mode: 'import', total: 40, posted: [{}, {}], skipped: [{}], failed: [] };
   await dm(OWNER, '进度');
   const msg = lastSay();
-  assert.match(msg.text, /云电脑（抓自己的号）：正在抓（\d+ 秒前）\n1\. #[^：]+：抓了 52 \/ 共 300\n2\. #冰美人：抓了 0\n一共抓了 52 条，送给小橘 40 条/);
+  assert.match(msg.text, /云电脑（抓自己的号）：正在抓（\d+ 秒前）\n1\. #[^：]+：这次抓了 52 \/ 共 300\n2\. #冰美人：还没轮到\n这次一共抓了 52 条，送给小橘 40 条/);
   assert.match(msg.text, /小橘（转云电脑送来的作品）：进行中\n新转进频道 2 条，已有跳过 1 条，失败 0 条\n收到 40 条，还有 37 条排着队/);
   assert.deepEqual(msg.reply_markup.inline_keyboard.flat().map(b => b.callback_data), ['prg:r', 'prg:cloud', 'prg:post']);
   const press = async data => hook({ update_id: 901, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: { message_id: 78, chat: { id: OWNER, type: 'private' } } } });
