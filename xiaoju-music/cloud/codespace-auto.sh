@@ -4,6 +4,12 @@
 # 有了令牌（存进 ~/.xiaoju/env）以后，每次打开这台云电脑都自动跑 crawl.sh。MediaCrawler 会记住登录状态，没过期就连码都不用扫。
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# 先把仓库更新到最新（修好的问题马上用上，频道主不用自己敲 git pull）；本脚本变了就用新的重跑一次
+if [ -z "${XIAOJU_UPDATED:-}" ]; then
+  before=$(sha1sum "$0" 2>/dev/null)
+  git -C "$HERE" pull --ff-only -q >/dev/null 2>&1 || true
+  [ "$(sha1sum "$0" 2>/dev/null)" != "$before" ] && XIAOJU_UPDATED=1 exec bash "$0" "$@"
+fi
 API=https://xiaoju-music.langhua98.workers.dev
 if [ ! -s "$HOME/.xiaoju/env" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
   # 第一次：用 Codespaces 自带的 GitHub 令牌找小橘领上传令牌和抖音账号（手机网页版终端粘贴不了）
