@@ -922,6 +922,32 @@ async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子�
     return out
 
 
+@app.post('/douyin/delete')
+async def douyin_delete(request: Request):
+    """{target, ids: [消息号]}：删掉视频频道里转过的抖音视频帖（换最高画质重转用：删了以后查重认不出，下次就重新转）。
+    只删说明里带抖音视频链接、而且确实是视频的帖子，别的一律不动；正在转作品时不删（免得查重乱掉）"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    if douyin_busy():
+        raise HTTPException(409, 'busy')
+    body = await request.json()
+    target = parse_target(body.get('target'))
+    if target is None:
+        raise HTTPException(400, '没设置视频频道')
+    ids = [int(x) for x in (body.get('ids') or []) if str(x).isdigit()][:500]
+    entity = await channel_entity(user_client, target)
+    ok, refused = [], []
+    for m in await user_client.get_messages(entity, ids=ids):
+        if m is not None and m.video and re.search(r'douyin\.com/video/\d{8,24}', m.message or ''):
+            ok.append(m.id)
+        elif m is not None:
+            refused.append(m.id)
+    for i in range(0, len(ok), 100):
+        await flood_retry(lambda chunk=ok[i:i + 100]: user_client.delete_messages(entity, chunk))
+    return {'deleted': ok, 'refused': refused}
+
+
 @app.get('/channels/owned')
 async def channels_owned(title: str, request: Request):
     """频道主自己建的频道里、名字含 title 的那几个（找新建私有频道的数字 id 用）。只回对得上的，不列别的聊天"""

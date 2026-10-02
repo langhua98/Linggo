@@ -1070,3 +1070,38 @@ def test_import_gives_up_waiting_when_the_cloud_computer_goes_quiet():
         return job.state
 
     assert asyncio.run(go())['status'] == 'done'
+
+
+def test_delete_only_touches_douyin_video_posts(monkeypatch):
+    """换最高画质重转：只删说明里带抖音视频链接的视频帖；图文、别的帖子不动；正在转作品时不删"""
+    from types import SimpleNamespace as NS
+    msgs = {
+        5: NS(id=5, video=True, message='a\n\n📹 抖音 · 2026-01-01\nhttps://www.douyin.com/video/7600000000000000001'),
+        6: NS(id=6, video=None, message='b\n\n🖼 抖音 · 2026-01-01\nhttps://www.douyin.com/note/7600000000000000002'),
+        7: NS(id=7, video=True, message='别的视频，没有抖音链接'),
+    }
+    deleted = []
+
+    class FakeClient:
+        async def get_messages(self, entity, ids):
+            return [msgs.get(i) for i in ids]
+
+        async def delete_messages(self, entity, ids):
+            deleted.extend(ids)
+
+    async def entity(client, target):
+        return target
+
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    monkeypatch.setattr(appmod, 'user_client', FakeClient())
+    monkeypatch.setattr(appmod, 'channel_entity', entity)
+    monkeypatch.setattr(appmod, 'douyin_login', None)
+    job = DouyinJob(web=None, send_video=None, posted_ids=None)
+    monkeypatch.setattr(appmod, 'douyin_job', job)
+    c = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    r = c.post('/douyin/delete', json={'target': str(VIDEO_CHANNEL), 'ids': [5, 6, 7, 8]}, headers=key)
+    assert r.json() == {'deleted': [5], 'refused': [6, 7]} and deleted == [5]
+    monkeypatch.setattr(job, 'running', lambda: True)
+    assert c.post('/douyin/delete', json={'target': str(VIDEO_CHANNEL), 'ids': [5]}, headers=key).status_code == 409
+    assert c.post('/douyin/delete', json={'target': str(VIDEO_CHANNEL), 'ids': [5]}).status_code in (401, 403)
