@@ -8,6 +8,13 @@ command -v xdotool >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-ge
 if command -v xrandr >/dev/null 2>&1 && ! xrandr 2>/dev/null | grep -q 'current 1920 x 1200'; then
   xrandr --fb 1920x1200 >/dev/null 2>&1 && pkill -HUP -x fluxbox 2>/dev/null && sleep 2
 fi
+# 底下那条黄色任务栏用不上，还老挡住验证框的按钮：直接藏掉（只改一次，让 fluxbox 重新读配置）
+F="$HOME/.fluxbox/init"
+if [ -f "$F" ] && ! grep -q '^session.screen0.toolbar.visible:[[:space:]]*false' "$F"; then
+  sed -i '/^session.screen0.toolbar.visible:/d' "$F"
+  echo 'session.screen0.toolbar.visible: false' >> "$F"
+  pkill -HUP -x fluxbox 2>/dev/null && sleep 2
+fi
 n=0
 for w in $(xdotool search --onlyvisible --class 'chrom' 2>/dev/null); do
   xdotool windowmove "$w" 0 0 windowsize "$w" 1920 1170 >/dev/null 2>&1 && n=$((n + 1))
