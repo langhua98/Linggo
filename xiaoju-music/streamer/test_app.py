@@ -267,8 +267,8 @@ def test_photo_scan_and_download(monkeypatch):
 def run_copier(songs, existing=(), limit=100, dry_run=False, flood_on=None, **rule):
     forwarded, slept = [], []
 
-    async def iter_music(source):
-        assert source == 'VmoMusic'
+    async def iter_music(source, min_id=0):
+        assert source == 'VmoMusic' and min_id == 0
         for s in songs:
             yield s, s[0], s[1], (s[2] if len(s) > 2 else 200)
 
@@ -437,3 +437,125 @@ def test_viz_endpoint(monkeypatch):
     assert len(r.content) == 5 + 2 * appmod.VIZ_FPS * appmod.VIZ_BANDS // 2
     monkeypatch.setattr(appmod, 'decode_pcm', lambda data: None)  # 解不出来（不是能识别的音频）
     assert client.get('/viz/12', headers=key).status_code == 404
+
+
+
+# ── 夜里自动搬、通知、求歌 ──
+
+class Post:
+    """假的频道帖子：消息号 + (歌名, 歌手, 秒数)"""
+    def __init__(self, id, title, performer='', seconds=200):
+        self.id, self.title, self.performer, self.seconds = id, title, performer, seconds
+
+
+def run_auto(channels, sources, existing=(), protected=(), broken=(), **kw):
+    """channels: {频道: [Post, ...]（新的在前）}"""
+    forwarded, said, asked = [], [], []
+
+    async def iter_music(source, min_id=0):
+        asked.append((source, min_id))
+        if source in broken:
+            raise RuntimeError('boom')
+        for p in channels[source]:
+            if p.id > min_id:
+                yield p, p.title, p.performer, p.seconds
+
+    async def forward(target, msg):
+        if any(msg in channels[c] for c in protected):
+            raise appmod.ChatForwardsRestrictedError(request=None)
+        forwarded.append(msg.title)
+        return msg
+
+    async def say(chat, text):
+        said.append((chat, text))
+
+    async def sleep(n):
+        pass
+
+    async def main():
+        c = appmod.Copier(iter_music=iter_music, forward=forward, say=say, sleep=sleep)
+        c.start_auto(sources, 'xiaojumusic', list(existing), notify=42, run_id='r1', **kw)
+        await c.task
+        return c.state
+
+    return asyncio.run(main()), forwarded, said, asked
+
+
+def test_auto_copies_only_new_posts_and_remembers_where_it_stopped():
+    channels = {
+        'old_ch': [Post(105, '新歌甲', '歌手A'), Post(104, '新歌乙', '歌手B'), Post(100, '老歌', '歌手C')],
+        'new_ch': [Post(30 - i, f'第{i}首', '某人') for i in range(10)],
+        'prot_ch': [Post(9, '锁住的歌', '某人')],
+        'dj_ch': [Post(7, '两小时串烧', 'DJ', 7200), Post(6, '片段', '', 20), Post(5, 'English Song', 'X')],
+    }
+    sources = {'old_ch': 100, 'new_ch': 0, 'prot_ch': 0, 'dj_ch': 0, 'broken_ch': 3}
+    channels['broken_ch'] = []
+    st, forwarded, said, asked = run_auto(channels, sources, existing=[('新歌乙', '歌手B')],
+                                          protected=['prot_ch'], broken=['broken_ch'], first_time=3)
+    assert ('old_ch', 100) in asked and ('new_ch', 0) in asked  # 只看上次之后的帖子
+    assert forwarded == ['新歌甲', '第0首', '第1首', '第2首']  # 重复的、第一次多于 3 首的、串烧、片段、外语都不搬
+    assert st['status'] == 'done' and st['copied'] == 4
+    assert st['sources']['old_ch'] == {'max_id': 105, 'copied': 1, 'error': ''}
+    assert st['sources']['new_ch']['max_id'] == 30
+    assert st['sources']['prot_ch']['error'] == 'protected'
+    assert st['sources']['broken_ch']['error'].startswith('RuntimeError') and st['sources']['broken_ch']['max_id'] == 3
+    (chat, text), = said
+    assert chat == 42 and '新增 4 首' in text and '@new_ch：3 首' in text and '@broken_ch' in text and 'prot_ch' not in text
+
+
+def test_single_copy_notifies_when_done_or_protected():
+    channels = {'a_ch': [Post(2, '晴天', '周杰伦')], 'p_ch': [Post(1, '稻香', '周杰伦')]}
+    said = []
+
+    async def iter_music(source, min_id=0):
+        for p in channels[source]:
+            yield p, p.title, p.performer, p.seconds
+
+    async def forward(target, msg):
+        if msg in channels['p_ch']:
+            raise appmod.ChatForwardsRestrictedError(request=None)
+        return msg
+
+    async def say(chat, text):
+        said.append(text)
+
+    async def sleep(n):
+        pass
+
+    async def main():
+        c = appmod.Copier(iter_music=iter_music, forward=forward, say=say, sleep=sleep)
+        c.start('a_ch', 't', 10, [], notify=7)
+        await c.task
+        c.start('p_ch', 't', 10, [], notify=7)
+        await c.task
+        return c.state
+
+    st = asyncio.run(main())
+    assert '从 @a_ch 搬了 1 首' in said[0] and '周杰伦 - 晴天' in said[0]
+    assert '禁止转发' in said[1] and st['error'] == 'protected'
+
+
+def test_request_ranking_prefers_the_plain_song():
+    res = [
+        {'title': '晴天 (DJ版)', 'performer': '周杰伦', 'duration': 200},
+        {'title': '晴天', 'performer': '周杰伦', 'duration': 269},
+        {'title': '晴天娃娃', 'performer': '某人', 'duration': 200},
+        {'title': '晴天', 'performer': '周杰伦', 'duration': 30},      # 片段
+        {'title': '雨天', 'performer': '某人', 'duration': 200},       # 不相干
+    ]
+    ranked = appmod.rank_requests('晴天', res)
+    assert [r['title'] for r in ranked] == ['晴天', '晴天娃娃']  # DJ 版被扣分到 40，不要
+    # 「歌名 歌手」也能对上
+    assert appmod.rank_requests('周杰伦 晴天', res)[0]['title'] == '晴天'
+    assert appmod.rank_requests('晴天 dj版', res)[0]['title'] == '晴天 (DJ版)'
+
+
+def test_auto_and_fulfill_endpoints_need_key_and_login(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    monkeypatch.setattr(appmod, 'copier', None)
+    monkeypatch.setattr(appmod, 'user_client', None)
+    client = TestClient(appmod.app)
+    assert client.post('/auto/start', json={}).status_code == 403
+    assert client.post('/auto/start', json={}, headers={'X-Key': 'k1'}).status_code == 409
+    assert client.get('/auto/status', headers={'X-Key': 'k1'}).json() == {'status': 'idle'}
+    assert client.post('/fulfill', json={'q': 'x', 'chat_id': 1}, headers={'X-Key': 'k1'}).status_code == 409

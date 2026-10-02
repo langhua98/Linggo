@@ -153,7 +153,7 @@ Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/RE
   curl "https://api.telegram.org/bot<机器人 token>/setWebhook" \
     -d url=https://xiaoju-music.langhua98.workers.dev/tg-webhook \
     -d secret_token=<与 Worker 的 TG_WEBHOOK_SECRET 相同> \
-    --data-urlencode 'allowed_updates=["channel_post","edited_channel_post"]'
+    --data-urlencode 'allowed_updates=["channel_post","edited_channel_post","message","callback_query"]'
   ```
 
   设了 webhook 之后 `getUpdates` 不再可用（两者互斥）。
@@ -163,7 +163,38 @@ Space 会自动重新构建。环境变量见 [`streamer/README.md`](streamer/RE
   删掉转发出来的副本，再把 `message_id`、`date` 换回原帖的值，拼成一个 `channel_post` update，
   带着 `X-Telegram-Bot-Api-Secret-Token` 头 POST 给 `/tg-webhook`。
 
+## 机器人和自动搬歌
+
+机器人 @xiaoju_music_bot 收私聊（webhook 要带 `message`、`callback_query`，见上面「重设 webhook」）。
+私聊和按钮由 Worker 先回 200，再在后台处理（`botUpdate`）；要搜歌、搬歌的转给流式服务。
+
+- **频道主**：频道的创建者（Worker 第一次用时问 `getChatAdministrators`，记在 config 的 `ownerId`）。能发：
+  - `搜 歌名`：在来源频道里搜（流式服务 `/search/global`），列出来带「搬 N」按钮，点了走 `/copy/pick`。
+  - `搬 @频道 N`：流式服务 `/copy/start`（只要中文、60 秒～20 分钟、查重），搬完机器人私聊通知。
+  - `找 歌名`：在歌库里找，按钮可以加入/移出歌单、删除（删除只从歌库去掉，频道里的帖子不动，和管理页「移除」一样）。
+  - `统计`：歌库总数、最近 1/7 天新增、上次夜里自动搬、各歌单首数。
+  - 直接发歌名：和听众求歌一样，不限次。
+- **听众求歌**：发歌名。歌库里有就回网页链接（`/#消息号`）；没有就交给流式服务 `/fulfill`：在来源频道里搜，
+  按 `rank_requests` 挑最像的一首（歌名一样优先；DJ 版、伴奏、片段等用户没提就往后排；60 秒～15 分钟），
+  搬进频道后机器人直接回链接；禁止转发的跳过试下一首。每人每 24 小时最多 10 次（`asks` 表）。
+- **新歌自动分歌单**：webhook 收到的新音频帖（第一次登记的，不是编辑）按 `genresOf` 放进已有的同名歌单：
+  歌名关键词（DJ/Remix/串烧 → DJ 劲爆，重低音/Bass → 重低音，Live → 现场 Live……）加歌手名单
+  （`GENRE_ARTISTS`），一首可以进几个；都对不上但有歌手的进「华语流行」；MV、综艺、伴奏之类不进。
+- **夜里自动搬**：Worker 的定时任务 `0 19 * * *`（北京时间凌晨 3 点）跑 `nightly`：叫醒流式服务，读上一晚
+  `/auto/status`，把每个来源频道「看到的最大消息号」合进 config 的 `auto.state`，再 `/auto/start`：每个频道只看
+  比上次新的帖子（`min_id`），最多 30 首；第一次只看最新 10 首；禁止转发、出错的频道跳过。搬完机器人私聊频道主。
+  手动跑一次：`POST /admin/api/auto-run`；看记录：`GET /admin/api/auto-state`。
+
+  定时任务的设置（部署脚本不会动它，改时间才需要）：
+
+  ```bash
+  curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/xiaoju-music/schedules" \
+    -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" -d '[{"cron":"0 19 * * *"}]'
+  ```
+
 ## 限制
+
+- 机器人只能私聊和它说过话的人（Telegram 的规定）：频道主、听众都要先在机器人那里点一次「开始」。
 
 - 大概四分之一的歌（多是 DJ 版、翻唱）两个歌词库里都没有，要在频道里手动配 `.lrc`。
 - LRCLIB 上不少中文歌词是繁体字（2026 年 9 月存下的 207 首里有 103 首），原样显示。

@@ -31,7 +31,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from telethon import TelegramClient
-from telethon.errors import FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
+from telethon.errors import ChatForwardsRestrictedError, FileReferenceExpiredError, FloodWaitError, SessionPasswordNeededError
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
@@ -259,11 +259,13 @@ def song_key(title, performer):
 class Copier:
     """把 source 频道里的中文歌（歌名或歌手里有汉字）从新到旧转到 target，跳过已有的，最多 limit 首。
 
-    iter_music(source) 异步给出 (消息, 歌名, 歌手)；forward(target, 消息) 转一条。都由外面注入，方便测试。"""
+    iter_music(source, min_id=) 异步给出 (消息, 歌名, 歌手, 秒数)，只给消息号大于 min_id 的；
+    forward(target, 消息) 转一条；say(chat_id, 文字) 用机器人发消息通知（可以不给）。都由外面注入，方便测试。"""
 
-    def __init__(self, *, iter_music, forward, sleep=asyncio.sleep, pause=3.0):
+    def __init__(self, *, iter_music, forward, say=None, sleep=asyncio.sleep, pause=3.0):
         self.iter_music = iter_music
         self.forward = forward
+        self.say = say
         self.sleep = sleep
         self.pause = pause
         self.task = None
@@ -272,57 +274,135 @@ class Copier:
     def running(self):
         return self.task is not None and not self.task.done()
 
-    def start(self, source, target, limit, existing, dry_run=False, keywords=(), min_seconds=0, chinese_only=True):
+    def _fresh_state(self, **extra):
+        return {'status': 'running', 'scanned': 0, 'copied': 0, 'skipped_lang': 0, 'skipped_dup': 0,
+                'skipped_other': 0, 'recent': [], 'new_ids': [], 'error': '', **extra}
+
+    def start(self, source, target, limit, existing, dry_run=False, keywords=(), min_seconds=0, chinese_only=True,
+              notify=None, max_seconds=0):
         """keywords：给了就只要歌名或歌手里含其中一个词的（不分大小写）；min_seconds：比这短的是片段，不要；
-        chinese_only：只要中文歌。"""
+        max_seconds：比这长的（一两个小时的串烧）不要，0 表示不限；chinese_only：只要中文歌；
+        notify：搬完用机器人给这个聊天发一条结果。"""
         if self.running():
             raise RuntimeError('already running')
-        self.state = {'status': 'running', 'source': source, 'limit': limit, 'dry_run': dry_run,
-                      'scanned': 0, 'copied': 0, 'skipped_lang': 0, 'skipped_dup': 0, 'skipped_other': 0,
-                      'recent': [], 'new_ids': [], 'error': ''}
+        self.state = self._fresh_state(source=source, limit=limit, dry_run=dry_run)
         seen = {song_key(t, a) for t, a in existing}
-        rule = (tuple(k.lower() for k in keywords if k), min_seconds, chinese_only)
-        self.task = asyncio.create_task(self.run(source, target, limit, seen, dry_run, rule))
+        rule = (tuple(k.lower() for k in keywords if k), min_seconds, chinese_only, max_seconds)
+        self.task = asyncio.create_task(self._single(source, target, limit, seen, dry_run, rule, notify))
+
+    def start_auto(self, sources, target, existing, *, per_source=50, first_time=20, min_seconds=60, max_seconds=1200,
+                   notify=None, run_id=''):
+        """每天夜里的自动搬：sources 是 {频道: 上次看到的最大消息号}，只看比它新的帖子；
+        第一次（0）只看最新的 first_time 首。结果里 sources 给出每个频道这次看到的最大消息号，下次接着用。"""
+        if self.running():
+            raise RuntimeError('already running')
+        self.state = self._fresh_state(mode='auto', run_id=run_id, sources={})
+        seen = {song_key(t, a) for t, a in existing}
+        rule = ((), min_seconds, True, max_seconds)
+        self.task = asyncio.create_task(self._auto(dict(sources), target, seen, rule, per_source, first_time, notify))
 
     def stop(self):
         if self.running():
             self.task.cancel()
 
-    async def run(self, source, target, limit, seen, dry_run, rule=((), 0, True)):
-        keywords, min_seconds, chinese_only = rule
+    async def _single(self, source, target, limit, seen, dry_run, rule, notify):
         st = self.state
         try:
-            async for msg, title, performer, seconds in self.iter_music(source):
-                if st['copied'] >= limit:
-                    break
-                st['scanned'] += 1
-                text = (title or '') + ' ' + (performer or '')
-                if chinese_only and not is_chinese(text):
-                    st['skipped_lang'] += 1
-                    continue
-                if (keywords and not any(k in text.lower() for k in keywords)) or (seconds or 0) < min_seconds:
-                    st['skipped_other'] += 1
-                    continue
-                key = song_key(title, performer)
-                if key in seen:
-                    st['skipped_dup'] += 1
-                    continue
-                if not dry_run:
-                    sent = await self.forward_patiently(target, msg)
-                    new_id = getattr(sent[0] if isinstance(sent, list) and sent else sent, 'id', None)
-                    if new_id:
-                        st['new_ids'].append(new_id)
-                    await self.sleep(self.pause)  # 慢慢来，免得账号被限制
-                seen.add(key)
-                st['copied'] += 1
-                t, a = clean_names(title, performer)
-                st['recent'] = ([f'{a} - {t}' if a else t] + st['recent'])[:30]
+            await self.copy_source(source, target, limit, seen, dry_run, rule, 0)
             st['status'] = 'done'
         except asyncio.CancelledError:
             st['status'] = 'stopped'
+        except ChatForwardsRestrictedError:
+            st['status'], st['error'] = 'error', 'protected'
         except Exception as e:  # noqa: BLE001 — 记下来给 /copy/status 看
             log.exception('copy failed')
             st['status'], st['error'] = 'error', f'{type(e).__name__}: {e}'
+        if notify:
+            if st['status'] == 'done':
+                msg = f'✅ 从 @{source} 搬了 {st["copied"]} 首（重复跳过 {st["skipped_dup"]}，外语跳过 {st["skipped_lang"]}）'
+                if st['recent']:
+                    msg += '\n' + '\n'.join('· ' + r for r in st['recent'][:10])
+            elif st['error'] == 'protected':
+                msg = f'⛔ @{source} 禁止转发，搬不了'
+            else:
+                msg = f'⚠️ 从 @{source} 搬歌出错了：{st["error"] or st["status"]}（已搬 {st["copied"]} 首）'
+            await self.tell(notify, msg)
+
+    async def _auto(self, sources, target, seen, rule, per_source, first_time, notify):
+        st = self.state
+        for source, min_id in sources.items():
+            info = {'max_id': min_id or 0, 'copied': 0, 'error': ''}
+            st['sources'][source] = info
+            before = st['copied']
+            try:
+                limit = per_source if min_id else first_time
+                info['max_id'] = await self.copy_source(source, target, limit, seen, False, rule, min_id or 0,
+                                                       scan_cap=None if min_id else first_time * 3) or info['max_id']
+            except asyncio.CancelledError:
+                st['status'] = 'stopped'
+                return
+            except ChatForwardsRestrictedError:
+                info['error'] = 'protected'
+            except Exception as e:  # noqa: BLE001 — 一个频道出错不影响后面的
+                log.exception('auto copy %s failed', source)
+                info['error'] = f'{type(e).__name__}: {e}'[:200]
+            info['copied'] = st['copied'] - before
+        st['status'] = 'done'
+        if notify:
+            got = [(s, i['copied']) for s, i in st['sources'].items() if i['copied']]
+            msg = f'🌙 夜里自动搬歌：新增 {st["copied"]} 首'
+            if got:
+                msg += '\n' + '\n'.join(f'· @{s}：{n} 首' for s, n in got)
+            if st['recent']:
+                msg += '\n\n最新几首：\n' + '\n'.join('· ' + r for r in st['recent'][:8])
+            bad = [s for s, i in st['sources'].items() if i['error'] and i['error'] != 'protected']
+            if bad:
+                msg += f'\n\n这几个频道没看成：{", ".join("@" + b for b in bad[:10])}'
+            await self.tell(notify, msg)
+
+    async def tell(self, chat_id, text):
+        if not self.say:
+            return
+        try:
+            await self.say(chat_id, text)
+        except Exception:  # noqa: BLE001 — 通知发不出去不影响搬歌
+            log.exception('notify failed')
+
+    async def copy_source(self, source, target, limit, seen, dry_run, rule, min_id, scan_cap=None):
+        """搬一个频道，返回看到的最大消息号。禁止转发的频道抛 ChatForwardsRestrictedError。"""
+        keywords, min_seconds, chinese_only, max_seconds = rule
+        st = self.state
+        top, scanned, copied = min_id, 0, 0  # copied：这个频道这次搬了几首（自动搬时 st['copied'] 是几个频道的合计）
+        async for msg, title, performer, seconds in self.iter_music(source, min_id=min_id):
+            top = max(top, getattr(msg, 'id', 0) or 0)
+            if copied >= limit or (scan_cap and scanned >= scan_cap):
+                break
+            scanned += 1
+            st['scanned'] += 1
+            text = (title or '') + ' ' + (performer or '')
+            if chinese_only and not is_chinese(text):
+                st['skipped_lang'] += 1
+                continue
+            if (keywords and not any(k in text.lower() for k in keywords)) or (seconds or 0) < min_seconds \
+                    or (max_seconds and (seconds or 0) > max_seconds):
+                st['skipped_other'] += 1
+                continue
+            key = song_key(title, performer)
+            if key in seen:
+                st['skipped_dup'] += 1
+                continue
+            if not dry_run:
+                sent = await self.forward_patiently(target, msg)
+                new_id = getattr(sent[0] if isinstance(sent, list) and sent else sent, 'id', None)
+                if new_id:
+                    st['new_ids'].append(new_id)
+                await self.sleep(self.pause)  # 慢慢来，免得账号被限制
+            seen.add(key)
+            st['copied'] += 1
+            copied += 1
+            t, a = clean_names(title, performer)
+            st['recent'] = ([f'{a} - {t}' if a else t] + st['recent'])[:30]
+        return top
 
     async def forward_patiently(self, target, msg):
         for attempt in range(3):
@@ -376,14 +456,15 @@ def make_client(env):
 
 
 streamer = None
+bot_client = None   # 机器人账号（取文件、发通知）
 user_client = None  # 频道主账号（搬歌用），没登录时为 None
 copier = None
 login = None
 
 
 def user_music(client):
-    async def iter_music(source):
-        async for msg in client.iter_messages(source, filter=InputMessagesFilterMusic):
+    async def iter_music(source, min_id=0):
+        async for msg in client.iter_messages(source, filter=InputMessagesFilterMusic, min_id=min_id or 0):
             f = msg.file
             if f is None:
                 continue
@@ -400,7 +481,14 @@ def set_user_client(client):
         # drop_author：转过去是一条新帖，不带「转发自」
         return await client.forward_messages(target, msg, drop_author=True)
 
-    copier = Copier(iter_music=user_music(client), forward=forward)
+    copier = Copier(iter_music=user_music(client), forward=forward, say=bot_say)
+
+
+async def bot_say(chat_id, text):
+    """用机器人给某个聊天发消息（通知频道主、回复求歌的人）。对方得先和机器人说过话才收得到。"""
+    if bot_client is None:
+        return
+    await bot_client.send_message(int(chat_id), text, link_preview=False)
 
 
 @asynccontextmanager
@@ -409,6 +497,8 @@ async def lifespan(app):
     env = os.environ
     client = make_client(env)
     await client.start(bot_token=env['TG_BOT_TOKEN'])
+    global bot_client
+    bot_client = client
     log.info('logged in to Telegram as a bot')
 
     async def fetch_message(channel, message_id):
@@ -579,10 +669,128 @@ async def copy_start(request: Request):
     try:
         keywords = [str(k)[:30] for k in body.get('keywords', [])][:30]
         copier.start(source, target_channel(), limit, existing, bool(body.get('dry_run')), keywords,
-                     max(0, int(body.get('min_seconds', 0))), bool(body.get('chinese_only', True)))
+                     max(0, int(body.get('min_seconds', 0))), bool(body.get('chinese_only', True)),
+                     notify=body.get('notify') or None, max_seconds=max(0, int(body.get('max_seconds', 0))))
     except RuntimeError:
         raise HTTPException(409, 'already running')
     return copier.state
+
+
+@app.post('/auto/start')
+async def auto_start(request: Request):
+    """每天夜里的自动搬（Worker 的定时任务来调）：{sources: {频道: 上次的最大消息号}, existing, notify, run_id}。
+    正在搬别的就 409，明天再说。"""
+    check_key(request)
+    if copier is None:
+        raise HTTPException(409, 'not logged in')
+    body = await request.json()
+    sources = {str(k).strip().lstrip('@'): int(v or 0) for k, v in (body.get('sources') or {}).items()
+               if re.fullmatch(r'@?\w{4,64}', str(k).strip())}
+    existing = [(str(t), str(a)) for t, a in body.get('existing', [])]
+    try:
+        copier.start_auto(sources, target_channel(), existing, per_source=max(1, min(int(body.get('per_source', 50)), 500)),
+                          first_time=max(1, min(int(body.get('first_time', 20)), 200)), notify=body.get('notify') or None,
+                          run_id=str(body.get('run_id', ''))[:40])
+    except RuntimeError:
+        raise HTTPException(409, 'already running')
+    return {'ok': True}
+
+
+@app.get('/auto/status')
+async def auto_status(request: Request):
+    check_key(request)
+    if copier is None:
+        return {'status': 'idle'}
+    st = copier.state
+    return {k: st.get(k) for k in ('status', 'mode', 'run_id', 'sources', 'copied', 'error')}
+
+
+# ── 求歌：听众私聊机器人一个歌名，库里没有时到来源频道里找一首最像的搬进来 ──
+
+FLAVOR = re.compile(r'dj|remix|伴奏|片段|live|现场|翻自|cover|翻唱|加速|降调|铃声|0\.\dx', re.I)
+
+
+def rank_requests(q, results):
+    """给搜到的音频按「像不像用户要的那首」打分排序，只留够像的（分数 ≥ 50）。
+    歌名一样最好；歌名里含要找的词次之；用户写了「歌名 歌手」时歌名、歌手都对上也算一样。
+    DJ 版、伴奏、片段之类，用户没提就往后排；太短（片段）、太长（串烧）的不要。"""
+    nq = norm(q)
+    want_flavor = bool(FLAVOR.search(q))
+    out = []
+    for r in results:
+        t, a = clean_names(r.get('title', ''), r.get('performer', ''))
+        nt, na = norm(t), norm(a)
+        if not nt or not (60 <= (r.get('duration') or 0) <= 900):
+            continue
+        if nt == nq:
+            score = 100
+        elif na and nt in nq and na in nq:
+            score = 95
+        elif nq in nt:
+            score = 70 - min(20, len(nt) - len(nq))
+        elif nt in nq and len(nt) >= 2:
+            score = 55
+        else:
+            continue
+        if FLAVOR.search(t) and not want_flavor:
+            score -= 30
+        if is_chinese(t + a):
+            score += 3
+        if score >= 50:
+            out.append((score, r))
+    out.sort(key=lambda x: -x[0])
+    return [r for _, r in out]
+
+
+async def search_audio(q, allowed, limit=150):
+    out = []
+    async for msg in user_client.iter_messages(None, search=q[:64], filter=InputMessagesFilterMusic, limit=limit):
+        chat, f = msg.chat, msg.file
+        if not f or (getattr(chat, 'username', None) or '').lower() not in allowed:
+            continue
+        out.append({'channel': chat.username, 'id': msg.id, 'title': f.title or f.name or '', 'performer': f.performer or '',
+                    'duration': f.duration or 0})
+    return out
+
+
+async def fulfill_request(q, chat_id, allowed, existing, link):
+    try:
+        ranked = rank_requests(q, await search_audio(q, allowed))
+        have = {song_key(t, a) for t, a in existing}
+        for r in ranked[:4]:
+            t, a = clean_names(r['title'], r['performer'])
+            name = f'{a} - {t}' if a else t
+            if song_key(r['title'], r['performer']) in have:
+                await bot_say(chat_id, f'🎵 「{name}」已经在小橘音乐里了，打开网页搜一下就能听：{link}')
+                return
+            try:
+                msg = await user_client.get_messages(r['channel'], ids=r['id'])
+                sent = await user_client.forward_messages(target_channel(), msg, drop_author=True)
+            except ChatForwardsRestrictedError:
+                continue  # 这个频道禁止转发，试下一首
+            new_id = getattr(sent[0] if isinstance(sent, list) and sent else sent, 'id', None)
+            await bot_say(chat_id, f'🎵 找到了：{name}\n已经放进小橘音乐，点这里听：{link}#{new_id}')
+            return
+        await bot_say(chat_id, f'没找到「{q}」😢 换个写法、或者加上歌手名再试试')
+    except Exception:  # noqa: BLE001
+        log.exception('fulfill failed')
+        await bot_say(chat_id, '找歌的时候出了点问题，过一会儿再试试')
+
+
+@app.post('/fulfill')
+async def fulfill(request: Request):
+    """{q, chat_id, only: [来源频道], existing, link}。马上返回；找到（或没找到）后机器人直接回复 chat_id。"""
+    check_key(request)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    body = await request.json()
+    q = str(body.get('q', '')).strip()[:60]
+    if not q or not body.get('chat_id'):
+        raise HTTPException(400, 'bad request')
+    allowed = {str(c).strip().lstrip('@').lower() for c in body.get('only', []) if str(c).strip()}
+    existing = [(str(t), str(a)) for t, a in body.get('existing', [])]
+    asyncio.create_task(fulfill_request(q, body['chat_id'], allowed, existing, str(body.get('link', ''))[:200]))
+    return {'ok': True}
 
 
 @app.get('/search/channels')

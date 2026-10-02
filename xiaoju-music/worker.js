@@ -36,6 +36,8 @@ const LIST_TTL_MS = 20 * 1000;
 const REC_TTL_MS = 60 * 1000;
 // 等流式服务回响应头的时间；等不到多半是它在休眠，先让播放页过会儿再试
 const STREAMER_WAIT_MS = 25 * 1000;
+// 机器人问流式服务（搜歌、开始搬）最多等多久
+const BOT_WAIT_MS = 25 * 1000;
 // 算音柱数据要先把整首歌从 Telegram 取下来再解码，大文件要久一点
 const VIZ_WAIT_MS = 90 * 1000;
 // Telegram 给音乐文件生成的缩略图一般 20 KB 上下，超过这个大小就不当封面存
@@ -51,6 +53,7 @@ const UA = 'xiaoju-music (https://xiaoju-music.langhua98.workers.dev)';
 const LYRICS_SLACK_S = 3;
 const LYRICS_WAIT_MS = 8000;
 const DAY_MS = 24 * 3600 * 1000;
+const ASK_PER_DAY = 10;
 // 手动发的 .lrc 文件大小上限（一首歌的歌词一般几 KB）
 const LRC_LIMIT = 256 * 1024;
 
@@ -81,7 +84,11 @@ class HttpError extends Error {
 }
 
 export default {
-  async fetch(request, env) {
+  // 每天北京时间凌晨 3 点（UTC 19:00）：自动去来源频道搬新歌
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(nightly(env).catch(() => {}));
+  },
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
@@ -90,7 +97,7 @@ export default {
         return new Response(null, { status: 204, headers: cors({ 'Access-Control-Max-Age': '86400' }) });
       }
       if (path === '/tg-webhook') {
-        return method === 'POST' ? await webhook(request, env) : text('Method Not Allowed', 405);
+        return method === 'POST' ? await webhook(request, env, ctx) : text('Method Not Allowed', 405);
       }
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
@@ -127,11 +134,17 @@ function streamerBase(env) {
 
 // ── Telegram webhook：登记频道里的音频 ──────────────────────────────
 
-async function webhook(request, env) {
+async function webhook(request, env, ctx) {
   const got = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
   if (!env.TG_WEBHOOK_SECRET || !sameString(got, env.TG_WEBHOOK_SECRET)) return text('Forbidden', 403);
 
   const update = await request.json().catch(() => null);
+  // 私聊机器人（频道主管理、听众求歌）和按按钮：先回 200，慢慢处理（搜歌要好几秒，Telegram 等不了太久会重发）
+  if (update && ((update.message && update.message.chat && update.message.chat.type === 'private') || update.callback_query)) {
+    const work = botUpdate(env, update, new URL(request.url).origin).catch(() => {});
+    if (ctx && ctx.waitUntil) ctx.waitUntil(work); else await work;
+    return text('ok');
+  }
   const post = update && (update.channel_post || update.edited_channel_post);
   // 只收自己频道的帖子；别的群、私聊一律忽略，但仍回 200，免得 Telegram 反复重发
   if (!post || !Number.isInteger(post.message_id) || String(post.chat && post.chat.id) !== String(env.CHANNEL_ID)) {
@@ -154,8 +167,11 @@ async function webhook(request, env) {
   const rec = toRecord(post);
   // 新帖是已有的歌（歌名、歌手一样，时长差 3 秒以内）：不再进歌单。编辑已登记的帖子不算
   if (rec && update.channel_post && (await lib(env).findSame(rec))) return text('ok');
-  if (rec) await lib(env).upsertTrack(rec);
-  else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
+  if (rec) {
+    const fresh = await lib(env).upsertTrack(rec);
+    // 新进来的歌（不管是手动发的、夜里自动搬的还是机器人搬的）：按类型放进对应的歌单
+    if (fresh && update.channel_post) await lib(env).addToPlaylists(rec.id, genresOf(summary(rec)));
+  } else if (update.edited_channel_post) await lib(env).removeTrack(post.message_id); // 编辑后已不含音频
   forget(post.message_id);
   return text('ok');
 }
@@ -234,6 +250,9 @@ async function adminApi(request, env, url) {
     listCache = null;
     return json({ ok: true, playlists: saved });
   }
+  // 手动跑一次「夜里自动搬」（测试、或者想马上搬）
+  if (action === 'auto-run' && request.method === 'POST') return json(await nightly(env));
+  if (action === 'auto-state') return json(await lib(env).getAuto());
   if (action === 'remove' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));
     const track = Number(body.track);
@@ -837,6 +856,8 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS logo_covers (data TEXT PRIMARY KEY)');
       // 音柱数据：base64；空字符串表示确定算不了
       this.sql.exec('CREATE TABLE IF NOT EXISTS viz (id INTEGER PRIMARY KEY, data TEXT NOT NULL)');
+      // 听众求歌的记录（限次用）
+      this.sql.exec('CREATE TABLE IF NOT EXISTS asks (uid INTEGER NOT NULL, at INTEGER NOT NULL)');
       this.dropSplitterLeftovers();
       const coversV = this.cfg('coversV');
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
@@ -903,6 +924,7 @@ export class Library extends DurableObject {
     return r ? JSON.parse(r.rec) : null;
   }
 
+  // 返回这首是不是第一次登记
   async upsertTrack(rec) {
     const old = await this.getTrack(rec.id);
     // 帖子里换了文件，旧封面、旧歌词、旧音柱数据就作废
@@ -914,6 +936,25 @@ export class Library extends DurableObject {
     this.sql.exec(`INSERT INTO songs (id, rec, updated) VALUES (?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, updated = excluded.updated`,
       rec.id, JSON.stringify(rec), Date.now());
+    return !old;
+  }
+
+  // 把这首放到这几个歌单的最前面（已经在里面的不动）。返回真正放进去的歌单名
+  async addToPlaylists(id, names) {
+    const done = [];
+    for (const p of await this.listPlaylists()) {
+      if (!names.includes(p.name) || p.tracks.includes(id)) continue;
+      this.sql.exec('UPDATE playlists SET tracks = ? WHERE id = ?', JSON.stringify([id, ...p.tracks]), p.id);
+      done.push(p.name);
+    }
+    return done;
+  }
+
+  async removeFromPlaylist(id, name) {
+    const p = (await this.listPlaylists()).find(x => x.name === name);
+    if (!p || !p.tracks.includes(id)) return false;
+    this.sql.exec('UPDATE playlists SET tracks = ? WHERE id = ?', JSON.stringify(p.tracks.filter(x => x !== id)), p.id);
+    return true;
   }
 
   async removeTrack(id) {
@@ -921,6 +962,23 @@ export class Library extends DurableObject {
     this.sql.exec('DELETE FROM covers WHERE id = ?', id);
     this.sql.exec('DELETE FROM lyrics WHERE id = ?', id);
     this.sql.exec('DELETE FROM viz WHERE id = ?', id);
+  }
+
+  async getConfig(k) { return this.cfg(k); }
+  async setConfig(k, v) { this.setCfg(k, v); }
+
+  // 夜里自动搬的记录：state 是 {频道: 看到的最大消息号}
+  async getAuto() {
+    return { state: {}, ...JSON.parse(this.cfg('auto') || '{}') };
+  }
+  async setAuto(v) { this.setCfg('auto', JSON.stringify(v)); }
+
+  // 听众求歌限次：每人每 24 小时最多 ASK_PER_DAY 次（库里直接有的不算）
+  async allowAsk(uid, now) {
+    this.sql.exec('DELETE FROM asks WHERE at < ?', now - DAY_MS);
+    if (this.sql.exec('SELECT COUNT(*) AS n FROM asks WHERE uid = ?', uid).toArray()[0].n >= ASK_PER_DAY) return false;
+    this.sql.exec('INSERT INTO asks (uid, at) VALUES (?, ?)', uid, now);
+    return true;
   }
 
   async getSources() {
@@ -1084,6 +1142,316 @@ function summary(rec) {
     id: rec.id, kind: rec.kind, title, artist, mime: rec.mime,
     size: rec.size, duration: rec.duration, date: rec.date,
   };
+}
+
+// ── 机器人：频道主私聊管理、听众私聊求歌 ─────────────────────────────
+
+async function tg(env, method, payload) {
+  const res = await fetch(`${TG}/bot${env.TG_BOT_TOKEN}/${method}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  return res.json().catch(() => ({}));
+}
+
+function say(env, chatId, textMsg, buttons) {
+  const payload = { chat_id: chatId, text: textMsg, disable_web_page_preview: true };
+  if (buttons) payload.reply_markup = { inline_keyboard: buttons };
+  return tg(env, 'sendMessage', payload);
+}
+
+// 频道主：频道的创建者（问一次 Telegram 就记下来）
+async function ownerId(env) {
+  const L = lib(env);
+  let id = await L.getConfig('ownerId');
+  if (!id) {
+    const r = await tg(env, 'getChatAdministrators', { chat_id: env.CHANNEL_ID });
+    const c = (r.result || []).find(a => a.status === 'creator');
+    if (c) await L.setConfig('ownerId', (id = String(c.user.id)));
+  }
+  return id ? Number(id) : null;
+}
+
+async function streamerCall(env, path, body) {
+  const res = await fetch(`${streamerBase(env)}${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'X-Key': env.STREAMER_KEY, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(BOT_WAIT_MS),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, data };
+}
+
+const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
+
+搜 歌名或歌手 —— 去来源频道里找，点按钮就搬
+搬 @频道名 100 —— 从这个频道搬 100 首中文歌（查重），搬完告诉你
+找 歌名 —— 在小橘音乐里找这首，可以加进/移出歌单、删除
+统计 —— 歌库和这几天搬歌的情况
+
+直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
+新搬进来的歌会按类型自动放进对应的歌单。`;
+
+const PUBLIC_HELP = `你好，这里是小橘音乐 🍊
+发一个歌名给我（可以加上歌手名），我帮你找。找到了会给你一个链接，点开就能听。`;
+
+const tooLong = s => s.length > 60;
+
+async function botUpdate(env, update, origin) {
+  const owner = await ownerId(env);
+  if (update.callback_query) return botButton(env, update.callback_query, owner, origin);
+  const m = update.message;
+  const chat = m.chat.id, isOwner = owner && m.from && m.from.id === owner;
+  const t = (m.text || '').trim();
+  if (!t) return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
+  if (/^\/(start|help)\b/.test(t) || t === '帮助') return say(env, chat, isOwner ? HELP : PUBLIC_HELP);
+  if (isOwner) {
+    let c;
+    if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
+    if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
+    if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
+    if (/^(统计|今天搬了多少|搬了多少)/.test(t)) return ownerStats(env, chat);
+  }
+  if (tooLong(t)) return say(env, chat, '歌名太长啦，发短一点（歌名，或者「歌名 歌手」）');
+  return songRequest(env, chat, m.from ? m.from.id : chat, t, origin, isOwner);
+}
+
+// 在小橘音乐里按歌名、歌手找（不分大小写、去掉符号）
+async function libraryFind(env, q, n = 5) {
+  const nq = norm(q);
+  if (!nq) return [];
+  const scored = [];
+  for (const t of await lib(env).listTracks()) {
+    const nt = norm(t.title), na = norm(t.artist);
+    let s = 0;
+    if (nt === nq) s = 100;
+    else if (na && nt && nq.includes(nt) && nq.includes(na)) s = 95;
+    else if (nt.includes(nq)) s = 60;
+    else if ((nt + na).includes(nq)) s = 40;
+    if (s) scored.push([s, t]);
+  }
+  return scored.sort((a, b) => b[0] - a[0] || b[1].id - a[1].id).slice(0, n).map(x => x[1]);
+}
+
+const nameOf = t => (t.artist ? `${t.artist} - ${t.title}` : t.title);
+
+async function songRequest(env, chat, uid, q, origin, isOwner) {
+  const hit = (await libraryFind(env, q, 1))[0];
+  if (hit && norm(hit.title).length >= Math.min(2, norm(q).length)) {
+    return say(env, chat, `🎵 小橘音乐里有：${nameOf(hit)}\n点这里听：${origin}/#${hit.id}`);
+  }
+  if (!isOwner && !(await lib(env).allowAsk(uid, Date.now()))) {
+    return say(env, chat, '今天帮你找的歌有点多啦，明天再来吧 🙏');
+  }
+  if (!streamerOn(env)) return say(env, chat, `小橘音乐里还没有「${q}」`);
+  await say(env, chat, `小橘音乐里还没有「${q}」，我去找找，稍等一会儿…`);
+  try {
+    const L = lib(env);
+    const { status } = await streamerCall(env, '/fulfill', {
+      q, chat_id: chat, only: await L.getSources(), link: origin + '/',
+      existing: (await L.listTracks()).map(t => [t.title, t.artist]),
+    });
+    if (status !== 200) throw new Error(String(status));
+  } catch {
+    await say(env, chat, '找歌的服务正在睡觉（刚被叫醒），过一两分钟再发一次歌名试试');
+  }
+}
+
+async function ownerSearch(env, chat, q) {
+  if (!streamerOn(env)) return say(env, chat, '搬歌服务没配置');
+  const only = (await lib(env).getSources()).join(',');
+  let res;
+  try {
+    const r = await fetch(`${streamerBase(env)}/search/global?q=${encodeURIComponent(q)}&only=${encodeURIComponent(only)}&limit=150`, {
+      headers: { 'X-Key': env.STREAMER_KEY }, signal: AbortSignal.timeout(BOT_WAIT_MS),
+    });
+    res = ((await r.json().catch(() => ({}))).results || []);
+  } catch {
+    return say(env, chat, '搬歌服务正在唤醒，过一两分钟再搜一次');
+  }
+  res = res.filter(r => r.duration >= 60).slice(0, 8);
+  if (!res.length) return say(env, chat, `来源频道里没搜到「${q}」`);
+  const lines = res.map((r, i) => `${i + 1}. ${r.performer ? r.performer + ' - ' : ''}${r.title}（${Math.floor(r.duration / 60)}:${String(r.duration % 60).padStart(2, '0')}，@${r.channel}）`);
+  const buttons = [];
+  for (let i = 0; i < res.length; i += 4) {
+    buttons.push(res.slice(i, i + 4).map((r, k) => ({ text: `搬 ${i + k + 1}`, callback_data: `p:${r.channel}:${r.id}` })));
+  }
+  return say(env, chat, `搜「${q}」找到这些，点按钮搬进来：\n` + lines.join('\n'), buttons);
+}
+
+async function ownerCopy(env, chat, source, n) {
+  if (!streamerOn(env)) return say(env, chat, '搬歌服务没配置');
+  const L = lib(env);
+  try {
+    const { status } = await streamerCall(env, '/copy/start', {
+      source, limit: Math.max(1, Math.min(n, 500)), min_seconds: 60, max_seconds: 1200, chinese_only: true,
+      notify: chat, existing: (await L.listTracks()).map(t => [t.title, t.artist]),
+    });
+    if (status === 409) return say(env, chat, '正在搬别的，等那边搬完再来（搬完会通知你）');
+    if (status !== 200) throw new Error(String(status));
+  } catch {
+    return say(env, chat, '搬歌服务正在唤醒，过一两分钟再发一次');
+  }
+  return say(env, chat, `开始从 @${source} 搬最多 ${n} 首中文歌，搬完告诉你 👌`);
+}
+
+async function ownerFind(env, chat, q, origin) {
+  const hits = await libraryFind(env, q, 5);
+  if (!hits.length) return say(env, chat, `小橘音乐里没有「${q}」。想从来源频道找的话发：搜 ${q}`);
+  const pls = await lib(env).listPlaylists();
+  for (const t of hits) {
+    const inside = pls.filter(p => p.tracks.includes(t.id)).map(p => p.name);
+    await say(env, chat, `${nameOf(t)}\n${inside.length ? '在歌单：' + inside.join('、') : '不在任何歌单'}\n${origin}/#${t.id}`, [[
+      { text: '加入歌单', callback_data: `a:${t.id}` },
+      { text: '移出歌单', callback_data: `r:${t.id}` },
+      { text: '删除', callback_data: `d:${t.id}` },
+    ]]);
+  }
+}
+
+async function ownerStats(env, chat) {
+  const L = lib(env);
+  const tracks = await L.listTracks();
+  const now = Date.now() / 1000;
+  const recent = d => tracks.filter(t => t.date > now - d * 86400).length;
+  const auto = await L.getAuto();
+  const lines = [`歌库一共 ${tracks.length} 首`, `最近 24 小时新增 ${recent(1)} 首，7 天 ${recent(7)} 首`];
+  if (auto.lastStart) lines.push(`上次夜里自动搬：${auto.lastStart.slice(0, 10)}${auto.lastCopied != null ? `，搬了 ${auto.lastCopied} 首` : ''}`);
+  lines.push('', '各歌单：', ...(await L.listPlaylists()).map(p => `· ${p.name} ${p.tracks.length} 首`));
+  return say(env, chat, lines.join('\n'));
+}
+
+async function botButton(env, cb, owner, origin) {
+  const chat = cb.message && cb.message.chat.id;
+  const ack = textMsg => tg(env, 'answerCallbackQuery', { callback_query_id: cb.id, text: textMsg || '' });
+  if (!owner || !cb.from || cb.from.id !== owner) return ack('只有频道主能用');
+  const [kind, a, b] = String(cb.data || '').split(':');
+  const L = lib(env);
+  if (kind === 'p') { // 搬搜到的那首
+    await ack('搬运中…');
+    try {
+      const { data } = await streamerCall(env, '/copy/pick', { items: [{ channel: a, id: Number(b) }] });
+      const id = (data.new_ids || [])[0];
+      return say(env, chat, id ? `✅ 搬好了，会自动放进对应的歌单：${origin}/#${id}` : '⛔ 这首搬不了（可能那个频道禁止转发）');
+    } catch {
+      return say(env, chat, '搬歌服务正在唤醒，过一两分钟再点一次');
+    }
+  }
+  const id = Number(a);
+  const t = (await L.listTracks()).find(x => x.id === id);
+  if (!t) return ack('这首已经不在了');
+  const pls = await L.listPlaylists();
+  if (kind === 'a') {
+    await ack();
+    const opts = pls.filter(p => !p.tracks.includes(id));
+    if (!opts.length) return say(env, chat, '已经在所有歌单里了');
+    return say(env, chat, `把「${t.title}」加到哪个歌单？`, rows(opts.map(p => ({ text: p.name, callback_data: `ap:${id}:${p.id}` }))));
+  }
+  if (kind === 'r') {
+    await ack();
+    const opts = pls.filter(p => p.tracks.includes(id));
+    if (!opts.length) return say(env, chat, '它不在任何歌单里');
+    return say(env, chat, `把「${t.title}」从哪个歌单移出？`, rows(opts.map(p => ({ text: p.name, callback_data: `rp:${id}:${p.id}` }))));
+  }
+  if (kind === 'ap' || kind === 'rp') {
+    const p = pls.find(x => x.id === Number(b));
+    if (!p) return ack('歌单不在了');
+    if (kind === 'ap') await L.addToPlaylists(id, [p.name]); else await L.removeFromPlaylist(id, p.name);
+    listCache = null;
+    await ack(kind === 'ap' ? `已加入「${p.name}」` : `已移出「${p.name}」`);
+    return say(env, chat, `${kind === 'ap' ? '✅ 已加入' : '✅ 已移出'}「${p.name}」：${nameOf(t)}`);
+  }
+  if (kind === 'd') {
+    await ack();
+    return say(env, chat, `确定从小橘音乐删除「${nameOf(t)}」吗？（频道里的帖子不动）`, [[
+      { text: '确定删除', callback_data: `dd:${id}` }, { text: '算了', callback_data: 'x:0' },
+    ]]);
+  }
+  if (kind === 'dd') {
+    await L.removeTrack(id);
+    forget(id);
+    await ack('已删除');
+    return say(env, chat, `🗑 已删除：${nameOf(t)}`);
+  }
+  return ack();
+}
+
+function rows(buttons, per = 2) {
+  const out = [];
+  for (let i = 0; i < buttons.length; i += per) out.push(buttons.slice(i, i + per));
+  return out;
+}
+
+// ── 每天夜里自动搬歌 ───────────────────────────────────────────────
+// 先看上一晚那次搬完没有：搬完了就把每个频道「看到哪条了」记下来；再开始今晚这次（只看比上次新的帖子）。
+// 流式服务在 Hugging Face 上，久没人用会睡着，先叫醒它
+async function nightly(env) {
+  if (!streamerOn(env)) return { ok: false, why: 'no streamer' };
+  const L = lib(env);
+  let up = false;
+  for (let i = 0; i < 10 && !up; i++) {
+    try {
+      const r = await fetch(`${streamerBase(env)}/`, { signal: AbortSignal.timeout(20000) });
+      up = r.ok && ((await r.json().catch(() => ({}))).ok === true);
+    } catch {}
+    if (!up) await new Promise(res => setTimeout(res, 20000));
+  }
+  if (!up) return { ok: false, why: 'streamer asleep' };
+  const auto = await L.getAuto();
+  const { data: st } = await streamerCall(env, '/auto/status');
+  if (st.status === 'running') return { ok: false, why: 'still running' };
+  if (st.run_id && st.run_id === auto.runId && st.sources) {
+    for (const [name, info] of Object.entries(st.sources)) {
+      if (info && info.max_id) auto.state[name] = Math.max(auto.state[name] || 0, info.max_id);
+    }
+    auto.lastCopied = st.copied;
+  }
+  const sources = await L.getSources();
+  const runId = new Date().toISOString().slice(0, 19);
+  const { status } = await streamerCall(env, '/auto/start', {
+    sources: Object.fromEntries(sources.map(s => [s, auto.state[s] || 0])),
+    existing: (await L.listTracks()).map(t => [t.title, t.artist]),
+    notify: await ownerId(env), run_id: runId, per_source: 30, first_time: 10,
+  });
+  if (status === 200) { auto.runId = runId; auto.lastStart = new Date().toISOString(); auto.lastCopied = null; }
+  await L.setAuto(auto);
+  return { ok: status === 200, status, runId };
+}
+
+// ── 自动分歌单 ───────────────────────────────────────────────────
+// 新歌按歌名里的关键词和歌手放进对应的歌单（一首可以进好几个）；MV、综艺片段、伴奏这类不进歌单，只留在「全部」。
+// 都对不上、但有歌手名的，放「华语流行」
+const W = s => s.split(' ');
+const GENRE_ARTISTS = {
+  '经典老歌': W('邓丽君 蔡琴 李宗盛 张学友 刘德华 黎明 郭富城 谭咏麟 张国荣 梅艳芳 王杰 齐秦 童安格 周华健 刘若英 孟庭苇 费玉清 罗大佑 羅大佑 叶倩文 林子祥 许冠杰 陈百强 徐小凤 韩宝仪 卓依婷 甄妮 凤飞飞 高胜美 姜育恒 赵传 伍佰 黄品源 张雨生 郑智化 小虎队 毛阿敏 那英 田震 韦唯 杨钰莹 毛宁 陈慧娴 关淑怡 林忆莲 苏芮 潘美辰 李玲玉 王菲 辛晓琪 黄安 任贤齐 张信哲 刘欢 屠洪刚 郑钧 许巍 汪峰 黑豹 唐朝 Beyond 黄家驹 孙楠 陈淑桦 叶蒨文 周璇 黄莺莺 李翊君 万芳 张宇 光良 品冠 动力火车 庾澄庆 蔡幸娟'),
+  '粤语金曲': W('张学友 刘德华 黎明 郭富城 谭咏麟 张国荣 梅艳芳 陈百强 许冠杰 林子祥 叶倩文 Beyond 黄家驹 陈慧娴 关淑怡 李克勤 陈奕迅 杨千嬅 容祖儿 古巨基 郑秀文 卫兰 Twins 谢安琪 吴雨霏 侧田 林峯 张敬轩 周慧敏 许志安 郑中基 薛凯琪 陈小春 草蜢 太极乐队 达明一派 黄耀明 林家谦'),
+  '古风国风': W('银临 河图 双笙 等什么君 音阙诗听 小魂 霍尊 司南 叶里 Hita HITA 排骨教主 汐音社 西瓜JUN 灰原穷 刘珂矣 小曲儿 裁缝铺 王朝1982 戴荃 龚琳娜 萨顶顶 徐梦圆 慕寒 李常超 刘烨溦 任安琪 戏班 自得琴社 少司命 国风堂 黄诗扶 乐正绫 洛天依 五音Jw 小坠'),
+  '民谣·治愈': W('赵雷 宋冬野 马頔 陈鸿宇 好妹妹 房东的猫 程璧 李志 万能青年旅店 朴树 老狼 郝云 尧十三 陈粒 花粥 谢春花 曾轶可 鹿先森 隔壁老樊 毛不易 刘昊霖 痛仰 新裤子 草东没有派对 告五人 落日飞车 陈绮贞 蛙池 好乐无荒 马良 尹约 宿羽阳 暗杠 福禄寿 门尼 椿乐队 犬儒乐队 银河快递 安与骑兵 莫非定律'),
+  '广场舞·民族风': W('凤凰传奇 降央卓玛 乌兰图雅 云飞 杨魏玲花 刀郎 龚玥 阿鲁阿卓 韩红 腾格尔 德德玛 王琪 祁隆 乌兰托娅 李琼 雷佳 宋祖英 卓依婷 庄心妍 云朵 拉毛 斯琴格日乐 布仁巴雅尔 安东阳'),
+  '说唱': W('GAI 艾热 法老 马思唯 幼稚园杀手 谢帝 万妮达 VAVA 盛宇 杨和苏 弹壳 小青龙 黄旭 C-BLOCK 功夫胖 布瑞吉 BrAnTB 宝石Gem Capper 蛋堡 热狗 潘玮柏 KEY.L'),
+  '华语流行': W('周杰伦 林俊杰 薛之谦 陈奕迅 邓紫棋 G.E.M. 蔡依林 王力宏 孙燕姿 梁静茹 张惠妹 五月天 李荣浩 周深 许嵩 汪苏泷 张杰 华晨宇 田馥甄 S.H.E 萧敬腾 杨丞琳 林宥嘉 徐佳莹 莫文蔚 张韶涵 王心凌 李宇春 张靓颖 周笔畅 郁可唯 任然 单依纯 张碧晨 刘宇宁 胡夏 杨宗纬 方大同 陶喆 蔡健雅 梁博 张远 李健 陈楚生 苏打绿 吴青峰 王嘉尔 易烊千玺 王俊凯 王源 时代少年团 TFBOYS 张艺兴 弦子 王贰浪 苏星婕 程响 海来阿木 承桓 王小帅 小阿七'),
+  '伤感情歌': W('海来阿木 承桓 王小帅 小阿七 半吨兄弟 张碧晨 王贰浪 苏星婕 祁隆 王琪 杨宗纬 任然 庄心妍 张宇 刘增瞳 弦子 冷漠 杨坤 曲婉婷 莫叫姐姐 阿冗 周林枫 阿肆'),
+};
+const GENRE_WORDS = [
+  ['DJ 劲爆', /dj|remix|慢摇|串烧|劲爆|电音|蹦迪|disco|嗨曲|舞曲|edm|车载/i],
+  ['重低音', /重低音|低音炮|bass|超重低/i],
+  ['现场 Live', /live|现场|演唱会/i],
+  ['粤语金曲', /粤语|粵語|cantonese/i],
+  ['古风国风', /古风|国风|戏腔|古筝|琵琶|二胡/],
+  ['广场舞·民族风', /广场舞|民族风|草原|蒙古|藏族|西藏|山歌/],
+  ['说唱', /说唱|\brap\b|hiphop|hip-hop|cypher/i],
+  ['抖音热歌', /抖音|热播|爆款|网红|tiktok/i],
+  ['伤感情歌', /伤感|心碎|心痛|离别|失恋|眼泪|分手|忘不了|放手|错过|遗憾|难过|孤单|寂寞|想你/],
+];
+const NOT_A_SONG = /\.mp4|\bMV\b|综艺|音乐缘计划|伴奏|铃声|广告|会员|试听|片段|教学|有声书|相声|小品|Lyrics Video|Official Video/i;
+
+function genresOf(t) {
+  if (NOT_A_SONG.test(t.title)) return [];
+  const text = t.title + ' ' + t.artist, out = new Set();
+  for (const [name, re] of GENRE_WORDS) if (re.test(text)) out.add(name);
+  for (const [name, list] of Object.entries(GENRE_ARTISTS)) if (t.artist && list.some(a => t.artist.includes(a))) out.add(name);
+  if (!out.size && t.artist) out.add('华语流行');
+  return [...out];
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────

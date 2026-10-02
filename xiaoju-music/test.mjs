@@ -51,6 +51,8 @@ let seq = 0;
 const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); return id; };
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
 const calls = [];
+const OWNER = 777, FAN = 555;
+const bot = { out: [], toStreamer: [], search: [], pickId: 0, autoStatus: { status: 'idle' }, adminAsks: 0, copyBusy: false, streamerDown: false };
 const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok', viz: 'ok' };
 // 模拟歌词来源：LRCLIB 的歌词库，网易云的歌和歌词
 const lrclibDb = [];
@@ -126,7 +128,30 @@ globalThis.fetch = async (input, init = {}) => {
   if ((m = url.match(/^https:\/\/music\.163\.com\/api\/song\/lyric\?id=(\d+)&/))) {
     return Response.json({ code: 200, lrc: { version: 1, lyric: neteaseLyrics.get(Number(m[1])) || '' } });
   }
+  // 机器人要用的流式服务接口：记下收到的请求，按 bot 里设好的回
+  if ((m = url.match(/^https:\/\/streamer\.example\/(fulfill|copy\/start|copy\/pick|auto\/start|auto\/status|search\/global)(?:\?(.*))?$/)) || url === STREAMER + '/') {
+    if (bot.streamerDown) throw new TypeError('fetch failed');
+    if (url === STREAMER + '/') return Response.json({ ok: true });
+    assert.equal(headers.get('X-Key'), SKEY);
+    const body = init.body ? JSON.parse(init.body) : null;
+    bot.toStreamer.push({ path: m[1], body, query: m[2] || '' });
+    if (m[1] === 'search/global') return Response.json({ results: bot.search });
+    if (m[1] === 'copy/pick') return Response.json({ new_ids: [bot.pickId] });
+    if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
+    if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
+    return Response.json({ ok: true });
+  }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
+  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators)$/))) {
+    const body = JSON.parse(init.body);
+    if (m[1] === 'getChatAdministrators') {
+      assert.equal(String(body.chat_id), String(CHANNEL));
+      bot.adminAsks++;
+      return Response.json({ ok: true, result: [{ status: 'administrator', user: { id: 1 } }, { status: 'creator', user: { id: OWNER } }] });
+    }
+    bot.out.push({ method: m[1], ...body });
+    return Response.json({ ok: true, result: {} });
+  }
   if ((m = url.match(/\/bot[^/]+\/getFile\?file_id=(.+)$/))) {
     const f = files.get(decodeURIComponent(m[1]));
     if (!f) return Response.json({ ok: false, error_code: 400, description: 'Bad Request: invalid file_id' });
@@ -203,7 +228,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'viz']);
+  assert.deepEqual(tables, ['asks', 'config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'viz']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -539,6 +564,33 @@ await t('歌单：管理员整体设置，跟着歌单 JSON 给出去；改名�
   await admin('playlists', { playlists: [] });
 });
 
+await t('新歌自动分歌单：按歌名关键词和歌手放进对应歌单；MV 不进；编辑旧帖不重新分；只放进已有的歌单', async () => {
+  const names = ['抖音热歌', '华语流行', '伤感情歌', '经典老歌', '粤语金曲', 'DJ 劲爆', '重低音', '现场 Live'];
+  await admin('playlists', { playlists: names.map(name => ({ name, tracks: name === '经典老歌' ? [1] : [] })) });
+  const post = (id, title, performer) => hook({ channel_post: audioPost(id, { file_id: addFile(bytesOf(10, id)), file_size: 10, title, performer }) });
+  await post(901, '吻别 (DJ版)', '张学友');
+  await post(902, '晴天', '周杰伦');
+  await post(903, '某某 MV', '张学友');
+  await post(904, '超重低音车载串烧', '');
+  await post(905, '无名小曲', '某个新人');
+  await post(906, '想你的夜 (Live)', '关喆');
+  const pl = Object.fromEntries((await lib.listPlaylists()).map(p => [p.name, p.tracks]));
+  assert.deepEqual(pl['DJ 劲爆'], [904, 901]);
+  assert.deepEqual(pl['经典老歌'], [901, 1], '放在最前面，原来的不动');
+  assert.deepEqual(pl['粤语金曲'], [901]);
+  assert.deepEqual(pl['华语流行'], [905, 902], '对不上关键词、有歌手名的进华语流行');
+  assert.deepEqual(pl['重低音'], [904]);
+  assert.deepEqual(pl['现场 Live'], [906]);
+  assert.deepEqual(pl['伤感情歌'], [906]);
+  assert.ok(!Object.values(pl).some(t => t.includes(903)), 'MV 不进歌单');
+  // 编辑已登记的帖子：不再动歌单（管理员可能已经手动调过）
+  await lib.removeFromPlaylist(902, '华语流行');
+  await hook({ edited_channel_post: audioPost(902, { file_id: addFile(bytesOf(10, 902)), file_size: 10, title: '晴天', performer: '周杰伦' }) });
+  assert.ok(!(await lib.listPlaylists()).find(p => p.name === '华语流行').tracks.includes(902));
+  for (const id of [901, 902, 903, 904, 905, 906]) await admin('remove', { track: id });
+  await admin('playlists', { playlists: [] });
+});
+
 await t('重新配图：只清掉用频道图片的歌（语音、确定没有自带缩略图的、和别首共用一张图的老歌），自带封面的不动', async () => {
   await lib.upsertTrack({ id: 620, kind: 'audio', file_id: 'a', file_unique_id: 'u620', thumb: '', title: '没封面', performer: '', name: 'a.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
   await lib.upsertTrack({ id: 621, kind: 'audio', file_id: 'b', file_unique_id: 'u621', thumb: 'T', title: '有封面', performer: '', name: 'b.mp3', mime: 'audio/mpeg', size: 9, duration: 1, date: 1, caption: '' });
@@ -713,6 +765,138 @@ await t('音柱数据：第一次请流式服务算，存下来；算不了记�
   await admin('remove', { track: 811 });
   assert.equal(await lib.getViz(811), null);
   for (const id of [810, 404]) await admin('remove', { track: id });
+});
+
+// 私聊机器人：from 是谁，发什么
+const dm = (from, text) => hook({ update_id: 1, message: { message_id: 1, from: { id: from }, chat: { id: from, type: 'private' }, text } });
+const press = (from, data) => hook({ update_id: 2, callback_query: { id: 'cb', from: { id: from }, message: { message_id: 9, chat: { id: from, type: 'private' } }, data } });
+const lastSay = () => bot.out.filter(o => o.method === 'sendMessage').at(-1);
+
+await t('机器人：频道主是频道创建者（问一次就记住）；频道主和听众看到不同的说明；群里的消息不理', async () => {
+  bot.out.length = 0;
+  await dm(OWNER, '/start');
+  assert.match(lastSay().text, /管理助手/);
+  await dm(FAN, '/start');
+  assert.match(lastSay().text, /发一个歌名给我/);
+  assert.equal(bot.adminAsks, 1, '频道主记住了，不重复问');
+  const n = bot.out.length;
+  await hook({ update_id: 3, message: { message_id: 2, from: { id: FAN }, chat: { id: -5, type: 'group' }, text: '晴天' } });
+  assert.equal(bot.out.length, n);
+});
+
+await t('求歌：库里有直接给链接；没有就请流式服务去找（带来源频道和链接前缀）；每人每天限 10 次；服务睡着时说一声', async () => {
+  await admin('sources', { sources: ['VmoMusic', 'yinyue555'] });
+  await hook({ channel_post: audioPost(970, { file_id: addFile(bytesOf(10, 970)), file_size: 10, title: '谁', performer: '张万森' }) });
+  await dm(FAN, '谁');
+  assert.match(lastSay().text, /小橘音乐里有：张万森 - 谁/);
+  assert.ok(lastSay().text.includes(BASE + '/#970'));
+  bot.toStreamer.length = 0;
+  await dm(FAN, '晴天');
+  assert.match(lastSay().text, /我去找找/);
+  const f = bot.toStreamer.find(x => x.path === 'fulfill').body;
+  assert.equal(f.q, '晴天');
+  assert.equal(f.chat_id, FAN);
+  assert.deepEqual(f.only, ['VmoMusic', 'yinyue555']);
+  assert.equal(f.link, BASE + '/');
+  assert.ok(f.existing.some(([t, a]) => t === '谁' && a === '张万森'));
+  for (let i = 0; i < 9; i++) await dm(FAN, '晴天' + i);
+  await dm(FAN, '稻香');
+  assert.match(lastSay().text, /有点多/);
+  await dm(OWNER, '稻香'); // 频道主不限次
+  assert.match(lastSay().text, /我去找找/);
+  bot.streamerDown = true;
+  await dm(OWNER, '七里香');
+  assert.match(lastSay().text, /睡觉/);
+  bot.streamerDown = false;
+  await dm(FAN, 'x'.repeat(70));
+  assert.match(lastSay().text, /太长/);
+  await admin('remove', { track: 970 });
+});
+
+await t('频道主：搜 → 列出来带「搬」按钮；按按钮请流式服务搬；别人按没用', async () => {
+  bot.search = [{ channel: 'VmoMusic', id: 321, title: '晴天', performer: '周杰伦', duration: 269 }, { channel: 'VmoMusic', id: 322, title: '晴天片段', performer: '', duration: 20 }];
+  await dm(OWNER, '搜 晴天');
+  const m = lastSay();
+  assert.match(m.text, /1\. 周杰伦 - 晴天（4:29，@VmoMusic）/);
+  assert.ok(!m.text.includes('片段'), '太短的片段不列');
+  assert.deepEqual(m.reply_markup.inline_keyboard, [[{ text: '搬 1', callback_data: 'p:VmoMusic:321' }]]);
+  assert.ok(bot.toStreamer.at(-1).query.includes('only=VmoMusic%2Cyinyue555'));
+  bot.pickId = 4321;
+  await press(OWNER, 'p:VmoMusic:321');
+  assert.deepEqual(bot.toStreamer.at(-1), { path: 'copy/pick', body: { items: [{ channel: 'VmoMusic', id: 321 }] }, query: '' });
+  assert.ok(lastSay().text.includes(BASE + '/#4321'));
+  bot.pickId = 0;
+  await press(OWNER, 'p:VmoMusic:999');
+  assert.match(lastSay().text, /搬不了/);
+  const n = bot.toStreamer.length;
+  await press(FAN, 'p:VmoMusic:321');
+  assert.equal(bot.toStreamer.length, n);
+  assert.equal(bot.out.at(-1).text, '只有频道主能用');
+});
+
+await t('频道主：搬 @频道 N → 请流式服务搬（中文、查重、搬完通知频道主）；正在搬别的时说一声', async () => {
+  await dm(OWNER, '搬 @haoyyup 120');
+  const b = bot.toStreamer.at(-1).body;
+  assert.deepEqual([b.source, b.limit, b.notify, b.chinese_only, b.min_seconds, b.max_seconds], ['haoyyup', 120, OWNER, true, 60, 1200]);
+  assert.match(lastSay().text, /开始从 @haoyyup 搬最多 120 首/);
+  bot.copyBusy = true;
+  await dm(OWNER, '搬 yinyue555');
+  assert.match(lastSay().text, /正在搬别的/);
+  bot.copyBusy = false;
+  await dm(FAN + 1, '搬 @haoyyup 120'); // 听众发这个只当求歌（换一个还没用完次数的听众）
+  assert.equal(bot.toStreamer.at(-1).path, 'fulfill');
+});
+
+await t('频道主：找 → 加入/移出歌单、删除（要确认）；统计', async () => {
+  await admin('playlists', { playlists: [{ name: '抖音热歌', tracks: [] }, { name: '华语流行', tracks: [] }] });
+  await hook({ channel_post: audioPost(960, { file_id: addFile(bytesOf(10, 960)), file_size: 10, title: '测试小曲', performer: '小橘' }) });
+  const pls = await lib.listPlaylists();
+  const hot = pls.find(p => p.name === '抖音热歌'), pop = pls.find(p => p.name === '华语流行');
+  assert.ok(pop.tracks.includes(960), '新歌自动进了华语流行');
+  await dm(OWNER, '找 测试小曲');
+  assert.match(lastSay().text, /小橘 - 测试小曲\n在歌单：华语流行/);
+  await press(OWNER, 'a:960');
+  assert.deepEqual(lastSay().reply_markup.inline_keyboard, [[{ text: '抖音热歌', callback_data: `ap:960:${hot.id}` }]]);
+  await press(OWNER, `ap:960:${hot.id}`);
+  assert.ok((await lib.listPlaylists()).find(p => p.name === '抖音热歌').tracks.includes(960));
+  await press(OWNER, `rp:960:${pop.id}`);
+  assert.ok(!(await lib.listPlaylists()).find(p => p.name === '华语流行').tracks.includes(960));
+  await dm(OWNER, '统计');
+  assert.match(lastSay().text, /歌库一共 \d+ 首/);
+  assert.match(lastSay().text, /抖音热歌 1 首/);
+  await press(OWNER, 'd:960');
+  assert.match(lastSay().text, /确定从小橘音乐删除/);
+  assert.ok(await lib.getTrack(960), '没确认前不删');
+  await press(OWNER, 'dd:960');
+  assert.equal(await lib.getTrack(960), null);
+  await dm(OWNER, '找 不存在的歌');
+  assert.match(lastSay().text, /没有「不存在的歌」/);
+  await admin('playlists', { playlists: [] });
+});
+
+await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {
+  await admin('sources', { sources: ['VmoMusic', 'yinyue555'] });
+  bot.autoStatus = { status: 'idle' };
+  let r = await jsonOf(await admin('auto-run', {}));
+  assert.equal(r.ok, true);
+  let b = bot.toStreamer.at(-1);
+  assert.equal(b.path, 'auto/start');
+  assert.deepEqual(b.body.sources, { VmoMusic: 0, yinyue555: 0 });
+  assert.equal(b.body.notify, OWNER);
+  // 第二晚：上一晚搬完了，记下每个频道看到的最大消息号
+  bot.autoStatus = { status: 'done', run_id: r.runId, copied: 7, sources: { VmoMusic: { max_id: 900, copied: 5 }, yinyue555: { max_id: 50, copied: 2 } } };
+  await new Promise(res => setTimeout(res, 1100)); // 换一秒，run_id 才不一样
+  r = await jsonOf(await admin('auto-run', {}));
+  b = bot.toStreamer.at(-1);
+  assert.deepEqual(b.body.sources, { VmoMusic: 900, yinyue555: 50 });
+  const st = await jsonOf(await admin('auto-state'));
+  assert.equal(st.runId, r.runId);
+  bot.autoStatus = { status: 'running' };
+  const n = bot.toStreamer.length;
+  r = await jsonOf(await admin('auto-run', {}));
+  assert.deepEqual([r.ok, r.why], [false, 'still running']);
+  assert.equal(bot.toStreamer.at(-1).path, 'auto/status');
+  assert.equal(bot.toStreamer.length, n + 1);
 });
 
 await t('路由：404、405、CORS 预检', async () => {
