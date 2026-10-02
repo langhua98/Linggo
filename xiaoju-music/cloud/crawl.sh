@@ -14,6 +14,9 @@ CFG=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" "$API/dy-cloud-config" 2>/dev/
 NEW=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("creators",""))' 2>/dev/null)
 # 机器人里「搜抖音 舞蹈」排队等搜的词（搜索模式用）
 QUEUE=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin).get("searches") or []))' 2>/dev/null)
+# 每个词搜多少条（机器人里「搜抖音 瑜伽裤 300」定的；没有就 100）
+SMAX=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("search_max") or 0))' 2>/dev/null)
+XJ_SEARCH_MAX="${XJ_SEARCH_MAX:-${SMAX:-100}}"; [ "$XJ_SEARCH_MAX" -gt 0 ] 2>/dev/null || XJ_SEARCH_MAX=100
 if [ -n "$NEW" ] && [ "$NEW" != "$CREATORS" ]; then
   CREATORS="$NEW"
   printf 'TOKEN=%q\nCREATORS=%q\nAPI=%q\n' "$TOKEN" "$CREATORS" "$API" > "$HOME/.xiaoju/env"
@@ -227,13 +230,13 @@ report starting
 
 # 搜索模式（search.sh）：在抖音里搜关键词，结果只送给小橘整理成链接清单私聊发频道主，不下载、不转发别人的视频
 if [ -n "${XJ_SEARCH_MODE:-}" ]; then
-  echo "== 在抖音里搜：${KW//,/、}（每个词最多 ${XJ_SEARCH_MAX:-30} 条），只收集链接 =="
+  echo "== 在抖音里搜：${KW//,/、}（每个词最多 $XJ_SEARCH_MAX 条），只收集链接 =="
   ( while sleep "${XJ_SEND_EVERY:-30}"; do report running; done ) &
   REPLOOP=$!
   trap 'kill $WINLOOP $REPLOOP 2>/dev/null' EXIT
   uv run main.py --platform dy --lt qrcode --type search --keywords "$KW" \
     --get_comment no --get_sub_comment no --get_media no --headless no \
-    --save_data_option jsonl --crawler_max_notes_count "${XJ_SEARCH_MAX:-30}" --save_data_path "$OUT"
+    --save_data_option jsonl --crawler_max_notes_count "$XJ_SEARCH_MAX" --save_data_path "$OUT"
   kill $REPLOOP 2>/dev/null; wait $REPLOOP 2>/dev/null
   if [ -f "$STOPF" ]; then
     report stopped

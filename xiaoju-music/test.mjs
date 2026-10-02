@@ -1082,8 +1082,9 @@ await t('账号标签：视频频道按账号分类，默认用抖音昵称、�
 await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送回来 → 按点赞排的链接清单私聊发频道主（不下载、不转发）', async () => {
   await dm(OWNER, '搜抖音 舞蹈');
   assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*search\.sh/);
-  await dm(OWNER, '搜抖音 街舞');
-  assert.match(lastSay().text, /一共 2 个词等着搜：舞蹈、街舞/);
+  assert.match(lastSay().text, /搜 100 条/);
+  await dm(OWNER, '搜抖音 街舞 300');
+  assert.match(lastSay().text, /记下了「街舞」，搜 300 条（一共 2 个词等着搜：舞蹈、街舞）/);
   await dm(OWNER, '搜抖音');
   assert.match(lastSay().text, /舞蹈、街舞/);
   const n = bot.toStreamer.length;
@@ -1093,6 +1094,7 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   const tok = await lib.getConfig('cloudTok');
   const cfg = await jsonOf(await req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok } }));
   assert.deepEqual(cfg.searches, ['舞蹈', '街舞']);
+  assert.equal(cfg.search_max, 300, '排队的词里要得最多的');
   const rows = [
     { aweme_id: '7600000000000000001', desc: '低赞', liked_count: '12', source_keyword: '舞蹈', nickname: '甲*', xiaoju_nickname: '甲甲' },
     { aweme_id: '7600000000000000002', desc: '高赞 舞蹈', liked_count: '123456', source_keyword: '舞蹈', nickname: '乙' },
@@ -1235,13 +1237,13 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   assert.ok(!/crawl\.sh/.test(lastSay().text), '听众拿不到命令');
   // 云电脑拿 Codespaces 自带的 GitHub 令牌领口令：只认仓库主人
   const cfg = gh => req('/dy-cloud-config', { method: 'POST', headers: gh ? { Authorization: 'token ' + gh } : {} });
-  assert.deepEqual(await jsonOf(await cfg('gh-owner')), { token: m[1], creators: sec, searches: [] });
+  assert.deepEqual(await jsonOf(await cfg('gh-owner')), { token: m[1], creators: sec, searches: [], search_max: 100 });
   assert.equal((await cfg('gh-other')).status, 403);
   assert.equal((await cfg('bad')).status, 403);
   assert.equal((await cfg('')).status, 401);
   // 云电脑带上传令牌拿最新账号名单
   const byTok = t => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': t } });
-  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec, searches: [] });
+  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec, searches: [], search_max: 100 });
   assert.equal((await byTok('wrong')).status, 403);
 });
 

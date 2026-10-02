@@ -1242,7 +1242,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮
 发一个视频文件 —— 点按钮转进视频频道
 
 🔎 抖音搜索
-搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词，结果按点赞排好私聊发你（链接、文件地址），每条有「📤 转 N」按钮，点了转进视频频道
+搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词（默认 100 条；「搜抖音 舞蹈 300」搜 300 条，最多 500），结果按点赞排好私聊发你（链接、文件地址），每条有「📤 转 N」按钮，点了转进视频频道
 搜抖音 —— 看还有哪些词排着队；「搜抖音 清空」清掉
 
 🎵 音乐（小橘音乐）
@@ -1676,7 +1676,8 @@ async function cloudConfig(request, env) {
     if (!tok || !sameString(xt, tok)) return json({ error: '令牌不对' }, 403);
     const selves = await douyinSelves(L);
     if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
-    return json({ token: tok, creators: selves.join(','), searches: await douyinSearchQueue(L) });
+    const q = await douyinSearchQueue(L);
+    return json({ token: tok, creators: selves.join(','), searches: q, search_max: await douyinSearchMax(L, q) });
   }
   const gh = (request.headers.get('Authorization') || '').replace(/^(Bearer|token)\s+/i, '');
   if (!gh) return json({ error: '没带 GitHub 令牌' }, 401);
@@ -1690,12 +1691,21 @@ async function cloudConfig(request, env) {
   if (login.toLowerCase() !== CLOUD_GH_USER) return json({ error: '不是仓库主人的 GitHub 账号' }, 403);
   const L = lib(env), selves = await douyinSelves(L);
   if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
-  return json({ token: await cloudToken(L), creators: selves.join(','), searches: await douyinSearchQueue(L) });
+  const q = await douyinSearchQueue(L);
+  return json({ token: await cloudToken(L), creators: selves.join(','), searches: q, search_max: await douyinSearchMax(L, q) });
 }
 
 // ── 抖音搜索 → 链接清单 ──
 // 「搜抖音 舞蹈」：关键词记进 dySearchQueue；云电脑（MediaCrawler 的 search 模式，频道主自己登录的）下次打开时搜，
 // 结果 POST /dy-search（X-Token）。只整理成分享链接清单私聊发给频道主，点链接在抖音里看——别人的视频不下载、不转发
+const SEARCH_DEFAULT = 100, SEARCH_MAX = 500;
+
+// 这次要搜多少条：排队的词里要得最多的那个（MediaCrawler 一次只能给一个数）
+async function douyinSearchMax(L, queue) {
+  const counts = await douyinTagMap(L, 'dySearchCounts');
+  return queue.length ? Math.max(...queue.map(k => Number(counts[k]) || SEARCH_DEFAULT)) : SEARCH_DEFAULT;
+}
+
 async function douyinSearchQueue(L) {
   try {
     const a = JSON.parse((await L.getConfig('dySearchQueue')) || '[]');
@@ -1716,11 +1726,19 @@ async function ownerDouyinSearch(env, chat, kw) {
     await L.setConfig('dySearchQueue', '[]');
     return say(env, chat, '清空了');
   }
+  // 「搜抖音 瑜伽裤 300」：最后的数字是这个词要搜多少条（默认 100，最多 500）
+  let want = SEARCH_DEFAULT;
+  const num = /^(.*?)\s+(\d{1,4})$/.exec(kw);
+  if (num) { kw = num[1]; want = Math.min(SEARCH_MAX, Math.max(10, Number(num[2]))); }
   kw = kw.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').slice(0, 30);
   if (!q.includes(kw)) q.push(kw);
   await L.setConfig('dySearchQueue', JSON.stringify(q.slice(-10)));
+  const counts = await douyinTagMap(L, 'dySearchCounts');
+  counts[kw] = want;
+  await L.setConfig('dySearchCounts', JSON.stringify(counts));
   return say(env, chat, [
-    `🔎 记下了「${kw}」${q.length > 1 ? `（一共 ${q.length} 个词等着搜：${q.join('、')}）` : ''}`,
+    `🔎 记下了「${kw}」，搜 ${want} 条${q.length > 1 ? `（一共 ${q.length} 个词等着搜：${q.join('、')}）` : ''}`,
+    `想多搜一些：「搜抖音 ${kw} 300」（最多 ${SEARCH_MAX} 条；搜得越多越容易被抖音限制）`,
     '',
     '搜索要用云电脑上登录的抖音：下次打开云电脑，抓完你的作品就会顺便搜，搜完把链接清单私聊发你。',
     `云电脑正开着的话，在终端运行这个马上搜：\nbash xiaoju-music/cloud/search.sh`,
@@ -1738,7 +1756,7 @@ async function searchRows(L) {
 
 // 搜索结果的一条 → 转进频道要用的那几样（和 MediaCrawler 导出的格式一样，流式服务的 mcimport 认得），各档清晰度留着挑最高的
 function compactSearchRow(r) {
-  const addr = a => (a && typeof a === 'object' ? { url_list: (a.url_list || []).slice(0, 3), width: a.width, height: a.height, data_size: a.data_size } : undefined);
+  const addr = a => (a && typeof a === 'object' ? { url_list: (a.url_list || []).slice(0, 2), width: a.width, height: a.height, data_size: a.data_size } : undefined);
   const v = r.xiaoju_video && typeof r.xiaoju_video === 'object' ? r.xiaoju_video : null;
   const out = {};
   for (const k of ['aweme_id', 'aweme_type', 'desc', 'create_time', 'nickname', 'xiaoju_nickname', 'xiaoju_sec_uid',
@@ -1746,7 +1764,10 @@ function compactSearchRow(r) {
   if (v) {
     out.xiaoju_video = {
       width: v.width, height: v.height, duration: v.duration, play_addr: addr(v.play_addr), play_addr_h264: addr(v.play_addr_h264),
-      bit_rate: (Array.isArray(v.bit_rate) ? v.bit_rate : []).slice(0, 8).map(b => ({
+      // 只留清晰度最高的 4 档（按分辨率、码率排），每条存得小一点：几百条都放得下
+      bit_rate: (Array.isArray(v.bit_rate) ? v.bit_rate : []).filter(b => b && b.play_addr)
+        .sort((x, y) => (Math.min(y.play_addr.width || 0, y.play_addr.height || 0) - Math.min(x.play_addr.width || 0, x.play_addr.height || 0)) || ((y.bit_rate || 0) - (x.bit_rate || 0)))
+        .slice(0, 4).map(b => ({
         bit_rate: b.bit_rate, is_h265: b.is_h265, gear_name: b.gear_name, play_addr: addr(b.play_addr),
       })),
     };
@@ -1871,7 +1892,7 @@ async function cloudSearchResult(request, env) {
   if (!groups.size) return json({ error: '文件里没认出搜索结果' }, 400);
   for (const [kw, list] of groups) {
     list.sort((a, b) => b.likes - a.likes);
-    const lines = list.slice(0, 50).map((x, i) => `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}${x.own ? ' 👤你的号' : ''}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`
+    const lines = list.slice(0, SEARCH_MAX).map((x, i) => `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}${x.own ? ' 👤你的号' : ''}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`
       + (x.files.length ? `\n⬇️ 文件（几个小时内有效）：\n${x.files.slice(0, 9).join('\n')}` : ''));
     const head = `🔎 抖音搜「${kw}」：${list.length} 条，按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）`;
     const send = async (text, ids) => {
@@ -1894,10 +1915,13 @@ async function cloudSearchResult(request, env) {
     }
     await send(chunk, ids);
   }
-  const keep = Object.keys(rows).slice(-150);  // 只留最近 150 条（地址几个小时就失效，旧的留着也没用）
+  const keep = Object.keys(rows).slice(-300);  // 只留最近 300 条（地址几个小时就失效，旧的留着也没用；再多存不下）
   await L.setConfig('dySearchRows', JSON.stringify(Object.fromEntries(keep.map(k => [k, rows[k]]))));
   const done = [...groups.keys()];
   await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !done.includes(k))));
+  const counts = await douyinTagMap(L, 'dySearchCounts');
+  for (const k of done) delete counts[k];
+  await L.setConfig('dySearchCounts', JSON.stringify(counts));
   return json({ ok: true, keywords: done, total: seen.size });
 }
 
