@@ -1,4 +1,4 @@
-"""把抖音接口返回的一条作品整理成要用的几样东西：是视频还是图文、发布时间、文案、下载地址。
+"""把抖音接口返回的一条作品整理成要用的几样东西：是视频还是图文、公开链接、发布时间、文案、下载地址。
 
 下载地址挑不带水印的 H.264：play_addr / bit_rate 里的都不带水印（带水印的是 download_addr，不用）；
 H.265 有的 Telegram 客户端放不了，排在最后。"""
@@ -56,9 +56,11 @@ def normalize(a):
         kind = 'video'
     else:
         kind = 'other'
+    aweme_id = str(a.get('aweme_id') or '')
     return {
-        'id': str(a.get('aweme_id') or ''),
+        'id': aweme_id,
         'kind': kind,
+        'url': share_url(aweme_id, kind),
         'time': int(a.get('create_time') or 0),
         'desc': (a.get('desc') or '').strip(),
         'author': author.get('nickname') or '',
@@ -69,6 +71,11 @@ def normalize(a):
         'sources': sources,
         'cover': (_urls(v.get('origin_cover')) or _urls(v.get('cover')) or [''])[0],
     }
+
+
+def share_url(aweme_id, kind='video'):
+    """作品的公开链接（解析网站都认）：图文是 /note/，视频是 /video/"""
+    return f'https://www.douyin.com/{"note" if kind == "images" else "video"}/{aweme_id}'
 
 
 def _u16(s):

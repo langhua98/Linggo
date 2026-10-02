@@ -85,7 +85,9 @@ def test_normalize_video_and_images():
     it = normalize(aweme())
     assert (it['id'], it['kind'], it['seconds'], it['author'], it['sec_uid']) == ('7691335977760321704', 'video', 12, '丁', SEC)
     assert it['cover'] == 'https://p/cover.jpeg'
-    assert normalize(aweme(images=[{'url_list': ['x']}]))['kind'] == 'images'
+    assert it['url'] == 'https://www.douyin.com/video/7691335977760321704'
+    note = normalize(aweme(images=[{'url_list': ['x']}]))
+    assert note['kind'] == 'images' and note['url'] == 'https://www.douyin.com/note/7691335977760321704'
     assert normalize({'aweme_id': '1', 'video': {}})['kind'] == 'other'
 
 
@@ -291,6 +293,7 @@ def test_douyin_link_endpoint(monkeypatch):
     started = []
     job = DouyinJob(web=None, send_video=None, find_posted=None)
     monkeypatch.setattr(job, 'start', lambda aweme_id, notify=None: started.append((aweme_id, notify)))
+    monkeypatch.setattr(job, 'start_collect', lambda sec_uid, notify=None: started.append(('collect', sec_uid, notify)))
     monkeypatch.setattr(appmod, 'douyin_job', job)
 
     async def fake_resolve(text):
@@ -303,9 +306,10 @@ def test_douyin_link_endpoint(monkeypatch):
     key = {'X-Key': 'k1'}
     assert c.post('/douyin/link', json={'text': SHARE}).status_code == 403
     r = c.post('/douyin/link', json={'text': SHARE, 'notify': 42}, headers=key)
-    assert r.status_code == 200 and r.json() == {'id': '7691335977760321704'} and started == [('7691335977760321704', 42)]
-    r = c.post('/douyin/link', json={'text': 'https://www.douyin.com/user/x'}, headers=key)
-    assert r.status_code == 400 and '主页' in r.json()['detail']
+    assert r.status_code == 200 and r.json() == {'kind': 'aweme', 'id': '7691335977760321704'}
+    r = c.post('/douyin/link', json={'text': 'https://www.douyin.com/user/x', 'notify': 42}, headers=key)
+    assert r.status_code == 200 and r.json() == {'kind': 'user', 'sec_uid': SEC}
+    assert started == [('7691335977760321704', 42), ('collect', SEC, 42)]
     assert c.post('/douyin/link', json={'text': 'hello'}, headers=key).status_code == 400
     assert c.get('/douyin/status', headers=key).json() == {'status': 'idle'}
 
@@ -326,3 +330,164 @@ def test_douyin_link_busy(monkeypatch):
     monkeypatch.setattr(appmod.dy_links, 'resolve', fake_resolve)
     r = TestClient(appmod.app).post('/douyin/link', json={'text': 'x'}, headers={'X-Key': 'k1'})
     assert r.status_code == 409
+
+
+# ── 打开着的网页：先用网页自己拿到的，没有再自己调 ──
+
+class ScriptedPage:
+    """evaluate 按顺序回 answers 里的东西（'hang' 表示一直不回）"""
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), 0
+
+    async def evaluate(self, js, arg):
+        self.calls += 1
+        a = self.answers.pop(0) if self.answers else {'status': 200, 'text': ''}
+        if a == 'hang':
+            await asyncio.sleep(3600)
+        return a
+
+
+class Res:
+    def __init__(self, url, text):
+        self.url, self._text = url, text
+
+    async def text(self):
+        return self._text
+
+
+def make_tab(answers, warmup=0.3):
+    from douyin.web import Tab
+    w = DouyinWeb(warmup=warmup, tries=2, gap=0.01, call_timeout=0.2)
+    return Tab(w, ScriptedPage(answers), watch=['/aweme/v1/web/aweme/post/'])
+
+
+def test_tab_uses_what_the_page_itself_got():
+    async def go():
+        t = make_tab([])
+        await t.on_response(Res('https://www.douyin.com/aweme/v1/web/aweme/post/?sec_user_id=S&max_cursor=0', ''))  # 空的不算
+        await t.on_response(Res('https://www.douyin.com/aweme/v1/web/aweme/post/?sec_user_id=S&max_cursor=0', '{"aweme_list": [1]}'))
+        await t.on_response(Res('https://www.douyin.com/aweme/v1/web/hot/search/list/', '{"x": 1}'))  # 没在 watch 里
+        data = await t.get('/aweme/v1/web/aweme/post/', {}, match=lambda u: 'max_cursor=0' in u)
+        return data, t.page.calls, len(t.got)
+    assert asyncio.run(go()) == ({'aweme_list': [1]}, 0, 1)
+
+
+def test_tab_calls_itself_when_the_page_did_not_and_stops_on_a_captcha():
+    async def go():
+        t = make_tab([{'status': 200, 'text': ''}, {'status': 200, 'text': '{"ok": 1}'}])
+        return await t.get('/p', {}, match=lambda u: False), t.page.calls
+    assert asyncio.run(go()) == ({'ok': 1}, 2)
+
+    async def captcha():
+        t = make_tab(['hang'])
+        await t.on_response(Res('https://verify.zijieapi.com/captcha/get?x=1', ''))
+        await t.get('/p', {}, match=lambda u: False)
+    try:
+        asyncio.run(asyncio.wait_for(captcha(), 5))
+        raise AssertionError('should block')
+    except Blocked as e:
+        assert '滑块验证' in str(e)
+
+    async def nothing():
+        t = make_tab([])
+        await t.get('/p', {})
+    try:
+        asyncio.run(nothing())
+        raise AssertionError('should block')
+    except Blocked as e:
+        assert '没给数据' in str(e)
+
+
+# ── 采集一个账号的作品链接 ──
+
+class FakeTab:
+    def __init__(self, pages):
+        self.pages, self.asked = list(pages), []
+
+    async def get(self, path, params, match=None):
+        self.asked.append(params['max_cursor'])
+        p = self.pages.pop(0)
+        if isinstance(p, Exception):
+            raise p
+        return p
+
+
+def web_with_pages(pages):
+    import contextlib
+    w = DouyinWeb(gap=0)
+    tab = FakeTab(pages)
+
+    @contextlib.asynccontextmanager
+    async def fake_tab(url, watch=()):
+        assert url == f'https://www.douyin.com/user/{SEC}'
+        yield tab
+
+    w.tab = fake_tab
+    return w, tab
+
+
+def page_of(ids, more, cursor, hidden=False):
+    d = {'status_code': 0, 'has_more': more, 'max_cursor': cursor,
+         'aweme_list': [aweme(aweme_id=i, create_time=1790000000 - n) for n, i in enumerate(ids)]}
+    if hidden:
+        d['not_login_module'] = {'guide_login_tip_exist': True}
+    return d
+
+
+def test_posts_follows_the_pages_and_reports_what_douyin_hid():
+    w, tab = web_with_pages([page_of(['1', '2'], 1, 111, hidden=True), page_of(['2', '3'], 1, 222), {'status_code': 0}])
+    items, info = asyncio.run(w.posts(SEC))
+    assert [i['id'] for i in items] == ['1', '2', '3'] and tab.asked == ['0', '111', '222']
+    assert info == {'hidden_newest': True, 'truncated': True}
+    w, tab = web_with_pages([page_of(['1'], 0, 0)])
+    assert asyncio.run(w.posts(SEC))[1] == {'hidden_newest': False, 'truncated': False}
+    w, tab = web_with_pages([page_of(['1', '2'], 1, 111), Blocked('x')])  # 第二页被风控：第一页的照样算
+    items, info = asyncio.run(w.posts(SEC))
+    assert len(items) == 2 and info['truncated']
+    w, tab = web_with_pages([page_of(['1', '2', '3'], 1, 111)])
+    assert len(asyncio.run(w.posts(SEC, limit=2))[0]) == 2 and tab.asked == ['0']
+    w, tab = web_with_pages([{'status_code': 8, 'status_msg': 'x'}])
+    try:
+        asyncio.run(w.posts(SEC))
+        raise AssertionError('should block')
+    except Blocked:
+        pass
+
+
+def test_collect_job_reports_the_links():
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit):
+            return ([normalize(aweme(aweme_id='111', desc='视频一')),
+                     normalize(aweme(aweme_id='222', desc='图文一', images=[{}], create_time=1790000000))],
+                    {'hidden_newest': True, 'truncated': True})
+
+    said = []
+
+    async def say(chat, text):
+        said.append(text)
+
+    async def go():
+        job = DouyinJob(web=Web(), send_video=None, find_posted=None, say=say)
+        job.start_collect(SEC, notify=42)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert st['status'] == 'done' and st['name'] == '丁' and st['hidden_newest'] and st['truncated']
+    assert [(x['id'], x['kind'], x['url']) for x in st['links']] == [
+        ('111', 'video', 'https://www.douyin.com/video/111'), ('222', 'images', 'https://www.douyin.com/note/222')]
+    text = said[0]
+    assert text.startswith('🔗 抖音 @丁 的作品链接：共 2 条（视频 1、图文 1）')
+    assert '最新的几条作品' in text and '只给没登录的人看第一页' in text
+    assert text.index('https://www.douyin.com/video/111') < text.index('https://www.douyin.com/note/222')
+    assert '2026-09-30 视频一' in text
+
+
+def test_links_report_splits_long_lists():
+    from douyin.job import MESSAGE_LIMIT, links_report
+    links = [{'id': str(i), 'url': f'https://www.douyin.com/video/{7600000000000000000 + i}', 'kind': 'video',
+              'time': 1790000000 - i, 'desc': '很长的文案' * 10} for i in range(120)]
+    out = links_report({'name': '丁', 'links': links})
+    assert len(out) > 1 and all(len(m) <= MESSAGE_LIMIT for m in out)
+    assert sum(m.count('https://www.douyin.com/video/') for m in out) == 120
+    assert links_report({'name': '丁', 'links': []})[0].endswith('这个账号没有公开作品。')

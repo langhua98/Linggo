@@ -10,7 +10,8 @@ Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里�
 开了「禁止保存内容」的频道 Telegram 不让转，这里也不去绕。登录走 POST /login/code、/login/verify，
 搬歌走 /copy/start、/copy/status、/copy/stop。
 
-抖音视频转到频道（不登录抖音，见 douyin/）：POST /douyin/link 转一条分享链接，GET /douyin/status 看上一次的结果。
+抖音（不登录，见 douyin/）：POST /douyin/link 发作品链接 → 转进频道，发主页链接 → 采集这个账号全部作品的链接；
+GET /douyin/status 看上一次的结果（采集到的链接也在里面）。
 
 环境变量（在 Space 的 Settings → Variables and secrets 里设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
@@ -823,8 +824,9 @@ async def douyin_find_posted(aweme_id):
 
 @app.post('/douyin/link')
 async def douyin_link(request: Request):
-    """{text: 分享文字或链接, notify}。是作品就在后台转到频道（转好、转不了都会通知 notify）→ {id}。
-    认不出、是主页链接 → 400 带原因；正在转别的 → 409"""
+    """{text: 分享文字或链接, notify}，在后台跑，跑完通知 notify：
+    作品链接 → 转到频道 → {kind: 'aweme', id}；主页链接 → 采集这个账号全部作品的链接 → {kind: 'user', sec_uid}。
+    认不出 → 400；正在跑别的 → 409"""
     check_key(request)
     body = await request.json()
     try:
@@ -832,14 +834,17 @@ async def douyin_link(request: Request):
     except Exception:  # noqa: BLE001 — 短链接打不开
         raise HTTPException(502, '抖音短链接打不开')
     if not got:
-        raise HTTPException(400, '没认出抖音视频链接')
-    if got[0] == 'user':
-        raise HTTPException(400, '这是主页链接，要发某一条视频的分享链接')
+        raise HTTPException(400, '没认出抖音链接')
+    kind, value = got
+    notify = body.get('notify') or None
     try:
-        douyin_job.start(got[1], notify=body.get('notify') or None)
+        if kind == 'user':
+            douyin_job.start_collect(value, notify=notify)
+        else:
+            douyin_job.start(value, notify=notify)
     except RuntimeError:
         raise HTTPException(409, 'already running')
-    return {'id': got[1]}
+    return {'kind': kind, 'sec_uid': value} if kind == 'user' else {'kind': kind, 'id': value}
 
 
 @app.get('/douyin/status')

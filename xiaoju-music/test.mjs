@@ -140,9 +140,10 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
     if (m[1] === 'douyin/link') {
-      if (/\/user\//.test(body.text)) return Response.json({ detail: '这是主页链接，要发某一条视频的分享链接' }, { status: 400 });
+      if (!/douyin\.com/.test(body.text)) return Response.json({ detail: '没认出抖音链接' }, { status: 400 });
       if (bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
-      return Response.json({ id: '7691335977760321704' });
+      if (/\/user\//.test(body.text)) return Response.json({ kind: 'user', sec_uid: 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng' });
+      return Response.json({ kind: 'aweme', id: '7691335977760321704' });
     }
     if (m[1] === 'harvest') {
       if (/example\.com/.test(body.url)) return Response.json({ detail: '这个网站还不支持' }, { status: 400 });
@@ -933,17 +934,18 @@ await t('贴网址搬运：搬运设置可以开关网站和授权、改数量�
   await admin('playlists', { playlists: [] });
 });
 
-await t('抖音：频道主发分享链接 → 交给流式服务解析转发；主页链接、正在转别的都说清楚；发视频文件 → 点按钮复制到频道', async () => {
+await t('抖音：频道主发作品链接 → 交给流式服务解析转发；主页链接 → 采集作品链接；正在跑别的说清楚；发视频文件 → 点按钮复制到频道', async () => {
   const share = '2.58 复制打开抖音，看看【丁的作品】特效一用谁都不认  https://v.douyin.com/-Ghr0VeGTpA/ :0pm C@H.iC Uyt:/ 02/20';
   await dm(OWNER, share);
   const d = bot.toStreamer.at(-1);
   assert.deepEqual([d.path, d.body.text, d.body.notify], ['douyin/link', share, OWNER]);
   assert.match(lastSay().text, /正在解析这条抖音视频/);
   await dm(OWNER, 'https://www.douyin.com/user/MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng');
-  assert.equal(lastSay().text, '这是主页链接，要发某一条视频的分享链接');
+  assert.equal(bot.toStreamer.at(-1).path, 'douyin/link');
+  assert.match(lastSay().text, /正在采集这个账号的作品链接/);
   bot.copyBusy = true;
   await dm(OWNER, 'https://www.douyin.com/video/7691335977760321704');
-  assert.match(lastSay().text, /正在转上一条/);
+  assert.match(lastSay().text, /正在处理上一个链接/);
   bot.copyBusy = false;
   bot.streamerDown = true;
   await dm(OWNER, share);

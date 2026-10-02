@@ -1204,6 +1204,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 你可以发：
 贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），可以在后面加数量，比如「网址 30」
 搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
 抖音视频的分享链接 —— 不登录解析，把这条视频转到频道
+抖音主页的分享链接 —— 不登录采集这个账号作品的链接，发给你
 发一个视频文件 —— 点按钮转到频道（抖音解析不了的时候用）
 
 直接发歌名：和听众一样，帮你找这首歌，库里没有就自动搬进来。
@@ -1500,8 +1501,9 @@ async function ownerHarvest(env, chat, url, n) {
   return say(env, chat, `开始从${r.data.site || '这个网站'}搬，最多 ${settings.limit} 首。每首都会检查授权，搬完告诉你结果 👌`);
 }
 
-// ── 抖音视频转到频道：频道主发分享链接，流式服务不登录解析、下载、发进频道（在 streamer/douyin/ 里），好了通知 ──
-// 不做「自动发现新视频」：抖音网页版不给没登录的人看账号最新的作品，见 streamer/douyin/job.py
+// ── 抖音（真正干活的在流式服务的 streamer/douyin/ 里，不登录）：频道主发作品链接 → 解析、下载、发进频道；
+// 发主页链接 → 采集这个账号作品的公开链接。都在后台跑，好了机器人通知。
+// 没登录时抖音只给看一部分（藏起最新的几条、只给第一页），所以不做「自动发现新视频」，见 streamer/douyin/job.py
 const DOUYIN_LINK = /https?:\/\/(?:[\w-]+\.)*(?:douyin|iesdouyin)\.com\//i;
 
 async function ownerDouyin(env, chat, t) {
@@ -1513,8 +1515,9 @@ async function ownerDouyin(env, chat, t) {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
   }
   if (r.status === 400 || r.status === 502) return say(env, chat, r.data.detail || '这个链接认不出来');
-  if (r.status === 409) return say(env, chat, '正在转上一条，好了会告诉你，之后再发这条');
+  if (r.status === 409) return say(env, chat, '正在处理上一个链接，好了会告诉你，之后再发这个');
   if (r.status !== 200) return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
+  if (r.data.kind === 'user') return say(env, chat, '收到 👌 正在采集这个账号的作品链接（不登录），大约半分钟，采好了发给你');
   return say(env, chat, '收到 👌 正在解析这条抖音视频，大约半分钟，转好了告诉你');
 }
 

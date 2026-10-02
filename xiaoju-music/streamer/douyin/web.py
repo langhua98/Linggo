@@ -9,6 +9,7 @@
 都有超时；拿不到就算这次没拿到（Blocked），不去碰验证码。"""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -23,6 +24,9 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 # 网页版自己调接口时带的固定参数（版本号随网页更新，旧的也照样能用）
 BASE = {'device_platform': 'webapp', 'aid': '6383', 'channel': 'channel_pc_web', 'pc_client_type': '1',
         'version_code': '290100', 'version_name': '29.1.0', 'cookie_enabled': 'true', 'platform': 'PC', 'downlink': '10'}
+# 作品列表接口的参数（网页版主页自己调的时候就带这些）；翻页改 max_cursor
+POST_PARAMS = {'locate_query': 'false', 'show_live_replay_strategy': '1', 'need_time_list': '1', 'time_list_query': '0',
+               'whale_cut_token': '', 'cut_version': '1', 'publish_video_strategy_type': '2'}
 CALL_JS = """async ({path, params}) => {
   const r = await fetch(path + '?' + new URLSearchParams(params), {credentials: 'include'});
   return {status: r.status, text: await r.text()};
@@ -62,8 +66,57 @@ class DownloadError(Exception):
     pass
 
 
+class Tab:
+    """一个打开着的抖音网页。取数据时先看网页自己调接口拿到的（不多发请求，风控最松），没有再自己在页面里调。"""
+
+    def __init__(self, web, page, watch=()):
+        self.web, self.page, self.watch = web, page, list(watch)
+        self.captcha = asyncio.Event()  # 页面去要滑块验证码了：接口不会再给数据，不用干等
+        self.got = []  # [(网址, JSON)]：网页自己调 watch 里那些接口拿到的（空的、不是 JSON 的不算）
+
+    async def on_response(self, res):
+        if CAPTCHA.search(res.url):
+            self.captcha.set()
+        if not any(p in res.url for p in self.watch):
+            return
+        try:
+            data = json.loads(await res.text())
+        except Exception:  # noqa: BLE001 — 空的、不是 JSON、页面已关
+            return
+        self.got.append((res.url, data))
+
+    def _found(self, path, match):
+        return next((d for u, d in self.got if path in u and match(u)), None) if match else None
+
+    async def get(self, path, params, match=None):
+        """match(网址) 认出网页自己的那次调用：给了就先等它一会儿（warmup 秒）；不给就直接自己调"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (self.web.warmup if match else 0)
+        while loop.time() < deadline and not self.captcha.is_set():
+            data = self._found(path, match)
+            if data is not None:
+                return data
+            await asyncio.sleep(0.5)
+        for i in range(self.web.tries):
+            data = self._found(path, match)
+            if data is not None:
+                return data
+            if self.captcha.is_set():
+                raise Blocked(CAPTCHA_MSG)
+            data = await self.web.call(self.page, path, params, abort=self.captcha)
+            if data is not None:
+                return data
+            if i < self.web.tries - 1:
+                await asyncio.sleep(self.web.gap)
+        data = self._found(path, match)
+        if data is not None:
+            return data
+        raise Blocked(CAPTCHA_MSG if self.captcha.is_set() else '抖音没给数据（多半是风控）')
+
+
 class DouyinWeb:
-    """async with DouyinWeb() as w: item = await w.detail(作品号); data, src = await w.download(item)"""
+    """async with DouyinWeb() as w: items, hidden = await w.posts(sec_uid)；item = await w.detail(作品号)；
+    data, src = await w.download(item)"""
 
     def __init__(self, state_file=STATE_FILE, warmup=10.0, tries=4, gap=4.0, call_timeout=20, extra_args=()):
         self.state_file, self.warmup, self.tries, self.gap, self.call_timeout = state_file, warmup, tries, gap, call_timeout
@@ -115,46 +168,18 @@ class DouyinWeb:
             await self.pw.stop()
         self.pw = self.browser = self.ctx = None
 
-    async def fetch(self, url, path, params, match):
-        """打开网页 url，拿接口 path 的数据。网页打开时自己就会调这个接口：它拿到了就用它的（不多发请求，
-        风控最松）；它没调、拿到空的，再自己在页面里调。match(网址) 认出是不是我们要的那次调用。"""
-        got = asyncio.get_running_loop().create_future()
-        captcha = asyncio.Event()  # 页面去要滑块验证码了：接口不会再给数据，不用干等
-
-        async def on_response(res):
-            if CAPTCHA.search(res.url):
-                captcha.set()
-            if got.done() or path not in res.url or not match(res.url):
-                return
-            try:
-                data = json.loads(await res.text())
-            except Exception:  # noqa: BLE001 — 空的、不是 JSON、页面已关
-                return
-            if not got.done():
-                got.set_result(data)
-
+    @contextlib.asynccontextmanager
+    async def tab(self, url, watch=()):
+        """打开一个抖音网页，在它关掉之前可以连着调好几次接口（翻页时不用每页重开一次网页）"""
         page = await self.ctx.new_page()
-        page.on('response', on_response)
+        t = Tab(self, page, watch)
+        page.on('response', t.on_response)
         try:
             try:
                 await page.goto(url, wait_until='domcontentloaded', timeout=45000)
             except Exception as e:  # noqa: BLE001
                 raise Blocked(f'打不开抖音网页（{type(e).__name__}）') from e
-            # 先等网页自己的那次（等到了、或者页面要验证码了就不再等）
-            await _first(got, captcha.wait(), timeout=self.warmup)
-            for i in range(self.tries):
-                if got.done():
-                    return got.result()
-                if captcha.is_set():
-                    raise Blocked(CAPTCHA_MSG)
-                data = await self.call(page, path, params, abort=captcha)
-                if data is not None:
-                    return data
-                if i < self.tries - 1:
-                    await _first(got, captcha.wait(), timeout=self.gap)
-            if got.done():
-                return got.result()
-            raise Blocked(CAPTCHA_MSG if captcha.is_set() else '抖音没给数据（多半是风控）')
+            yield t
         finally:
             await page.close()
 
@@ -175,9 +200,44 @@ class DouyinWeb:
         except ValueError:
             return None
 
+    async def posts(self, sec_uid, limit=300):
+        """这个账号的作品（新的在前、置顶的在最前），最多 limit 条 → (作品列表, info)。
+        没登录时抖音只给看一部分，info 里如实报出来（2026 年 10 月实测）：
+          hidden_newest：最新的几条被藏起来了（返回里带 not_login_module，「登录看更多最新作品」）
+          truncated：还有更早的作品，但第二页起返回空的 {"status_code": 0}——没登录只给看第一页（18 条）"""
+        path = '/aweme/v1/web/aweme/post/'
+        params = {**POST_PARAMS, 'sec_user_id': sec_uid, 'count': '18'}
+        items, seen, info = [], set(), {'hidden_newest': False, 'truncated': False}
+        async with self.tab(f'https://www.douyin.com/user/{sec_uid}', watch=[path]) as t:
+            # 第一页：网页自己会调，先看它拿到的
+            data = await t.get(path, {**params, 'max_cursor': '0'},
+                               match=lambda u: f'sec_user_id={sec_uid}' in u and 'max_cursor=0' in u)
+            while True:
+                if data.get('status_code') not in (0, None):
+                    raise Blocked(f'抖音返回错误 {data.get("status_code")}')
+                if (data.get('not_login_module') or {}).get('guide_login_tip_exist'):
+                    info['hidden_newest'] = True
+                for a in data.get('aweme_list') or []:
+                    if a.get('aweme_id') and str(a['aweme_id']) not in seen:
+                        seen.add(str(a['aweme_id']))
+                        items.append(normalize(a))
+                cursor = data.get('max_cursor')
+                if not data.get('has_more') or not cursor or len(items) >= limit:
+                    break
+                await asyncio.sleep(self.gap)  # 慢慢翻，像人往下滑
+                try:
+                    data = await t.get(path, {**params, 'max_cursor': str(cursor)})
+                except Blocked:
+                    data = {}
+                if not data.get('aweme_list'):  # 后面的页不给：已经拿到的照样算
+                    info['truncated'] = True
+                    break
+        return items[:limit], info
+
     async def detail(self, aweme_id):
-        data = await self.fetch(f'https://www.douyin.com/video/{aweme_id}', '/aweme/v1/web/aweme/detail/',
-                                {'aweme_id': aweme_id}, match=lambda u: f'aweme_id={aweme_id}' in u)
+        path = '/aweme/v1/web/aweme/detail/'
+        async with self.tab(f'https://www.douyin.com/video/{aweme_id}', watch=[path]) as t:
+            data = await t.get(path, {'aweme_id': aweme_id}, match=lambda u: f'aweme_id={aweme_id}' in u)
         a = data.get('aweme_detail')
         if not a:
             why = (data.get('filter_detail') or {}).get('detail_msg') or ''
