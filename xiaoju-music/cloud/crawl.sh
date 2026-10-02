@@ -32,6 +32,20 @@ if '# xiaoju: settle' not in s and old in s:
                   + pad + 'try:\n' + pad + '    await self.context_page.wait_for_load_state("networkidle", timeout=20000)\n'
                   + pad + 'except Exception:\n' + pad + '    pass\n' + pad + 'await asyncio.sleep(3)\n', 1)
     open(p, 'w', encoding='utf-8').write(s)
+
+# 抖音改过页面，MediaCrawler 自己点「登录」、找二维码常找不到，一找不到就退出。改成找不到也不退：
+# 提示频道主在桌面的浏览器里自己点登录、扫码，后面 check_login_state 会等最多 10 分钟
+p = 'media_platform/douyin/login.py'
+s = open(p, encoding='utf-8').read()
+if '# xiaoju: manual' not in s:
+    note = 'print("\\n== 小橘：请在「桌面」的浏览器里自己点右上角「登录」，用抖音扫码。最多等 10 分钟 ==\\n", flush=True)'
+    for old in ('await self.popup_login_dialog()\n', 'await self.login_by_qrcode()\n'):
+        if old in s:
+            i = s.index(old)
+            pad = s[s.rindex('\n', 0, i) + 1:i]
+            s = s.replace(old, '# xiaoju: manual\n' + pad + 'try:\n' + pad + '    ' + old + pad
+                          + 'except (Exception, SystemExit):\n' + pad + '    ' + note + '\n', 1)
+    open(p, 'w', encoding='utf-8').write(s)
 PY
 
 echo "== 马上会弹出浏览器，用抖音 App 扫码登录（要验证就在浏览器里完成）=="
