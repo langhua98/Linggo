@@ -15,6 +15,14 @@ export DISPLAY="${DISPLAY:-:1}"  # 浏览器开在桌面上（Codespaces 的网�
 # MediaCrawler 的浏览器页面是 1920×1080，网页桌面默认比它小：页面一半在屏幕外，抖音的验证框就点不到。把桌面放大到装得下
 command -v xrandr >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y x11-xserver-utils >/dev/null 2>&1 || true
 bash "$HERE/win.sh" quiet  # 放大桌面（任务栏跟着挪到底下），见 win.sh
+# 之前中途关掉、崩掉的那几次留下的浏览器进程不会自己退，一直占着内存和 /dev/shm，越积越多，
+# 新开的页面一开就崩（Page crashed）。开抓前先清干净，再看一眼还剩多少内存
+pkill -f 'main.py --platform dy' 2>/dev/null
+pkill -f 'ms-playwright' 2>/dev/null
+sleep 2
+pkill -9 -f 'ms-playwright' 2>/dev/null
+rm -rf /dev/shm/.org.chromium.* 2>/dev/null
+echo "== 可用内存 $(free -m | awk '/^Mem/{print $7}') MB，/dev/shm 剩 $(df -m /dev/shm | awk 'NR==2{print $4}') MB =="
 OUT="$HOME/douyin-data"
 rm -rf "$OUT" && mkdir -p "$OUT"
 cd "$HOME/MediaCrawler" || { echo "没找到 MediaCrawler，重新运行一次安装命令"; exit 1; }
