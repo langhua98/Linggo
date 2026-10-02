@@ -246,32 +246,56 @@ report() {  # $1 = starting / running / done / stopped / failed
 }
 report starting
 
+# 边抓边送：MediaCrawler 抓一条往 jsonl 里写一行。后台每 30 秒把新写的几行送给小橘（X-Final: 0），抓完把剩下的
+# 连同「完了」（X-Final: 1）送过去。送成功才往前记（SENTF），没送成下次连同新的一起送；重复送的小橘认得出来。
+# 抓作品送到 /dy-import（小橘边收边转进频道），搜索送到 /dy-search（机器人边收边发清单）
+PATTERN=creator_contents; ENDPOINT=dy-import
+if [ -n "${XJ_SEARCH_MODE:-}" ]; then PATTERN=search_contents; ENDPOINT=dy-search; fi
+newest() { find "$OUT" -name "${PATTERN}_*.jsonl" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-; }
+send() {  # $1 = 0 还在抓 / 1 抓完了
+  local f n sent code
+  f=$(newest); n=0; [ -n "$f" ] && n=$(wc -l < "$f")
+  sent=$(cat "$SENTF")
+  [ "$n" -le "$sent" ] && [ "$1" = 0 ] && return 0
+  if [ "$n" -gt "$sent" ]; then tail -n +"$((sent + 1))" "$f" | head -n "$((n - sent))" > "$OUT/.batch"; else : > "$OUT/.batch"; fi
+  code=$(curl -sS -m 120 -o "$OUT/.resp" -w '%{http_code}' -X POST -H "X-Token: $TOKEN" -H "X-Final: $1" \
+    -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$OUT/.batch" "$API/$ENDPOINT" 2>/dev/null)
+  if [ "$code" = 200 ]; then
+    echo "$n" > "$SENTF"
+    [ "$n" -gt "$sent" ] && echo "== 已送给小橘 $n 条（这批 $((n - sent)) 条）=="
+    return 0
+  fi
+  echo "== 这批没送成（$code $(head -c 120 "$OUT/.resp" 2>/dev/null)），等下连同新的一起再送 =="
+  return 1
+}
+
 # 搜索模式（search.sh）：在抖音里搜关键词，结果只送给小橘整理成链接清单私聊发频道主，不下载、不转发别人的视频
 if [ -n "${XJ_SEARCH_MODE:-}" ]; then
   echo "== 在抖音里搜：${KW//,/、}（每个词最多 $XJ_SEARCH_MAX 条），只收集链接 =="
-  ( while sleep "${XJ_SEND_EVERY:-30}"; do report running; done ) &
+  # 边搜边发：每 30 秒把新搜到的送给机器人，它马上私聊你这一批
+  ( while sleep "${XJ_SEND_EVERY:-30}"; do send 0; report running; done ) &
   REPLOOP=$!
   trap 'kill $WINLOOP $REPLOOP 2>/dev/null' EXIT
   uv run main.py --platform dy --lt qrcode --type search --keywords "$KW" \
     --get_comment no --get_sub_comment no --get_media no --headless no \
     --save_data_option jsonl --crawler_max_notes_count "$XJ_SEARCH_MAX" --save_data_path "$OUT"
   kill $REPLOOP 2>/dev/null; wait $REPLOOP 2>/dev/null
+  F=$(newest); N=0; [ -n "$F" ] && N=$(wc -l < "$F")
   if [ -f "$STOPF" ]; then
+    for i in $(seq 5); do send 1 && break; sleep 10; done  # 已经搜到的照常收尾
     report stopped
-    echo "== 停了，这次搜到的不发 =="
+    echo "== 停了。已经搜到的 $(cat "$SENTF") 条清单发过去了 =="
     exit 0
   fi
-  F=$(find "$OUT" -name 'search_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
-  if [ -z "$F" ] || [ ! -s "$F" ]; then
+  if [ "$N" = 0 ]; then
     report failed
     echo "== 没搜到东西（登录过期了？抖音不让搜？）=="
     exit 1
   fi
-  echo "== 搜到 $(wc -l < "$F") 条，发给小橘整理成链接清单 =="
-  curl -sS -m 120 -X POST -H "X-Token: $TOKEN" -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$F" "$API/dy-search"
-  echo
+  echo "== 搜完了，一共 $N 条，把剩下的发过去 =="
+  for i in $(seq 10); do send 1 && break; sleep 30; done
   report done
-  echo "== 好了，清单会私聊发给你 =="
+  echo "== 好了，清单都私聊发给你了 =="
   exit 0
 fi
 
@@ -286,26 +310,7 @@ else
   echo "== 全部重抓一遍（转过的小橘会跳过，旧帖顺便补标签）=="
 fi
 
-# 边抓边转：MediaCrawler 抓一条往 jsonl 里写一行。后台每 30 秒把新写的几行送给小橘（X-Final: 0），
-# 小橘收到第一批就开始转，后面的接着排队；抓完再把剩下的连同「抓完了」（X-Final: 1）送过去。
-# 送成功才往前记（SENTF），没送成（小橘在忙、网不好）下次连同新的一起送；重复送的小橘会认出来不重收
-newest() { find "$OUT" -name 'creator_contents_*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-; }
-send() {  # $1 = 0 还在抓 / 1 抓完了
-  local f n sent code
-  f=$(newest); n=0; [ -n "$f" ] && n=$(wc -l < "$f")
-  sent=$(cat "$SENTF")
-  [ "$n" -le "$sent" ] && [ "$1" = 0 ] && return 0
-  if [ "$n" -gt "$sent" ]; then tail -n +"$((sent + 1))" "$f" | head -n "$((n - sent))" > "$OUT/.batch"; else : > "$OUT/.batch"; fi
-  code=$(curl -sS -m 120 -o "$OUT/.resp" -w '%{http_code}' -X POST -H "X-Token: $TOKEN" -H "X-Final: $1" \
-    -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$OUT/.batch" "$API/dy-import" 2>/dev/null)
-  if [ "$code" = 200 ]; then
-    echo "$n" > "$SENTF"
-    [ "$n" -gt "$sent" ] && echo "== 已送给小橘 $n 条（这批 $((n - sent)) 条），小橘在边收边转 =="
-    return 0
-  fi
-  echo "== 这批没送成（$code $(head -c 120 "$OUT/.resp" 2>/dev/null)），等下连同新的一起再送 =="
-  return 1
-}
+# 边抓边转：小橘收到第一批就开始转，后面的接着排队（send 在上面）
 ( while sleep "${XJ_SEND_EVERY:-30}"; do send 0; report running; done ) &
 SENDLOOP=$!
 trap 'kill $WINLOOP $SENDLOOP 2>/dev/null' EXIT

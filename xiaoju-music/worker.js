@@ -1882,18 +1882,27 @@ async function cloudSearchResult(request, env) {
   if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对' }, 403);
   const body = await request.text();
   if (body.length > 5 * 1024 * 1024) return json({ error: '文件太大' }, 413);
+  // 边搜边发：云电脑每 30 秒送一批（X-Final: 0），搜完送 X-Final: 1（可以不带结果）。不带这个头当一次送完。
+  // 编号在这一轮里接着往下排（dySearchNum: {词: 已经发了几条}），同一轮送重复的不再发（dySearchRun）
+  const final = request.headers.get('X-Final') !== '0';
   // 清单只私聊发给频道主一个人：每条附上文件地址（频道主说搜到的都是自己的号）；登记过的号（douyinSelf）标 👤。
   // 只发链接，不下载、不转进频道——批量转进频道的仍然只有登记过的账号
   const mine = new Set(await douyinSelves(L));
-  const groups = new Map(), seen = new Set();
+  const groups = new Map();
+  let run = [];
+  try { run = JSON.parse((await L.getConfig('dySearchRun')) || '[]'); } catch {}
+  const seen = new Set(run);
+  const nums = await douyinTagMap(L, 'dySearchNum');
   // 清单里每条带「📤 转 N」按钮：频道主挑出自己的作品点一下，就按最高画质转进视频频道。按钮要用的作品数据先存着
   const rows = await searchRows(L);
+  let fresh = 0;
   for (const line of body.split('\n')) {
     let r;
     try { r = JSON.parse(line); } catch { continue; }
     const id = String((r && r.aweme_id) || '');
     if (!/^\d{8,24}$/.test(id) || seen.has(id)) continue;
     seen.add(id);
+    fresh++;
     const kw = String(r.source_keyword || '').trim() || '（没标关键词）';
     if (!groups.has(kw)) groups.set(kw, []);
     const name = String(r.xiaoju_nickname || (String(r.nickname || '').includes('*') ? '' : r.nickname) || '');
@@ -1908,19 +1917,22 @@ async function cloudSearchResult(request, env) {
     });
   }
   const owner = await ownerId(env);
-  if (!groups.size) return json({ error: '文件里没认出搜索结果' }, 400);
+  if (!fresh && final && !Object.keys(nums).length && body.trim()) return json({ error: '文件里没认出搜索结果' }, 400);
+  const send = async (text, ids) => {
+    if (!owner) return;
+    const btns = ids.map(([n, id]) => ({ text: `📤 转 ${n}`, callback_data: `dys:${id}` }));
+    const kb = [];
+    for (let i = 0; i < btns.length; i += 5) kb.push(btns.slice(i, i + 5));
+    await say(env, owner, text, kb.length ? kb : undefined);
+  };
   for (const [kw, list] of groups) {
-    list.sort((a, b) => b.likes - a.likes);
-    const lines = list.slice(0, SEARCH_MAX).map((x, i) => `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}${x.own ? ' 👤你的号' : ''}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`
+    list.sort((a, b) => b.likes - a.likes);  // 这一批里按点赞排
+    const start = Number(nums[kw]) || 0;
+    const lines = list.map((x, i) => `${start + i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}${x.name ? ` — @${x.name}` : ''} ❤${fmtCount(x.likes)}${x.own ? ' 👤你的号' : ''}\nhttps://www.douyin.com/${x.note ? 'note' : 'video'}/${x.id}`
       + (x.files.length ? `\n⬇️ 文件（几个小时内有效）：\n${x.files.slice(0, 9).join('\n')}` : ''));
-    const head = `🔎 抖音搜「${kw}」：${list.length} 条，按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）`;
-    const send = async (text, ids) => {
-      if (!owner) return;
-      const btns = ids.map(([n, id]) => ({ text: `📤 转 ${n}`, callback_data: `dys:${id}` }));
-      const kb = [];
-      for (let i = 0; i < btns.length; i += 5) kb.push(btns.slice(i, i + 5));
-      await say(env, owner, text, kb.length ? kb : undefined);
-    };
+    const head = start
+      ? `🔎「${kw}」接着来：第 ${start + 1}–${start + list.length} 条`
+      : `🔎 抖音搜「${kw}」：边搜边发，每批按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）`;
     let chunk = head, ids = [];
     for (const [i, l] of lines.entries()) {
       if ((chunk + '\n\n' + l).length > 3800) {
@@ -1930,18 +1942,28 @@ async function cloudSearchResult(request, env) {
       } else {
         chunk += '\n\n' + l;
       }
-      ids.push([i + 1, list[i].id]);
+      ids.push([start + i + 1, list[i].id]);
     }
     await send(chunk, ids);
+    nums[kw] = start + list.length;
   }
   const keep = Object.keys(rows).slice(-300);  // 只留最近 300 条（地址几个小时就失效，旧的留着也没用；再多存不下）
   await L.setConfig('dySearchRows', JSON.stringify(Object.fromEntries(keep.map(k => [k, rows[k]]))));
-  const done = [...groups.keys()];
-  await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !done.includes(k))));
+  const touched = Object.keys(nums);
+  if (!final) {
+    await L.setConfig('dySearchNum', JSON.stringify(nums));
+    await L.setConfig('dySearchRun', JSON.stringify([...seen].slice(-2000)));
+    return json({ ok: true, keywords: touched, total: fresh });
+  }
+  // 搜完了：每个词说一声一共几条，出队，这一轮的编号清零
+  for (const kw of touched) await say(env, owner, `✅ 「${kw}」搜完了，一共 ${nums[kw]} 条`);
+  await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !touched.includes(k))));
   const counts = await douyinTagMap(L, 'dySearchCounts');
-  for (const k of done) delete counts[k];
+  for (const k of touched) delete counts[k];
   await L.setConfig('dySearchCounts', JSON.stringify(counts));
-  return json({ ok: true, keywords: done, total: seen.size });
+  await L.setConfig('dySearchNum', '{}');
+  await L.setConfig('dySearchRun', '[]');
+  return json({ ok: true, keywords: touched, total: fresh });
 }
 
 async function cloudToken(L) {

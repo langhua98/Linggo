@@ -1110,12 +1110,13 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   const post = (t2, body) => req('/dy-search', { method: 'POST', headers: { 'X-Token': t2 }, body });
   assert.equal((await post('wrong', rows)).status, 403);
   assert.deepEqual(await jsonOf(await post(tok, rows)), { ok: true, keywords: ['舞蹈'], total: 4 });
-  const msg = lastSay();
+  assert.match(lastSay().text, /✅ 「舞蹈」搜完了，一共 4 条/);
+  const msg = bot.out.filter(o => o.method === 'sendMessage' && o.chat_id === OWNER).at(-2);
   assert.equal(msg.chat_id, OWNER);
   // 每条都附文件地址；登记过的号标 👤
   assert.match(msg.text, /4\. 📹 我自己的 ❤3 👤你的号\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000004\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/v\/mine\.mp4/);
   assert.match(msg.text, /3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/p\/1\.jpg/, '每条都附文件地址');
-  assert.match(msg.text, /抖音搜「舞蹈」：4 条[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
+  assert.match(msg.text, /抖音搜「舞蹈」：边搜边发[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '搜过的词出队');
   assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '光收到搜索结果不转（频道主点按钮才转）');
   // 每条带「📤 转 N」按钮，点了就交给流式服务转进视频频道
@@ -1135,6 +1136,20 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   await press(OWNER, 'dys:7600000000000000999');
   assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /找不到了/);
   assert.equal((await post(tok, 'nothing')).status, 400);
+  // 边抓边发：一批一批送（X-Final: 0），编号接着排，重复的不再发；最后送「搜完了」
+  const batch = (body, fin) => req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': fin }, body });
+  const row = (id, likes) => JSON.stringify({ aweme_id: id, desc: '街舞' + id.slice(-1), liked_count: String(likes), source_keyword: '街舞' });
+  const n1 = bot.out.length;
+  await batch([row('7600000000000000011', 5), row('7600000000000000012', 50)].join('\n'), '0');
+  assert.match(lastSay().text, /抖音搜「街舞」：边搜边发[\s\S]*1\. 📹 街舞2 ❤50[\s\S]*2\. 📹 街舞1 ❤5/);
+  assert.deepEqual(lastSay().reply_markup.inline_keyboard.flat().map(b => b.text), ['📤 转 1', '📤 转 2']);
+  await batch([row('7600000000000000012', 50), row('7600000000000000013', 9)].join('\n'), '0');
+  assert.match(lastSay().text, /「街舞」接着来：第 3–3 条\n\n3\. 📹 街舞3 ❤9/);
+  assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '没搜完不出队');
+  assert.equal((await batch('', '1')).status, 200);
+  assert.match(lastSay().text, /✅ 「街舞」搜完了，一共 3 条/);
+  assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
+  assert.equal(bot.out.slice(n1).filter(o => o.method === 'sendMessage').length, 3);
   await dm(OWNER, '搜抖音 清空');
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
 });
