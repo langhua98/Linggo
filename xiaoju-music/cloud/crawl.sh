@@ -52,6 +52,47 @@ if '# xiaoju: manual' not in s:
 s = s.replace('最多等 10 分钟', '最多等 30 分钟')
 s = s.replace('stop=stop_after_attempt(600), wait=wait_fixed(1)', 'stop=stop_after_attempt(1800), wait=wait_fixed(1)')
 open(p, 'w', encoding='utf-8').write(s)
+# 翻作品列表时，抖音偶尔回 504（翻得太快、服务器超时），MediaCrawler 一遇到就整个停掉，后面的作品和账号全漏了。
+# 改成：每页失败重试 6 次（越等越久），翻页之间歇 2～4 秒；一个账号出错不影响下一个
+p2 = 'media_platform/douyin/client.py'
+c = open(p2, encoding='utf-8').read()
+old = '            aweme_post_res = await self.get_user_aweme_posts(sec_user_id, max_cursor)\n'
+if '# xiaoju: retry' not in c and old in c:
+    c = c.replace(old, '            # xiaoju: retry\n'
+                  '            for _try in range(6):\n'
+                  '                try:\n'
+                  '                    aweme_post_res = await self.get_user_aweme_posts(sec_user_id, max_cursor)\n'
+                  '                    break\n'
+                  '                except Exception as _e:\n'
+                  '                    if _try == 5:\n'
+                  '                        raise\n'
+                  '                    utils.logger.info(f"[xiaoju] 这一页没拿到，{5 * (_try + 1)} 秒后重试：{str(_e)[:80]}")\n'
+                  '                    await asyncio.sleep(5 * (_try + 1))\n'
+                  '            await asyncio.sleep(random.uniform(2, 4))\n', 1)
+    for imp in ('import asyncio\n', 'import random\n'):
+        if imp not in c:
+            c = imp + c
+    open(p2, 'w', encoding='utf-8').write(c)
+p3 = 'media_platform/douyin/core.py'
+c = open(p3, encoding='utf-8').read()
+old = '            all_video_list = await self.dy_client.get_all_user_aweme_posts(sec_user_id=user_id, callback=self.fetch_creator_video_detail)\n'
+if '# xiaoju: per-creator' not in c and old in c:
+    c = c.replace(old, '            # xiaoju: per-creator\n'
+                  '            try:\n'
+                  '                all_video_list = await self.dy_client.get_all_user_aweme_posts(sec_user_id=user_id, callback=self.fetch_creator_video_detail)\n'
+                  '            except Exception as _e:\n'
+                  '                utils.logger.error(f"[xiaoju] 这个账号没翻完，先抓下一个：{str(_e)[:120]}")\n'
+                  '                continue\n', 1)
+    open(p3, 'w', encoding='utf-8').write(c)
+c = open(p3, encoding='utf-8').read()
+old = '        note_details = await asyncio.gather(*task_list)\n        for aweme_item in note_details:\n'
+if '# xiaoju: keep' not in c and old in c:
+    # 单条作品的详情也会 504，MediaCrawler 拿不到就把这条丢了：改成拿不到就用列表里那份（字段一样）
+    c = c.replace(old, '        note_details = await asyncio.gather(*task_list)\n'
+                  '        # xiaoju: keep\n'
+                  '        note_details = [d if d is not None else p for d, p in zip(note_details, video_list)]\n'
+                  '        for aweme_item in note_details:\n', 1)
+    open(p3, 'w', encoding='utf-8').write(c)
 PY
 
 # 浏览器窗口常开在屏幕外一半：抓的时候后台隔几秒把它摆回屏幕里（最多 30 分钟）
