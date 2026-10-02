@@ -633,13 +633,32 @@ h1{font-size:20px;margin:0;line-height:1.2}
   function groupOf(kind, key){
     return groups(kind).filter(function(g){ return g.key === key; })[0] || null;
   }
-  function openGroup(kind, key){
+  // ── 页面层级和返回 ──
+  // 点进歌单/歌手、打开播放页各记一条浏览记录：iPhone 从左边缘往右滑（系统返回）就是回上一层，不会直接离开网站。
+  // 页面上的返回键、下拉收起播放页时，顺手把那条记录也退掉（ignorePop：这次退记录是自己发起的，不用再处理）
+  var ignorePop = false, gridScroll = {};
+  function scroller(){ return narrow.matches ? document.querySelector('.panel') : list; }
+  // 手机上整页在滚：列表开头的位置（页签贴在顶上时，列表第一行刚好在页签下面）
+  function listTop(){ return list.offsetTop - document.querySelector('.tabs').offsetHeight; }
+  function popOurs(xm){
+    if(history.state && history.state.xm === xm){ ignorePop = true; history.back(); }
+  }
+  function openGroup(kind, key, fromHistory){
+    var sc = scroller(), was = prefs[OPEN[kind]];
+    if(key != null && was == null) gridScroll[kind] = sc.scrollTop; // 记住宫格/歌手列表翻到哪儿了
     prefs[OPEN[kind]] = key;
     savePrefs();
     $('q').value = '';
     paintTabs();
-    list.scrollTop = 0;
     render();
+    if(key != null){
+      if(!fromHistory && was == null) history.pushState({ xm: 'group', kind: kind }, '', location.hash);
+      // 进去后从歌单头开始看（返回键、播放全部都在那儿）
+      if(narrow.matches){ var top = listTop(); if(sc.scrollTop > top) sc.scrollTop = top; } else list.scrollTop = 0;
+    } else {
+      if(!fromHistory) popOurs('group');
+      sc.scrollTop = gridScroll[kind] || 0; // 回到刚才翻到的位置
+    }
   }
   function groupRow(kind, g){
     if(kind === 'list') return listCard(g);
@@ -872,7 +891,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
         artwork: [{ src: location.origin + coverUrl(id), sizes: '320x320', type: 'image/jpeg' }]
       });
     }
-    history.replaceState(null, '', '#' + id);
+    history.replaceState(history.state, '', '#' + id); // 只换地址里的消息号，别把返回记录抹掉
     prefs.last = id;
     savePrefs();
     mark();
@@ -1413,7 +1432,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
       }
       e.preventDefault();
       sw.dx = dx;
-      var i = TABS.indexOf(prefs.tab), edge = (dx > 0 && i <= 0) || (dx < 0 && i >= TABS.length - 1);
+      var i = TABS.indexOf(prefs.tab), inGroup = OPEN[prefs.tab] && prefs[OPEN[prefs.tab]] != null;
+      var edge = (dx > 0 && i <= 0 && !inGroup) || (dx < 0 && i >= TABS.length - 1);
       list.style.transform = 'translateX(' + dx * (edge ? .12 : .35) + 'px)'; // 已经是第一页/最后一页：拉不太动
       list.style.opacity = String(edge ? 1 : Math.max(.4, 1 - Math.abs(dx) / 400));
     }, { passive: false });
@@ -1425,14 +1445,16 @@ h1{font-size:20px;margin:0;line-height:1.2}
       if(d.dir !== 'h') return;
       swipedAt = Date.now();
       var i = TABS.indexOf(prefs.tab), dir = d.dx < 0 ? 1 : -1, next = TABS[i + dir];
-      if(e.type === 'touchcancel' || Math.abs(d.dx) < 70 || !next){
+      // 在歌单/歌手详情里往右滑：返回上一层（和 iPhone 习惯一致），不是切页签
+      var back = dir < 0 && OPEN[prefs.tab] && prefs[OPEN[prefs.tab]] != null;
+      if(e.type === 'touchcancel' || Math.abs(d.dx) < 70 || (!next && !back)){
         list.style.transform = ''; list.style.opacity = '';
         return;
       }
       list.style.transform = 'translateX(' + (-dir * 60) + 'px)';
       list.style.opacity = '0';
       setTimeout(function(){
-        setTab(next);
+        if(back) openGroup(prefs.tab, null); else setTab(next);
         list.classList.add('swiping');
         list.style.transform = 'translateX(' + (dir * 60) + 'px)'; // 新的一页从另一边滑进来
         void list.offsetWidth;
@@ -1493,8 +1515,27 @@ h1{font-size:20px;margin:0;line-height:1.2}
   });
 
   // 手机上的全屏「正在播放」
-  function openStage(){ $('stage').classList.add('open'); document.body.classList.add('sheet-open'); }
-  function closeStage(){ $('stage').classList.remove('open'); document.body.classList.remove('sheet-open'); }
+  function openStage(){
+    if($('stage').classList.contains('open')) return;
+    $('stage').classList.add('open');
+    document.body.classList.add('sheet-open');
+    if(narrow.matches) history.pushState({ xm: 'stage' }, '', location.hash);
+  }
+  function closeStage(fromHistory){
+    if(!$('stage').classList.contains('open')) return;
+    $('stage').classList.remove('open');
+    document.body.classList.remove('sheet-open');
+    if(!fromHistory) popOurs('stage');
+  }
+  // 系统返回（iPhone 左边缘右滑、安卓返回键、电脑浏览器后退）：先收播放页，再退出歌单/歌手详情
+  window.addEventListener('popstate', function(){
+    // 退回去的那条记录里存的是当时那首歌的消息号：换回正在放的这首，不然刷新页面会跳回旧的歌
+    if(curId !== null && location.hash !== '#' + curId) history.replaceState(history.state, '', '#' + curId);
+    if(ignorePop){ ignorePop = false; return; }
+    if($('stage').classList.contains('open')){ closeStage(true); return; }
+    var k = prefs.tab;
+    if(OPEN[k] && prefs[OPEN[k]] != null) openGroup(k, null, true);
+  });
   // 迷你播放条：点哪儿都展开（播放、下一首两个按钮除外）
   $('mini').addEventListener('click', function(e){
     if(miniSwiped) return;
@@ -1581,7 +1622,7 @@ h1{font-size:20px;margin:0;line-height:1.2}
     stage.classList.remove('dragging');
     if(d.dir === 'down'){
       stage.style.transform = '';
-      if(!cancel && d.dy > 110) closeStage();
+      if(!cancel && d.dy > 110) closeStage(false);
     } else if(d.dir === 'up'){
       if(!cancel && d.dy < -90) swipeNext();
       else { now.style.transform = ''; now.style.opacity = ''; }
@@ -1606,13 +1647,13 @@ h1{font-size:20px;margin:0;line-height:1.2}
   }
   stage.addEventListener('touchend', endDrag);
   stage.addEventListener('touchcancel', endDrag);
-  $('close').addEventListener('click', closeStage);
+  $('close').addEventListener('click', function(){ closeStage(false); });
   document.addEventListener('keydown', function(e){
-    if(e.key === 'Escape') closeStage();
+    if(e.key === 'Escape') closeStage(false);
     var tag = (e.target && e.target.tagName) || '';
     if(e.code === 'Space' && !/INPUT|BUTTON|A|TEXTAREA/.test(tag)){ e.preventDefault(); toggle(); }
   });
-  narrow.addEventListener('change', function(){ if(!narrow.matches) closeStage(); });
+  narrow.addEventListener('change', function(){ if(!narrow.matches) closeStage(false); });
 
   if('mediaSession' in navigator){
     var actions = {
@@ -1648,6 +1689,8 @@ h1{font-size:20px;margin:0;line-height:1.2}
         if(!g || g.songs.indexOf(first) < 0) prefs.ctx = 'all';
       }
       if(prefs.ctx === 'recent') recentSnap = recent.slice();
+      // 上次停在某个歌单/歌手里：补一条记录，系统返回先回到列表
+      if(OPEN[prefs.tab] && prefs[OPEN[prefs.tab]] != null && !(history.state && history.state.xm)) history.pushState({ xm: 'group', kind: prefs.tab }, '', location.hash);
       var resume = first && first.id === prefs.last ? prefs.lastPos : 0;
       paintTabs();
       render();
