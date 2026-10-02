@@ -1,0 +1,13 @@
+{
+  // 小橘 · 抖音抓取用的云电脑（GitHub Codespaces，免费额度内不用绑卡）。和 Linggo 阅读器无关。
+  // 打开后：端口 6080 是网页版桌面（noVNC，密码 xiaoju），在终端里运行机器人「云电脑」给的命令。
+  "name": "小橘 · 抖音抓取",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/desktop-lite:1": { "password": "xiaoju", "webPort": "6080" }
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": { "6080": { "label": "桌面（扫码登录在这里）", "onAutoForward": "openBrowser" } },
+  "postCreateCommand": "bash xiaoju-music/cloud/codespace-setup.sh",
+  "hostRequirements": { "cpus": 2, "memory": "4gb" }
+}

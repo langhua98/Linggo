@@ -1046,12 +1046,14 @@ await t('发 MediaCrawler 导出的文件：取下来交给流式服务转进视
   assert.match(lastSay().text, /文件里有 2 条作品（视频 1、图文 1）/);
 });
 
-await t('云电脑：发一键安装命令（带令牌和自己的账号）；云电脑带令牌上传文件 → 转进视频频道', async () => {
+await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己的账号）；云电脑带令牌上传文件 → 转进视频频道', async () => {
   const sec = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
   await admin('douyin-self', { sec_uids: [sec] });
   await dm(OWNER, '云电脑');
+  const says = bot.out.filter(o => o.method === 'sendMessage');
+  assert.match(says.at(-2).text, /codespaces\.new\/langhua98\/Linggo\?devcontainer_path=\.devcontainer%2Fdouyin%2Fdevcontainer\.json/);
   const cmd = lastSay().text;
-  const m = cmd.match(/^bash <\(curl -fsSL https:\/\/raw\.githubusercontent\.com\/langhua98\/Linggo\/main\/xiaoju-music\/cloud\/setup\.sh\) ([0-9a-f]{48}) (\S+)$/);
+  const m = cmd.match(/^bash xiaoju-music\/cloud\/crawl\.sh ([0-9a-f]{48}) (\S+)$/);
   assert.ok(m, cmd);
   assert.equal(m[2], sec);
   await dm(OWNER, '云电脑');
@@ -1065,7 +1067,7 @@ await t('云电脑：发一键安装命令（带令牌和自己的账号）；�
   assert.match(lastSay().text, /云电脑发来 2 条作品/);
   assert.equal((await up(m[1], 'nothing here')).status, 400);
   await dm(FAN + 4, '云电脑');
-  assert.ok(!/setup\.sh/.test(lastSay().text), '听众拿不到命令');
+  assert.ok(!/crawl\.sh/.test(lastSay().text), '听众拿不到命令');
 });
 
 await t('夜里自动搬：叫醒流式服务，带上每个频道上次看到哪条；上一晚搬完的记录合进来；还在搬就不再开', async () => {

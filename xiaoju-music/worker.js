@@ -1573,9 +1573,12 @@ async function douyinSelves(L) {
   return [raw];
 }
 
-// 「云电脑」：给频道主一条一键安装命令（xiaoju-music/cloud/setup.sh），带上上传令牌和他自己的抖音账号。
+// 「云电脑」：教频道主开一台 GitHub Codespaces（不用绑卡），给一条带上传令牌和自己抖音账号的抓取命令。
+// （自己有 VPS 的话也可以用 cloud/setup.sh 一键装，参数一样。）
 // 云电脑上 MediaCrawler 抓完，cloud/crawl.sh 把文件 POST 到 /dy-import（带 X-Token），这边转给流式服务
 const CLOUD_SETUP = 'https://raw.githubusercontent.com/langhua98/Linggo/main/xiaoju-music/cloud/setup.sh';
+// GitHub Codespaces：用仓库里 .devcontainer/douyin 的配置开一台带网页桌面的云电脑（不用绑卡）
+const CODESPACE_URL = 'https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer%2Fdouyin%2Fdevcontainer.json';
 
 async function cloudToken(L) {
   let tok = await L.getConfig('cloudTok');
@@ -1589,9 +1592,18 @@ async function cloudToken(L) {
 async function ownerCloud(env, chat) {
   const L = lib(env), selves = await douyinSelves(L);
   if (!selves.length) return say(env, chat, '还没设置你自己的抖音账号');
-  const cmd = `bash <(curl -fsSL ${CLOUD_SETUP}) ${await cloudToken(L)} ${selves.join(',')}`;
-  await say(env, chat, '云电脑一键安装：SSH 登进你的云电脑后，把下一条消息整条复制粘贴进去回车。中途会让你设一个远程桌面密码，其余全自动。\n（这条命令里有你的上传令牌，别发给别人）');
-  return say(env, chat, cmd);
+  const tok = await cloudToken(L), ids = selves.join(',');
+  await say(env, chat, [
+    '☁️ 云电脑（GitHub Codespaces，免费额度内不用绑卡、不会扣费）：',
+    '',
+    `1. 用 iPad 的 Safari 打开这个链接，点绿色的「Create codespace」，等它装好（第一次大约 5～10 分钟）：\n${CODESPACE_URL}`,
+    '2. 装好后在下面「PORTS（端口）」里打开 6080「桌面」，密码 xiaoju，这就是云电脑的桌面',
+    '3. 回到网页编辑器下面的「TERMINAL（终端）」，把下一条消息整条粘贴进去回车',
+    '4. 桌面上会弹出抖音登录页，用手机抖音扫码（要验证就在那里做），抓完自动发回小橘',
+    '',
+    '用完在 github.com/codespaces 里把它删掉，免得占免费额度。下一条命令里有你的上传令牌，别发给别人。',
+  ].join('\n'));
+  return say(env, chat, `bash xiaoju-music/cloud/crawl.sh ${tok} ${ids}`);
 }
 
 async function cloudImport(request, env) {
