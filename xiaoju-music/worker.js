@@ -1600,7 +1600,13 @@ async function douyinLoginApi(env, token, action) {
   try {
     if (action === 'start') {
       const r = await call('/douyin/login', { method: 'POST', body: '{}' });
-      return json(r.ok ? { ok: true } : { error: r.status === 409 ? '服务器正忙，过一会儿再点' : '服务器正在唤醒，一分钟后再点' }, r.ok ? 200 : 503);
+      if (r.ok) return json({ ok: true });
+      if (r.status === 409) { // 已经有一次登录在等扫码：直接用它的二维码
+        const st = await (await call('/douyin/login/status')).json().catch(() => ({}));
+        if (st.status === 'running') return json({ ok: true });
+        return json({ error: '服务器正在处理别的抖音任务，过一会儿再点' }, 503);
+      }
+      return json({ error: '服务器正在唤醒，一分钟后再点' }, 503);
     }
     if (action === 'qr') {
       const r = await call('/douyin/login/qr');
