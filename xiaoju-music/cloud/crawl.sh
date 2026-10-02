@@ -252,21 +252,25 @@ report starting
 PATTERN=creator_contents; ENDPOINT=dy-import
 if [ -n "${XJ_SEARCH_MODE:-}" ]; then PATTERN=search_contents; ENDPOINT=dy-search; fi
 newest() { find "$OUT" -name "${PATTERN}_*.jsonl" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-; }
-send() {  # $1 = 0 还在抓 / 1 抓完了
-  local f n sent code
+send() {  # $1 = 0 还在抓 / 1 抓完了。一次最多送 50 条（一条带着各档清晰度的地址，几十 KB），多了分几次送
+  local f n sent end fin code
   f=$(newest); n=0; [ -n "$f" ] && n=$(wc -l < "$f")
-  sent=$(cat "$SENTF")
-  [ "$n" -le "$sent" ] && [ "$1" = 0 ] && return 0
-  if [ "$n" -gt "$sent" ]; then tail -n +"$((sent + 1))" "$f" | head -n "$((n - sent))" > "$OUT/.batch"; else : > "$OUT/.batch"; fi
-  code=$(curl -sS -m 120 -o "$OUT/.resp" -w '%{http_code}' -X POST -H "X-Token: $TOKEN" -H "X-Final: $1" \
-    -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$OUT/.batch" "$API/$ENDPOINT" 2>/dev/null)
-  if [ "$code" = 200 ]; then
-    echo "$n" > "$SENTF"
-    [ "$n" -gt "$sent" ] && echo "== 已送给小橘 $n 条（这批 $((n - sent)) 条）=="
-    return 0
-  fi
-  echo "== 这批没送成（$code $(head -c 120 "$OUT/.resp" 2>/dev/null)），等下连同新的一起再送 =="
-  return 1
+  while :; do
+    sent=$(cat "$SENTF")
+    end=$((sent + 50)); [ "$end" -gt "$n" ] && end=$n
+    fin=0; [ "$1" = 1 ] && [ "$end" -ge "$n" ] && fin=1
+    [ "$end" -le "$sent" ] && [ "$fin" = 0 ] && return 0
+    if [ "$end" -gt "$sent" ]; then sed -n "$((sent + 1)),${end}p" "$f" > "$OUT/.batch"; else : > "$OUT/.batch"; fi
+    code=$(curl -sS -m 120 -o "$OUT/.resp" -w '%{http_code}' -X POST -H "X-Token: $TOKEN" -H "X-Final: $fin" \
+      -H 'Content-Type: text/plain; charset=utf-8' --data-binary @"$OUT/.batch" "$API/$ENDPOINT" 2>/dev/null)
+    if [ "$code" != 200 ]; then
+      echo "== 这批没送成（$code $(head -c 120 "$OUT/.resp" 2>/dev/null)），等下连同新的一起再送 =="
+      return 1
+    fi
+    echo "$end" > "$SENTF"
+    [ "$end" -gt "$sent" ] && echo "== 已送给小橘 $end 条（这批 $((end - sent)) 条）=="
+    [ "$fin" = 1 ] && return 0
+  done
 }
 
 # 搜索模式（search.sh）：在抖音里搜关键词，结果只送给小橘整理成链接清单私聊发频道主，不下载、不转发别人的视频

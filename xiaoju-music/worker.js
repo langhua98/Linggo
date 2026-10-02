@@ -1881,7 +1881,7 @@ async function cloudSearchResult(request, env) {
   const L = lib(env), tok = await L.getConfig('cloudTok');
   if (!tok || !sameString(request.headers.get('X-Token') || '', tok)) return json({ error: '令牌不对' }, 403);
   const body = await request.text();
-  if (body.length > 5 * 1024 * 1024) return json({ error: '文件太大' }, 413);
+  if (body.length > 20 * 1024 * 1024) return json({ error: '文件太大' }, 413);  // 云电脑一次最多送 50 条，这只是防万一
   // 边搜边发：云电脑每 30 秒送一批（X-Final: 0），搜完送 X-Final: 1（可以不带结果）。不带这个头当一次送完。
   // 编号在这一轮里接着往下排（dySearchNum: {词: 已经发了几条}），同一轮送重复的不再发（dySearchRun）
   const final = request.headers.get('X-Final') !== '0';
