@@ -14,7 +14,7 @@ export DISPLAY="${DISPLAY:-:1}"  # 浏览器开在桌面上（Codespaces 的网�
 [ -S /tmp/.X11-unix/X1 ] && export DISPLAY=:1  # 有网页桌面就一定开在它上面，别开到看不见的地方
 # MediaCrawler 的浏览器页面是 1920×1080，网页桌面默认比它小：页面一半在屏幕外，抖音的验证框就点不到。把桌面放大到装得下
 command -v xrandr >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y x11-xserver-utils >/dev/null 2>&1 || true
-xrandr --fb 1920x1200 >/dev/null 2>&1 || xrandr -s 1920x1200 >/dev/null 2>&1 || true
+bash "$HERE/win.sh" quiet  # 放大桌面（任务栏跟着挪到底下），见 win.sh
 OUT="$HOME/douyin-data"
 rm -rf "$OUT" && mkdir -p "$OUT"
 cd "$HOME/MediaCrawler" || { echo "没找到 MediaCrawler，重新运行一次安装命令"; exit 1; }
