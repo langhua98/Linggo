@@ -118,8 +118,19 @@ if '# xiaoju: light' not in c:
                       + pad + '        await route.abort()\n'
                       + pad + '    else:\n'
                       + pad + '        await route.continue_()\n'
-                      + pad + 'await self.browser_context.route("**/*", _xj_route)\n', 1)
+                      , 1)
     open(p3, 'w', encoding='utf-8').write(c)
+c = open(p3, encoding='utf-8').read()
+# 每个请求都绕到 Python 里判断（拦视频）太慢，抖音首页几百个请求，30 秒都开不完：已经加上的撤掉
+c = c.replace('            await self.browser_context.route("**/*", _xj_route)\n', '')
+# 首页只等页面结构出来（不等所有图片脚本），最多 60 秒；页面崩了新开那页也一样
+c = c.replace('await self.context_page.goto(self.index_url)\n',
+              'await self.context_page.goto(self.index_url, wait_until="domcontentloaded", timeout=60000)\n')
+open(p3, 'w', encoding='utf-8').write(c)
+c = open(p2, encoding='utf-8').read()
+c = c.replace('await _pg.goto("https://www.douyin.com/", timeout=60000)',
+              'await _pg.goto("https://www.douyin.com/", wait_until="domcontentloaded", timeout=60000)')
+open(p2, 'w', encoding='utf-8').write(c)
 c = open(p2, encoding='utf-8').read()
 old = '        local_storage: Dict = await self.playwright_page.evaluate("() => window.localStorage")  # type: ignore\n'
 if '# xiaoju: crash-safe' not in c and old in c:
