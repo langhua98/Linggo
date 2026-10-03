@@ -11,9 +11,9 @@ fallthrough = false
 
 [vars]
 # 视频频道「小橘视频」的数字 id（-100 开头）
-VIDEO_CHANNEL_ID = ""
-# 流式服务（streamer/，Hugging Face Space langhua1998/xiaoju-video）
-STREAMER_URL = "https://langhua1998-xiaoju-video.hf.space"
+VIDEO_CHANNEL_ID = "-1004292843233"
+# 流式服务（streamer/，Hugging Face Space langhua1998/douyin-proxy，原小橘音乐的流式服务改建）
+STREAMER_URL = "https://langhua1998-douyin-proxy.hf.space"
 
 [[durable_objects.bindings]]
 name = "LIB"

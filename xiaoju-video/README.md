@@ -17,7 +17,7 @@
 | Worker | `worker.js`（Cloudflare，`xiaoju-video`） | 两个机器人的 webhook、作品状态机、视频池、刷视频网页、管理页、云电脑和流式服务的接口 |
 | 小橘视频机器人 | `TG_BOT_TOKEN` | 频道主私聊：发分享链接、「进度」「云电脑」「重试失败」；它是视频频道管理员，频道新帖由它的 webhook 登记 |
 | 审核机器人 | @xiaojuverify_bot（`VERIFY_BOT_TOKEN`） | 每条作品转之前在这里点「通过 / 不转」；云电脑一次来很多条时可以「全部通过」 |
-| 流式服务 | `streamer/`（HF Space `langhua1998/xiaoju-video`） | 认分享链接、下载、ffmpeg、用频道主账号发帖；超过 20 MB 的视频按 Range 走 MTProto 现取现传。详见 `streamer/README.md` |
+| 流式服务 | `streamer/`（HF Space `langhua1998/douyin-proxy`，原小橘音乐的流式服务改建，`https://langhua1998-douyin-proxy.hf.space`） | 认分享链接、下载、ffmpeg、用频道主账号发帖；超过 20 MB 的视频按 Range 走 MTProto 现取现传。详见 `streamer/README.md` |
 | 云电脑 | `cloud/` + 仓库根的 `.devcontainer/xiaoju-video/` | Codespaces 里用真 Chromium 登录你自己的抖音，翻「我的作品」页，把作品送给 Worker |
 
 ### 一条作品怎么走
@@ -81,10 +81,10 @@ cd xiaoju-video/cloud && python -m pytest -q                   # 云电脑脚本
 
 ```bash
 ACC=aca35ff5f62ae4208757219dbc3b489b
-CH=<视频频道数字 id>
+CH=-1004292843233   # 视频频道「小橘视频」
 curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$ACC/workers/scripts/xiaoju-video" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"https://langhua1998-xiaoju-video.hf.space\"},{\"type\":\"plain_text\",\"name\":\"VIDEO_CHANNEL_ID\",\"text\":\"$CH\"}]};type=application/json" \
+  -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"https://langhua1998-douyin-proxy.hf.space\"},{\"type\":\"plain_text\",\"name\":\"VIDEO_CHANNEL_ID\",\"text\":\"$CH\"}]};type=application/json" \
   -F 'worker.js=@xiaoju-video/worker.js;type=application/javascript+module' \
   -F 'video.html=@xiaoju-video/video.html;type=text/plain' \
   -F 'admin.html=@xiaoju-video/admin.html;type=text/plain'
@@ -102,7 +102,7 @@ done
 ```
 
 改了流式服务：把 `streamer/` 下的 `app.py`、`douyin.py`、`Dockerfile`、`requirements.txt`、`README.md`（顶部是 Space 配置）
-推到 Space `langhua1998/xiaoju-video`，它会自动重新构建。重新构建会打断正在转的作品，它起来后报到，Worker 会重交。
+推到 Space `langhua1998/douyin-proxy`，它会自动重新构建。重新构建会打断正在转的作品，它起来后报到，Worker 会重交。
 
 ## 云电脑
 
