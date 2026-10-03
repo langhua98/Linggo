@@ -14,7 +14,7 @@ Worker 管登记、审核和网页；这里干 Worker 干不了的重活：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
   TG_BOT_TOKEN              小橘视频机器人 token（视频频道的管理员），取文件用
   TG_USER_SESSION           频道主账号的登录凭证（StringSession），发帖用
-  VIDEO_CHANNEL_ID          视频频道的数字 id（-100 开头）
+  VIDEO_CHANNEL_ID          视频频道的数字 id（-100 开头），或私有频道的邀请链接
   STREAMER_KEY              和 Worker 之间的密钥（X-Key 请求头）
   WORKER_URL                Worker 地址，报到、报结果用
 """
@@ -288,7 +288,7 @@ def ffmpeg_prepare(src, work):
 streamer = None
 poster = None
 douyin = None
-state = {'bot': False, 'user': False, 'channel': None}
+state = {'bot': False, 'user': False, 'channel': None, 'channel_id': None}
 
 
 def check_key(request):
@@ -317,7 +317,6 @@ async def lifespan(app):
     http = httpx.AsyncClient(http2=False)
     douyin = Douyin(http)
     api_id, api_hash = int(env['TG_API_ID']), env['TG_API_HASH']
-    channel_id = int(env['VIDEO_CHANNEL_ID'])
     # receive_updates=False：只调用、不订阅推送。机器人同时挂在官方 Bot API 上收 webhook，
     # 这里要是订阅了，频道新帖的推送可能被它接走，Worker 就漏登记新视频
     bot = TelegramClient(StringSession(), api_id, api_hash, receive_updates=False)
@@ -328,8 +327,10 @@ async def lifespan(app):
     if not await user.is_user_authorized():
         raise RuntimeError('TG_USER_SESSION is not valid')
     await user.get_dialogs()  # 把频道记进缓存，按数字 id 才找得到
-    channel = await user.get_entity(PeerChannel(int(str(channel_id).removeprefix('-100'))))
-    state.update(user=True, channel=getattr(channel, 'title', None))
+    # VIDEO_CHANNEL_ID 可以是数字 id（-100 开头），也可以是私有频道的邀请链接（频道主账号已在频道里）
+    ref = env['VIDEO_CHANNEL_ID'].strip()
+    channel = await user.get_entity(PeerChannel(int(ref.removeprefix('-100'))) if re.fullmatch(r'-?\d+', ref) else ref)
+    state.update(user=True, channel=getattr(channel, 'title', None), channel_id=int(f'-100{channel.id}'))
     log.info('logged in; channel %s', state['channel'])
 
     # 取文件优先用机器人（它是频道管理员）；它找不到频道就用频道主账号

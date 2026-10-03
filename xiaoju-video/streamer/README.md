@@ -35,7 +35,7 @@ pinned: false
 | `TG_API_ID` / `TG_API_HASH` | my.telegram.org 申请的应用凭据 |
 | `TG_BOT_TOKEN` | **小橘视频机器人**的 token（视频频道的管理员），取文件用 |
 | `TG_USER_SESSION` | 频道主账号的登录凭证（Telethon StringSession），发帖用 |
-| `VIDEO_CHANNEL_ID` | 视频频道的数字 id（`-100` 开头） |
+| `VIDEO_CHANNEL_ID` | 视频频道的数字 id（`-100` 开头），或私有频道的邀请链接（`GET /` 会显示认出的数字 id） |
 | `STREAMER_KEY` | 和 Worker 的 `STREAMER_KEY` 相同 |
 | `WORKER_URL` | `https://xiaoju-video.langhua98.workers.dev` |
 
