@@ -75,16 +75,6 @@
   用户明确选了「只用流式，不切片」；`streamer/harvest/` 是贴网址搬授权音频。**和阅读器没有任何代码共享、
   引用关系**，只是借这个仓库存代码；不在 `sw.js` 的 `SHELL` 里。结构、绑定、重新部署和日常维护见
   `xiaoju-music/README.md`，改完先跑 `node xiaoju-music/test.mjs` 和 `streamer/` 里的 `pytest`。
-- **`xiaoju-video/`**：「小橘视频」——**和小橘音乐是两个独立的项目**（用户要求代码全部分开）：自己的 Worker（`xiaoju-video`）、
-  自己的机器人、自己的 Durable Object 数据库、自己的流式服务，和 `xiaoju-music/` 没有任何共用的代码和数据。
-  内容：抖音作品转进私有视频频道「小橘视频」（`streamer/douyin/`：无头 Chromium 不登录取作品、下载、ffmpeg、频道主账号发帖；
-  `cloud/`：GitHub Codespaces 上的云电脑，用 MediaCrawler 抓全部作品、按关键词搜）、刷视频网页（`video.html`）、
-  审核机器人（`verify.js`）、管理员配置的内容过滤规则（管理页 `video-admin.html`）。流式服务跑在 Hugging Face Space
-  `langhua1998/douyin-proxy` 上（免费账号新建 Docker Space 要 PRO）。**线上还没切**：当前线上仍是拆分之前合并在 `xiaoju-music`
-  Worker 里的那一份，切换要新机器人 token、新 Worker、重设数据，步骤见 `xiaoju-video/README.md` 的「第一次上线」；
-  云电脑每 10 分钟从 `main` 拉脚本，路径已经从 `xiaoju-music/cloud/` 改成 `xiaoju-video/cloud/`，所以**拆分的改动在新 Worker 能用之前不要推到 `main`**。
-  改完先跑 `node xiaoju-video/test.mjs` 和 `streamer/` 里的 `pytest`。整体架构、接口、密钥放在哪（只写名字）、部署和排障手册见
-  `xiaoju-video/架构与技术支持.md`。
 - **`private-cloud/`**：「Telegram Private Cloud Drive」私有云盘——网页上传文件，后台 Worker 存进 Telegram 私有频道，
   数据库（PostgreSQL / 开发用 SQLite）只存元数据和「频道 + 消息号」。FastAPI 后端（`backend/`，含上传 Worker
   `backend/workers/upload_worker.py`）+ Next.js 静态导出前端（`frontend/`），`docker compose` 部署（API + Worker + PostgreSQL，
@@ -149,7 +139,7 @@
 - `lottie/`（520 KB，多个小 `.json`）：Lottie 动画数据，`licon.js` 按需 `fetch`。
 - `cloudflare-proxy/`：`worker.js` + `wrangler.toml` + `README.md`，图书下载代理的
   Worker 源码，见「图书下载代理」一节。
-- `xiaoju-music/`、`xiaoju-video/`：两个独立的 Telegram 频道项目（音乐、视频），与阅读器无关，见上方「⚠️」一节。
+- `xiaoju-music/`：独立的 Telegram 频道项目（音乐），与阅读器无关，见上方「⚠️」一节。
 - `private-cloud/`：Telegram 私有云盘（FastAPI + Next.js），与阅读器无关，见上方「⚠️」一节。
 - `admin.html`（21.9 KB，525 行）：自包含管理后台，内嵌 CSS+JS，独立于阅读器。
 - `docs/CMA_plan_big_execute_small.ipynb`：已废止的旧工作约定（Plan Big, Execute Small）引用的
