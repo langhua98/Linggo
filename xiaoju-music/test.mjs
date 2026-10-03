@@ -1572,6 +1572,10 @@ await t('内容过滤规则：只由管理员在管理页加改删开关；机�
   const lastTask = async () => V.getTask(lib, JSON.parse(await lib.getConfig('rvIds')).at(-1));
   const log = async () => (await jsonOf(await admin('filter-log'))).log;
 
+  // 管理入口在小橘视频管理页（不在小橘音乐的 /admin）
+  const vpage = await (await req('/video-admin')).text();
+  assert.match(vpage, /小橘🍊视频 · 管理[\s\S]*内容过滤规则[\s\S]*过滤记录/);
+  assert.doesNotMatch(await (await req('/admin')).text(), /内容过滤规则/);
   // 管理接口：要管理密钥；一开始只有固定的未成年人保护，别的规则一条都没有（机器人不自己加）
   assert.equal((await admin('filters', undefined, 'wrong')).status, 401);
   let f = await jsonOf(await admin('filters'));

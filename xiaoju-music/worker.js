@@ -18,7 +18,8 @@
 //   GET  /api/videos       视频池 JSON（新的在前）；离上次和频道对一遍超过 30 分钟，就在后台再对一遍
 //   GET  /vf/<消息号>       视频流，支持 Range（20 MB 以内走 Bot API，更大的走流式服务）
 //   GET  /vp/<消息号>       视频封面（缩略图），取一次就存起来
-//   GET  /admin            管理页（admin.html，管理密钥登录）：把频道里已删掉的帖子从歌单移除
+//   GET  /admin            小橘音乐管理页（admin.html，管理密钥登录）：把频道里已删掉的帖子从歌单移除
+//   GET  /video-admin      小橘视频管理页（video-admin.html，同一个管理密钥）：内容过滤规则、过滤记录
 //   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>）
 //
 // 数据在 Durable Object「Library」的 SQLite 里：强一致，也没有 KV list 每天 1000 次的限制。
@@ -34,6 +35,7 @@ import PAGE from './page.html';
 import ADMIN_PAGE from './admin.html';
 import DOUYIN_LOGIN_PAGE from './douyin-login.html';
 import VIDEO_PAGE from './video.html';
+import VIDEO_ADMIN_PAGE from './video-admin.html';
 import * as V from './verify.js';
 
 const TG = 'https://api.telegram.org';
@@ -137,6 +139,7 @@ export default {
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
       if (path === '/') return html(PAGE, method);
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
+      if (path === '/video-admin') return html(VIDEO_ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
       if (path === '/video') return html(VIDEO_PAGE, method);
       if (path === '/api/videos') return await videoList(env, ctx);
       const vf = path.match(/^\/vf\/(\d{1,10})(?:\.mp4)?$/);
@@ -2249,7 +2252,7 @@ async function cloudConfig(request, env) {
 const SEARCH_DEFAULT = 100, SEARCH_MAX = 500;
 
 // ── 内容过滤 ──
-// 规则全部由管理员在管理页（/admin）配置：加、改、删、开关，表 filter_rules。机器人只照着已经启用的规则执行，
+// 规则全部由管理员在小橘视频管理页（/video-admin）配置：加、改、删、开关，表 filter_rules。机器人只照着已经启用的规则执行，
 // 不自己加规则、不自己扩大条件；没命中任何规则的照常走。规则每次现读，改了马上用到后面的任务上。
 // 每条规则：关键词（文字里包含任意一个就算命中，不分大小写）、查哪里（搜索词 keyword / 作品文案 caption / 两个都查 both）、
 // 命中了怎么办（filter 不进清单、不转；flag 只标「待人工确认」，照常进清单，审核时管理员决定）。
