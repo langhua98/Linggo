@@ -251,7 +251,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     正在转作品时不删），之后查重认不出，下次就按最高画质重转。
     不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找
     api.github.com 认出是仓库主人（`CLOUD_GH_USER`）才回上传令牌和账号。令牌存在云电脑的 `~/.xiaoju/env`，devcontainer 的 `postAttachCommand`（`cloud/codespace-auto.sh`）
-    每次打开都连上小橘：用 `setsid nohup` 起一个不挂在终端上的守候进程（`codespace-auto.sh --watch`，`flock` 防重复，记录写 `~/.xiaoju/watch.log`，终端里只是 `tail -f` 它），关掉终端、网页断开都照常等；每 10 分钟 `git pull` 一次，脚本变了自己换新的。点「运行爬虫」才跑 `crawl.sh`；机器人的「搜抖音」「进度」按 `dyCloudSeen` 说云电脑连没连着。搜完出队时除了结果里的 `source_keyword`，还按云电脑报进度时的关键词出队（两边写法对不上时不会一直重搜）；MediaCrawler 自己存登录状态，没过期就不用再扫码。
+    每次打开都连上小橘：用 `setsid nohup` 起一个不挂在终端上的守候进程（`codespace-auto.sh --watch`，`flock` 防重复，记录写 `~/.xiaoju/watch.log`，终端里只是 `tail -f` 它），关掉终端、网页断开都照常等；每 10 分钟 `git pull` 一次，脚本变了自己换新的（正在抓、正在搜时等它做完再换）。抓和搜都在后台跑，守候进程不管在干什么都每 20 秒来问一次 `/dy-cloud-config`，用 `X-Busy`（`idle` / `crawl` / `search` / `wait:秒`）说在干什么，机器人据此如实说云电脑在不在、在干什么。两个不能同时跑（共用同一个登录抖音的浏览器），搜索优先：正在抓的时候有词要搜，守候进程建 `~/.xiaoju/yield` 并停掉 MediaCrawler，`crawl.sh` 把已经抓到的送给小橘（不带「完了」）、报 `paused`、以退出码 3 退出，搜完守候进程再自动接着抓（只抓频道里还没有的，重复送的小橘认得出来）。没成的同一个词、同一次抓取 10 分钟内不再试，期间照常在线；发新的词、重新点「运行爬虫」马上做。点「运行爬虫」才跑 `crawl.sh`；机器人的「搜抖音」「进度」按 `dyCloudSeen` 说云电脑连没连着。搜完出队时除了结果里的 `source_keyword`，还按云电脑报进度时的关键词出队（两边写法对不上时不会一直重搜）；MediaCrawler 自己存登录状态，没过期就不用再扫码。
     自己有 VPS 的话 `cloud/setup.sh <令牌> <账号>` 一键装 XFCE + xrdp（RDP 连），桌面放「抓抖音发给小橘」。
     也可以手动把导出文件发给机器人。抖音账号和验证全程只在频道主自己的机器上。
   - 视频频道的数字 id 用流式服务 `GET /channels/owned?title=小橘视频` 查（只在频道主自己建的频道里按名字找，不列别的聊天）。

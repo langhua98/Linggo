@@ -1503,6 +1503,35 @@ await t('搜抖音：云电脑连着就说半分钟内开始；结果里标的�
   await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ phase: 'done', mode: 'search' }) });
 });
 
+await t('云电脑在线状态：守候脚本在抓、在搜、上次没搜成时照样每 20 秒来问（X-Busy），机器人如实说；旧脚本抓的时候只报进度也算连着', async () => {
+  const tok = await lib.getConfig('cloudTok');
+  const cfg = busy => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok, ...(busy ? { 'X-Busy': busy } : {}) } });
+  const prog = body => req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await cfg('crawl');
+  await dm(OWNER, '搜抖音 #微喇裤 50');
+  assert.match(lastSay().text, /云电脑连着（\d+ 秒前来问过），正在抓你的号：有词要搜就先停一下抓取，半分钟内开始搜，搜完接着抓/);
+  await cfg('search');
+  await dm(OWNER, '搜抖音');
+  assert.match(lastSay().text, /正在搜，这个词排在后面/);
+  await cfg('wait:540');
+  await dm(OWNER, '搜抖音');
+  assert.match(lastSay().text, /上一次没搜成[\s\S]*9 分钟后再搜；发新的词会马上搜/);
+  await cfg('idle');
+  await dm(OWNER, '搜抖音');
+  assert.match(lastSay().text, /云电脑连着（\d+ 秒前来问过），半分钟内开始$/m);
+  // 旧版脚本：抓的时候不来问，只报进度
+  await lib.setConfig('dyCloudSeen', String(Date.now() - 7 * 60 * 1000));
+  await prog({ phase: 'running', mode: 'crawl', sent: 3, got: 5, accounts: [] });
+  await dm(OWNER, '搜抖音');
+  assert.match(lastSay().text, /云电脑连着，正在抓你的号（\d+ 秒前报过进度），这个词等它做完就搜/);
+  await prog({ phase: 'paused', mode: 'crawl', sent: 5, got: 5, accounts: [] });
+  await dm(OWNER, '进度');
+  assert.match(lastSay().text, /先停一下给搜索让路/);
+  assert.match(lastSay().text, /云电脑现在没连上（上次是7 分钟前）/, '既不来问、又不在抓：真的没连上');
+  await dm(OWNER, '搜抖音 清空');
+  await prog({ phase: 'done', mode: 'crawl' });
+});
+
 await t('未成年人：相关的词不搜，排着队的也不交给云电脑；文案看得出是未成年人的不进审核清单；这样的审核单通过了也不转', async () => {
   const tok = await lib.getConfig('cloudTok');
   const cfg = () => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok } });

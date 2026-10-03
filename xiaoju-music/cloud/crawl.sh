@@ -237,6 +237,8 @@ report() {  # $1 = starting / running / done / stopped / failed
   if [ -n "${XJ_SEARCH_MODE:-}" ]; then mode=search; names="$KW"; fi
   body=$(python3 "$HERE/progress.py" "$1" "$mode" "$OUT" "$(cat "$SENTF" 2>/dev/null || echo 0)" "$names" 2>/dev/null) || return 0
   resp=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" -H 'Content-Type: application/json' --data-binary "$body" "$API/dy-progress" 2>/dev/null)
+  # 守候脚本要给搜索让路（~/.xiaoju/yield）：还在抓的话停掉（它刚 pkill 时可能还没开浏览器）
+  if [ -z "${XJ_SEARCH_MODE:-}" ] && [ -f "$HOME/.xiaoju/yield" ]; then pkill -f 'main.py --platform dy' 2>/dev/null; fi
   if printf '%s' "$resp" | grep -q '"stop": *true' && [ ! -f "$STOPF" ]; then
     touch "$STOPF"
     echo "== 你在机器人里点了停止，正在停 =="
@@ -331,6 +333,13 @@ uv run main.py --platform dy --lt qrcode --type creator --creator_id "$CREATORS"
   --save_data_option jsonl --crawler_max_notes_count 100000 --save_data_path "$OUT"
 
 kill $SENDLOOP 2>/dev/null; wait $SENDLOOP 2>/dev/null
+if [ -f "$HOME/.xiaoju/yield" ] && [ ! -f "$STOPF" ]; then
+  # 给搜索让路：已经抓到的先送过去（还没抓完，不带「完了」，小橘那边接着等），退出码 3 让守候脚本搜完接着抓
+  for i in $(seq 5); do send 0 && break; sleep 10; done
+  report paused
+  echo "== 先停一下给搜索让路（已经抓到的 $(cat "$SENTF") 条送给小橘了），搜完接着抓 =="
+  exit 3
+fi
 if [ -f "$STOPF" ]; then
   report stopped
   echo "== 停了。已经送给小橘的 $(cat "$SENTF") 条照常转（要连这些也停，在机器人里点「停止小橘转发」）=="

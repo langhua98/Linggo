@@ -2158,6 +2158,8 @@ async function cloudConfig(request, env) {
     if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
     const q = await douyinSearchQueue(L);
     await L.setConfig('dyCloudSeen', String(Date.now()));  // 云电脑开着时每 20 秒来问一次，机器人据此说它在不在
+    // 它在干什么：idle / crawl（在抓）/ search（在搜）/ wait:秒（上次没搜成，过这么久再搜）；旧脚本不带
+    await L.setConfig('dyCloudBusy', String(request.headers.get('X-Busy') || '').slice(0, 40));
     return json({ token: tok, creators: selves.join(','), searches: q, search_max: await douyinSearchMax(L, q), crawl: (await L.getConfig('dyCrawlReq')) === '1' });
   }
   const gh = (request.headers.get('Authorization') || '').replace(/^(Bearer|token)\s+/i, '');
@@ -2280,7 +2282,7 @@ async function cloudKnown(request, env) {
 }
 
 // ── 进度：云电脑每 30 秒报一次（POST /dy-progress，X-Token），记在 dyCloud；频道主发「进度」看，点按钮停 ──
-const CLOUD_PHASE = { starting: '刚开始（开浏览器、等登录）', running: '正在抓', done: '抓完了', stopped: '停了', failed: '没成（没抓到、登录过期，或者没发出去；看云电脑终端里的原因）' };
+const CLOUD_PHASE = { starting: '刚开始（开浏览器、等登录）', running: '正在抓', paused: '先停一下给搜索让路（已经抓到的送过来了，搜完自动接着抓）', done: '抓完了', stopped: '停了', failed: '没成（没抓到、登录过期，或者没发出去；看云电脑终端里的原因）' };
 
 async function cloudProgress(request, env) {
   const L = lib(env), tok = await L.getConfig('cloudTok');
@@ -2568,11 +2570,23 @@ async function cloudToken(L) {
 // 开抓时报 starting 进度把它清掉；没开的话等下次打开 ──
 const cloudOnline = seen => Date.now() - seen < 90 * 1000;
 
-// 云电脑现在在不在等指令（它开着时每 20 秒来问一次 /dy-cloud-config）
+// 云电脑现在在不在、在干什么。守候脚本不管在抓、在搜，每 20 秒都来问一次 /dy-cloud-config（带 X-Busy 说在干什么）。
+// 旧版脚本抓的时候不来问、只每 30 秒报进度：90 秒内报过进度也算连着
 async function cloudStatusLine(L) {
   const seen = Number(await L.getConfig('dyCloudSeen')) || 0;
-  if (cloudOnline(seen)) return `☁️ 云电脑连着（${ago(Date.now() - seen)}来问过），半分钟内开始（正在抓、正在搜的话等它做完）`;
-  return `☁️ 云电脑现在没连上${seen ? `（上次是${ago(Date.now() - seen)}）` : ''}：打开云电脑就会自动做；已经开着的话把网页刷新一下（旧脚本要刷新一次才换成新的）`;
+  let c = null;
+  try { c = JSON.parse((await L.getConfig('dyCloud')) || 'null'); } catch {}
+  const reporting = !!c && ['starting', 'running'].includes(c.phase) && Date.now() - c.at < 90 * 1000;
+  if (!cloudOnline(seen)) {
+    if (reporting) return `☁️ 云电脑连着，正在${c.mode === 'search' ? '搜' : '抓你的号'}（${ago(Date.now() - c.at)}报过进度），这个词等它做完就搜`;
+    return `☁️ 云电脑现在没连上${seen ? `（上次是${ago(Date.now() - seen)}）` : ''}：打开云电脑就会自动做；已经开着的话把网页刷新一下（旧脚本要刷新一次才换成新的）`;
+  }
+  const busy = (await L.getConfig('dyCloudBusy')) || '', when = `${ago(Date.now() - seen)}来问过`;
+  if (busy === 'crawl') return `☁️ 云电脑连着（${when}），正在抓你的号：有词要搜就先停一下抓取，半分钟内开始搜，搜完接着抓`;
+  if (busy === 'search') return `☁️ 云电脑连着（${when}），正在搜，这个词排在后面，搜完接着搜`;
+  const w = /^wait:(\d+)$/.exec(busy);
+  if (w) return `☁️ 云电脑连着（${when}），上一次没搜成（多半是抖音登录过期，去云电脑的「桌面」扫码），${Math.max(1, Math.round(Number(w[1]) / 60))} 分钟后再搜；发新的词会马上搜`;
+  return `☁️ 云电脑连着（${when}），半分钟内开始${busy ? '' : '（正在抓、正在搜的话等它做完）'}`;
 }
 
 async function requestCrawl(L) {
