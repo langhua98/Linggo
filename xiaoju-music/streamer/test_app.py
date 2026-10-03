@@ -567,3 +567,103 @@ def test_request_ranking_prefers_the_artist_most_channels_have():
     res += [{'title': '发如雪', 'performer': '某人', 'duration': 70}]
     assert appmod.rank_requests('发如雪', res)[0]['performer'] == '周杰伦'
     assert appmod.rank_requests('发如雪', res)[-1]['performer'] == '某人'
+
+
+# ── 视频频道（刷视频网页）──
+
+VC = -1004292843233
+
+
+class VideoDoc(Doc):
+    def __init__(self, size, ref, mime='video/mp4', thumbs=None):
+        super().__init__(size, ref)
+        self.mime_type = mime
+        if thumbs:
+            self.thumbs = thumbs
+
+
+class VideoTelegram(FakeTelegram):
+    """视频频道：12 号是有缩略图的视频，13 号是没缩略图的视频，14 号是个 PDF（不是视频）"""
+
+    async def fetch_message(self, channel, message_id):
+        assert channel == 'video-entity'
+        self.fetches += 1
+        return {12: Msg(VideoDoc(len(DATA), self.fetches, thumbs=['320x568'])), 13: Msg(VideoDoc(len(DATA), self.fetches)),
+                14: Msg(VideoDoc(10, self.fetches, mime='application/pdf'))}.get(message_id)
+
+
+def test_video_stream_and_thumb(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    tg = VideoTelegram()
+    jpeg = b'\xff\xd8\xff\xe0video-thumb'
+
+    async def download_thumb(msg):
+        return jpeg
+
+    s = Streamer(channel='video-entity', fetch_message=tg.fetch_message, iter_download=tg.iter_download, download_thumb=download_thumb)
+    monkeypatch.setattr(appmod, 'video_streamers', {VC: s})
+    client = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    assert client.get(f'/vstream/12?target={VC}').status_code == 403
+    r = client.get(f'/vstream/12?target={VC}', headers={**key, 'Range': f'bytes={CHUNK - 5}-{CHUNK + 4}'})
+    assert r.status_code == 206 and r.content == DATA[CHUNK - 5:CHUNK + 5]
+    assert r.headers['content-range'] == f'bytes {CHUNK - 5}-{CHUNK + 4}/{len(DATA)}'
+    r = client.get(f'/vstream/12?target={VC}', headers=key)
+    assert r.status_code == 200 and r.content == DATA
+    # 没有这条、不是视频：404 + 'gone'（Worker 认这个才从视频池去掉）
+    for mid in (99, 14):
+        r = client.get(f'/vstream/{mid}?target={VC}', headers=key)
+        assert r.status_code == 404 and r.json() == {'detail': 'gone'}
+    assert client.get('/vstream/12?target=nope!', headers=key).status_code == 400
+    # 缩略图
+    assert client.get(f'/vthumb/12?target={VC}').status_code == 403
+    r = client.get(f'/vthumb/12?target={VC}', headers=key)
+    assert r.status_code == 200 and r.content == jpeg and r.headers['content-type'] == 'image/jpeg'
+    assert client.get(f'/vthumb/13?target={VC}', headers=key).json() == {'detail': 'no thumb'}
+    assert client.get(f'/vthumb/99?target={VC}', headers=key).json() == {'detail': 'gone'}
+
+
+def test_video_list(monkeypatch):
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    import datetime
+
+    class F:
+        def __init__(self, mime, size=1000, duration=12.6, w=1080, h=1920):
+            self.mime_type, self.size, self.duration, self.width, self.height = mime, size, duration, w, h
+
+    class M:
+        def __init__(self, i, f, text='', gif=False):
+            self.id, self.file, self.message, self.gif, self.video_note = i, f, text, gif, False
+            self.date = datetime.datetime(2026, 10, 1, tzinfo=datetime.timezone.utc)
+
+    seen = {}
+
+    class User:
+        async def get_input_entity(self, target):
+            seen['target'] = target
+            return 'video-entity'
+
+        def iter_messages(self, entity, **kw):
+            seen.update(entity=entity, **kw)
+
+            async def gen():
+                for m in [M(30, F('video/mp4'), '跳舞\n\n📹 抖音 #小美 · 2026-09-30\nhttps://www.douyin.com/video/7600000000000000001'),
+                          M(29, F('video/mp4'), gif=True), M(28, F('application/pdf')), M(27, None), M(26, F('video/quicktime', duration=None))]:
+                    yield m
+            return gen()
+
+    client = TestClient(appmod.app)
+    key = {'X-Key': 'k1'}
+    monkeypatch.setattr(appmod, 'user_client', None)
+    assert client.get(f'/videos?target={VC}').status_code == 403
+    assert client.get(f'/videos?target={VC}', headers=key).status_code == 409  # 没登录频道主账号
+    monkeypatch.setattr(appmod, 'user_client', User())
+    r = client.get(f'/videos?target={VC}&min_id=5', headers=key)
+    assert r.status_code == 200
+    assert r.json() == {'complete': True, 'videos': [
+        {'id': 30, 'date': 1790812800, 'size': 1000, 'duration': 13, 'w': 1080, 'h': 1920, 'mime': 'video/mp4',
+         'text': '跳舞\n\n📹 抖音 #小美 · 2026-09-30\nhttps://www.douyin.com/video/7600000000000000001'},
+        {'id': 26, 'date': 1790812800, 'size': 1000, 'duration': 0, 'w': 1080, 'h': 1920, 'mime': 'video/quicktime', 'text': ''},
+    ]}
+    assert seen['target'] == VC and seen['entity'] == 'video-entity' and seen['min_id'] == 5 and seen['wait_time'] == 0
+    assert isinstance(seen['filter'], type) and seen['filter'].__name__ == 'InputMessagesFilterVideo'

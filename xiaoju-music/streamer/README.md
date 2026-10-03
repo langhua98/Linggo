@@ -37,6 +37,11 @@ Telethon 以 `receive_updates=False` 登录：这个会话只调用、不订阅�
 - `GET /`：健康检查
 - `GET /stream/<消息号>`：请求头 `X-Key`，可带 `Range`；返回 200（整个文件）、206（一段）、
   403（密钥不对）、404（频道里没有这条音频）、416（范围超出文件）
+- `GET /vstream/<消息号>?target=<视频频道>`（`X-Key`，可带 `Range`）：刷视频网页用，视频频道里的视频边取边传（机器人身份，
+  它是那里的管理员）。没有这条、不是视频 → 404 `{"detail": "gone"}`（Worker 认这个才从视频池去掉）。
+- `GET /vthumb/<消息号>?target=`：视频的缩略图（JPEG）；没有缩略图 → 404 `no thumb`，没有这条 → 404 `gone`。
+- `GET /videos?target=&min_id=`：视频频道里的视频帖 `{videos: [{id, date, size, duration, w, h, mime, text}], complete}`，
+  新的在前；要翻频道历史，用频道主账号（`TG_USER_SESSION`），没登录 → 409。
 - `POST /douyin/link`（`X-Key`）：`{text: 抖音分享文字或链接, target: 视频频道, notify: 通知谁}`，在后台不登录跑，跑完通知：
   作品链接 → 解析、下载、发进 `target` 频道，回 `{kind: "aweme", id}`；主页链接 → 采集这个账号作品的公开链接，回
   `{kind: "user", sec_uid}`。认不出、作品链接没给 `target` → 400，正在跑别的 → 409。
