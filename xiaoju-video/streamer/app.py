@@ -355,6 +355,15 @@ def ranged(s, msg, message_id, request):
     return StreamingResponse(s.body(message_id, start, end), status_code=206 if partial else 200,
                              headers=headers, media_type='application/octet-stream')
 
+@app.post('/login/code')
+async def login_code(request: Request):
+    check_key(request)
+    phone = str((await request.json()).get('phone', '')).strip()
+    if not re.fullmatch(r'\+?\d{6,16}', phone):
+        raise HTTPException(400, 'bad phone')
+    await login.send_code(phone)
+    return {'ok': True}
+
 @app.post('/login/verify')
 async def login_verify(request: Request):
     check_key(request)

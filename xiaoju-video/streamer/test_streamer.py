@@ -202,6 +202,25 @@ def test_login_with_two_step_password():
     assert signed[0]['code'] == '12345' and signed[1] == {'password': 'pw'}
 
 
+def test_login_endpoints_need_the_key_and_a_real_phone(monkeypatch):
+    # TG_USER_SESSION 过期后，要靠 /login/code 发验证码、/login/verify 换新的凭证
+    monkeypatch.setenv('STREAMER_KEY', 'k1')
+    sent = []
+
+    class FakeLogin:
+        async def send_code(self, phone):
+            sent.append(phone)
+
+    monkeypatch.setattr(appmod, 'login', FakeLogin())
+    client = TestClient(appmod.app)
+    assert client.post('/login/code', json={'phone': '+8613800000000'}).status_code == 403
+    assert client.post('/login/verify', json={'code': '1'}).status_code == 403
+    assert client.post('/login/code', json={'phone': 'abc'}, headers={'X-Key': 'k1'}).status_code == 400
+    assert not sent
+    r = client.post('/login/code', json={'phone': '+8613800000000'}, headers={'X-Key': 'k1'})
+    assert r.status_code == 200 and r.json() == {'ok': True} and sent == ['+8613800000000']
+
+
 # ── 视频频道：按消息号取视频、缩略图、翻频道历史 ──
 
 def video_app(monkeypatch, **streamer_kw):

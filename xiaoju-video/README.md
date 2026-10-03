@@ -3,6 +3,8 @@
 把频道主**自己**的抖音账号的作品（视频和图文）转进私有的 Telegram 频道「小橘视频」，再做成**打开网页就能刷**的短视频页
 （上滑下一条、下滑回上一条）。和 Linggo 阅读器没有任何关系，只是借这个仓库存代码。
 
+整体架构、接口和谁能调、密钥放在哪、部署、排障手册见 [`架构与技术支持.md`](架构与技术支持.md)。
+
 **小橘视频和小橘音乐是两个独立的项目**：这里只管视频；音乐（歌单、歌词、搬歌）在 [`../xiaoju-music/`](../xiaoju-music/)。
 两边各有各的 Worker、机器人、Durable Object 数据库、流式服务（Hugging Face Space），没有任何共用的代码和数据。
 
@@ -129,7 +131,7 @@ curl "https://api.telegram.org/bot<小橘视频机器人 token>/setWebhook" \
   碰上 Telegram 限流（FloodWait）等它说的秒数再发。只认自己的账号：别人的作品不批量搬。
 - 查重：先把视频频道翻一遍（最近 20000 条），从帖子说明的原视频链接里认出转过的作品号，已有的跳过。翻过的记在内存里，6 小时内再转只翻上次之后的新帖子（`douyin_posted_cache`），过了 6 小时或 Space 重启就整个重翻。
 - 转得快一点：同时有 3 条作品在下载、过 ffmpeg、传到 Telegram（`douyin_prepare_video`，`job.py` 的 `AHEAD`），发帖只是最后一步、仍按顺序一条条发（`douyin_post_video`，每条间隔 3 秒防限流），频道里的先后不乱；停下时备好没发的删掉临时文件。视频本来就是 faststart 的不再过 ffmpeg；超过 10 MB 的视频分 512 KB 一块、同时传 8 块，整个服务同时最多传 12 块（`upload_parallel`）。
-- 重启后接着转：流式服务（Space）一重启——推新代码、Hugging Face 维护、崩溃——内存里正在转的任务就没了。所以 Worker 每交一个抖音任务（转抖音视频、自动同步、云电脑送来的、审核通过的、发来的导出文件、单条链接）都记一笔：任务编号 `run_id` + 原样的请求，导入任务连作品数据一起（config `dyResume` + 表 `dy_resume`）。Space 启动时 POST Worker 的 `/streamer-up`（`X-Key` 用同一个 `STREAMER_KEY`），Worker 把没转完的照原样再交一次（频道里已有的会跳过）并告诉频道主；没交上（Space 还没完全起来）就回 `retry`，Space 过一会儿再报到。转完或出错 Space POST `/streamer-done {run_id}` 销记录；频道主点「停」Worker 自己销；每 30 分钟的定时任务也会对一下状态补漏。同一批最多自动接着转 3 次。Space 通知 Worker（报到、报结束）失败会隔一会儿重试，最近一次成功和失败的时间、原因记在 `worker_link`（`/douyin/status` 里带出），频道主发「进度」能看到；这部分只管通知，不碰审核和过滤。Space 找 Worker 的地址默认 `https://xiaoju-music.langhua98.workers.dev`，可用 Space 变量 `WORKER_URL` 改。
+- 重启后接着转：流式服务（Space）一重启——推新代码、Hugging Face 维护、崩溃——内存里正在转的任务就没了。所以 Worker 每交一个抖音任务（转抖音视频、自动同步、云电脑送来的、审核通过的、发来的导出文件、单条链接）都记一笔：任务编号 `run_id` + 原样的请求，导入任务连作品数据一起（config `dyResume` + 表 `dy_resume`）。Space 启动时 POST Worker 的 `/streamer-up`（`X-Key` 用同一个 `STREAMER_KEY`），Worker 把没转完的照原样再交一次（频道里已有的会跳过）并告诉频道主；没交上（Space 还没完全起来）就回 `retry`，Space 过一会儿再报到。转完或出错 Space POST `/streamer-done {run_id}` 销记录；频道主点「停」Worker 自己销；每 30 分钟的定时任务也会对一下状态补漏。同一批最多自动接着转 3 次。Space 通知 Worker（报到、报结束）失败会隔一会儿重试，最近一次成功和失败的时间、原因记在 `worker_link`（`/douyin/status` 里带出），频道主发「进度」能看到；这部分只管通知，不碰审核和过滤。Space 找 Worker 的地址默认 `https://xiaoju-video.langhua98.workers.dev`，可用 Space 变量 `WORKER_URL` 改。
 - 单条出错不停整批：某一条上传失败、Telegram 限流太久之类的意外错误，只记成这一条失败、接着转下一条；连续 5 条都这样才整批停下（多半是账号或网络出了问题）。抖音拦截（要验证）照旧整批停下。
   **不要**改回 Telegram 搜索：实测刚发的帖子搜不到链接里的作品号，查重落空、发了重复的（已删掉）。
 - 发一个视频文件 → 机器人问一句，点「📤 转到视频频道」才 `copyMessage` 过去（原样复制，不经流式服务，一定能成）。

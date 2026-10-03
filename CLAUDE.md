@@ -83,7 +83,8 @@
   `langhua1998/douyin-proxy` 上（免费账号新建 Docker Space 要 PRO）。**线上还没切**：当前线上仍是拆分之前合并在 `xiaoju-music`
   Worker 里的那一份，切换要新机器人 token、新 Worker、重设数据，步骤见 `xiaoju-video/README.md` 的「第一次上线」；
   云电脑每 10 分钟从 `main` 拉脚本，路径已经从 `xiaoju-music/cloud/` 改成 `xiaoju-video/cloud/`，所以**拆分的改动在新 Worker 能用之前不要推到 `main`**。
-  改完先跑 `node xiaoju-video/test.mjs` 和 `streamer/` 里的 `pytest`。
+  改完先跑 `node xiaoju-video/test.mjs` 和 `streamer/` 里的 `pytest`。整体架构、接口、密钥放在哪（只写名字）、部署和排障手册见
+  `xiaoju-video/架构与技术支持.md`。
 - **`private-cloud/`**：「Telegram Private Cloud Drive」私有云盘——网页上传文件，后台 Worker 存进 Telegram 私有频道，
   数据库（PostgreSQL / 开发用 SQLite）只存元数据和「频道 + 消息号」。FastAPI 后端（`backend/`，含上传 Worker
   `backend/workers/upload_worker.py`）+ Next.js 静态导出前端（`frontend/`），`docker compose` 部署（API + Worker + PostgreSQL，
