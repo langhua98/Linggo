@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>小橘视频</title>
+<style>
+  :root {
+    --bg: #000;
+    --fg: #fff;
+    --dim: rgba(255, 255, 255, .72);
+    --accent: #ff9a3c;
+    --shade: linear-gradient(to top, rgba(0, 0, 0, .7), rgba(0, 0, 0, 0));
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif; overflow: hidden; }
+  #feed { height: 100dvh; overflow-y: scroll; scroll-snap-type: y mandatory; overscroll-behavior: contain; scrollbar-width: none; }
+  #feed::-webkit-scrollbar { display: none; }
+  .slide { position: relative; height: 100dvh; scroll-snap-align: start; scroll-snap-stop: always; display: flex;
+    align-items: center; justify-content: center; background: #000 center / contain no-repeat; }
+  .slide video { width: 100%; height: 100%; object-fit: contain; background: transparent; }
+  .info { position: absolute; left: 0; right: 0; bottom: 0; padding: 48px 16px calc(20px + env(safe-area-inset-bottom));
+    background: var(--shade); pointer-events: none; }
+  .info p { margin: 0; max-height: 7.5em; overflow: hidden; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+  .info .date { font-size: 12px; color: rgba(255, 255, 255, .5); margin-top: 4px; }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, .15); }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .note { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 10px 16px; border-radius: 10px;
+    background: rgba(0, 0, 0, .6); font-size: 14px; text-align: center; max-width: 80%; pointer-events: none; display: none; }
+  .note.on { display: block; }
+  header { position: fixed; top: 0; left: 0; right: 0; z-index: 2; padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+    display: flex; align-items: center; justify-content: space-between; pointer-events: none;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, .45), rgba(0, 0, 0, 0)); }
+  header b { font-size: 17px; letter-spacing: .5px; }
+  header b span { color: var(--accent); }
+  header button { pointer-events: auto; border: 0; border-radius: 16px; padding: 6px 12px; font: inherit; font-size: 13px;
+    color: var(--fg); background: rgba(255, 255, 255, .18); }
+  #empty { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px;
+    text-align: center; color: var(--dim); }
+</style>
+</head>
+<body>
+<header><b><span>小橘</span>视频</b><button id="sound" type="button">🔇 点开声音</button></header>
+<main id="feed" aria-label="视频列表"></main>
+<div id="empty">加载中…</div>
+<script>
+(() => {
+  const feed = document.getElementById('feed');
+  const empty = document.getElementById('empty');
+  const soundBtn = document.getElementById('sound');
+  // 浏览器只让静音的视频自动播放；点一下才能开声音，开了以后之后的都带声音
+  let muted = true;
+  let videos = [];
+  let current = -1;
+  const KEEP = 1; // 当前这条前后各留几条的视频地址，其余的卸掉省流量
+
+  function fmtDate(sec) {
+    if (!sec) return '';
+    const d = new Date(sec * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function build() {
+    feed.textContent = '';
+    videos.forEach((v, i) => {
+      const s = document.createElement('section');
+      s.className = 'slide';
+      s.dataset.i = i;
+      s.style.backgroundImage = `url(/vp/${v.id})`;
+      const video = document.createElement('video');
+      video.playsInline = true;
+      video.loop = true;
+      video.muted = muted;
+      video.preload = 'none';
+      video.setAttribute('webkit-playsinline', '');
+      s.appendChild(video);
+      const info = document.createElement('div');
+      info.className = 'info';
+      const p = document.createElement('p');
+      p.textContent = v.caption || '';
+      const date = document.createElement('div');
+      date.className = 'date';
+      date.textContent = fmtDate(v.date);
+      info.append(p, date);
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      bar.appendChild(document.createElement('i'));
+      const note = document.createElement('div');
+      note.className = 'note';
+      s.append(info, bar, note);
+      video.addEventListener('timeupdate', () => {
+        if (video.duration) bar.firstChild.style.width = (video.currentTime / video.duration * 100) + '%';
+      });
+      video.addEventListener('playing', () => { video.dataset.tries = '0'; note.classList.remove('on'); });
+      video.addEventListener('error', () => retry(i));
+      s.addEventListener('click', () => {
+        if (muted) return setMuted(false);
+        if (video.paused) video.play().catch(() => {}); else video.pause();
+      });
+      feed.appendChild(s);
+    });
+  }
+
+  // 大视频走流式服务：它在休眠时 Worker 回 503，过一会儿再试
+  function retry(i) {
+    const s = feed.children[i];
+    if (!s || i !== current) return;
+    const video = s.querySelector('video');
+    const note = s.querySelector('.note');
+    const tries = Number(video.dataset.tries || 0) + 1;
+    video.dataset.tries = tries;
+    if (tries > 12) {
+      note.textContent = '这个视频暂时放不了，上滑看下一个';
+      note.classList.add('on');
+      return;
+    }
+    note.textContent = '视频服务正在唤醒，稍等…';
+    note.classList.add('on');
+    setTimeout(() => {
+      if (i !== current) return;
+      video.src = `/vf/${videos[i].id}?r=${tries}`;
+      video.play().catch(() => {});
+    }, 10000);
+  }
+
+  function setMuted(m) {
+    muted = m;
+    soundBtn.textContent = m ? '🔇 点开声音' : '🔊 声音已开';
+    for (const v of feed.querySelectorAll('video')) v.muted = m;
+    const s = feed.children[current];
+    if (s) s.querySelector('video').play().catch(() => {});
+  }
+  soundBtn.addEventListener('click', () => setMuted(!muted));
+
+  function activate(i) {
+    if (i === current) return;
+    current = i;
+    [...feed.children].forEach((s, j) => {
+      const video = s.querySelector('video');
+      if (Math.abs(j - i) <= KEEP) {
+        if (!video.getAttribute('src')) video.src = `/vf/${videos[j].id}`;
+        video.preload = j === i ? 'auto' : 'metadata';
+      } else if (video.getAttribute('src')) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+      if (j === i) {
+        video.muted = muted;
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
+    });
+    try { history.replaceState(null, '', `#${videos[i].id}`); } catch {}
+  }
+
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) if (e.isIntersecting && e.intersectionRatio > 0.6) activate(Number(e.target.dataset.i));
+  }, { root: feed, threshold: [0.6] });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const next = Math.max(0, Math.min(videos.length - 1, current + (e.key === 'ArrowDown' ? 1 : -1)));
+      feed.children[next].scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === ' ') {
+      e.preventDefault();
+      feed.children[current] && feed.children[current].click();
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    const s = feed.children[current];
+    if (s && document.hidden) s.querySelector('video').pause();
+  });
+
+  fetch('/api/videos').then(r => r.json()).then(j => {
+    videos = j.videos || [];
+    if (!videos.length) { empty.textContent = '频道里还没有视频'; return; }
+    empty.remove();
+    build();
+    for (const s of feed.children) io.observe(s);
+    // 链接带 #消息号 就从那条开始
+    const start = videos.findIndex(v => `#${v.id}` === location.hash);
+    if (start > 0) feed.children[start].scrollIntoView();
+  }).catch(() => { empty.textContent = '加载失败，请刷新重试'; });
+})();
+</script>
+</body>
+</html>

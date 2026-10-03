@@ -1,0 +1,12 @@
+{
+  "name": "小橘视频 · 云电脑",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/desktop-lite:1": {}
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": { "label": "网页桌面（扫码登录抖音，密码 vscode）" }
+  },
+  "postCreateCommand": "bash xiaoju-video/cloud/run.sh install"
+}

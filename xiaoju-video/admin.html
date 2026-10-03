@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>小橘视频管理</title>
+<style>
+  :root { --bg: #fafaf7; --fg: #222; --dim: #777; --line: #e5e2da; --card: #fff; --accent: #e8761b; --bad: #c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151413; --fg: #eee; --dim: #999; --line: #333; --card: #1f1d1b; --accent: #ff9a3c; --bad: #ff6b5b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "PingFang SC", "Noto Sans SC", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 16px; }
+  h1 span { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+  .stats div { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+  .stats div.on { border-color: var(--accent); }
+  .stats b { display: block; font-size: 20px; }
+  .stats small { color: var(--dim); }
+  button, input, select { font: inherit; }
+  button { border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button.main { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input { border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 6px 10px; width: 100%; max-width: 320px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .muted { color: var(--dim); }
+  table { width: 100%; border-collapse: collapse; }
+  td { border-top: 1px solid var(--line); padding: 8px 4px; vertical-align: top; word-break: break-word; }
+  td.st { white-space: nowrap; width: 1%; }
+  .err { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>小橘</span>视频 · 管理</h1>
+  <div class="card" id="login">
+    <div class="row"><input id="key" type="password" placeholder="管理密钥" autocomplete="current-password"><button class="main" id="go">进入</button></div>
+    <p class="muted" id="loginMsg"></p>
+  </div>
+  <div id="app" hidden>
+    <div class="card">
+      <div class="stats" id="stats"></div>
+      <p class="muted" id="meta"></p>
+      <div class="row">
+        <button id="dispatch">把排队的交给流式服务</button>
+        <button id="retry">失败的重新排队</button>
+        <button id="refresh">刷新</button>
+      </div>
+    </div>
+    <div class="card">
+      <table><tbody id="items"></tbody></table>
+    </div>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const NAMES = { videos: '视频池', review: '待审核', queued: '排队', sending: '在转', posted: '已转', failed: '失败', rejected: '不转' };
+  let key = '';
+  let filter = 'review';
+  try { key = sessionStorage.getItem('xv_admin') || ''; } catch {}
+
+  async function api(path, body) {
+    const res = await fetch('/admin/api/' + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 403) throw new Error('forbidden');
+    return res.json();
+  }
+
+  function when(ms) { return ms ? new Date(ms).toLocaleString() : '—'; }
+
+  async function load() {
+    const s = await api('state?status=' + encodeURIComponent(filter));
+    $('login').hidden = true;
+    $('app').hidden = false;
+    const stats = $('stats');
+    stats.textContent = '';
+    for (const k of Object.keys(NAMES)) {
+      const d = document.createElement('div');
+      if (k === filter) d.className = 'on';
+      const b = document.createElement('b');
+      b.textContent = s.counts[k] || 0;
+      const sm = document.createElement('small');
+      sm.textContent = NAMES[k];
+      d.append(b, sm);
+      if (k !== 'videos') d.onclick = () => { filter = k; load(); };
+      stats.appendChild(d);
+    }
+    const p = s.progress;
+    $('meta').textContent = `流式服务：${s.streamer ? '上次报到 ' + when(s.streamerUp) : '没配置'}` +
+      (p ? ` · 云电脑：${p.stage} ${p.done}/${p.total} ${p.note || ''}（${when(p.at)}）` : '');
+    const tb = $('items');
+    tb.textContent = '';
+    if (!s.items.length) {
+      const tr = tb.insertRow();
+      tr.insertCell().textContent = '没有「' + NAMES[filter] + '」的作品';
+    }
+    for (const it of s.items) {
+      const tr = tb.insertRow();
+      const st = tr.insertCell();
+      st.className = 'st';
+      st.textContent = NAMES[it.status] || it.status;
+      const c = tr.insertCell();
+      const a = document.createElement('a');
+      a.href = it.url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = (it.desc || it.aweme).slice(0, 120);
+      c.appendChild(a);
+      const sub = document.createElement('div');
+      sub.className = 'muted';
+      sub.textContent = `${it.type === 'images' ? '图文' : '视频'} · ${it.src === 'cloud' ? '云电脑' : '链接'} · ${when(it.updated)}` + (it.msg ? ` · 消息 ${it.msg}` : '');
+      c.appendChild(sub);
+      if (it.error) {
+        const e = document.createElement('div');
+        e.className = 'err';
+        e.textContent = it.error;
+        c.appendChild(e);
+      }
+      const act = tr.insertCell();
+      act.className = 'st';
+      if (it.status === 'review') {
+        const ok = document.createElement('button');
+        ok.textContent = '通过';
+        ok.onclick = () => api('review', { ids: [it.aweme], to: 'queued' }).then(load);
+        const no = document.createElement('button');
+        no.textContent = '不转';
+        no.onclick = () => api('review', { ids: [it.aweme], to: 'rejected' }).then(load);
+        act.append(ok, ' ', no);
+      }
+      if (it.status === 'posted' && it.msg) {
+        const del = document.createElement('button');
+        del.textContent = '移出视频池';
+        del.onclick = () => confirm('从网页的视频池里移除（频道里的帖子不动）？') && api('video-delete', { id: it.msg }).then(load);
+        act.append(del);
+      }
+    }
+  }
+
+  function start() {
+    load().catch(e => {
+      $('login').hidden = false;
+      $('app').hidden = true;
+      $('loginMsg').textContent = e.message === 'forbidden' ? '密钥不对' : '加载失败：' + e.message;
+    });
+  }
+
+  $('go').onclick = () => {
+    key = $('key').value.trim();
+    try { sessionStorage.setItem('xv_admin', key); } catch {}
+    start();
+  };
+  $('key').onkeydown = e => { if (e.key === 'Enter') $('go').click(); };
+  $('refresh').onclick = start;
+  $('dispatch').onclick = () => api('dispatch', {}).then(r => { alert(`交出去 ${r.n} 条`); start(); });
+  $('retry').onclick = () => api('retry-failed', {}).then(r => { alert(`${r.n} 条重新排队`); start(); });
+  if (key) start();
+})();
+</script>
+</body>
+</html>

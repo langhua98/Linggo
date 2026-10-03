@@ -1,0 +1,436 @@
+// 本地测试：Node 自带的 SQLite 模拟 Durable Object，再模拟两个机器人的 Telegram 接口和流式服务，逐条验证 worker.js
+import assert from 'node:assert/strict';
+import { register } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
+
+register('./test/hooks.mjs', import.meta.url);
+const { default: worker, Library, parseRange, normalizeItem, douyinLinks } = await import('./worker.js');
+
+const BOT = '111:VIDEO-BOT';
+const VERIFY = '222:VERIFY-BOT';
+const HOOK = 'hook-secret';
+const ADMIN = 'admin-key';
+const SKEY = 'streamer-key';
+const STREAMER = 'https://streamer.example';
+const CHANNEL = -1004000000001;
+const OWNER = 777, STRANGER = 555;
+const MB = 1024 * 1024;
+const ORIGIN = 'https://xiaoju-video.example';
+
+// ── 模拟 Durable Object ──
+function makeSql(db = new DatabaseSync(':memory:')) {
+  return { exec: (query, ...params) => { const rows = db.prepare(query).all(...params).map(r => ({ ...r })); return { toArray: () => rows }; } };
+}
+async function makeLibrary(env) {
+  let ready;
+  const ctx = { storage: { sql: makeSql() }, blockConcurrencyWhile(fn) { ready = fn(); return ready; } };
+  const lib = new Library(ctx, env);
+  await ready;
+  return new Proxy({}, {
+    get: (_, name) => name === 'then' ? undefined : async (...args) => structuredClone(await lib[name](...structuredClone(args))),
+  });
+}
+
+// ── 模拟 Telegram 和流式服务 ──
+const files = new Map(); // file_id -> 字节
+const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
+const sent = { bot: [], verify: [] };
+const toStreamer = [];
+const state = { streamer: 'ok', resolve: {} };
+const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed) & 255; return b; };
+
+function serve(bytes, range) {
+  if (!range) return new Response(bytes, { headers: { 'Content-Length': String(bytes.length) } });
+  const [a, b] = range.replace('bytes=', '').split('-');
+  const start = Number(a), end = b ? Number(b) : bytes.length - 1;
+  return new Response(bytes.slice(start, end + 1), {
+    status: 206, headers: { 'Content-Length': String(end - start + 1), 'Content-Range': `bytes ${start}-${end}/${bytes.length}` },
+  });
+}
+
+globalThis.fetch = async (input, init = {}) => {
+  const url = String(input);
+  const headers = new Headers(init.headers || {});
+  const body = init.body ? JSON.parse(init.body) : null;
+  let m;
+  if ((m = url.match(/^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)(\?.*)?$/))) {
+    const [, token, method, qs] = m;
+    const who = token === BOT ? 'bot' : token === VERIFY ? 'verify' : null;
+    assert.ok(who, 'unknown bot token');
+    if (method === 'getChatAdministrators') {
+      assert.equal(who, 'bot');
+      return Response.json({ ok: true, result: [{ status: 'administrator', user: { id: 1 } }, { status: 'creator', user: { id: OWNER } }] });
+    }
+    if (method === 'getFile') {
+      const id = new URLSearchParams(qs).get('file_id');
+      return Response.json(files.has(id) ? { ok: true, result: { file_path: 'videos/' + id } } : { ok: false });
+    }
+    sent[who].push({ method, ...body });
+    return Response.json({ ok: true, result: { message_id: 1 } });
+  }
+  if ((m = url.match(/^https:\/\/api\.telegram\.org\/file\/bot[^/]+\/videos\/(\w+)$/))) {
+    return files.has(m[1]) ? serve(files.get(m[1]), headers.get('Range')) : new Response('nope', { status: 404 });
+  }
+  if (url.startsWith(STREAMER)) {
+    assert.equal(headers.get('X-Key'), SKEY);
+    if (state.streamer === 'down') throw new TypeError('fetch failed');
+    if (state.streamer === 'html') return new Response('<html>starting</html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+    const path = url.slice(STREAMER.length);
+    if ((m = path.match(/^\/stream\/(\d+)$/))) {
+      const b = bigFiles.get(Number(m[1]));
+      return b ? serve(b, headers.get('Range')) : Response.json({ detail: 'gone' }, { status: 404 });
+    }
+    if ((m = path.match(/^\/thumb\/(\d+)$/))) return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 1, 2, 3]));
+    if (path === '/douyin/resolve') {
+      const item = state.resolve[body.url];
+      return item ? Response.json({ item }) : Response.json({ error: '认不出这个链接' }, { status: 400 });
+    }
+    if (path === '/douyin/post') {
+      toStreamer.push(...body.items);
+      return Response.json({ ok: true });
+    }
+  }
+  throw new Error('unexpected fetch ' + url);
+};
+
+const env = {
+  TG_BOT_TOKEN: BOT, VERIFY_BOT_TOKEN: VERIFY, TG_WEBHOOK_SECRET: HOOK, ADMIN_KEY: ADMIN, STREAMER_KEY: SKEY,
+  STREAMER_URL: STREAMER + '/', VIDEO_CHANNEL_ID: String(CHANNEL),
+};
+const L = await makeLibrary(env);
+env.LIB = { idFromName: () => 'id', get: () => L };
+
+const call = (path, init = {}) => worker.fetch(new Request(ORIGIN + path, init), env, { waitUntil() {} });
+const post = (path, body, headers = {}) => call(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+const hook = (update, verify = false) => post(verify ? '/verify-webhook' : '/tg-webhook', update, { 'X-Telegram-Bot-Api-Secret-Token': HOOK });
+const dm = (from, text) => hook({ update_id: 1, message: { message_id: 5, chat: { id: from, type: 'private' }, from: { id: from }, text } });
+const press = (from, data) => hook({ update_id: 2, callback_query: { id: 'cb', from: { id: from }, data, message: { message_id: 9, chat: { id: from } } } }, true);
+const channelPost = (msg, edited = false) => hook({ update_id: 3, [edited ? 'edited_channel_post' : 'channel_post']: { chat: { id: CHANNEL }, date: 1700000000, ...msg } });
+const last = who => sent[who][sent[who].length - 1];
+const reset = () => { sent.bot.length = 0; sent.verify.length = 0; toStreamer.length = 0; };
+
+let n = 0;
+async function test(name, fn) {
+  reset();
+  try {
+    await fn();
+    n++;
+  } catch (e) {
+    console.error('✗ ' + name);
+    throw e;
+  }
+}
+
+// ── 纯函数 ──
+await test('parseRange', () => {
+  assert.deepEqual(parseRange(null, 100), { start: 0, end: 99, partial: false });
+  assert.deepEqual(parseRange('bytes=10-19', 100), { start: 10, end: 19, partial: true });
+  assert.deepEqual(parseRange('bytes=90-', 100), { start: 90, end: 99, partial: true });
+  assert.deepEqual(parseRange('bytes=-5', 100), { start: 95, end: 99, partial: true });
+  assert.equal(parseRange('bytes=100-', 100), null);
+  assert.deepEqual(parseRange('bytes=0-5,10-20', 100), { start: 0, end: 99, partial: false });
+});
+
+await test('douyinLinks 从分享文字里认链接', () => {
+  const t = '7.43 复制打开抖音，看看【小橘的作品】今天的猫 # 猫 https://v.douyin.com/iAbC123/ dCu:/ 11/02 W@M.Ji';
+  assert.deepEqual(douyinLinks(t), ['https://v.douyin.com/iAbC123/']);
+  assert.deepEqual(douyinLinks('https://www.douyin.com/video/7300000000000000001?x=1，好看'), ['https://www.douyin.com/video/7300000000000000001?x=1']);
+  assert.deepEqual(douyinLinks('https://example.com/video/1'), []);
+});
+
+await test('normalizeItem 只留认得的字段', () => {
+  assert.equal(normalizeItem({ aweme: 'abc', type: 'video' }), null);
+  assert.equal(normalizeItem({ aweme: '7300000000000000001', type: 'live' }), null);
+  const v = normalizeItem({ aweme: '7300000000000000001', type: 'video', desc: 'x', video_url: 'http://insecure', evil: 1 });
+  assert.equal(v.video_url, undefined);
+  assert.equal(v.evil, undefined);
+  assert.equal(v.url, 'https://www.douyin.com/video/7300000000000000001');
+  const i = normalizeItem({ aweme: '7300000000000000002', type: 'images', images: ['https://a/1.jpg', 'ftp://x', 3] });
+  assert.deepEqual(i.images, ['https://a/1.jpg']);
+});
+
+// ── 鉴权 ──
+await test('webhook 密钥不对 403；内部接口不带凭证 403', async () => {
+  assert.equal((await post('/tg-webhook', {}, { 'X-Telegram-Bot-Api-Secret-Token': 'x' })).status, 403);
+  assert.equal((await post('/verify-webhook', {})).status, 403);
+  assert.equal((await post('/streamer-up', {})).status, 403);
+  assert.equal((await post('/dy-import', { items: [] })).status, 403); // 还没生成云电脑令牌
+  assert.equal((await call('/admin/api/state')).status, 403);
+  assert.equal((await call('/admin/api/state', { headers: { Authorization: 'Bearer nope' } })).status, 403);
+});
+
+// ── 频道新帖登记进视频池 ──
+const small = bytesOf(3 * MB, 1);
+const big = bytesOf(25 * MB, 2);
+files.set('VSMALL', small);
+files.set('THUMB1', Uint8Array.from([0xff, 0xd8, 0xff, 9, 9]));
+bigFiles.set(11, big);
+
+await test('频道视频帖登记；别的频道、非视频帖不登记', async () => {
+  await channelPost({ message_id: 10, video: { file_id: 'VSMALL', file_size: small.length, duration: 12, width: 720, height: 1280, mime_type: 'video/mp4', thumbnail: { file_id: 'THUMB1' } }, caption: '小猫 #dy7300000000000000009' });
+  await channelPost({ message_id: 11, document: { file_id: 'VBIG', file_size: big.length, mime_type: 'video/mp4' }, caption: '大视频' });
+  await hook({ channel_post: { chat: { id: -100999 }, message_id: 12, video: { file_id: 'X', file_size: 1 } } });
+  await channelPost({ message_id: 13, text: '纯文字' });
+  const j = await (await call('/api/videos')).json();
+  assert.deepEqual(j.videos.map(v => v.id), [11, 10]);
+  assert.equal(j.videos[1].caption, '小猫'); // 去掉 #dy 标签
+});
+
+await test('小视频走 Bot API，支持 Range', async () => {
+  let r = await call('/vf/10');
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('Content-Length'), String(small.length));
+  assert.deepEqual(new Uint8Array(await r.arrayBuffer()), small);
+  r = await call('/vf/10', { headers: { Range: 'bytes=100-199' } });
+  assert.equal(r.status, 206);
+  assert.equal(r.headers.get('Content-Range'), `bytes 100-199/${small.length}`);
+  assert.deepEqual(new Uint8Array(await r.arrayBuffer()), small.slice(100, 200));
+  r = await call('/vf/10', { headers: { Range: `bytes=${small.length}-` } });
+  assert.equal(r.status, 416);
+  r = await call('/vf/10', { method: 'HEAD' });
+  assert.equal(r.headers.get('Content-Length'), String(small.length));
+  assert.equal((await call('/vf/99')).status, 404);
+});
+
+await test('大视频走流式服务；休眠时 503 + Retry-After', async () => {
+  let r = await call('/vf/11', { headers: { Range: 'bytes=0-1023' } });
+  assert.equal(r.status, 206);
+  assert.deepEqual(new Uint8Array(await r.arrayBuffer()), big.slice(0, 1024));
+  r = await call('/vf/11.mp4', { headers: { Range: `bytes=${big.length - 10}-` } });
+  assert.deepEqual(new Uint8Array(await r.arrayBuffer()), big.slice(big.length - 10));
+  state.streamer = 'html';
+  r = await call('/vf/11', { headers: { Range: 'bytes=0-1' } });
+  assert.equal(r.status, 503);
+  assert.equal(r.headers.get('Retry-After'), '15');
+  state.streamer = 'down';
+  assert.equal((await call('/vf/11')).status, 503);
+  state.streamer = 'ok';
+});
+
+await test('封面：有缩略图走 Bot API，没有问流式服务；取一次就存下', async () => {
+  let r = await call('/vp/10');
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('Content-Type'), 'image/jpeg');
+  assert.deepEqual(new Uint8Array(await r.arrayBuffer()), Uint8Array.from([0xff, 0xd8, 0xff, 9, 9]));
+  files.delete('THUMB1');
+  r = await call('/vp/10'); // 从数据库出
+  assert.equal(r.status, 200);
+  r = await call('/vp/11');
+  assert.deepEqual(new Uint8Array(await r.arrayBuffer()), Uint8Array.from([0xff, 0xd8, 0xff, 1, 2, 3]));
+});
+
+await test('编辑后不含视频的帖子移出视频池', async () => {
+  await channelPost({ message_id: 11, text: '改成文字了' }, true);
+  const j = await (await call('/api/videos')).json();
+  assert.deepEqual(j.videos.map(v => v.id), [10]);
+});
+
+// ── 小橘视频机器人：私聊 ──
+const AW1 = '7300000000000000001', AW2 = '7300000000000000002';
+state.resolve['https://v.douyin.com/aaa/'] = { aweme: AW1, type: 'video', desc: '我的第一条', author: '小橘', video_url: 'https://cdn.example/1.mp4' };
+
+await test('陌生人私聊只给网页地址', async () => {
+  await dm(STRANGER, 'https://v.douyin.com/aaa/');
+  assert.equal(last('bot').chat_id, STRANGER);
+  assert.match(last('bot').text, /\/video/);
+  assert.equal(sent.verify.length, 0);
+});
+
+await test('频道主发分享链接 → 交审核机器人；重复的不再收', async () => {
+  await dm(OWNER, '复制打开抖音 https://v.douyin.com/aaa/ 看看 https://v.douyin.com/bad/');
+  assert.equal(sent.verify.length, 1);
+  assert.equal(sent.verify[0].chat_id, OWNER);
+  assert.match(sent.verify[0].text, /我的第一条/);
+  assert.deepEqual(sent.verify[0].reply_markup.inline_keyboard[0].map(b => b.callback_data), [`ok:${AW1}`, `no:${AW1}`]);
+  assert.match(last('bot').text, /1 条已交审核/);
+  assert.match(last('bot').text, /1 条认不出：认不出这个链接/);
+  reset();
+  await dm(OWNER, 'https://v.douyin.com/aaa/');
+  assert.equal(sent.verify.length, 0);
+  assert.match(last('bot').text, /以前已经收过/);
+});
+
+await test('流式服务没醒时，链接如实告诉频道主', async () => {
+  state.streamer = 'down';
+  await dm(OWNER, 'https://v.douyin.com/zzz/');
+  assert.match(last('bot').text, /流式服务没响应/);
+  state.streamer = 'ok';
+});
+
+await test('只有频道主能按审核按钮', async () => {
+  await press(STRANGER, `ok:${AW1}`);
+  assert.equal(last('verify').method, 'answerCallbackQuery');
+  assert.match(last('verify').text, /只有频道主/);
+  assert.equal((await L.getItem(AW1)).status, 'review');
+});
+
+await test('通过 → 排队并立刻交给流式服务（在转）', async () => {
+  await press(OWNER, `ok:${AW1}`);
+  assert.equal(toStreamer.length, 1);
+  assert.equal(toStreamer[0].aweme, AW1);
+  assert.equal(toStreamer[0].video_url, 'https://cdn.example/1.mp4');
+  assert.equal((await L.getItem(AW1)).status, 'sending');
+  assert.ok(sent.verify.some(m => m.method === 'editMessageText' && /已通过/.test(m.text)));
+  reset();
+  await press(OWNER, `ok:${AW1}`); // 再按一次：已经审过
+  assert.equal(toStreamer.length, 0);
+  assert.match(sent.verify.find(m => m.method === 'answerCallbackQuery').text, /已经审过/);
+});
+
+await test('流式服务交不进去：放回队列，定时任务再交', async () => {
+  state.resolve['https://v.douyin.com/bbb/'] = { aweme: AW2, type: 'images', desc: '图文', images: ['https://cdn.example/a.jpg'] };
+  await dm(OWNER, 'https://v.douyin.com/bbb/');
+  state.streamer = 'down';
+  await press(OWNER, `ok:${AW2}`);
+  assert.equal((await L.getItem(AW2)).status, 'queued');
+  state.streamer = 'ok';
+  await worker.scheduled({}, env, { waitUntil: p => p });
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal((await L.getItem(AW2)).status, 'sending');
+  assert.deepEqual(toStreamer.map(i => i.aweme), [AW2]);
+});
+
+await test('流式服务报结果：成功记已转；频道帖带 #dy 也能记已转', async () => {
+  const H = { 'X-Key': SKEY };
+  let r = await post('/streamer-done', { aweme: AW1, ok: true, message_id: 20 }, H);
+  assert.equal((await r.json()).status, 'posted');
+  assert.equal((await L.getItem(AW1)).msg, 20);
+  // 图文发成相册：频道帖带 #dy，没回报也记成已转
+  await channelPost({ message_id: 21, photo: [{ file_id: 'P' }], caption: `图文 #dy${AW2}` });
+  assert.equal((await L.getItem(AW2)).status, 'posted');
+  assert.equal((await post('/streamer-done', { aweme: 'x', ok: true }, H)).status, 400);
+});
+
+await test('失败重试，满 3 次记失败并告诉频道主；「重试失败」重新排队', async () => {
+  const AW = '7300000000000000003';
+  await L.addItems([normalizeItem({ aweme: AW, type: 'video' })], 'link');
+  await L.review([AW], 'queued');
+  const H = { 'X-Key': SKEY };
+  for (let i = 0; i < 2; i++) {
+    const r = await post('/streamer-done', { aweme: AW, ok: false, error: '下载 403' }, H);
+    assert.equal((await r.json()).status, 'queued');
+  }
+  const r = await post('/streamer-done', { aweme: AW, ok: false, error: '下载 403', idle: true }, H);
+  assert.equal((await r.json()).status, 'failed');
+  assert.match(last('bot').text, /下载 403/);
+  reset();
+  await dm(OWNER, '重试失败');
+  assert.deepEqual(toStreamer.map(i => i.aweme), [AW]);
+  assert.match(sent.bot[0].text, /1 条失败的作品重新排队/);
+});
+
+await test('流式服务重启报到：在转的全部重交', async () => {
+  const before = (await L.counts()).sending;
+  assert.ok(before >= 1);
+  const r = await post('/streamer-up', {}, { 'X-Key': SKEY });
+  assert.equal(r.status, 200);
+  assert.equal(toStreamer.length, before);
+  assert.ok(Number(await L.getConfig('streamerUp')) > 0);
+});
+
+await test('交出去 30 分钟没回音：重排队；超过次数记失败', async () => {
+  const AW = '7300000000000000004';
+  await L.addItems([normalizeItem({ aweme: AW, type: 'video' })], 'link');
+  await L.review([AW], 'queued');
+  await L.claimQueued(50, Date.now() - 31 * 60 * 1000);
+  const failed = await L.expireSending(Date.now() - 30 * 60 * 1000, 3);
+  assert.deepEqual(failed, []);
+  assert.equal((await L.getItem(AW)).attempts, 1);
+});
+
+// ── 云电脑 ──
+let token;
+await test('「云电脑」生成令牌，换新的旧的作废', async () => {
+  await dm(OWNER, '云电脑');
+  token = /setup \S+ ([0-9a-f]{48})/.exec(last('bot').text)[1];
+  assert.match(last('bot').text, new RegExp(`setup ${ORIGIN} `));
+  await dm(OWNER, '云电脑');
+  const t2 = /setup \S+ ([0-9a-f]{48})/.exec(last('bot').text)[1];
+  assert.notEqual(t2, token);
+  assert.equal((await post('/dy-known', { ids: [] }, { 'X-Token': token })).status, 403);
+  token = t2;
+});
+
+const C1 = '7300000000000000101', C2 = '7300000000000000102', C3 = '7300000000000000103';
+await test('云电脑：查已知、导入、进度', async () => {
+  const H = { 'X-Token': token };
+  let r = await post('/dy-known', { ids: [AW1, C1, 'junk'] }, H);
+  assert.deepEqual((await r.json()).known, [AW1]);
+  r = await post('/dy-import', { items: [
+    { aweme: C1, type: 'video', desc: 'c1', create_time: 3, video_url: 'https://cdn/c1.mp4' },
+    { aweme: C2, type: 'video', desc: 'c2', create_time: 1, video_url: 'https://cdn/c2.mp4' },
+    { aweme: C3, type: 'images', desc: 'c3', create_time: 2, images: ['https://cdn/c3.jpg'] },
+    { aweme: AW1, type: 'video' },
+    { aweme: 'bad' },
+  ] }, H);
+  assert.deepEqual(await r.json(), { ok: true, added: 3, skipped: 1, invalid: 1 });
+  assert.equal(sent.verify.length, 1);
+  assert.match(sent.verify[0].text, /新同步来 3 条/);
+  r = await post('/dy-progress', { stage: '抓作品', done: 30, total: 120 }, H);
+  assert.equal(r.status, 200);
+  reset();
+  await dm(OWNER, '进度');
+  assert.match(last('bot').text, /待审核 3/);
+  assert.match(last('bot').text, /云电脑：抓作品 30\/120/);
+  assert.equal((await post('/dy-import', { items: new Array(201).fill({}) }, H)).status, 413);
+});
+
+await test('逐条审核、全部通过：按发布时间从旧到新交出去', async () => {
+  await press(OWNER, 'cloud-each');
+  assert.equal(sent.verify.filter(m => m.method === 'sendMessage').length, 3);
+  await press(OWNER, `no:${C3}`);
+  reset();
+  await press(OWNER, 'cloud-ok');
+  assert.deepEqual(toStreamer.map(i => i.aweme).filter(a => a.startsWith('73000000000000001')), [C2, C1]);
+  assert.equal((await L.getItem(C3)).status, 'rejected');
+  assert.ok(sent.verify.some(m => m.method === 'editMessageText' && /全部通过/.test(m.text)));
+});
+
+await test('失败过的作品，云电脑再送来会用新地址重新待审核', async () => {
+  const AW = '7300000000000000005';
+  await L.addItems([normalizeItem({ aweme: AW, type: 'video', video_url: 'https://cdn.example/old.mp4' })], 'cloud');
+  await L.review([AW], 'queued');
+  for (let i = 0; i < 3; i++) await L.itemDone(AW, false, 0, 'x', 3);
+  assert.equal((await L.getItem(AW)).status, 'failed');
+  const r = await post('/dy-known', { ids: [AW] }, { 'X-Token': token });
+  assert.deepEqual((await r.json()).known, []);
+  await post('/dy-import', { items: [{ aweme: AW, type: 'video', video_url: 'https://cdn.example/new.mp4' }] }, { 'X-Token': token });
+  const it = await L.getItem(AW);
+  assert.equal(it.status, 'review');
+  assert.equal(it.video_url, 'https://cdn.example/new.mp4');
+  assert.equal(it.attempts, 0);
+});
+
+// ── 审核机器人私聊、管理接口 ──
+await test('审核机器人私聊：告诉频道主有几条待审核', async () => {
+  await hook({ message: { chat: { id: OWNER, type: 'private' }, from: { id: OWNER }, text: '/start' } }, true);
+  assert.match(last('verify').text, /1 条作品等你审核/);
+  await hook({ message: { chat: { id: STRANGER, type: 'private' }, from: { id: STRANGER }, text: '/start' } }, true);
+  assert.match(last('verify').text, /只有频道主/);
+});
+
+await test('管理接口', async () => {
+  const A = { Authorization: 'Bearer ' + ADMIN };
+  let r = await call('/admin/api/state?status=review', { headers: A });
+  const s = await r.json();
+  assert.equal(s.items.length, 1);
+  assert.equal(s.counts.videos, 1);
+  r = await post('/admin/api/review', { ids: [s.items[0].aweme], to: 'rejected' }, A);
+  assert.equal((await r.json()).n, 1);
+  r = await post('/admin/api/video-delete', { id: 10 }, A);
+  assert.equal(r.status, 200);
+  assert.deepEqual((await (await call('/api/videos')).json()).videos, []);
+  assert.equal((await post('/admin/api/review', { ids: [], to: 'x' }, A)).status, 400);
+});
+
+await test('网页', async () => {
+  for (const p of ['/', '/video', '/admin']) {
+    const r = await call(p);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('Content-Type'), /text\/html/);
+  }
+  assert.equal((await call('/nope')).status, 404);
+  assert.equal((await call('/tg-webhook')).status, 405);
+});
+
+console.log(`✓ ${n} 项测试全部通过`);

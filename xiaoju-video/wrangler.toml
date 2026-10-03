@@ -1,0 +1,35 @@
+name = "xiaoju-video"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# video.html / admin.html 以文本模块导入（worker.js 里 import PAGE from './video.html'）
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
+
+[vars]
+# 视频频道「小橘视频」的数字 id（-100 开头）
+VIDEO_CHANNEL_ID = ""
+# 流式服务（streamer/，Hugging Face Space langhua1998/xiaoju-video）
+STREAMER_URL = "https://langhua1998-xiaoju-video.hf.space"
+
+[[durable_objects.bindings]]
+name = "LIB"
+class_name = "Library"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Library"]
+
+# secret 不写在这里（仓库是公开的）：
+#   wrangler secret put TG_BOT_TOKEN        小橘视频机器人
+#   wrangler secret put VERIFY_BOT_TOKEN    审核机器人 @xiaojuverify_bot
+#   wrangler secret put TG_WEBHOOK_SECRET
+#   wrangler secret put ADMIN_KEY
+#   wrangler secret put STREAMER_KEY
+
+# 每 5 分钟：交给流式服务 30 分钟没回音的重交，排队的交出去
+[triggers]
+crons = ["*/5 * * * *"]
