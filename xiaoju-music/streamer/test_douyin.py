@@ -647,18 +647,104 @@ def test_douyin_posted_reads_work_ids_from_captions(monkeypatch):
         async def get_input_entity(self, target):
             return target
 
-        async def iter_messages(self, entity, limit=None):
+        async def iter_messages(self, entity, limit=None, min_id=0):
             for m in [NS(id=5, message='新的\n\n📹 抖音 @丁 · 2026-06-04\nhttps://www.douyin.com/video/7647364906534950114'),
                       NS(id=4, message=None),  # 没有说明的帖子
                       NS(id=3, message='图文 https://www.douyin.com/note/7675967931876579407'),
                       NS(id=2, message='旧的同一条 https://www.douyin.com/video/7647364906534950114')]:
                 yield m
 
+    monkeypatch.setattr(appmod, 'douyin_posted_cache', {})
     monkeypatch.setattr(appmod, 'user_client', Client())
     got = asyncio.run(appmod.douyin_posted(-1004292843233))
     assert got == {'7647364906534950114': 5, '7675967931876579407': 3}
     monkeypatch.setattr(appmod, 'user_client', None)
     assert asyncio.run(appmod.douyin_posted(-1004292843233)) == {}
+
+
+def test_douyin_posted_only_reads_new_posts_the_second_time(monkeypatch):
+    from types import SimpleNamespace as NS
+    posts = [NS(id=2, message='https://www.douyin.com/video/7647364906534950114')]
+    asked = []
+
+    class Client:
+        async def get_input_entity(self, target):
+            return target
+
+        async def iter_messages(self, entity, limit=None, min_id=0):
+            asked.append(min_id)
+            for m in sorted(posts, key=lambda m: -m.id):
+                if m.id > min_id:
+                    yield m
+
+    monkeypatch.setattr(appmod, 'douyin_posted_cache', {})
+    monkeypatch.setattr(appmod, 'user_client', Client())
+    assert asyncio.run(appmod.douyin_posted(-100123456)) == {'7647364906534950114': 2}
+    posts.append(NS(id=7, message='https://www.douyin.com/note/7675967931876579407'))
+    got = asyncio.run(appmod.douyin_posted(-100123456))
+    assert asked == [0, 2] and got == {'7647364906534950114': 2, '7675967931876579407': 7}
+    appmod.douyin_posted_cache[-100123456]['at'] -= appmod.DOUYIN_POSTED_TTL + 1  # 过期了就整个重翻
+    asyncio.run(appmod.douyin_posted(-100123456))
+    assert asked[-1] == 0
+
+
+def test_is_faststart():
+    box = lambda kind, n=8: n.to_bytes(4, 'big') + kind + b'\0' * (n - 8)
+    assert appmod.is_faststart(box(b'ftyp', 16) + box(b'moov', 12) + box(b'mdat', 20))
+    assert not appmod.is_faststart(box(b'ftyp', 16) + box(b'mdat', 20) + box(b'moov', 12))
+    assert not appmod.is_faststart(b'not a video')
+
+
+def test_upload_parallel_sends_every_part_and_small_files_go_to_telethon(monkeypatch, tmp_path):
+    monkeypatch.setattr(appmod, 'UPLOAD_PART', 4)
+    monkeypatch.setattr(appmod, 'UPLOAD_BIG', 8)
+    small, big = tmp_path / 's.mp4', tmp_path / 'b.mp4'
+    small.write_bytes(b'12345678')
+    big.write_bytes(b'abcdefghij')
+    got = {}
+
+    class Client:
+        async def __call__(self, req):
+            got[req.file_part] = (req.bytes, req.file_total_parts)
+            return True
+
+    assert asyncio.run(appmod.upload_parallel(Client(), str(small))) == str(small)
+    f = asyncio.run(appmod.upload_parallel(Client(), str(big)))
+    assert got == {0: (b'abcd', 3), 1: (b'efgh', 3), 2: (b'ij', 3)}
+    assert f.parts == 3 and f.name == 'b.mp4'
+
+
+def test_mirror_downloads_the_next_video_while_posting_this_one():
+    log = []
+
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            return [normalize(aweme(aweme_id=str(n), desc=str(n), create_time=n)) for n in (1, 2, 3)], \
+                {'hidden_newest': False, 'truncated': False}
+
+        async def download(self, item, max_bytes=0):
+            log.append(f'下载{item["id"]}')
+            await asyncio.sleep(0.01)
+            return b'x' * 20000, item['sources'][0]
+
+    async def send_video(data, item, src, text, target):
+        log.append(f'开始发{item["id"]}')
+        await asyncio.sleep(0.05)
+        log.append(f'发完{item["id"]}')
+        return int(item['id'])
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=Web(), send_video=send_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert [r['id'] for r in st['posted']] == ['1', '2', '3']
+    assert log.index('下载2') < log.index('发完1') and log.index('下载3') < log.index('发完2')
 
 
 # ── 图文 ──

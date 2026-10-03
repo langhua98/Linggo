@@ -95,17 +95,8 @@ class DouyinJob:
                     names |= {i['author'] for i in batch if i['author']}
                     st['name'] = '、@'.join(sorted(names))
                     # 同一批里旧的先发（批与批之间按云电脑抓到的顺序：抖音的作品列表是新的在前）
-                    for item in sorted((i for i in batch if i['kind'] in ('video', 'images')), key=lambda i: i['time']):
-                        row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
-                        try:
-                            row['msg'], fresh = await self._post(w, item, target, done)
-                        except (DownloadError, Gone) as e:
-                            row['reason'] = str(e)
-                            st['failed'].append(row)
-                            continue
-                        (st['posted'] if fresh else st['skipped']).append(row)
-                        if fresh:
-                            await asyncio.sleep(self.pause)
+                    await self._post_all(w, sorted((i for i in batch if i['kind'] in ('video', 'images')),
+                                                   key=lambda i: i['time']), target, done)
             st['status'] = 'done'
             await self._tell(notify, mirror_report(st))
         except asyncio.CancelledError:
@@ -136,8 +127,21 @@ class DouyinJob:
     async def _post(self, w, item, target, done):
         """转一条作品到 target 频道：done（频道里已有的 {作品号: 消息号}）里有就跳过 → (帖子的消息号, 是不是新发的)。
         视频发视频，图文发成相册。发了就记进 done，同一次里不会再发"""
+        return await self._send(item, await self._fetch(w, item, done), target, done)
+
+    async def _fetch(self, w, item, done):
+        """下载一条作品：频道里已有的不下载 → None"""
         self._label(item)
         if item['id'] in done:
+            return None
+        if item['kind'] == 'images':
+            return await w.download_images(item)
+        return await w.download(item)
+
+    async def _send(self, item, got, target, done):
+        if got is None and item['id'] not in done:
+            raise DownloadError('同一条前面没转成')
+        if got is None or item['id'] in done:
             if self.retag and item.get('tag'):
                 try:
                     await self.retag(target, done[item['id']], item)
@@ -145,12 +149,52 @@ class DouyinJob:
                     log.exception('retag failed')
             return done[item['id']], False
         if item['kind'] == 'images':
-            images = await w.download_images(item)
-            done[item['id']] = await self.send_images(images, item, caption(item), target)
+            done[item['id']] = await self.send_images(got, item, caption(item), target)
         else:
-            data, src = await w.download(item)
+            data, src = got
             done[item['id']] = await self.send_video(data, item, src, caption(item), target)
         return done[item['id']], True
+
+    async def _post_all(self, w, items, target, done):
+        """按顺序一条条发，但上一条在上传、在等限流间隔的时候，下一条已经在下载了（同一时刻最多一个下载、一个上传）"""
+        st, todo = self.state, list(items)
+        first = {}
+        for n, i in enumerate(todo):
+            first.setdefault(i['id'], n)
+
+        async def again(item):  # 同一次里重复出现的作品（置顶又在正常位置）不再下载，发的时候 done 里已经有它
+            self._label(item)
+
+        def fetch(n):
+            if n >= len(todo):
+                return None
+            item = todo[n]
+            return asyncio.ensure_future(self._fetch(w, item, done) if first[item['id']] == n else again(item))
+
+        task = fetch(0)
+        try:
+            for n, item in enumerate(todo):
+                row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
+                try:
+                    got = await task
+                except (DownloadError, Gone) as e:
+                    task = fetch(n + 1)
+                    row['reason'] = str(e)
+                    st['failed'].append(row)
+                    continue
+                task = fetch(n + 1)
+                try:
+                    row['msg'], fresh = await self._send(item, got, target, done)
+                except (DownloadError, Gone) as e:
+                    row['reason'] = str(e)
+                    st['failed'].append(row)
+                    continue
+                (st['posted'] if fresh else st['skipped']).append(row)
+                if fresh:
+                    await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流（下一条照样在下载）
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
 
     async def _mirror(self, sec_uids, notify, target, quiet=False):
         """采集这几个账号能看到的作品，视频和图文按发布顺序（旧的先）转进频道，已有的跳过。
@@ -177,18 +221,8 @@ class DouyinJob:
                 st['blocked_accounts'] = len(blocked)
                 st['name'] = '、@'.join(names)
                 st['other'] = sum(i['kind'] not in ('video', 'images') for i in items)
-                for item in sorted((i for i in items if i['kind'] in ('video', 'images') and i.get('public', True)),
-                                   key=lambda i: i['time']):
-                    row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
-                    try:
-                        row['msg'], fresh = await self._post(w, item, target, done)
-                    except (DownloadError, Gone) as e:
-                        row['reason'] = str(e)
-                        st['failed'].append(row)
-                        continue
-                    (st['posted'] if fresh else st['skipped']).append(row)
-                    if fresh:
-                        await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流
+                await self._post_all(w, sorted((i for i in items if i['kind'] in ('video', 'images') and i.get('public', True)),
+                                               key=lambda i: i['time']), target, done)
             st['status'] = 'done'
             if not quiet or st['posted'] or st['failed']:
                 await self._tell(notify, mirror_report(st))

@@ -42,8 +42,9 @@ from telethon.errors import (ChatForwardsRestrictedError, FileReferenceExpiredEr
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
+from telethon.tl.functions.upload import SaveBigFilePartRequest
 from telethon.tl.types import (DocumentAttributeAudio, DocumentAttributeVideo, InputMessagesFilterMusic, InputMessagesFilterPhotos,
-                               InputPeerNotifySettings)
+                               InputFileBig, InputPeerNotifySettings)
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -797,6 +798,23 @@ def probe_seconds(path):
         return 0
 
 
+def is_faststart(data):
+    """MP4 的索引（moov）已经在视频数据（mdat）前面：不用再过一遍 ffmpeg 就能边下边播"""
+    pos = 0
+    while pos + 8 <= len(data):
+        size, kind = int.from_bytes(data[pos:pos + 4], 'big'), data[pos + 4:pos + 8]
+        if kind == b'moov':
+            return True
+        if kind == b'mdat':
+            return False
+        if size == 1 and pos + 16 <= len(data):
+            size = int.from_bytes(data[pos + 8:pos + 16], 'big')
+        if size < 8:
+            return False
+        pos += size
+    return False
+
+
 def remux_faststart(src, dst):
     """把索引（moov）挪到文件开头，Telegram 才能边下边播；顺便确认是个完好的视频。不行返回 False"""
     try:
@@ -849,19 +867,56 @@ async def flood_retry(send, tries=3):
             await asyncio.sleep(e.seconds + 1)
 
 
+UPLOAD_PART = 512 * 1024  # Telegram 允许的最大分块
+UPLOAD_BIG = 10 * 1024 * 1024  # 超过这么大 Telegram 要求按「大文件」分块传
+UPLOAD_WORKERS = 8
+
+
+async def upload_parallel(client, path):
+    """大文件同时传几块（Telethon 自己是一块传完再传下一块，每块都要等一个来回），小文件交给 Telethon"""
+    size = os.path.getsize(path)
+    if size <= UPLOAD_BIG:
+        return path
+    file_id, parts = int.from_bytes(os.urandom(8), 'big', signed=True), -(-size // UPLOAD_PART)
+    gate = asyncio.Semaphore(UPLOAD_WORKERS)
+
+    def read(n):
+        with open(path, 'rb') as f:
+            f.seek(n * UPLOAD_PART)
+            return f.read(UPLOAD_PART)
+
+    async def put(n):
+        async with gate:
+            chunk = await asyncio.to_thread(read, n)
+            for _ in range(3):
+                try:
+                    if await client(SaveBigFilePartRequest(file_id, n, parts, chunk)):
+                        return
+                except FloodWaitError as e:
+                    if e.seconds > 600:
+                        raise
+                    await asyncio.sleep(e.seconds + 1)
+            raise RuntimeError(f'第 {n} 块传不上去')
+
+    await asyncio.gather(*(put(n) for n in range(parts)))
+    return InputFileBig(file_id, parts, os.path.basename(path))
+
+
 async def douyin_send_video(data, item, src, text, target):
     """发进 target 频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
     client = user_client or bot_client
     chat = await channel_entity(client, target)
     with tempfile.TemporaryDirectory() as d:
         raw, mp4, jpg = (os.path.join(d, n) for n in ('raw.mp4', f'douyin_{item["id"]}.mp4', 'thumb.jpg'))
-        with open(raw, 'wb') as f:
+        ready = is_faststart(data)
+        with open(mp4 if ready else raw, 'wb') as f:
             f.write(data)
-        path = mp4 if await asyncio.to_thread(remux_faststart, raw, mp4) else raw
+        path = mp4 if ready or await asyncio.to_thread(remux_faststart, raw, mp4) else raw
         seconds = item['seconds'] or await asyncio.to_thread(probe_seconds, path)
         thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
+        file = await upload_parallel(client, path)
         sent = await flood_retry(lambda: client.send_file(
-            chat, path, caption=text, thumb=thumb, supports_streaming=True, link_preview=False,
+            chat, file, caption=text, thumb=thumb, supports_streaming=True, link_preview=False, mime_type='video/mp4',
             attributes=[DocumentAttributeVideo(duration=seconds, w=src.get('width') or item['width'] or 720,
                                                h=src.get('height') or item['height'] or 1280, supports_streaming=True)]))
     return sent.id
@@ -927,18 +982,34 @@ async def douyin_retag(target, msg_id, item):
     await asyncio.sleep(1)  # 慢慢改，免得被限流
 
 
+DOUYIN_POSTED_TTL = 6 * 3600  # 这么久之内只翻上次之后的新帖子；过了就整个频道重翻（频道主删过帖子也能认出来）
+douyin_posted_cache = {}  # 频道 → {'ids': {作品号: 消息号}, 'top': 翻到的最新消息号, 'at': 整翻的时间}
+
+
 async def douyin_posted(target, limit=20000):  # 作品上千条，频道帖子也多：多翻些才不重复转
     """target 频道里已经转过的抖音作品 → {作品号: 消息号}：翻最近 limit 条帖子，看说明里的原视频链接。
     不用 Telegram 的搜索：实测刚发的帖子搜不到链接里的作品号，查重落空、发了重复的。
+    整翻一次很慢：记下来，下次只翻新帖子。返回的就是缓存本身，转作品时往里记的新帖子也就记进去了。
     机器人不能翻频道历史，没登录就当都没转过"""
     if user_client is None:
         return {}
-    out = {}
-    async for m in user_client.iter_messages(await channel_entity(user_client, target), limit=limit):
+    c = douyin_posted_cache.get(target)
+    if c is None or time.time() - c['at'] > DOUYIN_POSTED_TTL:
+        c = douyin_posted_cache[target] = {'ids': {}, 'top': 0, 'at': time.time()}
+        newer = 0
+    else:
+        newer = c['top']
+    out, top = {}, c['top']
+    async for m in user_client.iter_messages(await channel_entity(user_client, target), limit=limit, min_id=newer):
+        top = max(top, m.id)
         for aweme_id in DOUYIN_ID_IN_TEXT.findall(m.message or ''):
             out.setdefault(aweme_id, m.id)
             douyin_texts[m.id] = m.message or ''
-    return out
+    for aweme_id, msg_id in out.items():  # 新翻到的帖子更新，同一条作品留最新那条帖子
+        if newer == 0 or aweme_id not in c['ids'] or msg_id > c['ids'][aweme_id]:
+            c['ids'][aweme_id] = msg_id
+    c['top'] = top
+    return c['ids']
 
 
 @app.get('/douyin/posted')
