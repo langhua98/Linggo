@@ -160,7 +160,7 @@ class Poster:
         self.prepare = prepare                # async (原文件, 工作目录) -> {path, thumb, duration, width, height}
         self.send_video = send_video          # async (信息, 说明) -> 消息号
         self.send_images = send_images        # async ([图片路径], 说明) -> 第一条的消息号
-        self.already_posted = already_posted  # async (作品号) -> 频道里已有的消息号或 None（防重复发）
+        self.already_posted = already_posted  # async (作品号) -> 这次运行里已经发过的消息号或 None（防重复发）
         self.report = report                  # async (dict) -> None
         self.queue = []
         self.current = None
@@ -335,8 +335,8 @@ async def lifespan(app):
 
     # 取文件优先用机器人（它是频道管理员）；它找不到频道就用频道主账号
     try:
-        bot_channel = await bot.get_input_entity(PeerChannel(channel.id))
-        await bot.get_messages(bot_channel, limit=1)
+        # 只取频道本身的信息确认机器人进得去，不读频道里的帖子
+        bot_channel = await bot.get_entity(PeerChannel(channel.id))
         reader, reader_channel = bot, bot_channel
     except Exception:  # noqa: BLE001
         log.warning('bot cannot read the channel, streaming with the user session', exc_info=True)
@@ -364,18 +364,24 @@ async def lifespan(app):
             first = first or sent[0].id
         return first
 
+    # 防重复发只看这次运行里自己发过的（频道主要求：不去频道里搜、读帖子的标签）；
+    # 重启以后靠 Worker 的作品状态防重：已转的不会再交过来
+    posted = {}
+
     async def already_posted(aweme):
-        async for m in user.iter_messages(channel, search=f'#dy{aweme}', limit=3):
-            if f'#dy{aweme}' in (m.message or ''):
-                return m.id
-        return None
+        return posted.get(aweme)
 
     async def prepare(src, work):
         return await asyncio.to_thread(ffmpeg_prepare, src, work)
 
+    async def report(body):
+        if body.get('ok'):
+            posted[body['aweme']] = body['message_id']
+        await worker_post(http, '/streamer-done', body)
+
     poster = Poster(douyin=douyin, download=lambda u, p: http_download(http, u, p), prepare=prepare,
                     send_video=send_video, send_images=send_images, already_posted=already_posted,
-                    report=lambda body: worker_post(http, '/streamer-done', body))
+                    report=report)
     poster.task = asyncio.create_task(poster.run())
 
     async def say_up():
