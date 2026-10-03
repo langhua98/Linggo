@@ -279,7 +279,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['asks', 'config', 'covers', 'dy_resume', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'video_thumbs', 'videos', 'viz']);
+  assert.deepEqual(tables, ['asks', 'config', 'covers', 'dy_resume', 'filter_log', 'filter_rules', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'video_thumbs', 'videos', 'viz']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -1319,6 +1319,9 @@ await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每�
   await rep({ phase: 'running', mode: 'search', keywords: ['舞蹈'], per: { 舞蹈: 7 }, got: 7, sent: 0 });
   await dm(OWNER, '进度');
   assert.match(lastSay().text, /云电脑（搜索）：正在抓[\s\S]*「舞蹈」搜到 7 条/);
+  bot.dyStatus = { status: 'idle', worker_link: { ok_at: 0, fail_at: Math.floor(Date.now() / 1000) - 120, fails: 3, error: 'SSLEOFError: EOF', path: '/streamer-done' } };
+  await dm(OWNER, '进度');
+  assert.match(lastSay().text, /⚠️ 小橘的服务上次通知这边没成功（2 分钟前，连续 3 次：SSLEOFError: EOF），已经自动重试/);
   bot.dyStatus = null;
 });
 
@@ -1559,6 +1562,102 @@ await t('未成年人：相关的词不搜，排着队的也不交给云电脑�
   assert.match(lastSay().text, /不搜、不转未成年人的视频/);
   await lib.setConfig('dySearchQueue', '[]');
   await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ phase: 'done', mode: 'search' }) });
+});
+
+await t('内容过滤规则：只由管理员在管理页加改删开关；机器人只照启用的规则执行，没命中的照常走；命中都有记录；查不了的标待人工确认', async () => {
+  const tok = await lib.getConfig('cloudTok');
+  const cfg = () => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok } });
+  const search = rows => req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': '1' }, body: rows.map(r => JSON.stringify(r)).join('\n') + '\n' });
+  const V = await import('./verify.js');
+  const lastTask = async () => V.getTask(lib, JSON.parse(await lib.getConfig('rvIds')).at(-1));
+  const log = async () => (await jsonOf(await admin('filter-log'))).log;
+
+  // 管理接口：要管理密钥；一开始只有固定的未成年人保护，别的规则一条都没有（机器人不自己加）
+  assert.equal((await admin('filters', undefined, 'wrong')).status, 401);
+  let f = await jsonOf(await admin('filters'));
+  assert.deepEqual(f.rules, []);
+  assert.deepEqual(f.builtin.map(r => [r.id, r.enabled, r.builtin]), [['minor', true, true]]);
+  assert.equal((await admin('filters', { name: '', words: ['x'], scope: 'both', action: 'filter' })).status, 400);
+  assert.equal((await admin('filters', { name: 'a', words: [], scope: 'both', action: 'filter' })).status, 400);
+  assert.equal((await admin('filters', { name: 'a', words: ['x'], scope: 'everywhere', action: 'filter' })).status, 400);
+  assert.equal((await admin('filters', { id: 'minor', name: 'a', words: ['x'], scope: 'both', action: 'filter' })).status, 400, '固定规则不能改');
+  assert.equal((await admin('filters-delete', { id: 'minor' })).status, 400, '固定规则不能删');
+
+  // 没有规则时：照常搜、照常进清单（只有固定规则在管）
+  await dm(OWNER, '搜抖音 牛仔裤');
+  assert.match(lastSay().text, /记下了「牛仔裤」/);
+  await search([{ aweme_id: '7900000000000000001', desc: '烟管牛仔裤 广告位', source_keyword: '牛仔裤' }]);
+  assert.deepEqual((await lastTask()).items.map(i => [i.id, i.flag || '']), [['7900000000000000001', '']]);
+
+  // 管理员加两条：一条过滤（广告），一条只标记（品牌名，词按逗号分开写也行）
+  const ad = (await jsonOf(await admin('filters', { name: '广告', words: '广告, 代购', scope: 'both', action: 'filter' }))).id;
+  const brand = (await jsonOf(await admin('filters', { name: '品牌', words: ['Levis'], scope: 'caption', action: 'flag' }))).id;
+  f = await jsonOf(await admin('filters'));
+  assert.deepEqual(f.rules.map(r => [r.id, r.name, r.words, r.scope, r.action, r.enabled]),
+    [[ad, '广告', ['广告', '代购'], 'both', 'filter', true], [brand, '品牌', ['Levis'], 'caption', 'flag', true]]);
+
+  // 搜索词命中过滤规则：不搜，告诉是哪条规则，有记录
+  await dm(OWNER, '搜抖音 代购牛仔裤');
+  assert.match(lastSay().text, /命中过滤规则「广告」（词：代购），「代购牛仔裤」这个词不搜/);
+  assert.deepEqual(Object.values((await log())[0]).slice(2, 8), [String(ad), '广告', '代购', 'search', 'filtered', '代购牛仔裤']);
+
+  // 排着队的词，规则是后来加的：交给云电脑前按新规则再查，出队、告诉频道主、有记录
+  await lib.setConfig('dySearchQueue', JSON.stringify(['广告大片', '直筒裤']));
+  assert.deepEqual((await jsonOf(await cfg())).searches, ['直筒裤']);
+  assert.match(lastSay().text, /「广告大片」不搜了，已经从排队里拿掉/);
+  assert.equal((await log())[0].stage, 'queue');
+
+  // 搜到的结果：命中过滤的不进清单；命中「只标记」的、没有文案查不了的标「待人工确认」；没命中的照常
+  await dm(OWNER, '搜抖音 清空');
+  const rows = [
+    { aweme_id: '7900000000000000011', desc: '代购同款 私信', source_keyword: '直筒裤' },
+    { aweme_id: '7900000000000000012', desc: 'levis 501 上身', source_keyword: '直筒裤' },
+    { aweme_id: '7900000000000000013', desc: '', source_keyword: '直筒裤' },
+    { aweme_id: '7900000000000000014', desc: '直筒裤怎么搭', source_keyword: '直筒裤' },
+    { aweme_id: '7900000000000000014', desc: '直筒裤怎么搭', source_keyword: '直筒裤' },  // 同一条写了两行：只算一次
+  ];
+  await search(rows);
+  const task = await lastTask();
+  assert.deepEqual(task.items.map(i => [i.id, i.flag || '']), [
+    ['7900000000000000012', '命中规则「品牌」（词：Levis）'],
+    ['7900000000000000013', '没有文案，规则查不了'],
+    ['7900000000000000014', ''],
+  ]);
+  const owned = bot.out.filter(o => o.method === 'sendMessage' && /的完整清单/.test(o.text || '')).at(-1).text;
+  assert.match(owned, /按作品号去重后一共 4 条：进清单 3 条（其中 ⚠️ 待人工确认 2 条）；按过滤规则去掉 1 条（广告 1 条）/);
+  const sent = bot.vout.filter(o => o.method === 'sendMessage').map(o => o.text).join('\n');
+  assert.match(sent, /⚠️ 其中 2 条待人工确认/);
+  assert.match(sent, /作品 ID：7900000000000000012\n   ⚠️ 待人工确认：命中规则「品牌」（词：Levis）/);
+  const l = await log();
+  assert.deepEqual(l.slice(0, 3).map(x => [x.stage, x.result, x.rule_name, x.subject]).sort(), [
+    ['review', 'filtered', '广告', '7900000000000000011'],
+    ['review', 'flagged', '品牌', '7900000000000000012'],
+    ['review', 'unclear', '', '7900000000000000013'],
+  ]);
+
+  // 审核通过之后管理员又加了一条规则：转之前按最新的规则再查一遍（只看「过滤」，「只标记」的已经由频道主审过）
+  await admin('filters', { name: '怎么搭', words: ['怎么搭'], scope: 'caption', action: 'filter' });
+  Object.assign(task, { status: 'approved', transfer: '' });
+  await V.saveTask(lib, task);
+  const before = bot.toStreamer.length;
+  bot.importing = false;
+  await hook({ update_id: 905, callback_query: { id: 'cqf', from: { id: OWNER }, data: 'rvt:' + task.id, message: { message_id: 82, chat: { id: OWNER, type: 'private' } } } });
+  const imp = bot.toStreamer.slice(before).find(x => x.path === 'douyin/import');
+  assert.deepEqual(imp.body.text.split('\n').map(x => JSON.parse(x).aweme_id), ['7900000000000000012', '7900000000000000013']);
+  assert.match(lastSay().text, /开始转 2 条（按过滤规则去掉 1 条）/);
+  assert.deepEqual([(await log())[0].stage, (await log())[0].rule_name], ['transfer', '怎么搭']);
+
+  // 关掉、改、删：马上生效，不用改代码
+  await admin('filters', { id: ad, name: '广告', words: ['广告', '代购'], scope: 'both', action: 'filter', enabled: false });
+  await dm(OWNER, '搜抖音 代购牛仔裤');
+  assert.match(lastSay().text, /记下了「代购牛仔裤」/, '关掉的规则不再管');
+  await admin('filters', { id: brand, name: '品牌', words: ['Levis'], scope: 'keyword', action: 'flag' });
+  await dm(OWNER, '搜抖音 levis');
+  assert.match(lastSay().text, /⚠️ 这个词命中规则「品牌」（词：Levis，只标记）：照常搜/);
+  for (const r of (await jsonOf(await admin('filters'))).rules) assert.equal((await jsonOf(await admin('filters-delete', { id: r.id }))).ok, true);
+  assert.deepEqual((await jsonOf(await admin('filters'))).rules, []);
+  assert.equal((await jsonOf(await admin('filters-delete', { id: 99999 }))).ok, false);
+  await dm(OWNER, '搜抖音 清空');
 });
 
 await t('重启后接着转：交给流式服务的抖音任务记下来；它重启后来报到就照原样再交一次（同一个编号），转完、叫停就销掉', async () => {

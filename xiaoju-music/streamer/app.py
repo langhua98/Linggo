@@ -523,8 +523,21 @@ def worker_url():
     return os.environ.get('WORKER_URL', 'https://xiaoju-music.langhua98.workers.dev').rstrip('/')
 
 
+worker_link = {'ok_at': 0, 'fail_at': 0, 'fails': 0, 'error': '', 'path': ''}  # 最近一次连 Worker 成功、失败的情况（进度里显示）
+
+
 async def tell_worker(path, data):
-    """POST 给 Worker（带同一个 STREAMER_KEY）。失败就抛出去，调用方自己决定要不要重试"""
+    """POST 给 Worker（带同一个 STREAMER_KEY）。失败就抛出去，调用方自己决定要不要重试；成功、失败都记进 worker_link"""
+    try:
+        got = await _post_worker(path, data)
+    except Exception as e:
+        worker_link.update(fail_at=int(time.time()), fails=worker_link['fails'] + 1, error=f'{type(e).__name__}: {e}'[:160], path=path)
+        raise
+    worker_link.update(ok_at=int(time.time()), fails=0)
+    return got
+
+
+async def _post_worker(path, data):
     req = urllib.request.Request(worker_url() + path, data=json.dumps(data).encode(), method='POST', headers={
         'Content-Type': 'application/json', 'X-Key': os.environ.get('STREAMER_KEY', ''),
         'User-Agent': 'xiaoju-streamer'})
@@ -1327,7 +1340,8 @@ async def douyin_login_state(request: Request):
 @app.get('/douyin/status')
 async def douyin_status(request: Request):
     check_key(request)
-    return douyin_job.state if douyin_job else {'status': 'idle'}
+    st = douyin_job.state if douyin_job else {'status': 'idle'}
+    return {**st, 'worker_link': worker_link} if worker_link['fail_at'] else st
 
 
 

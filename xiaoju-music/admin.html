@@ -36,6 +36,17 @@ button.danger{color:var(--danger)}
 button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
 #login{margin-top:24px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 #login p{width:100%;margin:0}
+form.rule{display:grid;gap:8px;margin-top:8px}
+form.rule label{font-size:14px;color:var(--muted);display:grid;gap:4px}
+form.rule input[type=text],form.rule textarea,form.rule select{font:inherit;font-size:15px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);width:100%}
+form.rule textarea{min-height:64px;resize:vertical}
+form.rule .check{display:flex;gap:8px;align-items:center;color:var(--text)}
+form.rule .actions{display:flex;gap:8px;flex-wrap:wrap}
+.tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:999px;padding:0 8px;margin-right:4px;color:var(--muted)}
+.tag.on{color:var(--accent);border-color:currentColor}
+.row .words{font-size:13px;color:var(--text);word-break:break-all;white-space:normal}
+.row .btns{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.log .title{white-space:normal}
 #key{flex:1;min-width:0;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
 </style>
 </head>
@@ -53,6 +64,23 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
   </form>
   <div id="app" hidden>
     <section class="card"><p id="streamer"></p></section>
+    <h2>内容过滤规则</h2>
+    <p class="hint">规则只由你在这里定：加、改、删、开关。机器人只照着已启用的规则执行，不会自己加规则或扩大条件；没命中任何规则的照常走。
+      「过滤」：命中的搜索词不搜、作品不进审核清单、不转；「只标记」：照常进清单，标成⚠️待人工确认，审核时你决定。作品没有文案、规则查不了的，也只标待人工确认。改完马上生效。</p>
+    <ul id="rules" class="rows"></ul>
+    <form id="rule-form" class="rule card">
+      <strong id="rule-form-title">新加一条规则</strong>
+      <label>名字<input id="r-name" type="text" maxlength="30" required placeholder="比如：广告"></label>
+      <label>关键词（用逗号、顿号或换行分开；文字里包含任意一个就算命中，不分大小写）<textarea id="r-words" required placeholder="比如：代购、私信下单"></textarea></label>
+      <label>查哪里<select id="r-scope"><option value="both">搜索词和作品文案都查</option><option value="keyword">只查搜索词</option><option value="caption">只查作品文案</option></select></label>
+      <label>命中后<select id="r-action"><option value="filter">过滤（不搜、不进清单、不转）</option><option value="flag">只标记（标成待人工确认，我来决定）</option></select></label>
+      <label class="check"><input id="r-enabled" type="checkbox" checked> 启用</label>
+      <div class="actions"><button type="submit" id="r-save">加上</button><button type="button" id="r-cancel" class="link" hidden>不改了</button></div>
+      <p id="r-err" class="err"></p>
+    </form>
+    <h2>过滤记录</h2>
+    <p class="hint">最近 100 次按规则过滤、标记的记录：命中哪条规则、哪个词，在哪一步，是哪条作品（或哪个搜索词）。</p>
+    <ul id="flog" class="rows log"></ul>
     <h2>全部歌曲</h2>
     <p class="hint">频道里删掉的帖子不会自动从网页消失，在这里移除（不会动 Telegram 里的帖子）。</p>
     <ul id="all" class="rows"></ul>
@@ -89,6 +117,88 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
     });
   }
 
+  var SCOPE = { both: '搜索词和文案', keyword: '只查搜索词', caption: '只查文案' };
+  var ACTION = { filter: '过滤', flag: '只标记' };
+  var STAGE = { search: '发搜索词时', queue: '排队交给云电脑前', review: '整理审核清单时', transfer: '审核通过、转之前' };
+  var RESULT = { filtered: '过滤掉了', flagged: '标了待人工确认', unclear: '查不了，标了待人工确认' };
+  var editing = 0;
+
+  function ruleRow(r){
+    var li = el('li', 'row');
+    var info = el('div', 'info');
+    var t = el('div', 'title', r.name);
+    info.appendChild(t);
+    var m = el('div', 'meta');
+    [r.builtin ? '固定规则' : null, r.enabled ? '启用中' : '已停用', SCOPE[r.scope], ACTION[r.action]].forEach(function(x, i){
+      if(!x) return;
+      m.appendChild(el('span', 'tag' + (i === 1 && r.enabled ? ' on' : ''), x));
+    });
+    info.appendChild(m);
+    info.appendChild(el('div', 'words', '关键词：' + r.words.join('、')));
+    li.appendChild(info);
+    if(!r.builtin){
+      var b = el('div', 'btns');
+      var tg = el('button', '', r.enabled ? '停用' : '启用'); tg.type = 'button';
+      tg.addEventListener('click', function(){ saveRule({ id: r.id, name: r.name, words: r.words, scope: r.scope, action: r.action, enabled: !r.enabled }); });
+      var ed = el('button', '', '改'); ed.type = 'button';
+      ed.addEventListener('click', function(){ startEdit(r); });
+      var rm = el('button', 'danger', '删'); rm.type = 'button';
+      rm.addEventListener('click', function(){
+        if(!confirm('删掉规则「' + r.name + '」？之后的任务就不再按它过滤。')) return;
+        api('filters-delete', { id: r.id }).then(refreshFilters).catch(function(e){ alert('出错了：' + e.message); });
+      });
+      b.appendChild(tg); b.appendChild(ed); b.appendChild(rm);
+      li.appendChild(b);
+    }
+    return li;
+  }
+
+  function refreshFilters(){
+    return Promise.all([api('filters'), api('filter-log?limit=100')]).then(function(res){
+      var f = res[0], ul = $('rules');
+      ul.textContent = '';
+      f.builtin.concat(f.rules).forEach(function(r){ ul.appendChild(ruleRow(r)); });
+      if(!f.rules.length) ul.appendChild(el('li', 'empty', '你还没加规则：除了上面的固定规则，现在什么都不过滤。'));
+      var lg = $('flog');
+      lg.textContent = '';
+      if(!res[1].log.length){ lg.appendChild(el('li', 'empty', '还没有记录')); return; }
+      res[1].log.forEach(function(x){
+        var li = el('li', 'row'), info = el('div', 'info');
+        info.appendChild(el('div', 'title', (x.rule_name ? '「' + x.rule_name + '」' + (x.word ? '（词：' + x.word + '）' : '') : '没有文案') + ' · ' + (RESULT[x.result] || x.result)));
+        info.appendChild(el('div', 'meta', new Date(x.at).toLocaleString() + ' · ' + (STAGE[x.stage] || x.stage) + ' · ' + x.subject));
+        if(x.text && x.text !== x.subject) info.appendChild(el('div', 'meta', x.text));
+        li.appendChild(info);
+        lg.appendChild(li);
+      });
+    });
+  }
+
+  function startEdit(r){
+    editing = r ? r.id : 0;
+    $('rule-form-title').textContent = r ? '改规则「' + r.name + '」' : '新加一条规则';
+    $('r-name').value = r ? r.name : '';
+    $('r-words').value = r ? r.words.join('、') : '';
+    $('r-scope').value = r ? r.scope : 'both';
+    $('r-action').value = r ? r.action : 'filter';
+    $('r-enabled').checked = r ? r.enabled : true;
+    $('r-save').textContent = r ? '保存' : '加上';
+    $('r-cancel').hidden = !r;
+    $('r-err').textContent = '';
+    if(r) $('rule-form').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function saveRule(rule){
+    return api('filters', rule).then(function(){ startEdit(null); return refreshFilters(); })
+      .catch(function(e){ $('r-err').textContent = e.message; });
+  }
+
+  $('rule-form').addEventListener('submit', function(e){
+    e.preventDefault();
+    saveRule({ id: editing || undefined, name: $('r-name').value, words: $('r-words').value, scope: $('r-scope').value,
+      action: $('r-action').value, enabled: $('r-enabled').checked });
+  });
+  $('r-cancel').addEventListener('click', function(){ startEdit(null); });
+
   function showLogin(msg){
     $('app').hidden = true;
     $('login').hidden = false;
@@ -103,6 +213,7 @@ button.link{border:0;padding:0;color:var(--muted);text-decoration:underline}
         ? '大文件服务：已开启，超过 20 MB 的歌也能播放'
         : '大文件服务：未开启，超过 20 MB 的歌暂时不能播放';
       render(s.tracks);
+      return refreshFilters();
     }).catch(function(e){
       if(e.status === 401){
         key = '';

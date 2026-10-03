@@ -942,6 +942,7 @@ def test_the_worker_is_told_when_a_run_ends_but_not_when_it_is_stopped():
 
 
 def test_douyin_ended_reports_the_run_to_the_worker(monkeypatch):
+    orig_tell = appmod.tell_worker
     sent = []
 
     async def tell_worker(path, data):
@@ -962,10 +963,15 @@ def test_douyin_ended_reports_the_run_to_the_worker(monkeypatch):
         tries.append(path)
         if len(tries) < 3:
             raise OSError('SSL: UNEXPECTED_EOF_WHILE_READING')
+        return {}
 
-    monkeypatch.setattr(appmod, 'tell_worker', flaky)
+    monkeypatch.setattr(appmod, 'tell_worker', orig_tell)
+    monkeypatch.setattr(appmod, '_post_worker', flaky)
+    monkeypatch.setattr(appmod, 'worker_link', {'ok_at': 0, 'fail_at': 0, 'fails': 0, 'error': '', 'path': ''})
     asyncio.run(appmod.douyin_ended({'run_id': 'abc', 'status': 'done'}))
     assert tries == ['/streamer-done'] * 3
+    assert appmod.worker_link['fails'] == 0 and appmod.worker_link['fail_at'] and appmod.worker_link['ok_at']
+    assert 'UNEXPECTED_EOF' in appmod.worker_link['error']
 
 
 # ── 图文 ──

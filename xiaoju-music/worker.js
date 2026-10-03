@@ -318,6 +318,29 @@ async function adminApi(request, env, url) {
     const L = lib(env);
     return json({ total: (await L.listVideos()).length, syncedAt: Number(await L.getConfig('vSyncOk')) || 0 });
   }
+  // 内容过滤规则：管理员在这里加、改、删、开关；固定规则（未成年人保护）只读
+  if (action === 'filters' && request.method === 'GET') {
+    return json({ builtin: BUILTIN_RULES, rules: await lib(env).listFilterRules() });
+  }
+  if (action === 'filters' && request.method === 'POST') {
+    let body;
+    try { body = await request.json(); } catch { return json({ error: '格式不对' }, 400); }
+    const rule = cleanRule(body);
+    if (rule.error) return json({ error: rule.error }, 400);
+    const id = await lib(env).saveFilterRule(rule);
+    if (!id) return json({ error: '找不到这条规则' }, 404);
+    return json({ ok: true, id });
+  }
+  if (action === 'filters-delete' && request.method === 'POST') {
+    let body;
+    try { body = await request.json(); } catch { return json({ error: '格式不对' }, 400); }
+    if (String(body.id) === 'minor') return json({ error: '固定规则不能删' }, 400);
+    return json({ ok: await lib(env).deleteFilterRule(Number(body.id) || 0) });
+  }
+  if (action === 'filter-log' && request.method === 'GET') {
+    const n = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 100, 500));
+    return json({ log: await lib(env).listFilterLog(n) });
+  }
   if (action === 'state' && request.method === 'GET') {
     return json({ channel: env.CHANNEL_USERNAME || '', streamer: streamerOn(env), tracks: await tracksFor(env), playlists: await lib(env).listPlaylists() });
   }
@@ -1163,6 +1186,10 @@ export class Library extends DurableObject {
       // 交给流式服务、还没转完的抖音任务：任务说明在 config 的 dyResume，导入任务的作品数据在这里（云电脑送一批是一批；
       // 一批太大拆成几段，batch 相同）。流式服务重启后照原样再交一次
       this.sql.exec('CREATE TABLE IF NOT EXISTS dy_resume (seq INTEGER PRIMARY KEY, batch INTEGER NOT NULL, body TEXT NOT NULL)');
+      // 内容过滤规则：全部由管理员在管理页里加、改、删、开关（机器人自己不加、不改）。words 是 JSON 数组
+      this.sql.exec('CREATE TABLE IF NOT EXISTS filter_rules (id INTEGER PRIMARY KEY, name TEXT NOT NULL, words TEXT NOT NULL, scope TEXT NOT NULL, action TEXT NOT NULL, enabled INTEGER NOT NULL, updated INTEGER NOT NULL)');
+      // 每次按规则过滤、标记的记录：命中哪条规则、哪个词、在哪一步、是哪条作品（或哪个搜索词）
+      this.sql.exec('CREATE TABLE IF NOT EXISTS filter_log (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, rule_id TEXT NOT NULL, rule_name TEXT NOT NULL, word TEXT NOT NULL, stage TEXT NOT NULL, result TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL)');
       // 刷视频网页的视频池：视频频道「小橘视频」里的视频帖，rec 是完整记录（含 Bot API 的 file_id）
       this.sql.exec('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, updated INTEGER NOT NULL)');
       // 视频封面（base64；mime 为 'none' 表示确定没有）
@@ -1345,6 +1372,44 @@ export class Library extends DurableObject {
   async setHarvest(v) { this.setCfg('harvest', JSON.stringify(v)); }
 
   async getConfig(k) { return this.cfg(k); }
+
+  // ── 内容过滤规则（见 filterRules）──
+  async listFilterRules() {
+    return this.sql.exec('SELECT * FROM filter_rules ORDER BY id').toArray().map(r => ({
+      id: r.id, name: r.name, words: JSON.parse(r.words), scope: r.scope, action: r.action, enabled: !!r.enabled, updated: r.updated,
+    }));
+  }
+
+  async saveFilterRule(r) {
+    const now = Date.now();
+    if (r.id) {
+      if (!this.sql.exec('SELECT id FROM filter_rules WHERE id = ?', r.id).toArray().length) return 0;
+      this.sql.exec('UPDATE filter_rules SET name = ?, words = ?, scope = ?, action = ?, enabled = ?, updated = ? WHERE id = ?',
+        r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, now, r.id);
+      return r.id;
+    }
+    this.sql.exec('INSERT INTO filter_rules (name, words, scope, action, enabled, updated) VALUES (?, ?, ?, ?, ?, ?)',
+      r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, now);
+    return this.sql.exec('SELECT last_insert_rowid() AS id').toArray()[0].id;
+  }
+
+  async deleteFilterRule(id) {
+    if (!this.sql.exec('SELECT id FROM filter_rules WHERE id = ?', id).toArray().length) return false;
+    this.sql.exec('DELETE FROM filter_rules WHERE id = ?', id);
+    return true;
+  }
+
+  async logFilter(entries) {
+    for (const e of entries) {
+      this.sql.exec('INSERT INTO filter_log (at, rule_id, rule_name, word, stage, result, subject, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        e.at, e.rule_id, e.rule_name, e.word, e.stage, e.result, e.subject, e.text);
+    }
+    this.sql.exec('DELETE FROM filter_log WHERE id <= (SELECT MAX(id) FROM filter_log) - 2000');
+  }
+
+  async listFilterLog(limit) {
+    return this.sql.exec('SELECT * FROM filter_log ORDER BY id DESC LIMIT ?', limit).toArray();
+  }
 
   // ── 重启后接着转（见 douyinStart）──
   async resumeStart(rec, text) {
@@ -2156,7 +2221,7 @@ async function cloudConfig(request, env) {
     if (!tok || !sameString(xt, tok)) return json({ error: '令牌不对' }, 403);
     const selves = await douyinSelves(L);
     if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
-    const q = await douyinSearchQueue(L);
+    const q = await queueAfterRules(env, L);
     await L.setConfig('dyCloudSeen', String(Date.now()));  // 云电脑开着时每 20 秒来问一次，机器人据此说它在不在
     // 它在干什么：idle / crawl（在抓）/ search（在搜）/ wait:秒（上次没搜成，过这么久再搜）；旧脚本不带
     await L.setConfig('dyCloudBusy', String(request.headers.get('X-Busy') || '').slice(0, 40));
@@ -2183,9 +2248,78 @@ async function cloudConfig(request, env) {
 // 结果 POST /dy-search（X-Token）。只整理成分享链接清单私聊发给频道主，点链接在抖音里看——别人的视频不下载、不转发
 const SEARCH_DEFAULT = 100, SEARCH_MAX = 500;
 
-// 未成年人的视频一律不搜、不送审、不转（搜的词、作品文案里带这些就不要）
-const MINOR = /初中|小学|中学生|高中生|未成年|学生妹|萝莉|幼女|女童|小女孩|童模|初[一二三]|高[一二三]|七年级|八年级|九年级|10后|幼儿|儿童|小朋友|中考|校服/;
+// ── 内容过滤 ──
+// 规则全部由管理员在管理页（/admin）配置：加、改、删、开关，表 filter_rules。机器人只照着已经启用的规则执行，
+// 不自己加规则、不自己扩大条件；没命中任何规则的照常走。规则每次现读，改了马上用到后面的任务上。
+// 每条规则：关键词（文字里包含任意一个就算命中，不分大小写）、查哪里（搜索词 keyword / 作品文案 caption / 两个都查 both）、
+// 命中了怎么办（filter 不进清单、不转；flag 只标「待人工确认」，照常进清单，审核时管理员决定）。
+// 查不了的（作品没有文案，文案规则无从判断）也只标「待人工确认」，不替管理员下结论。每次过滤、标记都记进 filter_log。
+// 唯一的固定规则是未成年人保护（管理员要求保留）：在管理页里照样列出、命中照样记录，但不能关、不能删。
+const MINOR_WORDS = ['初中', '小学', '中学生', '高中生', '未成年', '学生妹', '萝莉', '幼女', '女童', '小女孩', '童模', '初一', '初二', '初三',
+  '高一', '高二', '高三', '七年级', '八年级', '九年级', '10后', '幼儿', '儿童', '小朋友', '中考', '校服'];
 const MINOR_REFUSAL = '🚫 小橘不搜、不转未成年人的视频。';
+const BUILTIN_RULES = [{ id: 'minor', name: '未成年人保护（固定规则，不能关闭）', words: MINOR_WORDS, scope: 'both', action: 'filter', enabled: true, builtin: true }];
+const RULE_SCOPES = ['keyword', 'caption', 'both'], RULE_ACTIONS = ['filter', 'flag'];
+
+// 现在生效的规则：固定规则 + 管理员启用的；「过滤」的排在「只标记」前面（同时命中时按过滤算）
+async function filterRules(L) {
+  const mine = (await L.listFilterRules()).filter(r => r.enabled);
+  return [...BUILTIN_RULES, ...mine.filter(r => r.action === 'filter'), ...mine.filter(r => r.action === 'flag')];
+}
+
+// 一段文字（kind：keyword 搜索词 / caption 作品文案）命中的第一条规则 → { rule, word }；没命中 → null
+function ruleHit(rules, text, kind) {
+  const t = String(text || '').toLowerCase();
+  for (const r of rules) {
+    if (r.scope !== 'both' && r.scope !== kind) continue;
+    const w = r.words.find(x => x && t.includes(String(x).toLowerCase()));
+    if (w) return { rule: r, word: w };
+  }
+  return null;
+}
+
+const captionOf = r => (String((r && r.desc) || '') + ' ' + String((r && r.title) || '')).trim();
+
+function hitEntry(hit, stage, result, subject, text) {
+  return { at: Date.now(), rule_id: hit ? String(hit.rule.id) : '', rule_name: hit ? hit.rule.name : '', word: hit ? String(hit.word) : '',
+    stage, result, subject: String(subject).slice(0, 60), text: String(text || '').replace(/\s+/g, ' ').slice(0, 120) };
+}
+
+// 管理页送来的一条规则 → 存进表的样子；不像样 → { error }
+function cleanRule(b) {
+  if (!b || typeof b !== 'object') return { error: '格式不对' };
+  if (String(b.id) === 'minor') return { error: '固定规则不能改' };
+  const name = String(b.name || '').trim().slice(0, 30);
+  const raw = Array.isArray(b.words) ? b.words : String(b.words || '').split(/[,，、\n]/);
+  const words = [...new Set(raw.map(w => String(w).trim()).filter(Boolean))].slice(0, 100);
+  if (!name) return { error: '规则要有个名字' };
+  if (!words.length) return { error: '至少写一个关键词' };
+  if (words.some(w => w.length > 30)) return { error: '关键词太长（一个最多 30 个字）' };
+  if (!RULE_SCOPES.includes(b.scope)) return { error: '查哪里不对' };
+  if (!RULE_ACTIONS.includes(b.action)) return { error: '命中后怎么办不对' };
+  return { id: Number(b.id) || 0, name, words, scope: b.scope, action: b.action, enabled: b.enabled !== false };
+}
+
+function refusal(hit, what) {
+  return hit.rule.id === 'minor' ? `${MINOR_REFUSAL}${what}` : `🚫 命中过滤规则「${hit.rule.name}」（词：${hit.word}），${what}`;
+}
+
+// 交给云电脑之前按现在的规则再查一遍排队的词（规则可能是排队之后才加的）：命中过滤规则的出队、记录、告诉频道主
+async function queueAfterRules(env, L) {
+  const q = await douyinSearchQueue(L), rules = await filterRules(L);
+  const keep = [], log = [], gone = [];
+  for (const k of q) {
+    const hit = ruleHit(rules, k, 'keyword');
+    if (hit && hit.rule.action === 'filter') { log.push(hitEntry(hit, 'queue', 'filtered', k, k)); gone.push(refusal(hit, `「${k}」不搜了，已经从排队里拿掉。`)); }
+    else keep.push(k);
+  }
+  if (!log.length) return q;
+  await L.setConfig('dySearchQueue', JSON.stringify(keep));
+  await L.logFilter(log);
+  const owner = await ownerId(env);
+  if (owner) await say(env, owner, gone.join('\n'));
+  return keep;
+}
 
 // 这次要搜多少条：排队的词里要得最多的那个（MediaCrawler 一次只能给一个数）
 async function douyinSearchMax(L, queue) {
@@ -2196,7 +2330,7 @@ async function douyinSearchMax(L, queue) {
 async function douyinSearchQueue(L) {
   try {
     const a = JSON.parse((await L.getConfig('dySearchQueue')) || '[]');
-    return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x && !MINOR.test(x)) : [];
+    return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x) : [];
   } catch {
     return [];
   }
@@ -2218,7 +2352,12 @@ async function ownerDouyinSearch(env, chat, kw) {
   const num = /^(.*?)\s+(\d{1,4})$/.exec(kw);
   if (num) { kw = num[1]; want = Math.min(SEARCH_MAX, Math.max(10, Number(num[2]))); }
   kw = kw.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').slice(0, 30);
-  if (MINOR.test(kw)) return say(env, chat, `${MINOR_REFUSAL}「${kw}」这个词不搜。`);
+  const kwHit = ruleHit(await filterRules(L), kw, 'keyword');
+  if (kwHit && kwHit.rule.action === 'filter') {
+    await L.logFilter([hitEntry(kwHit, 'search', 'filtered', kw, kw)]);
+    return say(env, chat, refusal(kwHit, `「${kw}」这个词不搜。`));
+  }
+  if (kwHit) await L.logFilter([hitEntry(kwHit, 'search', 'flagged', kw, kw)]);
   if (!q.includes(kw)) q.push(kw);
   await L.setConfig('dySearchQueue', JSON.stringify(q.slice(-10)));
   const counts = await douyinTagMap(L, 'dySearchCounts');
@@ -2229,6 +2368,7 @@ async function ownerDouyinSearch(env, chat, kw) {
     `想多搜一些：「搜抖音 ${kw} 300」（最多 ${SEARCH_MAX} 条；搜得越多越容易被抖音限制）`,
     '',
     '搜索要用云电脑上登录的抖音，搜完把链接清单私聊发你。',
+    ...(kwHit ? [`⚠️ 这个词命中规则「${kwHit.rule.name}」（词：${kwHit.word}，只标记）：照常搜，审核清单里会标出来，你来决定`] : []),
     await cloudStatusLine(L),
   ].join('\n'));
 }
@@ -2337,6 +2477,10 @@ async function progressText(env) {
   let st = null;
   if (streamerOn(env)) {
     try { st = (await streamerCall(env, '/douyin/status')).data; } catch {}
+  }
+  const wl = st && st.worker_link;
+  if (wl && wl.fail_at > (wl.ok_at || 0)) {
+    lines.push(`⚠️ 小橘的服务上次通知这边没成功（${ago(Date.now() - wl.fail_at * 1000)}，连续 ${wl.fails} 次：${wl.error}），已经自动重试；这边每 30 分钟也会自己对一遍，转发不受影响`);
   }
   if (!st || !st.status || st.status === 'idle') {
     lines.push('🍊 小橘：现在没在转');
@@ -2465,14 +2609,33 @@ function reviewDeps(env) {
 }
 
 async function submitForReview(env, L, owner, kws, ids, rows) {
-  if (kws.some(k => MINOR.test(k))) return say(env, owner, `${MINOR_REFUSAL}「${kws.join('、')}」这批不送审、不转。`);
+  const rules = await filterRules(L), log = [];
+  for (const k of kws) {
+    const hit = ruleHit(rules, k, 'keyword');
+    if (hit && hit.rule.action === 'filter') {
+      await L.logFilter([hitEntry(hit, 'review', 'filtered', k, k)]);
+      return say(env, owner, refusal(hit, `「${kws.join('、')}」这批不送审、不转。`));
+    }
+  }
+  const kwFlag = kws.map(k => ruleHit(rules, k, 'keyword')).find(Boolean);
+  const captionRules = rules.some(r => r.scope !== 'keyword');
   const mine = new Set(await douyinSelves(L));
-  const items = [], data = [];
-  let lost = 0;
+  const items = [], data = [], byRule = new Map();
+  let lost = 0, flagged = 0;
   for (const id of ids) {
     const r = rows[id];
     if (!r) { lost++; continue; }
-    if (MINOR.test(String(r.desc || '') + ' ' + String(r.title || ''))) continue; // 文案看得出是未成年人的：不进清单
+    const text = captionOf(r), hit = ruleHit(rules, text, 'caption');
+    if (hit && hit.rule.action === 'filter') { // 命中过滤规则：不进清单
+      log.push(hitEntry(hit, 'review', 'filtered', id, text));
+      byRule.set(hit.rule.name, (byRule.get(hit.rule.name) || 0) + 1);
+      continue;
+    }
+    let flag = '';
+    if (hit) { flag = `命中规则「${hit.rule.name}」（词：${hit.word}）`; log.push(hitEntry(hit, 'review', 'flagged', id, text)); }
+    else if (!text && captionRules) { flag = '没有文案，规则查不了'; log.push(hitEntry(null, 'review', 'unclear', id, '')); }
+    else if (kwFlag) flag = `搜索词命中规则「${kwFlag.rule.name}」（词：${kwFlag.word}）`;
+    if (flag) flagged++;
     const note = String(r.aweme_type || '') === '68' || String(r.note_download_url || '').startsWith('http');
     const sec = SEC_UID.test(String(r.xiaoju_sec_uid || '')) ? String(r.xiaoju_sec_uid) : '';
     items.push({
@@ -2480,15 +2643,21 @@ async function submitForReview(env, L, owner, kws, ids, rows) {
       account: String(r.xiaoju_nickname || (String(r.nickname || '').includes('*') ? '' : r.nickname) || '').slice(0, 30),
       title: String(r.desc || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
       files: (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')]).map(u => u.trim()).filter(u => /^https?:\/\//.test(u)).slice(0, 9),
+      ...(flag ? { flag } : {}),
     });
     data.push(r);
   }
-  if (!items.length) return;
+  if (log.length) await L.logFilter(log);
+  const filtered = [...byRule.values()].reduce((a, b) => a + b, 0);
+  // 数都按作品号去重以后算：去重后一共多少、进清单多少（其中待人工确认多少）、过期多少、按哪条规则去掉多少
+  const tally = `按作品号去重后一共 ${ids.length} 条：进清单 ${items.length} 条${flagged ? `（其中 ⚠️ 待人工确认 ${flagged} 条）` : ''}`
+    + `${lost ? `；数据过期 ${lost} 条` : ''}${filtered ? `；按过滤规则去掉 ${filtered} 条（${[...byRule].map(([n, c]) => `${n} ${c} 条`).join('、')}）` : ''}`;
+  if (!items.length) return say(env, owner, `🔎 「${kws.join('、')}」${tally}，没有可以送审的。`);
   const t = await V.createTask(L, { keywords: kws, items, rows: data });
   const res = await V.deliverTask(env, L, owner, t);
   const bot = '@' + await V.verifyName(L);
   if (res.ok) {
-    return say(env, owner, `🛂 「${kws.join('、')}」的完整清单（${items.length} 条${lost ? `；另有 ${lost} 条数据过期，没进清单` : ''}）已经交给 ${bot}，审核单 ${t.id}。去那里审核，通过了小橘才转；24 小时不审就不转。`);
+    return say(env, owner, `🛂 「${kws.join('、')}」的完整清单（${items.length} 条）已经交给 ${bot}，审核单 ${t.id}。${tally}。去那里审核，通过了小橘才转；24 小时不审就不转。`);
   }
   return say(env, owner, `⏸ 「${kws.join('、')}」的清单没送到 ${bot}：${res.why}\n这批 ${items.length} 条先暂停，一条也不转。处理好后点下面重新送审（或者直接去 ${bot} 点「开始」，它会自己补发）。`,
     [[{ text: '🔁 重新送审', callback_data: `rvs:${t.id}` }]]);
@@ -2515,10 +2684,21 @@ async function transferApproved(env, L, owner, t) {
   };
   if (t.status !== 'approved') return;
   if (t.transfer === 'started') return;
-  if (t.keywords.some(k => MINOR.test(k))) return say(env, owner, `${MINOR_REFUSAL}${what}不转。`);
+  // 转之前按现在的规则再查一遍（审核之后规则可能改过）：只看「过滤」；「只标记」的审核时已经由频道主看过
+  const rules = (await filterRules(L)).filter(r => r.action === 'filter');
+  for (const k of t.keywords) {
+    const hit = ruleHit(rules, k, 'keyword');
+    if (hit) { await L.logFilter([hitEntry(hit, 'transfer', 'filtered', k, k)]); return say(env, owner, refusal(hit, `${what}不转。`)); }
+  }
   if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return fail('还没设置视频频道');
-  const data = (await V.taskRows(L, t)).filter(r => !MINOR.test(String((r && r.desc) || '') + ' ' + String((r && r.title) || '')));
-  if (!data.length) return fail('作品数据不见了，重新搜一次');
+  const all = await V.taskRows(L, t), log = [];
+  const data = all.filter(r => {
+    const hit = ruleHit(rules, captionOf(r), 'caption');
+    if (hit) log.push(hitEntry(hit, 'transfer', 'filtered', (r && r.aweme_id) || '', captionOf(r)));
+    return !hit;
+  });
+  if (log.length) await L.logFilter(log);
+  if (!data.length) return fail(all.length ? '这一批都命中了过滤规则' : '作品数据不见了，重新搜一次');
   let r;
   try {
     r = await douyinStart(env, '/douyin/import', {
@@ -2533,7 +2713,7 @@ async function transferApproved(env, L, owner, t) {
   t.transfer = 'started';
   await V.saveTask(L, t);
   // 只转这一批，不登记这些号（登记了云电脑每次开机都会抓它们的全部作品）；要长期同步的号用「添加抖音账号」单独加
-  return say(env, owner, `✅ ${what}审核通过，开始转 ${data.length} 条（只转这一批，不登记账号）；进度点「📊 进度」看`);
+  return say(env, owner, `✅ ${what}审核通过，开始转 ${data.length} 条${log.length ? `（按过滤规则去掉 ${log.length} 条）` : ''}（只转这一批，不登记账号）；进度点「📊 进度」看`);
 }
 
 async function expireReviews(env) {

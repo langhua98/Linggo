@@ -95,6 +95,8 @@ export async function createTask(L, { keywords, items, rows }) {
 }
 
 // ── 清单排版（审核机器人发给频道主的）──
+const flaggedOf = t => t.items.filter(x => x.flag).length;
+
 function accountsOf(t) {
   const by = new Map();
   for (const x of t.items) {
@@ -130,6 +132,7 @@ export function reviewMessages(t) {
       `🛂 审核单 ${t.id}`,
       `来源：小橘音乐机器人 · 抖音搜索「${t.keywords.join('、')}」`,
       `一共 ${t.items.length} 条，来自 ${accts.length} 个账号（👤 是你登记过的号，只作参考）：`,
+      ...(flaggedOf(t) ? [`⚠️ 其中 ${flaggedOf(t)} 条待人工确认（命中了你设的「只标记」规则，或者没有文案、规则查不了），清单里标出来了，看清楚再决定`] : []),
     ].join('\n'),
     ...accts.map((a, i) => `${i + 1}. ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.n} 条）${a.sec ? `\n   sec_uid: ${a.sec}` : '\n   （没拿到账号 id）'}`),
     '\n完整清单在下面，看完点最后一条的按钮。',
@@ -138,6 +141,7 @@ export function reviewMessages(t) {
     `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}`,
     `   账号：${x.mine ? '👤' : ''}@${x.account || '（没名字）'}`,
     `   作品 ID：${x.id}`,
+    ...(x.flag ? [`   ⚠️ 待人工确认：${x.flag}`] : []),
     `   链接：${x.link}`,
     ...(x.files && x.files.length ? [`   文件：${x.files[0]}${x.files.length > 1 ? `（另有 ${x.files.length - 1} 个）` : ''}`] : []),
   ].join('\n'));
