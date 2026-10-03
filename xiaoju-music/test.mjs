@@ -7,6 +7,7 @@ register('./test/hooks.mjs', import.meta.url);
 const { default: worker, Library } = await import('./worker.js');
 
 const TOKEN = '123:SECRET-BOT-TOKEN';
+const VTOKEN = '987654:VERIFY-BOT-TOKEN-abcdefghijklmnopqrstuvwxyz'; // 审核机器人（@xiaojuverify_bot）
 const HOOK = 'hook-secret';
 const ADMIN = 'admin-key-123';
 const SKEY = 'streamer-key-456';
@@ -53,7 +54,7 @@ const addFile = bytes => { const id = 'F' + (++seq); files.set(id, bytes); retur
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed + (i >> 12)) & 255; return b; };
 const calls = [];
 const OWNER = 777, FAN = 555;
-const bot = { out: [], toStreamer: [], search: [], pickId: 0, autoStatus: { status: 'idle' }, adminAsks: 0, copyBusy: false, streamerDown: false, copyFail: '' };
+const bot = { vout: [], vStarted: false, out: [], toStreamer: [], search: [], pickId: 0, autoStatus: { status: 'idle' }, adminAsks: 0, copyBusy: false, streamerDown: false, copyFail: '' };
 const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok', viz: 'ok' };
 // 模拟歌词来源：LRCLIB 的歌词库，网易云的歌和歌词
 const lrclibDb = [];
@@ -176,7 +177,16 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ ok: true });
   }
   assert.ok(url.startsWith('https://api.telegram.org/'), 'unexpected fetch ' + url);
-  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage|setMyCommands|editMessageReplyMarkup)$/))) {
+  // 审核机器人用自己的令牌：单独记在 bot.vout。频道主没在它那里点「开始」前，它发不了私聊
+  if ((m = url.match(/\/bot987654:[^/]+\/(\w+)$/))) {
+    assert.ok(url.includes(VTOKEN), '审核机器人的令牌不对');
+    const body = JSON.parse(init.body);
+    bot.vout.push({ method: m[1], ...body });
+    if (m[1] === 'getMe') return Response.json({ ok: true, result: { id: 987654, is_bot: true, username: 'xiaojuverify_bot' } });
+    if (m[1] === 'sendMessage' && !bot.vStarted) return Response.json({ ok: false, error_code: 403, description: "Forbidden: bot can't initiate conversation with a user" });
+    return Response.json({ ok: true, result: m[1] === 'sendMessage' ? { message_id: 5000 + bot.vout.length } : true });
+  }
+  if ((m = url.match(/\/bot[^/]+\/(sendMessage|answerCallbackQuery|getChatAdministrators|editMessageText|copyMessage|pinChatMessage|setMyCommands|editMessageReplyMarkup|deleteMessage)$/))) {
     const body = JSON.parse(init.body);
     if (m[1] === 'copyMessage' && bot.copyFail) return Response.json({ ok: false, error_code: 400, description: bot.copyFail });
     if (m[1] === 'getChatAdministrators') {
@@ -1083,7 +1093,7 @@ await t('账号标签：视频频道按账号分类，默认用抖音昵称、�
   await admin('douyin-self', { sec_uids: [sec] });
 });
 
-await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送回来 → 按点赞排的链接清单私聊发频道主（不下载、不转发）', async () => {
+await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私聊发频道主；搜完完整清单交给审核机器人，频道主在那里审核通过才转（暂停、不通过、超时都不转）', async () => {
   await dm(OWNER, '搜抖音 舞蹈');
   assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*search\.sh/);
   assert.match(lastSay().text, /搜 100 条/);
@@ -1111,75 +1121,139 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.equal((await post('wrong', rows)).status, 403);
   assert.deepEqual(await jsonOf(await post(tok, rows)), { ok: true, keywords: ['舞蹈'], total: 4 });
   const owned = bot.out.filter(o => o.method === 'sendMessage' && o.chat_id === OWNER);
-  // 只有登记过的号：不再审批，直接转
-  assert.match(owned.at(-1).text, /📤 「舞蹈」搜到的 1 条都来自你登记过的号（@（没名字）），已经直接开始转/);
-  const auto = bot.toStreamer.slice(n).filter(x => x.path === 'douyin/import');
-  assert.equal(auto.length, 1);
-  assert.equal(JSON.parse(auto[0].body.text).aweme_id, '7600000000000000004');
+  // 搜完整份清单交给审核机器人；还没接上审核机器人 → 暂停，一条不转（不默认通过）
+  assert.match(owned.at(-1).text, /⏸ 「舞蹈」的清单没送到 @xiaojuverify_bot：还没接上审核机器人[\s\S]*一条也不转/);
+  const rvs = owned.at(-1).reply_markup.inline_keyboard.flat()[0].callback_data;
+  assert.match(rvs, /^rvs:/);
+  const taskId = rvs.slice(4);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + taskId)).status, 'paused');
   assert.match(owned.at(-2).text, /✅ 「舞蹈」搜完了，一共 4 条/);
   const msg = owned.at(-3);
-  assert.equal(msg.chat_id, OWNER);
-  // 每条都附文件地址；登记过的号标 👤
+  // 每条都附文件地址；登记过的号标 👤；小橘的清单不带转发按钮
   assert.match(msg.text, /4\. 📹 我自己的 ❤3 👤你的号\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000004\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/v\/mine\.mp4/);
   assert.match(msg.text, /3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/p\/1\.jpg/, '每条都附文件地址');
   assert.match(msg.text, /抖音搜「舞蹈」：边搜边发[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
+  assert.equal(msg.reply_markup, undefined, '小橘的清单上没有转发按钮');
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '搜过的词出队');
-  assert.ok(bot.toStreamer.slice(n).filter(x => x.path.startsWith('douyin/')).length === 1, '没登记的号光收到搜索结果不转');
-  // 每条带「📤 转 N」按钮，点了就交给流式服务转进视频频道
-  const kb = msg.reply_markup.inline_keyboard.flat();
-  assert.deepEqual(kb.map(b => b.text), ['📤 转 1', '📤 转 2', '📤 转 3', '📤 转 4', '📤 一键转这批里你的号（1 条）']);
-  assert.equal(kb[0].callback_data, 'dys:7600000000000000002');
-  const press = async (from, data) => hook({ update_id: 900, callback_query: { id: 'cq' + data, from: { id: from }, data,
-    message: { message_id: 77, chat: { id: from, type: 'private' }, reply_markup: msg.reply_markup } } });
-  const m0 = bot.toStreamer.length;
-  await press(FAN + 5, 'dys:7600000000000000004');
-  assert.equal(bot.toStreamer.length, m0, '听众点不了');
-  await press(OWNER, 'dys:7600000000000000004');
-  const imp = bot.toStreamer.at(-1);
-  assert.deepEqual([imp.path, imp.body.target, imp.body.final], ['douyin/import', String(VIDEO_CHANNEL), true]);
-  assert.equal(JSON.parse(imp.body.text).video_download_url, 'https://v/mine.mp4');
-  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /开始转了/);
-  // 点过的按钮变成「✅ 已排队」
-  const mk = bot.out.filter(o => o.method === 'editMessageReplyMarkup').at(-1).reply_markup.inline_keyboard.flat().map(b => b.text);
-  assert.ok(mk.includes('✅ 4 已排队') && mk.includes('📤 转 1'));
-  // 一键转这批里登记过的号
-  const all = kb.at(-1).callback_data;
-  assert.match(all, /^dya:/);
-  await press(OWNER, all);
-  const imp2 = bot.toStreamer.at(-1);
-  assert.deepEqual(imp2.body.text.split('\n').map(l => JSON.parse(l).aweme_id), ['7600000000000000004']);
-  assert.ok(bot.out.filter(o => o.method === 'editMessageReplyMarkup').at(-1).reply_markup.inline_keyboard.flat().some(b => b.text === '✅ 已排队 1 条'));
-  await press(OWNER, 'dys:7600000000000000999');
-  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /找不到了/);
+  assert.equal(bot.toStreamer.slice(n).filter(x => x.path === 'douyin/import').length, 0, '登记过的号也不跳过审核');
+  const press = (from, data, message_id = 77) => hook({ update_id: 900, callback_query: { id: 'cq' + data, from: { id: from }, data,
+    message: { message_id, chat: { id: from, type: 'private' } } } });
+  const lastAck = () => bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text;
+  // 旧清单上的「📤 转 N」「一键转」「全部转」按钮都不能绕过审核
+  for (const old of ['dys:7600000000000000004', 'dya:abc', 'dyq:yes']) {
+    await press(OWNER, old);
+    assert.match(lastAck(), /要先在 @xiaojuverify_bot 审核通过才转/);
+  }
+  assert.equal(bot.toStreamer.slice(n).filter(x => x.path === 'douyin/import').length, 0);
   assert.equal((await post(tok, 'nothing')).status, 400);
-  // 账号审批：搜完按作者归在一起，频道主勾自己的号再转（先审后转）
+
+  // 接上审核机器人：令牌发给小橘 → 认令牌、给审核机器人设 webhook（独立 secret），令牌那条消息删掉
+  await dm(FAN + 5, '审核机器人 ' + VTOKEN);
+  assert.equal(await lib.getConfig('verifyTok'), null, '听众不能接');
+  await dm(OWNER, '审核机器人 ' + VTOKEN);
+  assert.equal(await lib.getConfig('verifyTok'), VTOKEN);
+  const wh = bot.vout.find(o => o.method === 'setWebhook');
+  assert.equal(wh.url, BASE + '/verify-webhook');
+  const VSECRET = await lib.getConfig('verifySecret');
+  assert.ok(VSECRET.length >= 32 && wh.secret_token === VSECRET && VSECRET !== HOOK);
+  assert.ok(bot.out.some(o => o.method === 'deleteMessage' && o.chat_id === OWNER), '令牌那条删掉');
+  assert.match(lastSay().text, /接上了 @xiaojuverify_bot[\s\S]*点一下「开始」/);
+  // 频道主还没在审核机器人里点「开始」：重新送审还是送不到 → 仍然暂停
+  await press(OWNER, rvs);
+  assert.match(lastAck(), /还是没送到：审核机器人还不能给你发消息/);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + taskId)).status, 'paused');
+
+  // 审核机器人的 webhook：secret 不对 403；频道主点「开始」→ 补发暂停的审核单（完整清单 + 审核按钮）
+  const vhook = (update, secret = VSECRET) => req('/verify-webhook', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Telegram-Bot-Api-Secret-Token': secret }, body: JSON.stringify(update),
+  });
+  assert.equal((await vhook({ update_id: 1 }, HOOK)).status, 403, '小橘的 secret 进不了审核机器人');
+  assert.equal((await hook({ update_id: 1 }, VSECRET)).status, 403, '审核机器人的 secret 进不了小橘');
+  bot.vStarted = true;
+  const v0 = bot.vout.length;
+  await vhook({ update_id: 2, message: { message_id: 1, from: { id: FAN + 5 }, chat: { id: FAN + 5, type: 'private' }, text: '/start' } });
+  assert.match(bot.vout.at(-1).text, /私人审核机器人/);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + taskId)).status, 'paused', '别人点开始不补发');
+  await vhook({ update_id: 3, message: { message_id: 2, from: { id: OWNER }, chat: { id: OWNER, type: 'private' }, text: '/start' } });
+  const vsent = bot.vout.slice(v0).filter(o => o.method === 'sendMessage' && o.chat_id === OWNER);
+  const full = vsent.map(o => o.text).join('\n');
+  assert.match(full, new RegExp(`🛂 审核单 ${taskId}\\n来源：小橘音乐机器人 · 抖音搜索「舞蹈」\\n一共 4 条，来自 4 个账号`));
+  // 完整清单：每条有作品 ID、链接、来源账号、文件地址
+  assert.match(full, /📹 我自己的\n   账号：👤@（没名字）\n   作品 ID：7600000000000000004\n   链接：https:\/\/www\.douyin\.com\/video\/7600000000000000004\n   文件：https:\/\/v\/mine\.mp4/);
+  assert.match(full, /sec_uid: MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng/);
+  for (const id of ['7600000000000000001', '7600000000000000002', '7600000000000000003', '7600000000000000004']) assert.ok(full.includes('作品 ID：' + id));
+  const dec = vsent.find(o => o.reply_markup && o.reply_markup.inline_keyboard.length);
+  assert.deepEqual(dec.reply_markup.inline_keyboard.flat().map(b => b.callback_data), [`v:ok:${taskId}`, `v:no:${taskId}`]);
+  assert.match(bot.vout.at(-1).text, /补发了 1 张之前没送到的审核单/);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + taskId)).status, 'pending');
+  const vpress = (from, data, message_id = 5001) => vhook({ update_id: 4, callback_query: { id: 'v' + data, from: { id: from }, data, message: { message_id, chat: { id: from, type: 'private' } } } });
+  const vAck = () => bot.vout.filter(o => o.method === 'answerCallbackQuery').at(-1).text;
+  await vpress(FAN + 5, `v:ok:${taskId}`);
+  assert.match(vAck(), /只有频道主能审核/);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + taskId)).status, 'pending');
+  // 不通过：一条不转，小橘那边说一声
+  const before = bot.toStreamer.length;
+  await vpress(OWNER, `v:no:${taskId}`);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + taskId)).status, 'rejected');
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 0, '不通过：一条不转');
+  assert.match(lastSay().text, new RegExp(`❌ 审核单 ${taskId}（「舞蹈」4 条）没通过，一条不转`));
+  await vpress(OWNER, `v:ok:${taskId}`);
+  assert.match(vAck(), /审核没通过/, '审过的不能再改');
+  await press(OWNER, `rvt:${taskId}`);
+  assert.match(lastAck(), /没通过审核，不能转/);
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 0);
+
+  // 再搜一次：审核机器人已经能发了 → 直接送审（pending）；通过 → 小橘按审核时那份数据转，并登记这些号
   const A = 'MS4wLjABAAAAOtherAuthor000001', sec4 = 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng';
   const rowA = (id, sec, name) => JSON.stringify({ aweme_id: id, desc: 'x', liked_count: '1', source_keyword: '审批', xiaoju_sec_uid: sec, xiaoju_nickname: name });
   await post(tok, [rowA('7600000000000000021', A, '安66'), rowA('7600000000000000022', A, '安66'), rowA('7600000000000000023', sec4, '丁')].join('\n'));
-  const pk = lastSay();
-  assert.match(pk.text, /账号审批：「审批」搜到的 3 条来自这 2 个号/);
-  assert.match(pk.text, /1\. 👤@丁（1 条）\n2\. @安66（2 条）/);
-  assert.deepEqual(pk.reply_markup.inline_keyboard.flat().map(b => b.text), ['✅ 都是我的号，全部转（3 条）', '❌ 有不是我的，不转']);
-  const pick = JSON.parse(await lib.getConfig('dyPick'));
-  const pmsg = { message_id: pick.msg, chat: { id: OWNER, type: 'private' } };
-  const press2 = data => hook({ update_id: 902, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: pmsg } });
-  const before = bot.toStreamer.length;
-  await press2('dyq:no');
-  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 0, '有不是的：一条不转');
-  assert.ok(!(await lib.getConfig('douyinSelf')).includes(A));
-  await press2('dyq:yes');
-  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /已经拒绝了/);
-  // 再搜一次，这回都是自己的：全部转、登记
-  await post(tok, [rowA('7600000000000000031', A, '安66'), rowA('7600000000000000032', sec4, '丁')].join('\n'));
-  const pick2 = JSON.parse(await lib.getConfig('dyPick'));
-  pmsg.message_id = pick2.msg;
-  const b2 = bot.toStreamer.length;
-  await press2('dyq:yes');
-  const go = bot.toStreamer.slice(b2).find(x => x.path === 'douyin/import');
-  assert.equal(go.body.text.split('\n').length, 2, '都是我的：全部转');
-  assert.ok((await lib.getConfig('douyinSelf')).includes(A), '并登记');
-  await press2('dyq:yes');
-  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /已经转过了/);
+  const sub = lastSay().text.match(/已经交给 @xiaojuverify_bot，审核单 (\w+)/);
+  assert.ok(sub, lastSay().text);
+  const t2 = sub[1];
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + t2)).status, 'pending');
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 0, '没审核不转');
+  assert.match(bot.vout.filter(o => o.method === 'sendMessage').map(o => o.text).join('\n'), /一共 3 条，来自 2 个账号[\s\S]*1\. 👤@丁（1 条）[\s\S]*2\. @安66（2 条）/);
+  await vpress(OWNER, `v:ok:${t2}`);
+  const task2 = JSON.parse(await lib.getConfig('rv:' + t2));
+  assert.deepEqual([task2.status, task2.decidedBy, task2.transfer], ['approved', OWNER, 'started']);
+  const go = bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import');
+  assert.equal(go.length, 1);
+  assert.deepEqual(go[0].body.text.split('\n').map(l => JSON.parse(l).aweme_id), ['7600000000000000021', '7600000000000000022', '7600000000000000023']);
+  assert.ok((await lib.getConfig('douyinSelf')).includes(A), '通过后登记');
+  assert.match(lastSay().text, new RegExp(`✅ 审核单 ${t2}（「审批」3 条）审核通过，开始转 3 条，登记了 1 个号`));
+  assert.ok(bot.vout.some(o => o.method === 'editMessageText' && /✅ 审核通过/.test(o.text)), '审核机器人那条改成结果');
+  await vpress(OWNER, `v:ok:${t2}`);
+  assert.match(vAck(), /审核通过/);
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 1, '点两次不转两次');
+
+  // 通过了但转发服务出错：不丢，给「再试转发」按钮
+  await post(tok, [rowA('7600000000000000041', A, '安66')].join('\n'));
+  const t3 = lastSay().text.match(/审核单 (\w+)/)[1];
+  bot.streamerDown = true;
+  await vpress(OWNER, `v:ok:${t3}`);
+  bot.streamerDown = false;
+  assert.match(lastSay().text, /审核通过了，但还没转：小橘的服务正在唤醒/);
+  assert.equal(lastSay().reply_markup.inline_keyboard[0][0].callback_data, `rvt:${t3}`);
+  await press(OWNER, `rvt:${t3}`);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + t3)).transfer, 'started');
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 2);
+
+  // 超时：24 小时没审 → expired，一条不转
+  await post(tok, [rowA('7600000000000000051', A, '安66')].join('\n'));
+  const t4 = lastSay().text.match(/审核单 (\w+)/)[1];
+  const task4 = JSON.parse(await lib.getConfig('rv:' + t4));
+  await lib.setConfig('rv:' + t4, JSON.stringify({ ...task4, expiresAt: Date.now() - 1 }));
+  let jobs = [];
+  await worker.scheduled({ cron: '*/30 * * * *' }, env, { waitUntil: p => jobs.push(p) });
+  await Promise.all(jobs);
+  assert.equal(JSON.parse(await lib.getConfig('rv:' + t4)).status, 'expired');
+  assert.ok(bot.out.some(o => o.method === 'sendMessage' && new RegExp(`⌛ 审核单 ${t4}`).test(o.text)));
+  await vpress(OWNER, `v:ok:${t4}`);
+  assert.match(vAck(), /超时/);
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 2, '超时不转');
+  // 「审核」：看接好没有、哪些在等
+  await dm(OWNER, '审核');
+  assert.match(lastSay().text, /🛂 审核机器人：@xiaojuverify_bot[\s\S]*现在没有等审核的/);
   await admin('douyin-self', { sec_uids: [sec4] });
   // 边抓边发：一批一批送（X-Final: 0），编号接着排，重复的不再发；最后送「搜完了」
   const batch = (body, fin) => req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': fin }, body });
@@ -1187,14 +1261,15 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   const n1 = bot.out.length;
   await batch([row('7600000000000000011', 5), row('7600000000000000012', 50)].join('\n'), '0');
   assert.match(lastSay().text, /抖音搜「街舞」：边搜边发[\s\S]*1\. 📹 街舞2 ❤50[\s\S]*2\. 📹 街舞1 ❤5/);
-  assert.deepEqual(lastSay().reply_markup.inline_keyboard.flat().map(b => b.text), ['📤 转 1', '📤 转 2']);
+  assert.equal(lastSay().reply_markup, undefined);
   await batch([row('7600000000000000012', 50), row('7600000000000000013', 9)].join('\n'), '0');
   assert.match(lastSay().text, /「街舞」接着来：第 3–3 条\n\n3\. 📹 街舞3 ❤9/);
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '没搜完不出队');
   assert.equal((await batch('', '1')).status, 200);
-  assert.match(bot.out.filter(o => o.method === 'sendMessage').at(-1).text, /✅ 「街舞」搜完了，一共 3 条/);
+  assert.match(bot.out.filter(o => o.method === 'sendMessage').at(-2).text, /✅ 「街舞」搜完了，一共 3 条/);
+  assert.match(lastSay().text, /🛂 「街舞」的完整清单（3 条）已经交给 @xiaojuverify_bot/);
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
-  assert.equal(bot.out.slice(n1).filter(o => o.method === 'sendMessage').length, 3);
+  assert.equal(bot.out.slice(n1).filter(o => o.method === 'sendMessage').length, 4);
   await dm(OWNER, '搜抖音 清空');
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
 });
@@ -1365,7 +1440,7 @@ await t('播放页和管理页都能取到，内嵌脚本能通过语法检查',
 await t('任何响应里都不出现机器人 token、管理密钥、流式服务密钥', async () => {
   assert.ok(seen.length > 20);
   for (const s of seen) {
-    for (const secret of [TOKEN, 'SECRET-BOT', ADMIN, SKEY]) assert.ok(!s.includes(secret), 'leaked: ' + s.slice(0, 200));
+    for (const secret of [TOKEN, 'SECRET-BOT', VTOKEN, 'VERIFY-BOT', ADMIN, SKEY]) assert.ok(!s.includes(secret), 'leaked: ' + s.slice(0, 200));
   }
 });
 

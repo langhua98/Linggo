@@ -23,11 +23,13 @@
 //       TG_BOT_TOKEN / TG_WEBHOOK_SECRET / ADMIN_KEY / STREAMER_KEY（secret）、
 //       CHANNEL_ID / CHANNEL_USERNAME / STREAMER_URL（普通变量；STREAMER_URL 为空则大文件不能播放）、
 //       VIDEO_CHANNEL_ID（视频频道「小橘视频」，私有频道的数字 id：抖音视频、频道主发来的视频文件都转到这里，不进音乐频道）
+//   POST /verify-webhook   审核机器人（verify.js）的 webhook：抖音搜索结果转进视频频道前，频道主在那里审核
 
 import { DurableObject } from 'cloudflare:workers';
 import PAGE from './page.html';
 import ADMIN_PAGE from './admin.html';
 import DOUYIN_LOGIN_PAGE from './douyin-login.html';
+import * as V from './verify.js';
 
 const TG = 'https://api.telegram.org';
 // 官方 Bot API 的 getFile 只能取 20 MB 以内的文件，更大的走流式服务
@@ -88,7 +90,10 @@ class HttpError extends Error {
 export default {
   // 每天北京时间凌晨 3 点（UTC 19:00）：自动去来源频道搬新歌
   async scheduled(controller, env, ctx) {
-    if (controller.cron === DOUYIN_CRON) ctx.waitUntil(douyinTick(env).catch(() => {}));
+    if (controller.cron === DOUYIN_CRON) {
+      ctx.waitUntil(expireReviews(env).catch(() => {}));
+      ctx.waitUntil(douyinTick(env).catch(() => {}));
+    }
     else ctx.waitUntil(nightly(env).catch(() => {}));
   },
   async fetch(request, env, ctx) {
@@ -101,6 +106,9 @@ export default {
       }
       if (path === '/tg-webhook') {
         return method === 'POST' ? await webhook(request, env, ctx) : text('Method Not Allowed', 405);
+      }
+      if (path === '/verify-webhook') {
+        return method === 'POST' ? await V.verifyWebhook(request, env, reviewDeps(env)) : text('Method Not Allowed', 405);
       }
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, url);
       if (path === '/dy-import' && method === 'POST') return await cloudImport(request, env);
@@ -1243,7 +1251,8 @@ const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮
 发一个视频文件 —— 点按钮转进视频频道
 
 🔎 抖音搜索
-搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词（默认 100 条；「搜抖音 舞蹈 300」搜 300 条，最多 500），结果按点赞排好私聊发你（链接、文件地址），每条有「📤 转 N」按钮，点了转进视频频道
+搜抖音 舞蹈 —— 让云电脑在抖音里搜这个词（默认 100 条；「搜抖音 舞蹈 300」搜 300 条，最多 500），结果按点赞排好私聊发你（链接、文件地址）；搜完完整清单交给审核机器人，你在那里审核通过才转进视频频道
+审核 —— 审核机器人接好没有、哪些审核单在等你；「审核机器人 令牌」接上审核机器人（令牌在 @BotFather 里拿）
 搜抖音 —— 看还有哪些词排着队；「搜抖音 清空」清掉
 
 🎵 音乐（小橘音乐）
@@ -1318,6 +1327,7 @@ async function botUpdate(env, update, origin) {
   if (!t || /^\/(start|help)\b/.test(t) || t === '帮助') return isOwner ? ownerHelp(env, chat) : say(env, chat, PUBLIC_HELP);
   if (isOwner) {
     let c;
+    if ((c = /^(?:审核机器人|审核)(?:\s+(\d{5,15}:[\w-]{30,80}))?$/.exec(t))) return ownerVerify(env, chat, m.message_id, c[1], origin);
     if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());
     if (/^进度$/.test(t)) return ownerProgress(env, chat);
     if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
@@ -1475,47 +1485,24 @@ async function botButton(env, cb, owner, origin) {
     await ack(tip);
     return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: await progressText(env), reply_markup: { inline_keyboard: PROGRESS_KB } });
   }
-  if (kind === 'dyp' || kind === 'dyq') { // 账号审批：都是我的 → 整批转；有不是的 → 不转
-    let p = null;
-    try { p = JSON.parse((await L.getConfig('dyPick')) || 'null'); } catch {}
-    if (!p || p.msg !== cb.message.message_id) return ack('这条审批过期了，以最新的一条为准');
-    if (p.done) return ack(p.done === 'yes' ? '已经转过了' : '这批已经拒绝了');
-    if (kind === 'dyp') return ack();
-    if (a === 'no') {
-      p.done = 'no';
-      await L.setConfig('dyPick', JSON.stringify(p));
-      await ack('好，这批不转');
-      return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
-    }
-    const res = await importPicked(env, L, owner, p);
-    if (!res.ok) return ack(res.tip);
-    await L.setConfig('dyPick', JSON.stringify(p));
-    await ack(`开始转 ${res.n} 条${res.add ? `，登记了 ${res.add} 个号` : ''}；进度点「📊 进度」看`);
-    return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
+  if (kind === 'dyp' || kind === 'dyq' || kind === 'dys' || kind === 'dya') { // 旧清单上的转发按钮：搜索结果一律先经审核机器人
+    return ack(`搜到的作品要先在 @${await V.verifyName(L)} 审核通过才转，这个按钮不能用了`);
   }
-  if (kind === 'dys' || kind === 'dya') { // 搜索清单里点「📤 转 N」/「一键转这批里你的号」：交给流式服务按最高画质转进视频频道（已有的跳过）
-    if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
-    const all = await searchRows(L);
-    const ids = kind === 'dys' ? [a] : ((await douyinTagMap(L, 'dySearchBatches'))[a] || []);
-    const rows = ids.map(id => all[id]).filter(Boolean);
-    if (!rows.length) return ack('找不到了（地址过期），重新搜一次');
-    let r;
-    try {
-      r = await streamerCall(env, '/douyin/import', {
-        text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
-        tags: await douyinTagMap(L, 'douyinTags'),
-      });
-    } catch {
-      return ack('小橘的服务正在唤醒，过一两分钟再点');
-    }
-    if (r.status === 409) return ack('小橘正在转别的，转完再点');
-    if (r.status !== 200) return ack((r.data && r.data.detail) || '没转成');
-    await ack(r.data.started ? '开始转了，转好告诉你；进度点「📊 进度」看' : '排进去了，前面的转完就转它；进度点「📊 进度」看');
-    // 点过的按钮改成「✅ 已排队」，一眼看出哪些点过了
-    const kb = (cb.message.reply_markup && cb.message.reply_markup.inline_keyboard) || [];
-    const marked = kb.map(row => row.map(btn => (btn.callback_data === cb.data
-      ? { ...btn, text: kind === 'dys' ? `✅ ${btn.text.replace(/^📤 转 /, '')} 已排队` : `✅ 已排队 ${rows.length} 条` } : btn)));
-    return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: cb.message.message_id, reply_markup: { inline_keyboard: marked } });
+  if (kind === 'rvs') { // 重新送审：清单再交给审核机器人一次（只对暂停的审核单）
+    const t = await V.getTask(L, a);
+    if (!t) return ack('找不到这张审核单了');
+    if (t.status !== 'paused') return ack(t.status === 'pending' ? '已经在审核机器人那里等你审核了' : '这张审核单已经处理过了');
+    const r = await V.deliverTask(env, L, owner, t);
+    await ack(r.ok ? `送到 @${await V.verifyName(L)} 了，去那里审核` : `还是没送到：${r.why}`);
+    if (r.ok) return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } });
+    return;
+  }
+  if (kind === 'rvt') { // 审核通过但没转成：再试（只认任务表里 approved 的）
+    const t = await V.getTask(L, a);
+    if (!t || t.status !== 'approved') return ack('这张审核单没通过审核，不能转');
+    if (t.transfer === 'started') return ack('已经在转了');
+    await ack('再试一次');
+    return transferApproved(env, L, owner, t);
   }
   if (kind === 'hs' || kind === 'hl') { // 搬运设置里点开关：网站 / 授权
     const h = await L.getHarvest();
@@ -1911,18 +1898,17 @@ async function cloudSearchResult(request, env) {
   // 边搜边发：云电脑每 30 秒送一批（X-Final: 0），搜完送 X-Final: 1（可以不带结果）。不带这个头当一次送完。
   // 编号在这一轮里接着往下排（dySearchNum: {词: 已经发了几条}），同一轮送重复的不再发（dySearchRun）
   const final = request.headers.get('X-Final') !== '0';
-  // 清单只私聊发给频道主一个人：每条附上文件地址（频道主说搜到的都是自己的号）；登记过的号（douyinSelf）标 👤。
-  // 只发链接，不下载、不转进频道——批量转进频道的仍然只有登记过的账号
+  // 清单只私聊发给频道主一个人：每条附上文件地址；登记过的号（douyinSelf）标 👤（只作参考）。
+  // 小橘这里只发清单、不带转发按钮：搜完把这一轮的完整清单交给审核机器人，频道主在那里审核通过才转
   const mine = new Set(await douyinSelves(L));
   const groups = new Map();
   let run = [];
   try { run = JSON.parse((await L.getConfig('dySearchRun')) || '[]'); } catch {}
   const seen = new Set(run);
   const nums = await douyinTagMap(L, 'dySearchNum');
-  // 清单里每条带「📤 转 N」按钮：频道主挑出自己的作品点一下，就按最高画质转进视频频道。按钮要用的作品数据先存着
+  // 这一轮的作品数据先存着，搜完一起交给审核机器人
   const rows = await searchRows(L);
   let fresh = 0;
-  const ownIds = new Set();
   for (const line of body.split('\n')) {
     let r;
     try { r = JSON.parse(line); } catch { continue; }
@@ -1938,7 +1924,6 @@ async function cloudSearchResult(request, env) {
     const files = (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')])
       .map(u => u.trim()).filter(u => /^https?:\/\//.test(u));
     rows[id] = compactSearchRow(r);
-    if (own) ownIds.add(id);
     groups.get(kw).push({
       id, likes: Number(r.liked_count) || 0, name, note, own, files,
       title: String(r.desc || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
@@ -1946,21 +1931,7 @@ async function cloudSearchResult(request, env) {
   }
   const owner = await ownerId(env);
   if (!fresh && final && !Object.keys(nums).length && body.trim()) return json({ error: '文件里没认出搜索结果' }, 400);
-  // 一键转「这批里登记过的号」的作品：作品号太多塞不进按钮，存在 dySearchBatches 里，按钮只带批号
-  const batches = await douyinTagMap(L, 'dySearchBatches');
-  const send = async (text, ids) => {
-    if (!owner) return;
-    const btns = ids.map(([n, id]) => ({ text: `📤 转 ${n}`, callback_data: `dys:${id}` }));
-    const kb = [];
-    for (let i = 0; i < btns.length; i += 5) kb.push(btns.slice(i, i + 5));
-    const own = ids.map(([, id]) => id).filter(id => ownIds.has(id));
-    if (own.length) {
-      const bid = Date.now().toString(36) + Object.keys(batches).length.toString(36);
-      batches[bid] = own;
-      kb.push([{ text: `📤 一键转这批里你的号（${own.length} 条）`, callback_data: `dya:${bid}` }]);
-    }
-    await say(env, owner, text, kb.length ? kb : undefined);
-  };
+  const send = async text => { if (owner) await say(env, owner, text); };
 
   for (const [kw, list] of groups) {
     list.sort((a, b) => b.likes - a.likes);  // 这一批里按点赞排
@@ -1969,24 +1940,20 @@ async function cloudSearchResult(request, env) {
       + (x.files.length ? `\n⬇️ 文件（几个小时内有效）：\n${x.files.slice(0, 9).join('\n')}` : ''));
     const head = start
       ? `🔎「${kw}」接着来：第 ${start + 1}–${start + list.length} 条`
-      : `🔎 抖音搜「${kw}」：边搜边发，每批按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）`;
-    let chunk = head, ids = [];
-    for (const [i, l] of lines.entries()) {
+      : `🔎 抖音搜「${kw}」：边搜边发，每批按点赞排（⬇️ 是文件地址，几个小时内有效；👤 是机器人里登记过的号）。搜完整份清单交给审核机器人，你在那里审核通过才转`;
+    let chunk = head;
+    for (const l of lines) {
       if ((chunk + '\n\n' + l).length > 3800) {
-        await send(chunk, ids);
+        await send(chunk);
         chunk = l;
-        ids = [];
       } else {
         chunk += '\n\n' + l;
       }
-      ids.push([start + i + 1, list[i].id]);
     }
-    await send(chunk, ids);
+    await send(chunk);
     nums[kw] = start + list.length;
   }
-  const bk = Object.keys(batches).slice(-50);
-  await L.setConfig('dySearchBatches', JSON.stringify(Object.fromEntries(bk.map(k => [k, batches[k]]))));
-  const keep = Object.keys(rows).slice(-300);  // 只留最近 300 条（地址几个小时就失效，旧的留着也没用；再多存不下）
+  const keep = Object.keys(rows).slice(-600);  // 只留最近 600 条（地址几个小时就失效，旧的留着也没用；再多存不下）
   await L.setConfig('dySearchRows', JSON.stringify(Object.fromEntries(keep.map(k => [k, rows[k]]))));
   const touched = Object.keys(nums);
   if (!final) {
@@ -1996,8 +1963,8 @@ async function cloudSearchResult(request, env) {
   }
   // 搜完了：每个词说一声一共几条，出队，这一轮的编号清零
   for (const kw of touched) await say(env, owner, `✅ 「${kw}」搜完了，一共 ${nums[kw]} 条`);
-  // 账号审批：这一轮搜到的按作者归在一起，发一条消息让频道主勾自己的号，点「转选中的」才转（先审后转，没勾的不转）
-  if (owner) await sendAccountPick(env, L, owner, touched, [...seen], rows);
+  // 这一轮的完整清单交给审核机器人（审核任务写进共享的任务表）；审核通过前一条不转
+  if (owner) await submitForReview(env, L, owner, touched, [...seen], rows);
   await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !touched.includes(k))));
   const counts = await douyinTagMap(L, 'dySearchCounts');
   for (const k of touched) delete counts[k];
@@ -2009,65 +1976,104 @@ async function cloudSearchResult(request, env) {
 
 const MAX_SELVES = 30;
 
-function pickKeyboard(p) {
-  const n = p.authors.reduce((t, a) => t + a.ids.length, 0);
-  if (p.done === 'yes') return { inline_keyboard: [[{ text: `✅ 已转 ${n} 条`, callback_data: 'dyp:x' }]] };
-  if (p.done === 'no') return { inline_keyboard: [[{ text: '❌ 没转', callback_data: 'dyp:x' }]] };
-  return { inline_keyboard: [[{ text: `✅ 都是我的号，全部转（${n} 条）`, callback_data: 'dyq:yes' }],
-    [{ text: '❌ 有不是我的，不转', callback_data: 'dyq:no' }]] };
+// ── 和审核机器人（verify.js）的交接 ──
+// 小橘：搜完生成完整清单 → 写进共享任务表 → 审核机器人发给频道主。频道主在审核机器人里点了，结果写回任务表，
+// 再叫小橘 onReviewDecision：小橘重新从任务表读状态，只有 approved 才转。送不到、超时、不通过，都不转。
+function reviewDeps(env) {
+  return { L: lib(env), owner: () => ownerId(env), onDecision: id => onReviewDecision(env, id) };
 }
 
-// 把审批（或全是登记过的号）的整批作品交给流式服务转进视频频道，并登记这些号；成功时把 p.done 置成 'yes'
-async function importPicked(env, L, owner, p) {
-  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, tip: '还没设置视频频道' };
-  const all = await searchRows(L);
-  const rows = p.authors.flatMap(x => x.ids).map(id => all[id]).filter(Boolean);
-  if (!rows.length) return { ok: false, tip: '作品数据过期了，重新搜一次' };
+async function submitForReview(env, L, owner, kws, ids, rows) {
+  const mine = new Set(await douyinSelves(L));
+  const items = [], data = [];
+  let lost = 0;
+  for (const id of ids) {
+    const r = rows[id];
+    if (!r) { lost++; continue; }
+    const note = String(r.aweme_type || '') === '68' || String(r.note_download_url || '').startsWith('http');
+    const sec = SEC_UID.test(String(r.xiaoju_sec_uid || '')) ? String(r.xiaoju_sec_uid) : '';
+    items.push({
+      id, note, sec, mine: !!sec && mine.has(sec), link: `https://www.douyin.com/${note ? 'note' : 'video'}/${id}`,
+      account: String(r.xiaoju_nickname || (String(r.nickname || '').includes('*') ? '' : r.nickname) || '').slice(0, 30),
+      title: String(r.desc || '').replace(/\s+/g, ' ').trim().slice(0, 40) || '（没有文案）',
+      files: (note ? String(r.note_download_url || '').split(',') : [String(r.video_download_url || '')]).map(u => u.trim()).filter(u => /^https?:\/\//.test(u)).slice(0, 9),
+    });
+    data.push(r);
+  }
+  if (!items.length) return;
+  const t = await V.createTask(L, { keywords: kws, items, rows: data });
+  const res = await V.deliverTask(env, L, owner, t);
+  const bot = '@' + await V.verifyName(L);
+  if (res.ok) {
+    return say(env, owner, `🛂 「${kws.join('、')}」的完整清单（${items.length} 条${lost ? `；另有 ${lost} 条数据过期，没进清单` : ''}）已经交给 ${bot}，审核单 ${t.id}。去那里审核，通过了小橘才转；24 小时不审就不转。`);
+  }
+  return say(env, owner, `⏸ 「${kws.join('、')}」的清单没送到 ${bot}：${res.why}\n这批 ${items.length} 条先暂停，一条也不转。处理好后点下面重新送审（或者直接去 ${bot} 点「开始」，它会自己补发）。`,
+    [[{ text: '🔁 重新送审', callback_data: `rvs:${t.id}` }]]);
+}
+
+async function onReviewDecision(env, id) {
+  const L = lib(env), owner = await ownerId(env);
+  const t = await V.getTask(L, id);
+  if (!t || !owner) return;
+  const what = `审核单 ${t.id}（「${t.keywords.join('、')}」${t.items.length} 条）`;
+  if (t.status === 'rejected') return say(env, owner, `❌ ${what}没通过，一条不转。`);
+  if (t.status === 'expired') return say(env, owner, `⌛ ${what}超时没审，一条不转。要转就重新搜一次。`);
+  if (t.status !== 'approved') return;
+  return transferApproved(env, L, owner, t);
+}
+
+// 只转任务表里 approved 的那一批（就是审核时看到的那份数据）
+async function transferApproved(env, L, owner, t) {
+  const what = `审核单 ${t.id}（「${t.keywords.join('、')}」${t.items.length} 条）`;
+  const fail = async tip => {
+    t.transfer = 'failed';
+    await V.saveTask(L, t);
+    return say(env, owner, `⚠️ ${what}审核通过了，但还没转：${tip}`, [[{ text: '🔁 再试转发', callback_data: `rvt:${t.id}` }]]);
+  };
+  if (t.status !== 'approved') return;
+  if (t.transfer === 'started') return;
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return fail('还没设置视频频道');
+  const data = await V.taskRows(L, t);
+  if (!data.length) return fail('作品数据不见了，重新搜一次');
   let r;
   try {
     r = await streamerCall(env, '/douyin/import', {
-      text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
+      text: data.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
       tags: await douyinTagMap(L, 'douyinTags'),
     });
   } catch {
-    return { ok: false, tip: '小橘的服务正在唤醒，过一两分钟再点' };
+    return fail('小橘的服务正在唤醒，过一两分钟再点');
   }
-  if (r.status === 409) return { ok: false, tip: '小橘正在转别的，转完再点' };
-  if (r.status !== 200) return { ok: false, tip: (r.data && r.data.detail) || '没转成' };
-  // 频道主确认都是自己的号：登记（以后云电脑也转它们的全部作品，再搜到它们也不用再审）
+  if (r.status === 409) return fail('小橘正在转别的，转完再点');
+  if (r.status !== 200) return fail((r.data && r.data.detail) || '没转成');
+  t.transfer = 'started';
+  await V.saveTask(L, t);
+  // 审核通过 = 频道主确认这些都是自己的号：登记（以后云电脑也抓它们的全部作品）
   const selves = await douyinSelves(L);
-  const add = p.authors.map(x => x.sec).filter(x => SEC_UID.test(x) && !selves.includes(x));
+  const add = [...new Set(t.items.map(x => x.sec))].filter(x => SEC_UID.test(x) && !selves.includes(x));
   if (add.length) await L.setConfig('douyinSelf', JSON.stringify([...selves, ...add].slice(0, MAX_SELVES)));
-  p.done = 'yes';
-  return { ok: true, n: rows.length, add: add.length };
+  return say(env, owner, `✅ ${what}审核通过，开始转 ${data.length} 条${add.length ? `，登记了 ${add.length} 个号` : ''}；进度点「📊 进度」看`);
 }
 
-async function sendAccountPick(env, L, owner, kws, ids, rows) {
-  const mine = new Set(await douyinSelves(L));
-  const by = new Map();
-  for (const id of ids) {
-    const r = rows[id];
-    if (!r || !r.xiaoju_sec_uid) continue;
-    const k = String(r.xiaoju_sec_uid);
-    if (!by.has(k)) by.set(k, { sec: k, name: String(r.xiaoju_nickname || '').slice(0, 20), ids: [], mine: mine.has(k) });
-    by.get(k).ids.push(id);
+async function expireReviews(env) {
+  return V.expireTasks(env, lib(env), await ownerId(env), id => onReviewDecision(env, id));
+}
+
+async function ownerVerify(env, chat, msgId, token, origin) {
+  const L = lib(env);
+  if (token) {
+    // 令牌不留在聊天记录里
+    await tg(env, 'deleteMessage', { chat_id: chat, message_id: msgId });
+    const r = await V.connectVerifyBot(env, L, token, origin);
+    if (!r.ok) return say(env, chat, `没接上审核机器人：${r.why}`);
+    return say(env, chat, `✅ 接上了 @${r.name}（你发的令牌那条已经删掉）。\n去 @${r.name} 点一下「开始」，它才能给你发审核清单。以后搜抖音搜完，完整清单都交给它审核，审核通过小橘才转。`);
   }
-  const authors = [...by.values()].sort((x, y) => (y.mine - x.mine) || (y.ids.length - x.ids.length)).slice(0, 40);
-  if (!authors.length) return;
-  const p = { authors, done: false };
-  if (authors.every(a => a.mine)) { // 全是频道主审过、登记过的号：不再问，直接转
-    const res = await importPicked(env, L, owner, p);
-    const n = authors.reduce((t, a) => t + a.ids.length, 0);
-    return say(env, owner, res.ok
-      ? `📤 「${kws.join('、')}」搜到的 ${n} 条都来自你登记过的号（${authors.map(a => '@' + (a.name || '（没名字）')).join('、')}），已经直接开始转；进度点「📊 进度」看`
-      : `「${kws.join('、')}」搜到的 ${n} 条都是你登记过的号，但没转成：${res.tip}。可以在上面的清单里点「一键转这批里你的号」`);
-  }
-  const list = authors.map((a, i) => `${i + 1}. ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.ids.length} 条）`).join('\n');
-  const r = await tg(env, 'sendMessage', {
-    chat_id: owner, reply_markup: pickKeyboard(p),
-    text: `🔍 账号审批：「${kws.join('、')}」搜到的 ${authors.reduce((t, a) => t + a.ids.length, 0)} 条来自这 ${authors.length} 个号（👤 是登记过的）：\n\n${list}\n\n都是你的号就点「全部转」（这些号也会登记）。只要有一个不是你的，就点「不转」，一条也不转，尊重原作者。`,
-  });
-  if (r.ok) await L.setConfig('dyPick', JSON.stringify({ ...p, msg: r.result.message_id }));
+  const has = !!(env.VERIFY_BOT_TOKEN || (await L.getConfig('verifyTok')));
+  const list = await V.pendingTasks(L);
+  return say(env, chat, [
+    has ? `🛂 审核机器人：@${await V.verifyName(L)}` : '🛂 还没接审核机器人：在 @BotFather 里拿到它的令牌，发「审核机器人 令牌」给我',
+    list.length ? `等审核 / 暂停的：\n${list.map(t => `· ${t.id}「${t.keywords.join('、')}」${t.items.length} 条 —— ${t.status === 'paused' ? `暂停（${t.reason}）` : '等你审核'}`).join('\n')}` : '现在没有等审核的。',
+  ].join('\n\n'), list.filter(t => t.status === 'paused').map(t => [{ text: `🔁 重新送审 ${t.id}`, callback_data: `rvs:${t.id}` }]));
 }
 
 async function cloudToken(L) {

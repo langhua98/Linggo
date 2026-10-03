@@ -124,6 +124,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
      -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
      -F "metadata={\"main_module\":\"worker.js\",\"compatibility_date\":\"2026-01-01\",\"keep_bindings\":[\"secret_text\"],\"bindings\":[{\"type\":\"kv_namespace\",\"name\":\"TRACKS\",\"namespace_id\":\"$KV\"},{\"type\":\"durable_object_namespace\",\"name\":\"LIB\",\"class_name\":\"Library\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_ID\",\"text\":\"-1003817921075\"},{\"type\":\"plain_text\",\"name\":\"CHANNEL_USERNAME\",\"text\":\"xiaojumusic\"},{\"type\":\"plain_text\",\"name\":\"STREAMER_URL\",\"text\":\"$STREAMER_URL\"},{\"type\":\"plain_text\",\"name\":\"VIDEO_CHANNEL_ID\",\"text\":\"-1004292843233\"}]};type=application/json" \
      -F 'worker.js=@xiaoju-music/worker.js;type=application/javascript+module' \
+     -F 'verify.js=@xiaoju-music/verify.js;type=application/javascript+module' \
      -F 'page.html=@xiaoju-music/page.html;type=text/plain' \
      -F 'admin.html=@xiaoju-music/admin.html;type=text/plain' \
      -F 'douyin-login.html=@xiaoju-music/douyin-login.html;type=text/plain'
@@ -229,7 +230,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     记进 `douyinTagsSeen`）。频道里置顶一条「📂 目录」（config `dyDirMsg`），名字变了就改它。频道里已有、说明里还没标签
     的帖子，转作品碰到时 `douyin_retag` 改说明补上，不重发。crawl.sh 另存 `xiaoju_sec_uid` / `xiaoju_nickname` 认账号。
   - **搜抖音 → 链接清单**：`搜抖音 舞蹈` 把词排进 `dySearchQueue`；云电脑打开时抓完作品接着 `cloud/search.sh`
-    （MediaCrawler 的 search 模式），结果每 30 秒一批 POST `/dy-search`（`X-Final: 0`，搜完 `X-Final: 1`），Worker 边收边发，编号接着排（`dySearchNum`），每批按点赞排好、私聊发频道主分享链接和文件地址（登记过的号标 👤），每条带「📤 转 N」按钮（`dys:<作品号>`，作品数据存 config `dySearchRows`，最近 150 条），频道主点了才交给 `/douyin/import` 按最高画质转进视频频道。
+    （MediaCrawler 的 search 模式），结果每 30 秒一批 POST `/dy-search`（`X-Final: 0`，搜完 `X-Final: 1`），Worker 边收边发，编号接着排（`dySearchNum`），每批按点赞排好、私聊发频道主分享链接和文件地址（登记过的号标 👤），清单上不带转发按钮（作品数据存 config `dySearchRows`，最近 600 条）；搜完整份清单交给审核机器人（见下）。
     只私聊发链接，不下载、不转进频道（批量转进频道的只有登记过的账号）。
   - **只抓新的**：crawl.sh 开抓前 POST `/dy-known`（Worker 转给流式服务 `GET /douyin/posted`，翻一遍视频频道）拿已有的作品号
     写进 `~/.xiaoju/known.txt`；补丁让 MediaCrawler 翻作品列表时扔掉转过的（不读详情、不送），一整页（置顶、私密、仅好友
@@ -238,7 +239,11 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     作品数写进 `~/.xiaoju/creators.jsonl`；抓了多少——结果文件里 `xiaoju_sec_uid` 是它的行；送了多少），POST `/dy-progress`
     存进 config `dyCloud`。机器人发「进度」看云电脑和流式服务（`/douyin/status`）两边；按钮「⏹ 停止云电脑抓取」设 `dyStop`，
     云电脑下次报进度收到 `{stop: true}` 就关掉 MediaCrawler（剩下的不送）；「⏹ 停止小橘转发」调 `/douyin/stop` 取消正在跑的任务。
-  - **账号审批**：搜完 Worker 把这一轮结果按作者归在一起发一条消息（`dyPick`），列出账号，只有两个按钮：「都是我的号，全部转」（整批转、这些号登记，最多 30 个）和「有不是我的，不转」（一条不转）。这一轮如果全是登记过的号（频道主审过一次的、或本来就登记的），不再问，直接整批转，只发一条「已经直接开始转」。
+  - **审核机器人（@xiaojuverify_bot，`verify.js`）**：搜到的作品转进视频频道前，必须由频道主本人在审核机器人里审核。两个机器人各用各的令牌、各收各的 webhook（审核机器人是 `POST /verify-webhook`，独立 secret `verifySecret`），数据交接走共享后端——同一个 Durable Object 里的审核任务表：`rv:<任务号>`（状态 pending / approved / rejected / expired / paused、完整清单：作品 ID、链接、来源账号和 sec_uid、文案、文件地址）、`rvRows:<任务号>:<段>`（审核时那份完整作品数据，每段 100 条，转发就用它）、`rvIds`（最近 30 个任务）。
+    - 搜完：小橘 `submitForReview` 写任务 → `deliverTask` 用审核机器人的令牌把清单分几条私聊发给频道主，最后一条带「✅ 通过，都是我的号 / ❌ 不通过」。
+    - 频道主点了：审核机器人把结果写回任务表，再叫小橘 `onReviewDecision`；小橘重新从任务表读状态，只有 approved 才交给 `/douyin/import`，并登记这些号。登记过的号在清单里标 👤，只作参考，不跳过审核。
+    - 不默认通过：没接审核机器人、频道主还没在审核机器人里点「开始」、Telegram 出错 → paused（小橘发「🔁 重新送审」按钮；频道主在审核机器人里点「开始」也会自动补发）；24 小时没审 → expired（cron 每 30 分钟查一次）；不通过 → rejected；通过了但流式服务没接上 → 状态仍是 approved，小橘给「🔁 再试转发」。旧清单上的「📤 转 N」「一键转」「全部转」按钮一律不能用。
+    - 接上：频道主在小橘里发「审核机器人 <BotFather 给的令牌>」，Worker 用 `getMe` 认令牌、给审核机器人 `setWebhook`，令牌存进 Durable Object（config `verifyTok`，不进代码库；也可以用 secret `VERIFY_BOT_TOKEN`），发令牌的那条消息删掉。「审核」看接好没有、哪些在等。
   - **换最高画质**：流式服务 `POST /douyin/delete {target, ids}` 删掉旧的抖音视频帖（只删说明里带抖音视频链接的视频，
     正在转作品时不删），之后查重认不出，下次就按最高画质重转。
     不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找
