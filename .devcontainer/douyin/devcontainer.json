@@ -8,8 +8,8 @@
   },
   "forwardPorts": [6080],
   "portsAttributes": { "6080": { "label": "桌面（扫码登录在这里）", "onAutoForward": "openBrowser" } },
-  "postCreateCommand": "bash xiaoju-music/cloud/codespace-setup.sh",
+  "postCreateCommand": "bash xiaoju-video/cloud/codespace-setup.sh",
   // 每次打开都连上小橘、等机器人的指令：点「▶️ 运行爬虫」才抓，「搜抖音」排了词才搜（开机不自己抓）
-  "postAttachCommand": "bash xiaoju-music/cloud/codespace-auto.sh",
+  "postAttachCommand": "bash xiaoju-video/cloud/codespace-auto.sh",
   "hostRequirements": { "cpus": 2, "memory": "4gb" }
 }

@@ -11,7 +11,7 @@ if [ -z "${XIAOJU_UPDATED:-}" ]; then
   git -C "$HERE" pull --ff-only -q >/dev/null 2>&1 || true
   [ "$(sha1sum "$0" 2>/dev/null)" != "$before" ] && XIAOJU_UPDATED=1 exec bash "$0" "$@"
 fi
-API=https://xiaoju-music.langhua98.workers.dev
+API=https://xiaoju-video.langhua98.workers.dev
 # 粘贴机器人「云电脑」给的命令：带着令牌和账号，记下来
 if [ $# -ge 2 ]; then
   mkdir -p "$HOME/.xiaoju"

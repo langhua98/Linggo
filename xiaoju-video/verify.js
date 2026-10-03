@@ -130,7 +130,7 @@ export function reviewMessages(t) {
   const head = packMessages([
     [
       `🛂 审核单 ${t.id}`,
-      `来源：小橘音乐机器人 · 抖音搜索「${t.keywords.join('、')}」`,
+      `来源：小橘视频机器人 · 抖音搜索「${t.keywords.join('、')}」`,
       `一共 ${t.items.length} 条，来自 ${accts.length} 个账号（👤 是你登记过的号，只作参考）：`,
       ...(flaggedOf(t) ? [`⚠️ 其中 ${flaggedOf(t)} 条待人工确认（命中了你设的「只标记」规则，或者没有文案、规则查不了），清单里标出来了，看清楚再决定`] : []),
     ].join('\n'),

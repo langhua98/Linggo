@@ -2,7 +2,7 @@
 # 小橘 · 抖音云电脑一键安装（Oracle Cloud 免费套餐 Ubuntu 24.04，ARM 或 x86 都行）
 #
 # 用法（机器人发「云电脑」会给你带好参数的这一行，复制粘贴就行）：
-#   bash <(curl -fsSL https://raw.githubusercontent.com/langhua98/Linggo/main/xiaoju-music/cloud/setup.sh) <令牌> <账号1,账号2>
+#   bash <(curl -fsSL https://raw.githubusercontent.com/langhua98/Linggo/main/xiaoju-video/cloud/setup.sh) <令牌> <账号1,账号2>
 #
 # 装好以后：用 iPad 上的「Windows App」（RDP）连这台机器的公网 IP，桌面上双击「抓抖音发给小橘」，
 # 在弹出的浏览器里自己扫码登录抖音（有验证也在那里做），抓完结果自动发给小橘，作品转进「小橘视频」频道。
@@ -11,8 +11,8 @@ set -euo pipefail
 
 TOKEN="${1:?缺少令牌：在机器人里发「云电脑」拿完整命令}"
 CREATORS="${2:?缺少抖音账号：在机器人里发「云电脑」拿完整命令}"
-API="${3:-https://xiaoju-music.langhua98.workers.dev}"
-RAW="https://raw.githubusercontent.com/langhua98/Linggo/main/xiaoju-music/cloud"
+API="${3:-https://xiaoju-video.langhua98.workers.dev}"
+RAW="https://raw.githubusercontent.com/langhua98/Linggo/main/xiaoju-video/cloud"
 
 say() { printf '\n\033[1;33m== %s ==\033[0m\n' "$*"; }
 

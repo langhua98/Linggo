@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # 带参数（Codespaces：bash crawl.sh <令牌> <账号1,账号2>）就记下来；不带就用 setup.sh 存的
 if [ $# -ge 2 ]; then
   mkdir -p "$HOME/.xiaoju"
-  printf 'TOKEN=%q\nCREATORS=%q\nAPI=%q\n' "$1" "$2" "${3:-https://xiaoju-music.langhua98.workers.dev}" > "$HOME/.xiaoju/env"
+  printf 'TOKEN=%q\nCREATORS=%q\nAPI=%q\n' "$1" "$2" "${3:-https://xiaoju-video.langhua98.workers.dev}" > "$HOME/.xiaoju/env"
   chmod 600 "$HOME/.xiaoju/env"
 fi
 source "$HOME/.xiaoju/env"
