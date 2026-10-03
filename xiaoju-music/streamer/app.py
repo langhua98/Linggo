@@ -634,6 +634,11 @@ async def stream(message_id: int, request: Request):
     msg = await streamer.message(message_id)
     if msg is None:
         raise HTTPException(404)
+    return ranged(streamer, msg, message_id, request)
+
+
+def ranged(s, msg, message_id, request):
+    """按浏览器的 Range 边取边传这条消息里的文件（Worker 转过来的请求）"""
     size = msg.document.size
     rng = parse_range(request.headers.get('range'), size)
     if rng is None:
@@ -642,7 +647,7 @@ async def stream(message_id: int, request: Request):
     headers = {'Accept-Ranges': 'bytes', 'Content-Length': str(end - start + 1)}
     if partial:
         headers['Content-Range'] = f'bytes {start}-{end}/{size}'
-    return StreamingResponse(streamer.body(message_id, start, end), status_code=206 if partial else 200,
+    return StreamingResponse(s.body(message_id, start, end), status_code=206 if partial else 200,
                              headers=headers, media_type='application/octet-stream')
 
 
