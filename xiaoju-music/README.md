@@ -3,10 +3,6 @@
 把 Telegram 频道 [@xiaojumusic](https://t.me/xiaojumusic) 里的音频变成**打开网页就能直接播放**的
 歌单，不需要登录 Telegram。和 Linggo 阅读器没有任何关系，只是借这个仓库存代码。
 
-**小橘音乐和小橘视频是两个独立的项目**：这里只管音乐（歌单、歌词、封面、音柱、搬歌）；抖音转进「小橘视频」频道、
-刷视频网页在 [`../xiaoju-video/`](../xiaoju-video/)。两边各有各的 Worker、机器人、Durable Object 数据库、流式服务，
-没有任何共用的代码和数据。
-
 - 播放页：https://xiaoju-music.langhua98.workers.dev
 - 分享单曲：在网址后加 `#消息号`，例如 `…/#4`
 - 管理页：https://xiaoju-music.langhua98.workers.dev/admin（用管理密钥登录，用来移除频道里已删掉的歌）

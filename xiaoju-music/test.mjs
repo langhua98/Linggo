@@ -959,7 +959,7 @@ await t('频道主的菜单：常驻按钮和 / 命令（只设给频道主）�
   assert.ok(set.commands.some(c => c.command === 'stats'));
   assert.ok(!set.commands.some(c => c.command === 'progress'), '菜单里没有抖音的命令');
   const help = lastSay();
-  assert.match(help.text, /🎵 音乐[\s\S]*小橘视频自己的机器人/);
+  assert.match(help.text, /🎵 音乐/);
   assert.doesNotMatch(help.text, /运行爬虫|搜抖音|审核/);
   assert.deepEqual(help.reply_markup.keyboard[0], ['📈 统计', '🎵 搬运设置']);
   const n = bot.out.filter(o => o.method === 'setMyCommands').length;

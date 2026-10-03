@@ -10,8 +10,6 @@ Worker 遇到超过 20 MB 的歌，就把浏览器的 Range 请求转到这里�
 开了「禁止保存内容」的频道 Telegram 不让转，这里也不去绕。登录走 POST /login/code、/login/verify，
 搬歌走 /copy/start、/copy/status、/copy/stop。
 
-小橘视频（抖音转进视频频道、刷视频网页）是另一个项目，在 ../../xiaoju-video/：自己的流式服务、自己的 Space，
-和这里没有任何共用的代码。
 
 环境变量（在 Space 的 Settings → Variables and secrets 里设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据

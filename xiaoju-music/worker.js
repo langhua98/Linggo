@@ -23,8 +23,6 @@
 //       TG_BOT_TOKEN / TG_WEBHOOK_SECRET / ADMIN_KEY / STREAMER_KEY（secret）、
 //       CHANNEL_ID / CHANNEL_USERNAME / STREAMER_URL（普通变量；STREAMER_URL 为空则大文件不能播放）
 //
-// 小橘视频（抖音转进视频频道、刷视频网页）是另一个项目，在 ../xiaoju-video/：自己的 Worker、自己的机器人、
-// 自己的数据库，和这里没有任何共用的代码和数据。
 
 import { DurableObject } from 'cloudflare:workers';
 import PAGE from './page.html';
@@ -1223,8 +1221,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮
 贴一个网址 —— 搬这个页面里允许转载的音频（每首都检查授权），后面可以加数量，比如「网址 30」
 搬运设置 —— 选网站、接受哪些授权、每次搬几首、搬到哪个歌单
 直接发歌名 —— 和听众一样找这首歌，库里没有就自动搬进来（新歌按类型自动进歌单）
-
-抖音和视频频道「小橘视频」的功能不在这里，在小橘视频自己的机器人里。`;
+`;
 
 
 const PUBLIC_HELP = `你好，这里是小橘音乐 🍊

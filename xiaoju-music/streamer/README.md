@@ -43,8 +43,6 @@ Telethon 以 `receive_updates=False` 登录：这个会话只调用、不订阅�
 - `POST /fulfill`：听众求歌；`GET /search/global`：在来源频道里搜
 - `POST /harvest`、`GET /harvest/status`：贴网址搬授权音频（`harvest/`）
 
-小橘视频（抖音转视频频道、刷视频网页）是另一个项目，在 [`../../xiaoju-video/`](../../xiaoju-video/)，有它自己的流式服务和 Space。
-
 ## 为什么不在这里跑官方的 telegram-bot-api（`--local` 模式）
 
 它也能突破 20 MB，但要当机器人唯一的 Bot API 服务器用：
