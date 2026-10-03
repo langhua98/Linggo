@@ -1475,24 +1475,21 @@ async function botButton(env, cb, owner, origin) {
     await ack(tip);
     return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: await progressText(env), reply_markup: { inline_keyboard: PROGRESS_KB } });
   }
-  if (kind === 'dyp' || kind === 'dyq') { // 账号审批：勾 / 取消勾，最后「转选中的」
+  if (kind === 'dyp' || kind === 'dyq') { // 账号审批：都是我的 → 整批转；有不是的 → 不转
     let p = null;
     try { p = JSON.parse((await L.getConfig('dyPick')) || 'null'); } catch {}
     if (!p || p.msg !== cb.message.message_id) return ack('这条审批过期了，以最新的一条为准');
-    if (p.done) return ack('已经转过了');
-    if (kind === 'dyp') {
-      const i = Number(a);
-      if (!p.authors[i]) return ack();
-      p.picked = p.picked.includes(i) ? p.picked.filter(x => x !== i) : [...p.picked, i];
+    if (p.done) return ack(p.done === 'yes' ? '已经转过了' : '这批已经拒绝了');
+    if (kind === 'dyp') return ack();
+    if (a === 'no') {
+      p.done = 'no';
       await L.setConfig('dyPick', JSON.stringify(p));
-      await ack();
+      await ack('好，这批不转');
       return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
     }
-    if (!p.picked.length) return ack('还没勾选号');
     if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
     const all = await searchRows(L);
-    const picked = p.picked.map(i => p.authors[i]);
-    const rows = picked.flatMap(x => x.ids).map(id => all[id]).filter(Boolean);
+    const rows = p.authors.flatMap(x => x.ids).map(id => all[id]).filter(Boolean);
     if (!rows.length) return ack('作品数据过期了，重新搜一次');
     let r;
     try {
@@ -1505,11 +1502,11 @@ async function botButton(env, cb, owner, origin) {
     }
     if (r.status === 409) return ack('小橘正在转别的，转完再点');
     if (r.status !== 200) return ack((r.data && r.data.detail) || '没转成');
-    // 频道主确认是自己的号：登记（以后搜到自动勾好，云电脑也转它的全部作品）
+    // 频道主确认都是自己的号：登记（以后云电脑也转它们的全部作品）
     const selves = await douyinSelves(L);
-    const add = picked.map(x => x.sec).filter(x => SEC_UID.test(x) && !selves.includes(x));
+    const add = p.authors.map(x => x.sec).filter(x => SEC_UID.test(x) && !selves.includes(x));
     await L.setConfig('douyinSelf', JSON.stringify([...selves, ...add].slice(0, MAX_SELVES)));
-    p.done = true;
+    p.done = 'yes';
     await L.setConfig('dyPick', JSON.stringify(p));
     await ack(`开始转 ${rows.length} 条${add.length ? `，登记了 ${add.length} 个号` : ''}；进度点「📊 进度」看`);
     return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
@@ -2031,12 +2028,11 @@ async function cloudSearchResult(request, env) {
 const MAX_SELVES = 30;
 
 function pickKeyboard(p) {
-  const kb = p.authors.map((a, i) => [{
-    text: `${p.picked.includes(i) ? '☑' : '☐'} ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.ids.length} 条）`, callback_data: `dyp:${i}`,
-  }]);
-  const n = p.picked.reduce((t, i) => t + p.authors[i].ids.length, 0);
-  kb.push([{ text: p.done ? `✅ 已转 ${n} 条` : `📤 转选中的（${n} 条）`, callback_data: p.done ? 'dyp:x' : 'dyq:go' }]);
-  return { inline_keyboard: kb };
+  const n = p.authors.reduce((t, a) => t + a.ids.length, 0);
+  if (p.done === 'yes') return { inline_keyboard: [[{ text: `✅ 已转 ${n} 条`, callback_data: 'dyp:x' }]] };
+  if (p.done === 'no') return { inline_keyboard: [[{ text: '❌ 没转', callback_data: 'dyp:x' }]] };
+  return { inline_keyboard: [[{ text: `✅ 都是我的号，全部转（${n} 条）`, callback_data: 'dyq:yes' }],
+    [{ text: '❌ 有不是我的，不转', callback_data: 'dyq:no' }]] };
 }
 
 async function sendAccountPick(env, L, owner, kws, ids, rows) {
@@ -2051,10 +2047,11 @@ async function sendAccountPick(env, L, owner, kws, ids, rows) {
   }
   const authors = [...by.values()].sort((x, y) => (y.mine - x.mine) || (y.ids.length - x.ids.length)).slice(0, 40);
   if (!authors.length) return;
-  const p = { authors, picked: authors.map((a, i) => (a.mine ? i : -1)).filter(i => i >= 0), done: false };
+  const p = { authors, done: false };
+  const list = authors.map((a, i) => `${i + 1}. ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.ids.length} 条）`).join('\n');
   const r = await tg(env, 'sendMessage', {
     chat_id: owner, reply_markup: pickKeyboard(p),
-    text: `🔍 账号审批：「${kws.join('、')}」搜到的 ${authors.reduce((t, a) => t + a.ids.length, 0)} 条来自 ${authors.length} 个号。\n点选你自己的号（👤 是登记过的，已经勾好），再点「转选中的」。没勾的号一条也不转，尊重原作者。\n勾上的号会顺便登记：以后搜到自动勾好，云电脑也会转它的全部作品。`,
+    text: `🔍 账号审批：「${kws.join('、')}」搜到的 ${authors.reduce((t, a) => t + a.ids.length, 0)} 条来自这 ${authors.length} 个号（👤 是登记过的）：\n\n${list}\n\n都是你的号就点「全部转」（这些号也会登记）。只要有一个不是你的，就点「不转」，一条也不转，尊重原作者。`,
   });
   if (r.ok) await L.setConfig('dyPick', JSON.stringify({ ...p, msg: r.result.message_id }));
 }

@@ -1111,7 +1111,7 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.equal((await post('wrong', rows)).status, 403);
   assert.deepEqual(await jsonOf(await post(tok, rows)), { ok: true, keywords: ['舞蹈'], total: 4 });
   const owned = bot.out.filter(o => o.method === 'sendMessage' && o.chat_id === OWNER);
-  assert.match(owned.at(-1).text, /账号审批：「舞蹈」搜到的 1 条来自 1 个号/);
+  assert.match(owned.at(-1).text, /账号审批：「舞蹈」搜到的 1 条来自这 1 个号/);
   assert.match(owned.at(-2).text, /✅ 「舞蹈」搜完了，一共 4 条/);
   const msg = owned.at(-3);
   assert.equal(msg.chat_id, OWNER);
@@ -1153,24 +1153,30 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   const rowA = (id, sec, name) => JSON.stringify({ aweme_id: id, desc: 'x', liked_count: '1', source_keyword: '审批', xiaoju_sec_uid: sec, xiaoju_nickname: name });
   await post(tok, [rowA('7600000000000000021', A, '安66'), rowA('7600000000000000022', A, '安66'), rowA('7600000000000000023', sec4, '丁')].join('\n'));
   const pk = lastSay();
-  assert.match(pk.text, /账号审批：「审批」搜到的 3 条来自 2 个号/);
-  const pkb = () => pk.reply_markup.inline_keyboard.flat();
-  assert.deepEqual(pkb().map(b => b.text), ['☑ 👤@丁（1 条）', '☐ @安66（2 条）', '📤 转选中的（1 条）']);
-  const pmsg = { message_id: pk.message_id || 0, chat: { id: OWNER, type: 'private' } };
-  const press2 = data => hook({ update_id: 902, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: pmsg } });
+  assert.match(pk.text, /账号审批：「审批」搜到的 3 条来自这 2 个号/);
+  assert.match(pk.text, /1\. 👤@丁（1 条）\n2\. @安66（2 条）/);
+  assert.deepEqual(pk.reply_markup.inline_keyboard.flat().map(b => b.text), ['✅ 都是我的号，全部转（3 条）', '❌ 有不是我的，不转']);
   const pick = JSON.parse(await lib.getConfig('dyPick'));
-  pmsg.message_id = pick.msg;
-  await press2('dyp:1');
-  assert.deepEqual(bot.out.filter(o => o.method === 'editMessageReplyMarkup').at(-1).reply_markup.inline_keyboard.flat().map(b => b.text),
-    ['☑ 👤@丁（1 条）', '☑ @安66（2 条）', '📤 转选中的（3 条）']);
-  await press2('dyp:1');  // 再点取消
+  const pmsg = { message_id: pick.msg, chat: { id: OWNER, type: 'private' } };
+  const press2 = data => hook({ update_id: 902, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: pmsg } });
   const before = bot.toStreamer.length;
-  await press2('dyq:go');
-  const go = bot.toStreamer.slice(before).find(x => x.path === 'douyin/import');
-  assert.deepEqual(go.body.text.split('\n').map(l => JSON.parse(l).aweme_id), ['7600000000000000023'], '没勾的号不转');
-  assert.ok(!(await lib.getConfig('douyinSelf')).includes(A), '没勾的号不登记');
-  await press2('dyq:go');
+  await press2('dyq:no');
+  assert.equal(bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import').length, 0, '有不是的：一条不转');
+  assert.ok(!(await lib.getConfig('douyinSelf')).includes(A));
+  await press2('dyq:yes');
+  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /已经拒绝了/);
+  // 再搜一次，这回都是自己的：全部转、登记
+  await post(tok, [rowA('7600000000000000031', A, '安66'), rowA('7600000000000000032', sec4, '丁')].join('\n'));
+  const pick2 = JSON.parse(await lib.getConfig('dyPick'));
+  pmsg.message_id = pick2.msg;
+  const b2 = bot.toStreamer.length;
+  await press2('dyq:yes');
+  const go = bot.toStreamer.slice(b2).find(x => x.path === 'douyin/import');
+  assert.equal(go.body.text.split('\n').length, 2, '都是我的：全部转');
+  assert.ok((await lib.getConfig('douyinSelf')).includes(A), '并登记');
+  await press2('dyq:yes');
   assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /已经转过了/);
+  await admin('douyin-self', { sec_uids: [sec4] });
   // 边抓边发：一批一批送（X-Final: 0），编号接着排，重复的不再发；最后送「搜完了」
   const batch = (body, fin) => req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': fin }, body });
   const row = (id, likes) => JSON.stringify({ aweme_id: id, desc: '街舞' + id.slice(-1), liked_count: String(likes), source_keyword: '街舞' });
