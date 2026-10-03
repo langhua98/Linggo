@@ -129,6 +129,7 @@ export default {
       if (path === '/dy-search' && method === 'POST') return await cloudSearchResult(request, env);
       if (path === '/dy-progress' && method === 'POST') return await cloudProgress(request, env);
       if (path === '/dy-known' && method === 'POST') return await cloudKnown(request, env);
+      if ((path === '/streamer-up' || path === '/streamer-done') && method === 'POST') return await streamerNotice(request, env, ctx, path);
       if (path.startsWith('/dl/') && method === 'POST') {
         const m2 = path.match(/^\/dl\/([\w-]{20,64})\/start$/);
         if (m2) return await douyinLoginApi(env, m2[1], 'start');
@@ -1159,6 +1160,9 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS viz (id INTEGER PRIMARY KEY, data TEXT NOT NULL)');
       // 听众求歌的记录（限次用）
       this.sql.exec('CREATE TABLE IF NOT EXISTS asks (uid INTEGER NOT NULL, at INTEGER NOT NULL)');
+      // 交给流式服务、还没转完的抖音任务：任务说明在 config 的 dyResume，导入任务的作品数据在这里（云电脑送一批是一批；
+      // 一批太大拆成几段，batch 相同）。流式服务重启后照原样再交一次
+      this.sql.exec('CREATE TABLE IF NOT EXISTS dy_resume (seq INTEGER PRIMARY KEY, batch INTEGER NOT NULL, body TEXT NOT NULL)');
       // 刷视频网页的视频池：视频频道「小橘视频」里的视频帖，rec 是完整记录（含 Bot API 的 file_id）
       this.sql.exec('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, updated INTEGER NOT NULL)');
       // 视频封面（base64；mime 为 'none' 表示确定没有）
@@ -1341,6 +1345,49 @@ export class Library extends DurableObject {
   async setHarvest(v) { this.setCfg('harvest', JSON.stringify(v)); }
 
   async getConfig(k) { return this.cfg(k); }
+
+  // ── 重启后接着转（见 douyinStart）──
+  async resumeStart(rec, text) {
+    this.sql.exec('DELETE FROM dy_resume');
+    this.setCfg('dyResume', JSON.stringify(rec));
+    if (text) this.addResumeBatch(text);
+  }
+
+  async resumeAppend(text, final) {
+    const rec = this.resumeRec();
+    if (!rec) return;
+    if (text) this.addResumeBatch(text);
+    if (final) { rec.final = true; this.setCfg('dyResume', JSON.stringify(rec)); }
+  }
+
+  async resumeGet() { return this.resumeRec(); }
+  async resumeSave(rec) { this.setCfg('dyResume', JSON.stringify(rec)); }
+
+  // 没给编号就直接销；给了编号要对得上（新的任务已经把记录换掉了，旧任务转完不能把新的销掉）
+  async resumeClear(runId) {
+    const rec = this.resumeRec();
+    if (!rec || (runId && rec.run_id !== runId)) return false;
+    this.sql.exec('DELETE FROM dy_resume');
+    this.sql.exec("DELETE FROM config WHERE k = 'dyResume'");
+    return true;
+  }
+
+  async resumeBatches() {
+    return this.sql.exec('SELECT DISTINCT batch FROM dy_resume ORDER BY batch').toArray().map(r => r.batch);
+  }
+
+  async resumeBatch(batch) {
+    return this.sql.exec('SELECT body FROM dy_resume WHERE batch = ? ORDER BY seq', batch).toArray().map(r => r.body).join('');
+  }
+
+  resumeRec() {
+    try { return JSON.parse(this.cfg('dyResume') || 'null'); } catch { return null; }
+  }
+
+  addResumeBatch(text) {
+    const batch = (this.sql.exec('SELECT MAX(batch) AS b FROM dy_resume').toArray()[0].b ?? -1) + 1;
+    for (let i = 0; i < text.length; i += RESUME_PIECE) this.sql.exec('INSERT INTO dy_resume (batch, body) VALUES (?, ?)', batch, text.slice(i, i + RESUME_PIECE));
+  }
   async setConfig(k, v) { this.setCfg(k, v); }
 
   // 夜里自动搬的记录：state 是 {频道: 看到的最大消息号}
@@ -1556,6 +1603,89 @@ async function streamerCall(env, path, body) {
   });
   const data = await res.json().catch(() => ({}));
   return { status: res.status, data };
+}
+
+// ── 抖音任务：重启后接着转 ──
+// 流式服务（Hugging Face Space）一重启（推新代码、平台维护、崩溃），内存里正在转的任务就没了。所以交任务时在这边记一笔
+// （任务编号 run_id + 原样的请求；导入任务连作品数据一起），流式服务启动时来 /streamer-up 报到，没转完的就再交一次，
+// 频道里已经有的它会跳过。转完或出错它来 /streamer-done 报编号，销掉记录；频道主点停，这边自己销。
+// 定时任务也会对一下（报到没送到的话）：流式服务没在跑、手上也不是这个编号的任务 → 再交；是这个编号且已经结束 → 销
+const RESUME_PIECE = 300 * 1024;  // 存作品数据时一段最多这么多字（数据库一行有大小上限）
+const RESUME_MAX = 3;             // 同一批最多自动接着转几次（老是转到一半就重启，多半是这批本身有问题）
+
+async function douyinStart(env, path, body) {
+  const L = lib(env), run_id = crypto.randomUUID().slice(0, 12);
+  const r = await streamerCall(env, path, { ...body, run_id });
+  if (r.status !== 200) return r;
+  const { text, ...rest } = body;
+  if (path === '/douyin/import' && !r.data.started) {
+    // 送进了正在转的那批（边抓边转），或者是「抓完了」的通知
+    await L.resumeAppend(r.data.added ? text : '', body.final !== false);
+  } else if (!(path === '/douyin/link' && r.data.kind === 'user')) { // 采集主页链接不算转发，不用接着做
+    await L.resumeStart({ path, body: rest, run_id, final: body.final !== false, resumes: 0, at: Date.now() }, path === '/douyin/import' ? text : '');
+  }
+  return r;
+}
+
+async function resumeDouyin(env) {
+  if (!streamerOn(env)) return { ok: false, why: 'not configured' };
+  const L = lib(env), rec = await L.resumeGet();
+  if (!rec) return { ok: true, resumed: false };
+  const owner = await ownerId(env);
+  if (rec.resumes >= RESUME_MAX) {
+    await L.resumeClear(rec.run_id);
+    if (owner) await say(env, owner, `⚠️ 小橘的服务重启了 ${RESUME_MAX} 次都没把这批转完，不再自动接着转了。点「📊 进度」看看，需要的话重新发一次命令`);
+    return { ok: false, why: 'too many restarts' };
+  }
+  rec.resumes++;
+  await L.resumeSave(rec); // 先记次数：要是这批一转就把服务弄崩，也不会无休止地重来
+  let r = null;
+  const base = { ...rec.body, run_id: rec.run_id };
+  if ('state' in base) base.state = (await L.getConfig('douyinState')) || ''; // 抖音登录状态用最新的
+  try {
+    if (rec.path === '/douyin/import') {
+      const batches = await L.resumeBatches();
+      if (!batches.length) { await L.resumeClear(rec.run_id); return { ok: true, resumed: false }; }
+      for (let i = 0; i < batches.length; i++) {
+        r = await streamerCall(env, rec.path, { ...base, text: await L.resumeBatch(batches[i]), final: i === batches.length - 1 ? rec.final : false });
+        if (r.status !== 200) break;
+      }
+    } else {
+      r = await streamerCall(env, rec.path, base);
+    }
+  } catch {
+    r = null;
+  }
+  if (!r || r.status !== 200) {
+    rec.resumes--; // 没交上（服务还没醒、正忙）不算一次，下次再来
+    await L.resumeSave(rec);
+    return { ok: false, retry: true, why: r ? `status ${r.status}` : 'unreachable' };
+  }
+  if (owner && !rec.body.quiet) await say(env, owner, '♻️ 小橘的服务刚才重启过，没转完的那批接着转了（已经发进频道的会跳过），转完照常告诉你');
+  return { ok: true, resumed: true };
+}
+
+// 流式服务来报到（刚启动）/ 报结束（转完、出错）。用同一个 STREAMER_KEY 认人
+async function streamerNotice(request, env, ctx, path) {
+  if (!env.STREAMER_KEY || !sameString(request.headers.get('X-Key') || '', env.STREAMER_KEY)) return json({ error: 'forbidden' }, 403);
+  if (path === '/streamer-done') {
+    const body = await request.json().catch(() => ({}));
+    return json({ ok: true, cleared: await lib(env).resumeClear(String(body.run_id || '') || 'none') });
+  }
+  // 等交完再回：没交上（它这边还没完全起来、正忙）就回 retry，它过一会儿再来报到
+  const r = await resumeDouyin(env).catch(() => ({ ok: false, retry: true }));
+  return json({ ok: true, resumed: !!r.resumed, retry: !!r.retry });
+}
+
+// 定时对一下：报到没送到、或者报结束没送到时补上
+async function checkResume(env) {
+  const L = lib(env), rec = await L.resumeGet();
+  if (!rec) return;
+  let st;
+  try { st = (await streamerCall(env, '/douyin/status')).data; } catch { return; }
+  if (!st || st.status === 'running') return;
+  if (st.run_id === rec.run_id) return void (await L.resumeClear(rec.run_id)); // 这个任务已经结束了
+  return resumeDouyin(env);
 }
 
 const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮；左下角「菜单」里也有。全部功能：
@@ -1815,6 +1945,7 @@ async function botButton(env, cb, owner, origin) {
     } else if (a === 'post') {
       let r = null;
       try { r = await streamerCall(env, '/douyin/stop', {}); } catch {}
+      if (r && r.status === 200) await L.resumeClear(); // 叫停的不再接着转
       tip = !r || r.status !== 200 ? '小橘的服务没连上，过一会儿再点' : r.data.stopped ? '小橘停了（已经发进频道的不动）' : '小橘现在没在转';
     }
     await ack(tip);
@@ -1985,7 +2116,7 @@ async function ownerDouyin(env, chat, t) {
   if (!streamerOn(env)) return say(env, chat, '解析服务没配置');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/link', { text: t, notify: chat, target: env.VIDEO_CHANNEL_ID || '', state: (await lib(env).getConfig('douyinState')) || '' });
+    r = await douyinStart(env, '/douyin/link', { text: t, notify: chat, target: env.VIDEO_CHANNEL_ID || '', state: (await lib(env).getConfig('douyinState')) || '' });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次链接');
   }
@@ -2388,7 +2519,7 @@ async function transferApproved(env, L, owner, t) {
   if (!data.length) return fail('作品数据不见了，重新搜一次');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/import', {
+    r = await douyinStart(env, '/douyin/import', {
       text: data.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
       tags: await douyinTagMap(L, 'douyinTags'),
     });
@@ -2493,7 +2624,7 @@ async function cloudImport(request, env) {
   const owner = await ownerId(env);
   let r;
   try {
-    r = await streamerCall(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner, final, tags: await douyinTagMap(L, 'douyinTags') });
+    r = await douyinStart(env, '/douyin/import', { text: body, target: env.VIDEO_CHANNEL_ID, notify: owner, final, tags: await douyinTagMap(L, 'douyinTags') });
   } catch {
     return json({ error: '小橘的服务正在唤醒，过两分钟再双击图标重发一次' }, 503);
   }
@@ -2520,7 +2651,7 @@ async function ownerDouyinImport(env, chat, doc) {
   }
   let r;
   try {
-    r = await streamerCall(env, '/douyin/import', { text: textBody, target: env.VIDEO_CHANNEL_ID, notify: chat, tags: await douyinTagMap(lib(env), 'douyinTags') });
+    r = await douyinStart(env, '/douyin/import', { text: textBody, target: env.VIDEO_CHANNEL_ID, notify: chat, tags: await douyinTagMap(lib(env), 'douyinTags') });
   } catch {
     return say(env, chat, '解析服务正在唤醒，过一两分钟再发一次文件');
   }
@@ -2557,7 +2688,7 @@ async function ownerDouyinMirror(env, chat) {
   if (!selves.length) return say(env, chat, '还没设置你自己的抖音账号');
   let r;
   try {
-    r = await streamerCall(env, '/douyin/mirror', {
+    r = await douyinStart(env, '/douyin/mirror', {
       sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: chat, state: (await lib(env).getConfig('douyinState')) || '',
       tags: await douyinTagMap(lib(env), 'douyinTags'),
     });
@@ -2576,6 +2707,7 @@ const DOUYIN_CRON = '*/30 * * * *';
 async function douyinTick(env) {
   if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, why: 'not configured' };
   const L = lib(env);
+  try { await checkResume(env); } catch {}
   if ((await L.getConfig('douyinAuto')) !== '1') return { ok: false, why: 'off' };
   const selves = await douyinSelves(L);
   if (!selves.length) return { ok: false, why: 'no account' };
@@ -2583,7 +2715,7 @@ async function douyinTick(env) {
   try {
     if (await learnDouyinTags(env)) await douyinDirectory(env);
   } catch {}
-  const { status } = await streamerCall(env, '/douyin/mirror', {
+  const { status } = await douyinStart(env, '/douyin/mirror', {
     sec_uids: selves, target: env.VIDEO_CHANNEL_ID, notify: await ownerId(env), quiet: true, state: (await L.getConfig('douyinState')) || '',
     tags: await douyinTagMap(L, 'douyinTags'),
   });

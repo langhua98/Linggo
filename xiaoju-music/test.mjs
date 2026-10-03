@@ -149,13 +149,15 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'copy/pick') return Response.json({ new_ids: [bot.pickId] });
     if (m[1] === 'copy/start' && bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
     if (m[1] === 'auto/status') return Response.json(bot.autoStatus);
-    if (m[1] === 'douyin/status') return Response.json(bot.dyStatus || { status: 'idle' });
+    // 没特意设状态时：交过任务就当它已经转完（带着那次的编号），没交过就是刚启动的 idle
+    if (m[1] === 'douyin/status') return Response.json(bot.dyStatus || (bot.lastRun ? { status: 'done', run_id: bot.lastRun } : { status: 'idle' }));
     if (m[1] === 'douyin/stop') return Response.json({ stopped: !!bot.dyStatus });
     if (m[1] === 'douyin/import') {
       if (body.final && body.text === '') return Response.json({ ok: true, total: 0, video: 0, images: 0, added: 0, started: false });
       if (!/aweme_id/.test(body.text)) return Response.json({ detail: '文件里没认出抖音作品' }, { status: 400 });
       const started = !bot.importing;
       if (body.final === false) bot.importing = true;
+      if (started) bot.lastRun = body.run_id;
       return Response.json({ ok: true, total: 2, video: 1, images: 1, added: 2, started });
     }
     if (m[1] === 'douyin/resolve') {
@@ -167,6 +169,7 @@ globalThis.fetch = async (input, init = {}) => {
       if (!/douyin\.com/.test(body.text)) return Response.json({ detail: '没认出抖音链接' }, { status: 400 });
       if (bot.copyBusy) return Response.json({ detail: 'already running' }, { status: 409 });
       if (/\/user\//.test(body.text)) return Response.json({ kind: 'user', sec_uid: 'MS4wLjABAAAAJObrvSZxXpV8f05lqI-Y8HJyrBORdiOtKImyUldBdng' });
+      bot.lastRun = body.run_id;
       return Response.json({ kind: 'aweme', id: '7691335977760321704' });
     }
     if (m[1] === 'harvest') {
@@ -276,7 +279,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['asks', 'config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'video_thumbs', 'videos', 'viz']);
+  assert.deepEqual(tables, ['asks', 'config', 'covers', 'dy_resume', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'video_thumbs', 'videos', 'viz']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -1047,6 +1050,7 @@ await t('登录抖音、抖音自动同步：定时任务只在开了时转，�
   assert.equal((await req('/dl/' + 'f'.repeat(36) + '/status')).status, 403);
   assert.equal((await req('/douyin-login')).status, 200);
   assert.ok(tok);
+  await lib.resumeClear(); // 前面的用例留下的「没转完」记录：这里只看自动同步
   const n = bot.toStreamer.length;
   await worker.scheduled({ cron: '*/30 * * * *' }, env, { waitUntil: p => p });
   await new Promise(r => setTimeout(r, 20));
@@ -1282,6 +1286,7 @@ await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私�
 });
 
 await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每个号抓了多少、小橘转了多少；点按钮停', async () => {
+  bot.lastRun = null; // 流式服务刚启动，什么都没在转
   await dm(OWNER, '进度');
   assert.match(lastSay().text, /云电脑：还没报过进度[\s\S]*小橘：现在没在转/);
   await dm(OWNER, '云电脑');
@@ -1525,6 +1530,88 @@ await t('未成年人：相关的词不搜，排着队的也不交给云电脑�
   assert.match(lastSay().text, /不搜、不转未成年人的视频/);
   await lib.setConfig('dySearchQueue', '[]');
   await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ phase: 'done', mode: 'search' }) });
+});
+
+await t('重启后接着转：交给流式服务的抖音任务记下来；它重启后来报到就照原样再交一次（同一个编号），转完、叫停就销掉', async () => {
+  await dm(OWNER, '云电脑');
+  const tok = await lib.getConfig('cloudTok');
+  const batch = (body, fin) => req('/dy-import', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': fin }, body });
+  const notice = (path, body, key = SKEY) => req(path, { method: 'POST', headers: { 'X-Key': key, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const imports = () => bot.toStreamer.filter(x => x.path === 'douyin/import');
+  bot.importing = false; bot.lastRun = null; bot.dyStatus = null;
+  const big = Array.from({ length: 4000 }, (_, i) => JSON.stringify({ aweme_id: String(7700000000000000000n + BigInt(i)), desc: '很长的文案'.repeat(20) })).join('\n');
+  const one = JSON.stringify({ aweme_id: '7700000000000099999', desc: 'b' });
+  assert.ok(big.length > 300 * 1024, '要大到拆成几段存');
+  await batch(big, '0');
+  await batch(one, '0');
+  const first = imports().at(-2), runId = first.body.run_id;
+  assert.ok(runId);
+  assert.equal(imports().at(-1).body.run_id.length > 0, true);
+
+  // 流式服务重启：手上什么都没有了
+  bot.importing = false; bot.lastRun = null;
+  assert.equal((await notice('/streamer-up', {}, 'wrong')).status, 403);
+  const n = imports().length;
+  assert.deepEqual(await jsonOf(await notice('/streamer-up')), { ok: true, resumed: true, retry: false });
+  const again = imports().slice(n);
+  assert.deepEqual(again.map(x => [x.body.text === big || x.body.text === one ? 'same' : 'diff', x.body.final, x.body.run_id]),
+    [['same', false, runId], ['same', false, runId]], '两批照原样再交，还在边抓边转（final 照旧是 false），编号不变');
+  assert.equal(again[0].body.text, big);
+  assert.match(lastSay().text, /重启过，没转完的那批接着转/);
+
+  // 云电脑抓完：最后的通知也记上，再重启时最后一批带 final
+  await batch('', '1');
+  bot.importing = false; bot.lastRun = null;
+  const n2 = imports().length;
+  await notice('/streamer-up');
+  assert.deepEqual(imports().slice(n2).map(x => x.body.final), [false, true]);
+
+  // 交不上（流式服务还没完全起来）：回 retry，它过一会儿再来报到；这次不算次数
+  bot.streamerDown = true;
+  assert.deepEqual(await jsonOf(await notice('/streamer-up')), { ok: true, resumed: false, retry: true });
+  bot.streamerDown = false;
+  assert.equal((await lib.resumeGet()).resumes, 2);
+  // 报结束：编号对不上不销，对上了销；再报到就没什么可交的
+  assert.deepEqual(await jsonOf(await notice('/streamer-done', { run_id: 'other' })), { ok: true, cleared: false });
+  assert.deepEqual(await jsonOf(await notice('/streamer-done', { run_id: runId })), { ok: true, cleared: true });
+  const n3 = imports().length;
+  await notice('/streamer-up');
+  assert.equal(imports().length, n3);
+
+  // 「转抖音视频」：报结束没送到也不要紧，定时任务问一下：还是这个编号、已经结束 → 销；流式服务手上没有（重启了）→ 再交
+  await dm(OWNER, '转抖音视频');
+  const mirror = bot.toStreamer.filter(x => x.path === 'douyin/mirror').at(-1);
+  assert.ok(mirror.body.run_id);
+  bot.dyStatus = { status: 'idle' };
+  let jobs = [];
+  await worker.scheduled({ cron: '*/30 * * * *' }, env, { waitUntil: p => jobs.push(p) });
+  await Promise.all(jobs);
+  const resent = bot.toStreamer.filter(x => x.path === 'douyin/mirror').at(-1);
+  assert.notEqual(resent, mirror);
+  assert.equal(resent.body.run_id, mirror.body.run_id);
+  bot.dyStatus = { status: 'done', run_id: mirror.body.run_id };
+  jobs = [];
+  await worker.scheduled({ cron: '*/30 * * * *' }, env, { waitUntil: p => jobs.push(p) });
+  await Promise.all(jobs);
+  assert.equal(await lib.resumeGet(), null, '这个编号已经转完，销掉');
+
+  // 老是转到一半就重启：最多接着转 3 次，之后告诉频道主，不再自动来
+  await dm(OWNER, '转抖音视频');
+  bot.dyStatus = { status: 'idle' };
+  for (let i = 0; i < 3; i++) await notice('/streamer-up');
+  const before = bot.toStreamer.filter(x => x.path === 'douyin/mirror').length;
+  await notice('/streamer-up');
+  assert.equal(bot.toStreamer.filter(x => x.path === 'douyin/mirror').length, before);
+  assert.match(lastSay().text, /重启了 3 次都没把这批转完/);
+  assert.equal(await lib.resumeGet(), null);
+
+  // 频道主点「停」：不再接着转
+  await dm(OWNER, '转抖音视频');
+  assert.ok(await lib.resumeGet());
+  bot.dyStatus = { status: 'running' };
+  await hook({ update_id: 902, callback_query: { id: 'cqstop', from: { id: OWNER }, data: 'prg:post', message: { message_id: 79, chat: { id: OWNER, type: 'private' } } } });
+  assert.equal(await lib.resumeGet(), null);
+  bot.dyStatus = null; bot.importing = false; bot.lastRun = null;
 });
 
 await t('任何响应里都不出现机器人 token、管理密钥、流式服务密钥', async () => {

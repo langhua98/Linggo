@@ -847,6 +847,112 @@ def test_stopping_a_mirror_cleans_up_videos_prepared_but_not_posted():
     assert sorted(closed) == ['1', '2', '3', '4']  # 第 1 条发帖时自己删；2～4 备好了没发，停下时删掉
 
 
+
+def _mirror_web(n_items):
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            return [normalize(aweme(aweme_id=str(n), desc=str(n), create_time=n)) for n in range(1, n_items + 1)], \
+                {'hidden_newest': False, 'truncated': False}
+
+        async def download(self, item, max_bytes=0):
+            return b'x' * 20000, item['sources'][0]
+    return Web
+
+
+def test_one_video_failing_to_upload_is_skipped_and_the_rest_still_go_out():
+    async def prepare_video(data, item, src, target):
+        if item['id'] == '2':
+            raise RuntimeError('第 3 块传不上去')
+        return item['id']
+
+    async def post_video(prep, text, target):
+        if prep == '4':
+            raise ConnectionError('断了一下')
+        return int(prep)
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=_mirror_web(5), send_video=post_video, prepare_video=prepare_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert st['status'] == 'done'
+    assert [r['id'] for r in st['posted']] == ['1', '3', '5']
+    assert [(r['id'], r['reason']) for r in st['failed']] == [('2', 'RuntimeError: 第 3 块传不上去'), ('4', 'ConnectionError: 断了一下')]
+
+
+def test_five_odd_failures_in_a_row_stop_the_run():
+    async def prepare_video(data, item, src, target):
+        raise RuntimeError('Telegram 不收')
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=_mirror_web(9), send_video=None, prepare_video=prepare_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert st['status'] == 'error' and 'Telegram 不收' in st['error']
+    assert len(st['failed']) == 5
+
+
+def test_the_worker_is_told_when_a_run_ends_but_not_when_it_is_stopped():
+    ended = []
+
+    async def on_end(st):
+        ended.append((st.get('run_id'), st['status']))
+
+    async def post_video(prep, text, target):
+        return 1
+
+    async def prepare_video(data, item, src, target):
+        return item['id']
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=_mirror_web(2), send_video=post_video, prepare_video=prepare_video, posted_ids=posted_ids,
+                        pause=0, on_end=on_end)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        job.state['run_id'] = 'r1'
+        await job.task
+
+        async def slow(prep, text, target):
+            await asyncio.sleep(10)
+        job.send_video = slow
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        job.state['run_id'] = 'r2'
+        await asyncio.sleep(0.02)
+        job.task.cancel()  # 叫停、服务关掉：不报，Worker 那边的记录还在（关掉的那种重启后会接着转）
+        try:
+            await job.task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert ended == [('r1', 'done')]
+
+
+def test_douyin_ended_reports_the_run_to_the_worker(monkeypatch):
+    sent = []
+
+    async def tell_worker(path, data):
+        sent.append((path, data))
+
+    monkeypatch.setattr(appmod, 'tell_worker', tell_worker)
+    asyncio.run(appmod.douyin_ended({'run_id': 'abc', 'status': 'done'}))
+    asyncio.run(appmod.douyin_ended({'status': 'done'}))  # 没编号的（采集链接之类）不报
+    assert sent == [('/streamer-done', {'run_id': 'abc', 'status': 'done'})]
+
+
 # ── 图文 ──
 
 def test_image_sources_keep_order_and_prefer_jpeg():
@@ -1389,3 +1495,23 @@ def test_posted_ids_endpoint(monkeypatch):
     r = c.get('/douyin/posted', params={'target': str(VIDEO_CHANNEL)}, headers={'X-Key': 'k1'})
     assert r.json() == {'ids': ['7600000000000000001', '7600000000000000002']}
     assert c.get('/douyin/posted', params={'target': str(VIDEO_CHANNEL)}).status_code in (401, 403)
+
+
+def test_announce_up_reports_again_until_the_worker_has_handed_the_run_back(monkeypatch):
+    answers = [ConnectionError('Worker 连不上'), {'ok': True, 'retry': True}, {'ok': True, 'resumed': True, 'retry': False}]
+    calls = []
+
+    async def tell_worker(path, data):
+        calls.append(path)
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    async def no_wait(s):
+        pass
+
+    monkeypatch.setattr(appmod, 'tell_worker', tell_worker)
+    monkeypatch.setattr(appmod.asyncio, 'sleep', no_wait)
+    asyncio.run(appmod.announce_up())
+    assert calls == ['/streamer-up'] * 3 and not answers

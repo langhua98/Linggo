@@ -20,11 +20,14 @@ POST /douyin/mirror 把一个账号能看到的视频都转进视频频道；GET
   TG_CHANNEL                频道用户名，xiaojumusic
   STREAMER_KEY              Worker 转发请求时带的密钥（X-Key 请求头）
   TG_USER_SESSION           （可选）频道主账号的登录凭证，搬歌用；由 /login/verify 生成
+  WORKER_URL                （可选）小橘音乐 Worker 的地址，默认 https://xiaoju-music.langhua98.workers.dev。
+                            启动时告诉它「重启过了」（它把没转完的抖音任务再交一次），任务转完告诉它销掉记录
 """
 
 import asyncio
 import hmac
 import io
+import json
 import logging
 import os
 import re
@@ -32,6 +35,7 @@ import subprocess
 import shutil
 import tempfile
 import time
+import urllib.request
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -515,6 +519,49 @@ async def bot_say(chat_id, text):
     await bot_client.send_message(int(chat_id), text, link_preview=False)
 
 
+def worker_url():
+    return os.environ.get('WORKER_URL', 'https://xiaoju-music.langhua98.workers.dev').rstrip('/')
+
+
+async def tell_worker(path, data):
+    """POST 给 Worker（带同一个 STREAMER_KEY）。失败就抛出去，调用方自己决定要不要重试"""
+    req = urllib.request.Request(worker_url() + path, data=json.dumps(data).encode(), method='POST', headers={
+        'Content-Type': 'application/json', 'X-Key': os.environ.get('STREAMER_KEY', ''),
+        'User-Agent': 'xiaoju-streamer'})
+    raw = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=60).read())
+    try:
+        return json.loads(raw or b'{}')
+    except ValueError:
+        return {}
+
+
+async def douyin_ended(st):
+    """抖音任务转完了或出错了：告诉 Worker 销掉「重启后接着转」的记录（叫停的 Worker 自己会销）"""
+    if st.get('run_id'):
+        await tell_worker('/streamer-done', {'run_id': st['run_id'], 'status': st.get('status')})
+
+
+async def announce_up():
+    """刚启动：告诉 Worker 这边重启过了，它会把重启前没转完的抖音任务再交一次（已经发进频道的会跳过）"""
+    for wait in (5, 20, 60, 120, 300):
+        await asyncio.sleep(wait)
+        try:
+            got = await tell_worker('/streamer-up', {})
+        except Exception as e:  # noqa: BLE001
+            log.warning('telling the Worker we are up failed: %s', e)
+            continue
+        if not got.get('retry'):  # 交上了，或者本来就没有没转完的
+            log.info('told the Worker we are up (resumed: %s)', bool(got.get('resumed')))
+            return
+        log.info('the Worker could not hand the unfinished run back yet, will report again')
+
+
+def note_run(body):
+    """Worker 给这次任务编的号，记进状态里：转完时报回去，它对上号才销记录"""
+    if body.get('run_id'):
+        douyin_job.state['run_id'] = str(body['run_id'])[:40]
+
+
 @asynccontextmanager
 async def lifespan(app):
     global streamer
@@ -538,7 +585,7 @@ async def lifespan(app):
     harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
     global douyin_job
     douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_post_video, prepare_video=douyin_prepare_video, send_images=douyin_send_images, retag=douyin_retag,
-                           posted_ids=douyin_posted, say=bot_say)
+                           posted_ids=douyin_posted, say=bot_say, on_end=douyin_ended)
     # 抖音登录：Worker 的登录页上扫码。登录 cookie 在 /tmp，Space 重启就没了，
     # Worker 存了一份，每次调抖音接口都带上（state），这边缺了就写回去
     global douyin_login
@@ -578,9 +625,11 @@ async def lifespan(app):
                 log.warning('TG_USER_SESSION is no longer valid')
         except Exception:  # noqa: BLE001 — 搬歌用不了不影响播放
             log.exception('user session failed')
+    up = asyncio.create_task(announce_up())
     try:
         yield
     finally:
+        up.cancel()
         if douyin_job and douyin_job.running():
             douyin_job.task.cancel()
         if copier:
@@ -1140,6 +1189,7 @@ async def douyin_link(request: Request):
             douyin_job.start(value, notify=notify, target=target)
     except RuntimeError:
         raise HTTPException(409, 'already running')
+    note_run(body)
     return {'kind': kind, 'sec_uid': value} if kind == 'user' else {'kind': kind, 'id': value}
 
 
@@ -1188,6 +1238,7 @@ async def douyin_import(request: Request):
     if douyin_busy():
         raise HTTPException(409, 'busy')
     douyin_job.start_import(items, notify=body.get('notify') or None, target=target, final=final, tags=tags)
+    note_run(body)
     return {'ok': True, **counts, 'added': len(items), 'started': True}
 
 
@@ -1211,6 +1262,7 @@ async def douyin_mirror(request: Request):
                                 tags=clean_tags(body.get('tags')))
     except RuntimeError:
         raise HTTPException(409, 'already running')
+    note_run(body)
     return {'ok': True}
 
 

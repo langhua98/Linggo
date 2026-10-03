@@ -22,13 +22,15 @@ IMPORT_IDLE = 20 * 60  # 边抓边转：云电脑这么久没再送作品来、�
 MESSAGE_LIMIT = 3500  # 一条消息放多少字的链接（Telegram 上限 4096）
 MAX_MESSAGES = 8
 AHEAD = 3  # 同时在下载、处理、上传的作品条数（发帖还是一条条按顺序发）
+MAX_ODD_FAILS = 5  # 连续这么多条出意外的错（上传失败、限流太久之类）才整批停下；零星的跳过那一条接着转
 
 
 class DouyinJob:
     def __init__(self, *, web, send_video, posted_ids, send_images=None, say=None, pause=3.0,
-                 import_idle=IMPORT_IDLE, poll=5.0, retag=None, prepare_video=None, ahead=AHEAD):
+                 import_idle=IMPORT_IDLE, poll=5.0, retag=None, prepare_video=None, ahead=AHEAD, on_end=None):
         # prepare_video(字节, 作品, 档, 频道) → 已经传到 Telegram、只差发帖的视频；有它时 send_video(备好的, 说明, 频道) 只发帖。
         # 这样几条视频的下载、ffmpeg、上传能同时做，发帖仍按顺序（频道里的先后不乱）
+        # on_end(state)：一件事跑完（转完了或出错了；被叫停、服务关掉不算）时调，Worker 据此销掉「重启后接着转」的记录
         # retag(频道, 消息号, 作品)：频道里已经有、但说明里还没有账号标签的旧帖，补上标签（改说明，不重发）
         # posted_ids(频道) → {作品号: 消息号}：频道里已经转过的（每次跑先翻一遍频道，查重靠它）
         self.web, self.send_video, self.send_images, self.posted_ids = web, send_video, send_images, posted_ids
@@ -36,6 +38,7 @@ class DouyinJob:
         self.import_idle, self.poll = import_idle, poll
         self.retag, self.tags = retag, {}
         self.prepare_video, self.ahead = prepare_video, max(1, ahead)
+        self.on_end = on_end
         self._inbox, self._seen, self._final = [], set(), True
         self.task = None
         self.state = {'status': 'idle'}
@@ -46,8 +49,17 @@ class DouyinJob:
     def _begin(self, run, **info):
         if self.running():
             raise RuntimeError('already running')
-        self.state = {'status': 'running', 'blocked': False, 'error': '', **info}
-        self.task = asyncio.create_task(run())
+        self.state = st = {'status': 'running', 'blocked': False, 'error': '', **info}
+
+        async def go():
+            await run()
+            if self.on_end and st.get('status') in ('done', 'error'):
+                try:
+                    await self.on_end(st)
+                except Exception:  # noqa: BLE001  通知不到 Worker 也不影响结果（它定时会自己来问）
+                    log.exception('on_end failed')
+
+        self.task = asyncio.create_task(go())
 
     def start(self, aweme_id, notify=None, target=None):
         aweme_id = str(aweme_id)
@@ -174,7 +186,16 @@ class DouyinJob:
         async def again(item):  # 同一次里重复出现的作品（置顶又在正常位置）不再下载，发的时候 done 里已经有它
             self._label(item)
 
-        tasks = {}
+        tasks, odd = {}, [0]
+
+        def fail(row, e, unexpected):
+            row['reason'] = str(e) if not unexpected else f'{type(e).__name__}: {e}'[:200]
+            st['failed'].append(row)
+            odd[0] = odd[0] + 1 if unexpected else 0
+            if unexpected:
+                log.warning('douyin item %s failed: %s', row['id'], row['reason'])
+                if odd[0] >= MAX_ODD_FAILS:
+                    raise e
 
         def fetch_upto(n):
             for k in range(n, min(n + self.ahead, len(todo))):
@@ -189,16 +210,26 @@ class DouyinJob:
                 try:
                     got = await tasks.pop(n)
                 except (DownloadError, Gone) as e:
-                    row['reason'] = str(e)
-                    st['failed'].append(row)
+                    fail(row, e, False)
+                    continue
+                except Blocked:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    fail(row, e, True)
                     continue
                 fetch_upto(n + 1)
                 try:
                     row['msg'], fresh = await self._send(item, got, target, done)
                 except (DownloadError, Gone) as e:
-                    row['reason'] = str(e)
-                    st['failed'].append(row)
+                    fail(row, e, False)
                     continue
+                except Exception as e:  # noqa: BLE001
+                    close = getattr(got, 'close', None)
+                    if close:
+                        close()
+                    fail(row, e, True)
+                    continue
+                odd[0] = 0
                 (st['posted'] if fresh else st['skipped']).append(row)
                 if fresh:
                     await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流（后面几条照样在准备）
