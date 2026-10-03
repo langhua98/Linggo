@@ -41,15 +41,20 @@ def parse_share_page(html):
         data = json.loads(m.group(1))
     except ValueError as e:
         raise DouyinError('分享页的作品数据解析不了') from e
-    for page in (data.get('loaderData') or {}).values():
+    seen = []
+    for key, page in (data.get('loaderData') or {}).items():
         res = (page or {}).get('videoInfoRes') if isinstance(page, dict) else None
         items = (res or {}).get('item_list') or []
         if items:
             return items[0]
         if res and res.get('filter_list'):
-            reason = (res['filter_list'][0] or {}).get('detail_msg') or '作品不可见'
+            f = res['filter_list'][0] or {}
+            reason = f.get('detail_msg') or f.get('filter_reason') or '作品不可见'
             raise DouyinError(f'抖音说：{reason}')
-    raise DouyinError('作品不存在或已删除')
+        if isinstance(page, dict):
+            seen.append(f'{key}: {",".join(sorted(page))}' + (f' status={res.get("status_code")}' if res else ''))
+    # 带上抖音实际给了什么（只有字段名和状态码），方便排查分享页换了格式还是被风控
+    raise DouyinError('分享页里没有作品（' + ('; '.join(seen)[:600] or '空的 loaderData') + '）')
 
 
 def first_url(obj):
