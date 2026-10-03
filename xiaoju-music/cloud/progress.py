@@ -29,16 +29,24 @@ def rows(path):
     return out
 
 
+def unique(rs):
+    """同一条作品 MediaCrawler 常写进去不止一行（翻页时重复出现、先存列表再补详情）：按作品号只算一次，后写的为准"""
+    out = {}
+    for r in rs:
+        out[str(r.get('aweme_id') or id(r))] = r
+    return list(out.values())
+
+
 def main():
     phase, mode, out_dir, sent, names = sys.argv[1:6]
     info = {'phase': phase, 'mode': mode, 'sent': int(sent or 0)}
     if mode == 'search':
-        got = rows(newest(os.path.join(out_dir, '**', 'search_contents_*.jsonl')))
+        got = unique(rows(newest(os.path.join(out_dir, '**', 'search_contents_*.jsonl'))))
         info['keywords'] = [k for k in names.split(',') if k]
         info['got'] = len(got)
         info['per'] = {k: sum(r.get('source_keyword') == k for r in got) for k in info['keywords']}
     else:
-        got = rows(newest(os.path.join(out_dir, '**', 'creator_contents_*.jsonl')))
+        got = unique(rows(newest(os.path.join(out_dir, '**', 'creator_contents_*.jsonl'))))
         meta = {}
         for c in rows(os.path.expanduser('~/.xiaoju/creators.jsonl')):
             meta[c.get('sec_uid')] = c

@@ -947,10 +947,25 @@ def test_douyin_ended_reports_the_run_to_the_worker(monkeypatch):
     async def tell_worker(path, data):
         sent.append((path, data))
 
+    async def no_wait(s):
+        pass
+
     monkeypatch.setattr(appmod, 'tell_worker', tell_worker)
+    monkeypatch.setattr(appmod.asyncio, 'sleep', no_wait)
     asyncio.run(appmod.douyin_ended({'run_id': 'abc', 'status': 'done'}))
     asyncio.run(appmod.douyin_ended({'status': 'done'}))  # 没编号的（采集链接之类）不报
     assert sent == [('/streamer-done', {'run_id': 'abc', 'status': 'done'})]
+
+    tries = []
+
+    async def flaky(path, data):  # 连 Worker 握手断了两次，第三次才通
+        tries.append(path)
+        if len(tries) < 3:
+            raise OSError('SSL: UNEXPECTED_EOF_WHILE_READING')
+
+    monkeypatch.setattr(appmod, 'tell_worker', flaky)
+    asyncio.run(appmod.douyin_ended({'run_id': 'abc', 'status': 'done'}))
+    assert tries == ['/streamer-done'] * 3
 
 
 # ── 图文 ──

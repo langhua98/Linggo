@@ -537,8 +537,15 @@ async def tell_worker(path, data):
 
 async def douyin_ended(st):
     """抖音任务转完了或出错了：告诉 Worker 销掉「重启后接着转」的记录（叫停的 Worker 自己会销）"""
-    if st.get('run_id'):
-        await tell_worker('/streamer-done', {'run_id': st['run_id'], 'status': st.get('status')})
+    if not st.get('run_id'):
+        return
+    for wait in (0, 10, 60):  # 连 Worker 偶尔握手就断（SSL EOF）：隔一会儿再试；都不行 Worker 的定时任务也会补上
+        await asyncio.sleep(wait)
+        try:
+            await tell_worker('/streamer-done', {'run_id': st['run_id'], 'status': st.get('status')})
+            return
+        except Exception as e:  # noqa: BLE001
+            log.warning('telling the Worker the run ended failed: %s', e)
 
 
 async def announce_up():
