@@ -129,12 +129,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
 （原来的代码在它的 Git 历史里，提交 `031d368d79`）。
 
 更新代码：把 `streamer/` 下的 `app.py`、`Dockerfile`、`requirements.txt`、`README.md` 和 `harvest/`、`douyin/` 两个目录
-推到这个 Space 的仓库，Space 会自动重新构建（装 Chromium 那一步第一次要几分钟）。
-
-**推之前先在机器人里发「进度」**：Space 一重新构建（或者 Hugging Face 维护重启），正在跑的任务就断了——转抖音作品、搬歌的
-队列只在它的内存里。小橘在转就等它转完再推。万一断了：审核通过的那几批发「接着转」（或者进度面板上点「🔁 接着转审核过的」，
-`POST /admin/api/douyin-resume`），重新交给小橘，频道里已有的跳过、只转剩下的；云电脑抓的号点「▶️ 运行爬虫」再抓一次，
-转过的不会再抓。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
+推到这个 Space 的仓库，Space 会自动重新构建（装 Chromium 那一步第一次要几分钟）。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
 填上面的地址，两边的 `STREAMER_KEY` 设成同一个值。
 
 ## 改完代码后
@@ -277,9 +272,6 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
   - **审核机器人（@xiaojuverify_bot，`verify.js`）**：搜到的作品转进视频频道前，必须由频道主本人在审核机器人里审核。两个机器人各用各的令牌、各收各的 webhook（审核机器人是 `POST /verify-webhook`，独立 secret `verifySecret`），数据交接走共享后端——同一个 Durable Object 里的审核任务表：`rv:<任务号>`（状态 pending / approved / rejected / expired / paused、完整清单：作品 ID、链接、来源账号和 sec_uid、文案、文件地址）、`rvRows:<任务号>:<段>`（审核时那份完整作品数据，每段 100 条，转发就用它）、`rvIds`（最近 30 个任务）。
     - 搜完：小橘 `submitForReview` 写任务 → `deliverTask` 用审核机器人的令牌把清单分几条私聊发给频道主，最后一条带「✅ 通过，都是我的号 / ❌ 不通过」。
     - 频道主点了：审核机器人把结果写回任务表，再叫小橘 `onReviewDecision`；小橘重新从任务表读状态，只有 approved 才交给 `/douyin/import`，只转这一批、不登记这些号（登记了云电脑每次开机都会抓它们的全部作品；要长期同步的号用「添加抖音账号」单独加）。登记过的号在清单里标 👤，只作参考，不跳过审核。
-    - **接着转**：小橘的服务重启（更新代码、Hugging Face 维护）会把正在转的打断。机器人里发「接着转」或者进度面板上点
-      「🔁 接着转审核过的」：最近两天审核通过、交给小橘转过的几批（`approvedTasks`）重新交一遍，同一条作品只交一次，
-      频道里已有的跳过，只转剩下的。小橘不在转、最近又有这样的几批时，进度面板会提示。文件地址几个小时就失效，隔久了的转不成，重新搜。
     - 不默认通过：没接审核机器人、频道主还没在审核机器人里点「开始」、Telegram 出错 → paused（小橘发「🔁 重新送审」按钮；频道主在审核机器人里点「开始」也会自动补发）；24 小时没审 → expired（cron 每 30 分钟查一次）；不通过 → rejected；通过了但流式服务没接上 → 状态仍是 approved，小橘给「🔁 再试转发」。旧清单上的「📤 转 N」「一键转」「全部转」按钮一律不能用。
     - 接上：频道主在小橘里发「审核机器人 <BotFather 给的令牌>」，Worker 用 `getMe` 认令牌、给审核机器人 `setWebhook`，令牌存进 Durable Object（config `verifyTok`，不进代码库；也可以用 secret `VERIFY_BOT_TOKEN`），发令牌的那条消息删掉。「审核」看接好没有、哪些在等。
   - **换最高画质**：流式服务 `POST /douyin/delete {target, ids}` 删掉旧的抖音视频帖（只删说明里带抖音视频链接的视频，
