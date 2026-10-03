@@ -1111,7 +1111,11 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.equal((await post('wrong', rows)).status, 403);
   assert.deepEqual(await jsonOf(await post(tok, rows)), { ok: true, keywords: ['舞蹈'], total: 4 });
   const owned = bot.out.filter(o => o.method === 'sendMessage' && o.chat_id === OWNER);
-  assert.match(owned.at(-1).text, /账号审批：「舞蹈」搜到的 1 条来自这 1 个号/);
+  // 只有登记过的号：不再审批，直接转
+  assert.match(owned.at(-1).text, /📤 「舞蹈」搜到的 1 条都来自你登记过的号（@（没名字）），已经直接开始转/);
+  const auto = bot.toStreamer.slice(n).filter(x => x.path === 'douyin/import');
+  assert.equal(auto.length, 1);
+  assert.equal(JSON.parse(auto[0].body.text).aweme_id, '7600000000000000004');
   assert.match(owned.at(-2).text, /✅ 「舞蹈」搜完了，一共 4 条/);
   const msg = owned.at(-3);
   assert.equal(msg.chat_id, OWNER);
@@ -1120,7 +1124,7 @@ await t('搜抖音：关键词排队给云电脑；云电脑把搜索结果送�
   assert.match(msg.text, /3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003\n⬇️ 文件（几个小时内有效）：\nhttps:\/\/p\/1\.jpg/, '每条都附文件地址');
   assert.match(msg.text, /抖音搜「舞蹈」：边搜边发[\s\S]*1\. 📹 高赞 舞蹈 — @乙 ❤12万\nhttps:\/\/www\.douyin\.com\/video\/7600000000000000002[\s\S]*2\. 📹 低赞 — @甲甲 ❤12\n[\s\S]*3\. 🖼 图文 ❤5\nhttps:\/\/www\.douyin\.com\/note\/7600000000000000003/);
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), ['街舞'], '搜过的词出队');
-  assert.ok(bot.toStreamer.slice(n).every(x => !x.path.startsWith('douyin/')), '光收到搜索结果不转（频道主点按钮才转）');
+  assert.ok(bot.toStreamer.slice(n).filter(x => x.path.startsWith('douyin/')).length === 1, '没登记的号光收到搜索结果不转');
   // 每条带「📤 转 N」按钮，点了就交给流式服务转进视频频道
   const kb = msg.reply_markup.inline_keyboard.flat();
   assert.deepEqual(kb.map(b => b.text), ['📤 转 1', '📤 转 2', '📤 转 3', '📤 转 4', '📤 一键转这批里你的号（1 条）']);

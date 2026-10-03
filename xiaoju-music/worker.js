@@ -1487,28 +1487,10 @@ async function botButton(env, cb, owner, origin) {
       await ack('好，这批不转');
       return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
     }
-    if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
-    const all = await searchRows(L);
-    const rows = p.authors.flatMap(x => x.ids).map(id => all[id]).filter(Boolean);
-    if (!rows.length) return ack('作品数据过期了，重新搜一次');
-    let r;
-    try {
-      r = await streamerCall(env, '/douyin/import', {
-        text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
-        tags: await douyinTagMap(L, 'douyinTags'),
-      });
-    } catch {
-      return ack('小橘的服务正在唤醒，过一两分钟再点');
-    }
-    if (r.status === 409) return ack('小橘正在转别的，转完再点');
-    if (r.status !== 200) return ack((r.data && r.data.detail) || '没转成');
-    // 频道主确认都是自己的号：登记（以后云电脑也转它们的全部作品）
-    const selves = await douyinSelves(L);
-    const add = p.authors.map(x => x.sec).filter(x => SEC_UID.test(x) && !selves.includes(x));
-    await L.setConfig('douyinSelf', JSON.stringify([...selves, ...add].slice(0, MAX_SELVES)));
-    p.done = 'yes';
+    const res = await importPicked(env, L, owner, p);
+    if (!res.ok) return ack(res.tip);
     await L.setConfig('dyPick', JSON.stringify(p));
-    await ack(`开始转 ${rows.length} 条${add.length ? `，登记了 ${add.length} 个号` : ''}；进度点「📊 进度」看`);
+    await ack(`开始转 ${res.n} 条${res.add ? `，登记了 ${res.add} 个号` : ''}；进度点「📊 进度」看`);
     return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
   }
   if (kind === 'dys' || kind === 'dya') { // 搜索清单里点「📤 转 N」/「一键转这批里你的号」：交给流式服务按最高画质转进视频频道（已有的跳过）
@@ -2035,6 +2017,31 @@ function pickKeyboard(p) {
     [{ text: '❌ 有不是我的，不转', callback_data: 'dyq:no' }]] };
 }
 
+// 把审批（或全是登记过的号）的整批作品交给流式服务转进视频频道，并登记这些号；成功时把 p.done 置成 'yes'
+async function importPicked(env, L, owner, p) {
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, tip: '还没设置视频频道' };
+  const all = await searchRows(L);
+  const rows = p.authors.flatMap(x => x.ids).map(id => all[id]).filter(Boolean);
+  if (!rows.length) return { ok: false, tip: '作品数据过期了，重新搜一次' };
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/import', {
+      text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
+      tags: await douyinTagMap(L, 'douyinTags'),
+    });
+  } catch {
+    return { ok: false, tip: '小橘的服务正在唤醒，过一两分钟再点' };
+  }
+  if (r.status === 409) return { ok: false, tip: '小橘正在转别的，转完再点' };
+  if (r.status !== 200) return { ok: false, tip: (r.data && r.data.detail) || '没转成' };
+  // 频道主确认都是自己的号：登记（以后云电脑也转它们的全部作品，再搜到它们也不用再审）
+  const selves = await douyinSelves(L);
+  const add = p.authors.map(x => x.sec).filter(x => SEC_UID.test(x) && !selves.includes(x));
+  if (add.length) await L.setConfig('douyinSelf', JSON.stringify([...selves, ...add].slice(0, MAX_SELVES)));
+  p.done = 'yes';
+  return { ok: true, n: rows.length, add: add.length };
+}
+
 async function sendAccountPick(env, L, owner, kws, ids, rows) {
   const mine = new Set(await douyinSelves(L));
   const by = new Map();
@@ -2048,6 +2055,13 @@ async function sendAccountPick(env, L, owner, kws, ids, rows) {
   const authors = [...by.values()].sort((x, y) => (y.mine - x.mine) || (y.ids.length - x.ids.length)).slice(0, 40);
   if (!authors.length) return;
   const p = { authors, done: false };
+  if (authors.every(a => a.mine)) { // 全是频道主审过、登记过的号：不再问，直接转
+    const res = await importPicked(env, L, owner, p);
+    const n = authors.reduce((t, a) => t + a.ids.length, 0);
+    return say(env, owner, res.ok
+      ? `📤 「${kws.join('、')}」搜到的 ${n} 条都来自你登记过的号（${authors.map(a => '@' + (a.name || '（没名字）')).join('、')}），已经直接开始转；进度点「📊 进度」看`
+      : `「${kws.join('、')}」搜到的 ${n} 条都是你登记过的号，但没转成：${res.tip}。可以在上面的清单里点「一键转这批里你的号」`);
+  }
   const list = authors.map((a, i) => `${i + 1}. ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.ids.length} 条）`).join('\n');
   const r = await tg(env, 'sendMessage', {
     chat_id: owner, reply_markup: pickKeyboard(p),
