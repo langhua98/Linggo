@@ -277,15 +277,15 @@ function makeSlide() {
   const el = $('#slideTpl').content.firstElementChild.cloneNode(true);
   const s = { el, id: undefined, v: el.querySelector('video'), bg: el.querySelector('.bg'), msg: el.querySelector('.msg'),
     by: el.querySelector('.by'), txt: el.querySelector('.txt'), like: el.querySelector('.like'),
-    bar: el.querySelector('.bar'), fill: el.querySelector('.bar-fill'), knob: el.querySelector('.bar-knob'), time: el.querySelector('.bar-time'), tries: 0, odd: 0 };
+    bar: el.querySelector('.bar'), fill: el.querySelector('.bar-fill'), knob: el.querySelector('.bar-knob'), time: el.querySelector('.bar-time'), tries: 0 };
   const v = s.v;
   let wait = 0, slow = 0;
   // 转圈晚 0.3 秒才出来（缓存里有的一下就好，不闪）；6 秒还没出画面多半是视频服务在休眠，说一声
   const loading = on => {
     clearTimeout(wait);
     clearTimeout(slow);
-    if (on && !s.bad && !v.error) {
-      wait = setTimeout(() => { if (!s.bad) el.classList.add('loading'); }, 300);
+    if (on) {
+      wait = setTimeout(() => el.classList.add('loading'), 300);
       slow = setTimeout(() => { if (!s.msg.textContent) { s.msg.textContent = '有点慢，视频服务可能在唤醒（大约一分钟）…'; s.slowMsg = true; hideTip(); } }, 6000);
     } else {
       el.classList.remove('loading');
@@ -293,7 +293,7 @@ function makeSlide() {
     }
   };
   v.addEventListener('waiting', () => { if (s === slides[1]) loading(true); });
-  v.addEventListener('playing', () => { loading(false); s.msg.textContent = ''; s.slowMsg = false; s.tries = 0; s.odd = 0; s.bad = false; badRun = 0; el.classList.remove('paused'); });
+  v.addEventListener('playing', () => { loading(false); s.msg.textContent = ''; s.slowMsg = false; s.tries = 0; el.classList.remove('paused'); });
   v.addEventListener('canplay', () => { if (!v.paused || s !== slides[1]) loading(false); });
   v.addEventListener('pause', () => { if (s === slides[1] && !busy && !document.hidden && !v.error && !s.msg.textContent) el.classList.add('paused'); });
   v.addEventListener('error', () => videoError(s));
@@ -314,8 +314,6 @@ function assign(s, id, preload) {
   if (s.id === id) return;
   s.id = id;
   s.tries = 0;
-  s.odd = 0;
-  s.bad = false;
   const v = s.v;
   v.pause();
   s.loading(false);
@@ -396,7 +394,6 @@ function settle() {
   fillNeighbors();
   const id = current().id;
   if (id != null) history.replaceState(null, '', '#' + id);
-  if (current().bad) autoSkip(current());
   if (!$('#sheet').hidden) renderSheet();
 }
 
@@ -459,19 +456,7 @@ function jumpToId(id) {
   jumpTo(hist.length - 1);
 }
 
-// ── 出错：流式服务在休眠（503）就等它醒了重试；帖子删了（404）、这个浏览器放不了（文件取得到却放不出来）就跳过 ──
-let badRun = 0; // 连着几条放不了：都放不了多半是浏览器不支持这种视频，别一直跳下去
-function skipBad(s, why) {
-  s.msg.textContent = why;
-  s.bad = true;
-  s.loading(false);
-  if (s === current()) autoSkip(s);
-}
-function autoSkip(s) {
-  const id = s.id;
-  if (++badRun >= 3) { s.msg.textContent = '这个浏览器放不了这些视频，换个浏览器试试（比如 Safari、Chrome）'; return; }
-  setTimeout(() => { if (current().id === id && !busy) go(1); }, 1500);
-}
+// ── 出错：流式服务在休眠（503）就等它醒了重试；帖子删了（404）就跳过 ──
 async function videoError(s) {
   const id = s.id;
   if (id == null || !s.v.getAttribute('src')) return;
@@ -487,23 +472,16 @@ async function videoError(s) {
   s.el.classList.remove('paused');
   if (s === current()) hideTip();
   if (status === 404) {
+    s.msg.textContent = '这条视频已经不在了';
     setPool(pool.filter(v => v.id !== id));
-    // 预先抽好的下一条没了：悄悄换一条
-    if (s === slides[2] && pos === hist.length - 1) { upcoming = null; assign(s, nextId(), 'auto'); return; }
-    return skipBad(s, '这条视频已经不在了');
+    if (s === current()) setTimeout(() => { if (current().id === id && !busy) go(1); }, 1200);
+    else if (s === slides[2] && pos === hist.length - 1) { upcoming = null; assign(s, nextId(), 'auto'); }
+    return;
   }
-  // 文件取得到却放不出来：再试一次（刚才可能正好碰上服务没醒），连着两次才算这个浏览器放不了；
-  // 取不到（在唤醒、出错）的另外数，最多试 18 次（约两分半钟）
-  const fine = status === 200 || status === 206;
-  if (fine) {
-    if (++s.odd >= 2) return skipBad(s, '这个浏览器放不了这条视频，换下一条');
-  } else {
-    s.odd = 0;
-    if (++s.tries > 18) { s.msg.textContent = '这条视频暂时放不了，滑走看看别的'; return; }
-  }
-  s.msg.textContent = fine ? '加载出错了，正在重试…' : '视频服务正在唤醒，大约一分钟…';
+  if (++s.tries > 18) { s.msg.textContent = '这条视频暂时放不了，滑走看看别的'; return; }
+  s.msg.textContent = status === 503 || !status ? '视频服务正在唤醒，大约一分钟…' : '加载出错了，正在重试…';
   if (s === current()) s.loading(true);
-  await sleep(fine ? 500 : 8000);
+  await sleep(status === 206 || status === 200 ? 500 : 8000);
   if (s.id !== id) return;
   const t = s.v.currentTime;
   s.v.load();
