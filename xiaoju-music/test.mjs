@@ -1444,6 +1444,22 @@ await t('播放页和管理页都能取到，内嵌脚本能通过语法检查',
   assert.equal((await req('/admin')).headers.get('X-Robots-Tag'), 'noindex');
 });
 
+await t('审核清单：账号多、文件地址长也按 Telegram 上限分段，一个字不丢', async () => {
+  const { reviewMessages } = await import('./verify.js');
+  const sec = i => 'MS4wLjABAAAA' + String(i).padStart(64, 'x');
+  const items = Array.from({ length: 45 }, (_, i) => ({
+    id: String(7400000000000000000n + BigInt(i)), note: i % 3 === 0, sec: sec(i), mine: false,
+    account: '菊花裤的朋友' + i + '号'.repeat(18), link: 'https://www.douyin.com/video/' + i,
+    title: '文案'.repeat(20), files: ['https://v26-web.douyinvod.com/' + 'a'.repeat(i === 7 ? 9000 : 600)],
+  }));
+  const msgs = reviewMessages({ id: 'T1', keywords: ['菊花裤'], items });
+  for (const m of msgs) assert.ok(m.length <= 4096, '超长：' + m.length);
+  const all = msgs.join('');
+  for (let i = 0; i < 45; i++) { assert.ok(all.includes(sec(i))); assert.ok(all.includes(items[i].id)); }
+  assert.ok(all.replace(/\n/g, '').includes('a'.repeat(9000)), '超长的文件地址切开了也要完整');
+  assert.match(msgs[0], /🛂 审核单 T1[\s\S]*一共 45 条，来自 45 个账号/);
+});
+
 await t('任何响应里都不出现机器人 token、管理密钥、流式服务密钥', async () => {
   assert.ok(seen.length > 20);
   for (const s of seen) {

@@ -105,16 +105,35 @@ function accountsOf(t) {
   return [...by.values()].sort((a, b) => (b.mine - a.mine) || (b.n - a.n));
 }
 
+// 把一段段文字装进不超过 MSG_LIMIT 的消息里；单段本身超长的（文件地址特别长之类）硬切开
+function packMessages(blocks, sep) {
+  const out = [];
+  let chunk = '';
+  for (let b of blocks) {
+    while (b.length > MSG_LIMIT) {
+      if (chunk) { out.push(chunk); chunk = ''; }
+      out.push(b.slice(0, MSG_LIMIT));
+      b = b.slice(MSG_LIMIT);
+    }
+    if (chunk && (chunk + sep + b).length > MSG_LIMIT) { out.push(chunk); chunk = b; }
+    else chunk = chunk ? chunk + sep + b : b;
+  }
+  if (chunk) out.push(chunk);
+  return out;
+}
+
 export function reviewMessages(t) {
   const accts = accountsOf(t);
-  const head = [
-    `🛂 审核单 ${t.id}`,
-    `来源：小橘音乐机器人 · 抖音搜索「${t.keywords.join('、')}」`,
-    `一共 ${t.items.length} 条，来自 ${accts.length} 个账号（👤 是你登记过的号，只作参考）：`,
+  // 账号汇总也要分段：账号多的时候（每个号一行 sec_uid）光这一段就超过 Telegram 的 4096 字
+  const head = packMessages([
+    [
+      `🛂 审核单 ${t.id}`,
+      `来源：小橘音乐机器人 · 抖音搜索「${t.keywords.join('、')}」`,
+      `一共 ${t.items.length} 条，来自 ${accts.length} 个账号（👤 是你登记过的号，只作参考）：`,
+    ].join('\n'),
     ...accts.map((a, i) => `${i + 1}. ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.n} 条）${a.sec ? `\n   sec_uid: ${a.sec}` : '\n   （没拿到账号 id）'}`),
-    '',
-    '完整清单在下面，看完点最后一条的按钮。',
-  ].join('\n');
+    '\n完整清单在下面，看完点最后一条的按钮。',
+  ], '\n');
   const lines = t.items.map((x, i) => [
     `${i + 1}. ${x.note ? '🖼' : '📹'} ${x.title}`,
     `   账号：${x.mine ? '👤' : ''}@${x.account || '（没名字）'}`,
@@ -122,14 +141,7 @@ export function reviewMessages(t) {
     `   链接：${x.link}`,
     ...(x.files && x.files.length ? [`   文件：${x.files[0]}${x.files.length > 1 ? `（另有 ${x.files.length - 1} 个）` : ''}`] : []),
   ].join('\n'));
-  const out = [head];
-  let chunk = '';
-  for (const l of lines) {
-    if (chunk && (chunk + '\n\n' + l).length > MSG_LIMIT) { out.push(chunk); chunk = l; }
-    else chunk = chunk ? chunk + '\n\n' + l : l;
-  }
-  if (chunk) out.push(chunk);
-  return out;
+  return [...head, ...packMessages(lines, '\n\n')];
 }
 
 function decisionText(t) {
