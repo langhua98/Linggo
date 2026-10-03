@@ -105,6 +105,8 @@ class HttpError extends Error {
 export default {
   // 每天北京时间凌晨 3 点（UTC 19:00）：自动去来源频道搬新歌
   async scheduled(controller, env, ctx) {
+    // 每 5 分钟：流式服务重启后没来报到（它连这边偶尔握手就断），这里自己去问，没转完的再交一次
+    if (controller.cron === RESUME_CRON) return void ctx.waitUntil(checkResume(env).catch(() => {}));
     if (controller.cron === DOUYIN_CRON) {
       ctx.waitUntil(expireReviews(env).catch(() => {}));
       ctx.waitUntil(douyinTick(env).catch(() => {}));
@@ -1679,7 +1681,8 @@ async function streamerCall(env, path, body) {
 // 频道里已经有的它会跳过。转完或出错它来 /streamer-done 报编号，销掉记录；频道主点停，这边自己销。
 // 定时任务也会对一下（报到没送到的话）：流式服务没在跑、手上也不是这个编号的任务 → 再交；是这个编号且已经结束 → 销
 const RESUME_PIECE = 300 * 1024;  // 存作品数据时一段最多这么多字（数据库一行有大小上限）
-const RESUME_MAX = 3;             // 同一批最多自动接着转几次（老是转到一半就重启，多半是这批本身有问题）
+const RESUME_MAX = 3;
+const RESUME_CRON = '*/5 * * * *';             // 同一批最多自动接着转几次（老是转到一半就重启，多半是这批本身有问题）
 
 async function douyinStart(env, path, body) {
   const L = lib(env), run_id = crypto.randomUUID().slice(0, 12);

@@ -998,10 +998,16 @@ async def douyin_prepare_video(data, item, src, target):
         with open(mp4 if ready else raw, 'wb') as f:
             f.write(data)
         del data
+        t0 = time.monotonic()
         path = mp4 if ready or await asyncio.to_thread(remux_faststart, raw, mp4) else raw
         seconds = item['seconds'] or await asyncio.to_thread(probe_seconds, path)
         thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
+        t1 = time.monotonic()
         file = await upload_parallel(client, path)
+        t2 = time.monotonic()
+        mb = os.path.getsize(path) / 1048576
+        log.info('douyin %s ffmpeg %.1fs%s，上传 %.1fMB 用了 %.1fs（%.2fMB/s）', item['id'], t1 - t0, '' if not ready else '（本来就能边下边播，没挪）',
+                 mb, t2 - t1, mb / max(t2 - t1, 0.01))
         for f in (raw, mp4):
             if os.path.exists(f):
                 os.remove(f)  # 传上去了，本地这份不用了（只留缩略图）
@@ -1016,6 +1022,7 @@ async def douyin_prepare_video(data, item, src, target):
 async def douyin_post_video(prep, text, target):
     """备好的视频发进 target 频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
     client = user_client or bot_client
+    t0 = time.monotonic()
     try:
         chat = await channel_entity(client, target)
         sent = await flood_retry(lambda: client.send_file(
@@ -1023,6 +1030,7 @@ async def douyin_post_video(prep, text, target):
             mime_type='video/mp4', attributes=prep.attrs))
     finally:
         prep.close()
+    log.info('douyin 发帖 %.1fs → 消息 %s', time.monotonic() - t0, sent.id)
     return sent.id
 
 

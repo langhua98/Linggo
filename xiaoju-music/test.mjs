@@ -1732,6 +1732,19 @@ await t('重启后接着转：交给流式服务的抖音任务记下来；它�
   await Promise.all(jobs);
   assert.equal(await lib.resumeGet(), null, '这个编号已经转完，销掉');
 
+  // 每 5 分钟的自检：流式服务重启后没来报到也能接上（只做自检，不跑自动同步）
+  await dm(OWNER, '转抖音视频');
+  const m5 = bot.toStreamer.filter(x => x.path === 'douyin/mirror').at(-1);
+  bot.dyStatus = { status: 'idle' };
+  jobs = [];
+  await worker.scheduled({ cron: '*/5 * * * *' }, env, { waitUntil: p => jobs.push(p) });
+  await Promise.all(jobs);
+  const again5 = bot.toStreamer.filter(x => x.path === 'douyin/mirror').at(-1);
+  assert.notEqual(again5, m5);
+  assert.equal(again5.body.run_id, m5.body.run_id);
+  assert.equal(again5.body.quiet, undefined, '是接着转那一次，不是自动同步');
+  await lib.resumeClear();
+
   // 老是转到一半就重启：最多接着转 3 次，之后告诉频道主，不再自动来
   await dm(OWNER, '转抖音视频');
   bot.dyStatus = { status: 'idle' };

@@ -152,7 +152,11 @@ class DouyinJob:
             return None
         if item['kind'] == 'images':
             return await w.download_images(item)
+        t0 = time.monotonic()
         data, src = await w.download(item)
+        dt = time.monotonic() - t0
+        log.info('douyin %s 下载 %.1fMB 用了 %.1fs（%.2fMB/s，%s）', item['id'], len(data) / 1048576, dt,
+                 len(data) / 1048576 / max(dt, 0.01), f"{src.get('width') or '?'}x{src.get('height') or '?'}")
         if self.prepare_video:
             return await self.prepare_video(data, item, src, target)
         return data, src
