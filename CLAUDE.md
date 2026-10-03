@@ -79,6 +79,13 @@
   （免费账号新建 Docker Space 要 PRO）。**和阅读器没有任何代码共享、
   引用关系**，只是借这个仓库存代码；不在 `sw.js` 的 `SHELL` 里。结构、绑定、重新部署和日常维护见
   `xiaoju-music/README.md`，改完先跑 `node xiaoju-music/test.mjs` 和 `streamer/` 里的 `pytest`。
+- **`private-cloud/`**：「Telegram Private Cloud Drive」私有云盘——网页上传文件，后台 Worker 存进 Telegram 私有频道，
+  数据库（PostgreSQL / 开发用 SQLite）只存元数据和「频道 + 消息号」。FastAPI 后端（`backend/`，含上传 Worker
+  `backend/workers/upload_worker.py`）+ Next.js 静态导出前端（`frontend/`），`docker compose` 部署（API + Worker + PostgreSQL，
+  API 和 Worker 必须挂同一个 `/data` 卷）。机器人走 Telethon MTProto（单文件 2 GB），`STORAGE_BACKEND=local` 时不连 Telegram、
+  文件存本地，开发和测试都用它。**和阅读器没有任何代码共享、引用关系**，不在 `sw.js` 的 `SHELL` 里；**尚未部署到任何服务器**
+  （需要用户自己的 Bot Token / api_id / 频道和一台有持久磁盘的机器）。说明见 `private-cloud/README.md`，改完跑
+  `pytest private-cloud/backend/tests`（设 `TEST_DATABASE_URL` 可在 PostgreSQL 上跑）和 `cd private-cloud/frontend && npm run build`。
 
 ---
 
@@ -137,6 +144,7 @@
 - `cloudflare-proxy/`：`worker.js` + `wrangler.toml` + `README.md`，图书下载代理的
   Worker 源码，见「图书下载代理」一节。
 - `xiaoju-music/`：Telegram 频道音频中转 Worker，与阅读器无关，见上方「⚠️」一节。
+- `private-cloud/`：Telegram 私有云盘（FastAPI + Next.js），与阅读器无关，见上方「⚠️」一节。
 - `admin.html`（21.9 KB，525 行）：自包含管理后台，内嵌 CSS+JS，独立于阅读器。
 - `docs/CMA_plan_big_execute_small.ipynb`：已废止的旧工作约定（Plan Big, Execute Small）引用的
   cookbook 原文，仅作存档。

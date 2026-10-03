@@ -1,0 +1,47 @@
+# docker compose up -d --build
+# 第一次启动前：cp .env.example .env 并填好里面的值
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cloud
+      POSTGRES_USER: cloud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloud -d cloud"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://cloud:${POSTGRES_PASSWORD}@db:5432/cloud
+    volumes:
+      - data:/data            # 上传临时文件、Telegram 会话、备份；Worker 必须挂同一个卷
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "backend.workers.upload_worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://cloud:${POSTGRES_PASSWORD}@db:5432/cloud
+    volumes:
+      - data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  data:

@@ -1,0 +1,7 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.32,<1
+sqlalchemy>=2.0,<3
+psycopg2-binary>=2.9,<3
+telethon>=1.40,<2
+cryptg>=0.5,<1
+pyjwt>=2.8,<3
