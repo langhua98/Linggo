@@ -169,6 +169,7 @@ globalThis.fetch = async (input, init = {}) => {
     if (m[1] === 'douyin/status') return Response.json(bot.dyStatus || { status: 'idle' });
     if (m[1] === 'douyin/stop') return Response.json({ stopped: !!bot.dyStatus });
     if (m[1] === 'douyin/import') {
+      if (bot.importBusy) return Response.json({ detail: 'busy' }, { status: 409 });
       if (body.final && body.text === '') return Response.json({ ok: true, total: 0, video: 0, images: 0, added: 0, started: false });
       if (!/aweme_id/.test(body.text)) return Response.json({ detail: '文件里没认出抖音作品' }, { status: 400 });
       const started = !bot.importing;
@@ -1317,7 +1318,7 @@ await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每�
   const msg = lastSay();
   assert.match(msg.text, /云电脑（抓自己的号）：正在抓（\d+ 秒前）\n1\. #[^：]+：这次抓了 52 \/ 共 300\n2\. #冰美人：还没轮到\n这次一共抓了 52 条，送给小橘 40 条/);
   assert.match(msg.text, /小橘（转云电脑送来的作品）：进行中\n新转进频道 2 条，已有跳过 1 条，失败 0 条\n收到 40 条，还有 37 条排着队/);
-  assert.deepEqual(msg.reply_markup.inline_keyboard.flat().map(b => b.callback_data), ['prg:run', 'prg:r', 'prg:cloud', 'prg:post']);
+  assert.deepEqual(msg.reply_markup.inline_keyboard.flat().map(b => b.callback_data), ['prg:run', 'prg:r', 'prg:resume', 'prg:cloud', 'prg:post']);
   const press = async data => hook({ update_id: 901, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: { message_id: 78, chat: { id: OWNER, type: 'private' } } } });
   await press('prg:cloud');
   assert.equal(await lib.getConfig('dyStop'), '1');
@@ -1470,6 +1471,54 @@ await t('路由：404、405、CORS 预检', async () => {
   const r = await req('/a/9', { method: 'OPTIONS' });
   assert.equal(r.status, 204);
   assert.match(r.headers.get('Access-Control-Allow-Headers'), /Range/);
+});
+
+await t('接着转：审核通过的几批重新交给小橘（同一条只交一次，转过的由它跳过）；没有就说没有；小橘在忙就等会儿', async () => {
+  const V = await import('./verify.js');
+  for (const id of JSON.parse((await lib.getConfig('rvIds')) || '[]')) { // 前面测试留下的审核单：都当成很早以前的
+    const t = await V.getTask(lib, id);
+    if (t) { t.decidedAt = 1; await V.saveTask(lib, t); }
+  }
+  const row = id => ({ aweme_id: id, desc: '作品' + id, video_download_url: 'https://v.example/' + id });
+  // 两批审核通过、已经交给小橘的（有一条重复），一批没通过的、一批太早的不算
+  const mk = async (kw, ids, status, transfer, decidedAt = Date.now()) => {
+    const t = await V.createTask(lib, { keywords: [kw], items: ids.map(id => ({ id, title: id })), rows: ids.map(row) });
+    Object.assign(t, { status, transfer, decidedAt });
+    await V.saveTask(lib, t);
+    return t;
+  };
+  await mk('鱼骨胸衣', ['7700000000000000001', '7700000000000000002'], 'approved', 'started');
+  await mk('lululemon', ['7700000000000000002', '7700000000000000003'], 'approved', 'started');
+  await mk('不要的', ['7700000000000000004'], 'rejected', '');
+  await mk('太早的', ['7700000000000000005'], 'approved', 'started', Date.now() - 3 * DAY);
+  bot.dyStatus = { status: 'done', mode: 'mirror', posted: [], skipped: [], failed: [] };
+  await dm(OWNER, '进度');
+  assert.match(lastSay().text, /最近审核通过的「(lululemon、鱼骨胸衣|鱼骨胸衣、lululemon)」：要是没转完[\s\S]*接着转审核过的/);
+  const press = async data => hook({ update_id: 903, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: { message_id: 80, chat: { id: OWNER, type: 'private' } } } });
+  await press('prg:resume');
+  const r = bot.toStreamer.filter(x => x.path === 'douyin/import').at(-1);
+  assert.equal(r.path, 'douyin/import');
+  assert.deepEqual(r.body.text.split('\n').map(l => JSON.parse(l).aweme_id).sort(), ['7700000000000000001', '7700000000000000002', '7700000000000000003']);
+  assert.deepEqual([r.body.target, r.body.final, r.body.notify], [String(VIDEO_CHANNEL), true, OWNER]);
+  assert.match(bot.out.filter(o => o.method === 'answerCallbackQuery').at(-1).text, /2 批共 3 条/);
+  // 小橘在忙（同步主页之类）：等会儿再点
+  bot.importBusy = true;
+  await dm(OWNER, '接着转');
+  assert.match(lastSay().text, /没有接着转：小橘正在转别的/);
+  bot.importBusy = false;
+  await dm(OWNER, '接着转');
+  assert.match(lastSay().text, /接着转「[^」]+」：2 批共 3 条重新交给小橘/);
+  // 正在转的时候不提示
+  bot.dyStatus = { status: 'running', mode: 'import', total: 3, posted: [], skipped: [], failed: [] };
+  await dm(OWNER, '进度');
+  assert.ok(!/最近审核通过的/.test(lastSay().text));
+  bot.dyStatus = null;
+  // 管理接口一样
+  assert.equal((await jsonOf(await admin('douyin-resume', {}))).n, 3);
+  // 听众不能用
+  const before = bot.toStreamer.length;
+  await dm(FAN + 7, '接着转');
+  assert.ok(!bot.toStreamer.slice(before).some(x => x.path === 'douyin/import'));
 });
 
 await t('刷视频网页：视频频道的视频帖登记进视频池（不进歌单），说明拆成账号、日期、文案；图片帖不当歌的封面', async () => {

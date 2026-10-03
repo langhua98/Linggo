@@ -311,6 +311,11 @@ async function adminApi(request, env, url) {
   if (!env.ADMIN_KEY || !sameString(key, env.ADMIN_KEY)) return json({ error: '管理密钥不对' }, 401);
 
   const action = url.pathname.slice('/admin/api/'.length);
+  // 接着转审核通过的那几批（和机器人里「接着转」一样）
+  if (action === 'douyin-resume' && request.method === 'POST') {
+    const L = lib(env);
+    return json(await resumeApproved(env, L, await ownerId(env)));
+  }
   // 刷视频网页的视频池：GET 看有多少条、上次什么时候和频道对过；POST 马上对一遍
   if (action === 'videos') {
     if (request.method === 'POST') return json(await syncVideos(env));
@@ -1560,6 +1565,9 @@ async function streamerCall(env, path, body) {
 
 const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮；左下角「菜单」里也有。全部功能：
 
+🔁 接着转
+接着转 —— 审核通过的那几批没转完（小橘的服务重启会把正在转的打断）：重新交给小橘，转过的跳过，只转剩下的
+
 ▶️ 运行爬虫
 运行爬虫 —— 让云电脑抓你登记过的抖音号的新作品（云电脑开机不会自己抓，点了才抓；没开的话下次打开时抓）
 
@@ -1662,6 +1670,7 @@ async function botUpdate(env, update, origin) {
     if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());
     if (/^进度$/.test(t)) return ownerProgress(env, chat);
     if (/^(运行爬虫|开始爬|开始抓|抓作品)$/.test(t)) return ownerCrawlRun(env, chat);
+    if (/^(接着转|继续转)$/.test(t)) return ownerResume(env, chat);
     if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
@@ -1812,6 +1821,8 @@ async function botButton(env, cb, owner, origin) {
       tip = '好，云电脑下次报进度时（半分钟内）停下';
     } else if (a === 'run') {
       tip = (await douyinSelves(L)).length ? (await requestCrawl(L)).short : '还没设置你自己的抖音账号';
+    } else if (a === 'resume') {
+      tip = (await resumeApproved(env, L, owner)).tip;
     } else if (a === 'post') {
       let r = null;
       try { r = await streamerCall(env, '/douyin/stop', {}); } catch {}
@@ -2200,6 +2211,13 @@ async function progressText(env) {
   if (streamerOn(env)) {
     try { st = (await streamerCall(env, '/douyin/status')).data; } catch {}
   }
+  const importing = st && st.status === 'running' && st.mode === 'import';
+  if (!importing) {
+    const recent = await V.approvedTasks(L, RESUME_WITHIN_MS);
+    if (recent.length) {
+      lines.push(`🔁 最近审核通过的「${[...new Set(recent.flatMap(t => t.keywords))].join('、')}」：要是没转完（小橘的服务重启会把正在转的打断），点「🔁 接着转审核过的」，转过的会跳过`, '');
+    }
+  }
   if (!st || !st.status || st.status === 'idle') {
     lines.push('🍊 小橘：现在没在转');
   } else {
@@ -2217,6 +2235,7 @@ async function progressText(env) {
 }
 
 const PROGRESS_KB = [[{ text: '▶️ 运行爬虫', callback_data: 'prg:run' }, { text: '🔄 刷新', callback_data: 'prg:r' }],
+  [{ text: '🔁 接着转审核过的', callback_data: 'prg:resume' }],
   [{ text: '⏹ 停止云电脑抓取', callback_data: 'prg:cloud' }, { text: '⏹ 停止小橘转发', callback_data: 'prg:post' }]];
 
 async function ownerProgress(env, chat) {
@@ -2393,6 +2412,44 @@ async function transferApproved(env, L, owner, t) {
   await V.saveTask(L, t);
   // 只转这一批，不登记这些号（登记了云电脑每次开机都会抓它们的全部作品）；要长期同步的号用「添加抖音账号」单独加
   return say(env, owner, `✅ ${what}审核通过，开始转 ${data.length} 条（只转这一批，不登记账号）；进度点「📊 进度」看`);
+}
+
+// ── 接着转：审核通过、已经交给流式服务的那几批，流式服务一重启（更新代码、Hugging Face 维护）正在转的就断了——
+// 排队的作品只在它的内存里。把最近两天的这几批重新交一遍：同一条作品只交一次，频道里已经有的它会跳过，只转没转完的 ──
+const RESUME_WITHIN_MS = 2 * DAY_MS;
+
+async function resumeApproved(env, L, owner) {
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, tip: '还没设置视频频道' };
+  const tasks = await V.approvedTasks(L, RESUME_WITHIN_MS);
+  if (!tasks.length) return { ok: false, tip: '最近两天没有审核通过、交给小橘转过的' };
+  const rows = [], seen = new Set();
+  for (const t of tasks) {
+    for (const r of await V.taskRows(L, t)) {
+      const id = String((r && r.aweme_id) || '');
+      if (id && !seen.has(id)) { seen.add(id); rows.push(r); }
+    }
+  }
+  if (!rows.length) return { ok: false, tip: '作品数据不见了，重新搜一次' };
+  let r;
+  try {
+    r = await streamerCall(env, '/douyin/import', {
+      text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
+      tags: await douyinTagMap(L, 'douyinTags'),
+    });
+  } catch {
+    return { ok: false, tip: '小橘的服务正在唤醒，过一两分钟再点' };
+  }
+  if (r.status === 409) return { ok: false, tip: '小橘正在转别的（比如同步抖音主页），转完再点' };
+  if (r.status !== 200) return { ok: false, tip: (r.data && r.data.detail) || '没交过去' };
+  const kws = [...new Set(tasks.flatMap(t => t.keywords))];
+  return { ok: true, n: rows.length, tasks: tasks.length, kws, tip: `交给小橘了：${tasks.length} 批共 ${rows.length} 条，频道里已经有的会跳过` };
+}
+
+async function ownerResume(env, chat) {
+  const r = await resumeApproved(env, lib(env), await ownerId(env));
+  if (!r.ok) return say(env, chat, `🔁 没有接着转：${r.tip}`);
+  return say(env, chat, `🔁 接着转「${r.kws.join('、')}」：${r.tasks} 批共 ${r.n} 条重新交给小橘，频道里已经有的跳过，只转没转完的。` +
+    '\n抖音的文件地址几个小时就失效，隔久了的会转不成（转不成的会列出来），那就重新搜一次。进度点「📊 进度」看', [[{ text: '📊 进度', callback_data: 'prg:r' }]]);
 }
 
 async function expireReviews(env) {

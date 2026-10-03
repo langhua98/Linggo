@@ -221,6 +221,16 @@ export async function verifyName(L) {
   return (await L.getConfig('verifyName')) || 'xiaojuverify_bot';
 }
 
+// 审核通过、已经交给小橘转的审核单（within 毫秒内通过的），新的在前。流式服务重启会把正在转的打断，「接着转」用它
+export async function approvedTasks(L, within) {
+  const out = [];
+  for (const id of await taskIds(L)) {
+    const t = await getTask(L, id);
+    if (t && t.status === 'approved' && t.transfer === 'started' && Date.now() - (t.decidedAt || 0) < within) out.push(t);
+  }
+  return out.reverse();
+}
+
 export async function pendingTasks(L) {
   const out = [];
   for (const id of await taskIds(L)) {
