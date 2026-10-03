@@ -1543,16 +1543,19 @@ await t('未成年人：相关的词不搜，排着队的也不交给云电脑�
   assert.ok(!(await jsonOf(await cfg())).searches.includes('女初中生'));
   await lib.setConfig('dySearchQueue', JSON.stringify(['校服变装', '秋冬穿搭']));
   assert.deepEqual((await jsonOf(await cfg())).searches, ['秋冬穿搭'], '以前排进去的这类词也不交给云电脑');
-  // 搜到的结果里文案带「初中生」的：不进审核清单
+  // 搜到的结果里文案带「初中生」的：不进审核清单；只带「校服」的（成年人的校服穿搭也常见，看文案定不了）：进清单，标待人工确认
   await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' },
     body: JSON.stringify({ phase: 'running', mode: 'search', keywords: ['秋冬穿搭'], per: {}, got: 2, sent: 0 }) });
   const rows = [{ aweme_id: '7800000000000000001', desc: '10后初中生的日常 #初中生', source_keyword: '秋冬穿搭' },
-    { aweme_id: '7800000000000000002', desc: '秋冬穿搭分享', source_keyword: '秋冬穿搭' }];
+    { aweme_id: '7800000000000000002', desc: '秋冬穿搭分享', source_keyword: '秋冬穿搭' },
+    { aweme_id: '7800000000000000003', desc: '✌️#青春女大穿搭 #女大穿搭日常 #学姐ootd #校服ootd分享', source_keyword: '秋冬穿搭' },
+    { aweme_id: '7800000000000000004', desc: '校服 初中生日常', source_keyword: '秋冬穿搭' }];
   assert.equal((await req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': '1' }, body: rows.map(r => JSON.stringify(r)).join('\n') + '\n' })).status, 200);
   const V = await import('./verify.js');
   const task = await V.getTask(lib, JSON.parse(await lib.getConfig('rvIds')).at(-1));
   assert.deepEqual(task.keywords, ['秋冬穿搭']);
-  assert.deepEqual(task.items.map(i => i.id), ['7800000000000000002']);
+  assert.deepEqual(task.items.map(i => [i.id, i.flag || '']), [['7800000000000000002', ''],
+    ['7800000000000000003', '命中规则「未成年人保护·要人工确认（固定规则，不能关闭）」（词：校服）：确认视频里都是成年人再通过']]);
   // 搜这类词的审核单：就算点了通过也不转
   Object.assign(task, { keywords: ['女初中生'], status: 'approved', transfer: '' });
   await V.saveTask(lib, task);
@@ -1580,7 +1583,9 @@ await t('内容过滤规则：只由管理员在管理页加改删开关；机�
   assert.equal((await admin('filters', undefined, 'wrong')).status, 401);
   let f = await jsonOf(await admin('filters'));
   assert.deepEqual(f.rules, []);
-  assert.deepEqual(f.builtin.map(r => [r.id, r.enabled, r.builtin]), [['minor', true, true]]);
+  assert.deepEqual(f.builtin.map(r => [r.id, r.scope, r.action, r.enabled, r.builtin]),
+    [['minor', 'both', 'filter', true, true], ['minor-search', 'keyword', 'filter', true, true], ['minor-check', 'caption', 'flag', true, true]]);
+  assert.equal((await admin('filters-delete', { id: 'minor-check' })).status, 400, '固定规则不能删');
   assert.equal((await admin('filters', { name: '', words: ['x'], scope: 'both', action: 'filter' })).status, 400);
   assert.equal((await admin('filters', { name: 'a', words: [], scope: 'both', action: 'filter' })).status, 400);
   assert.equal((await admin('filters', { name: 'a', words: ['x'], scope: 'everywhere', action: 'filter' })).status, 400);

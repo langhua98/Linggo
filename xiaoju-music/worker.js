@@ -337,7 +337,7 @@ async function adminApi(request, env, url) {
   if (action === 'filters-delete' && request.method === 'POST') {
     let body;
     try { body = await request.json(); } catch { return json({ error: '格式不对' }, 400); }
-    if (String(body.id) === 'minor') return json({ error: '固定规则不能删' }, 400);
+    if (String(body.id).startsWith('minor')) return json({ error: '固定规则不能删' }, 400);
     return json({ ok: await lib(env).deleteFilterRule(Number(body.id) || 0) });
   }
   if (action === 'filter-log' && request.method === 'GET') {
@@ -2258,16 +2258,24 @@ const SEARCH_DEFAULT = 100, SEARCH_MAX = 500;
 // 命中了怎么办（filter 不进清单、不转；flag 只标「待人工确认」，照常进清单，审核时管理员决定）。
 // 查不了的（作品没有文案，文案规则无从判断）也只标「待人工确认」，不替管理员下结论。每次过滤、标记都记进 filter_log。
 // 唯一的固定规则是未成年人保护（管理员要求保留）：在管理页里照样列出、命中照样记录，但不能关、不能删。
+// 明确指向未成年人的词直接过滤；「校服」成年人的穿搭分享里也常见（女大、学姐的校服 ootd），光看文案定不了：
+// 作品文案里有它只标待人工确认，由管理员看过视频、确认都是成年人再通过；主动拿它当搜索词仍然不搜
 const MINOR_WORDS = ['初中', '小学', '中学生', '高中生', '未成年', '学生妹', '萝莉', '幼女', '女童', '小女孩', '童模', '初一', '初二', '初三',
-  '高一', '高二', '高三', '七年级', '八年级', '九年级', '10后', '幼儿', '儿童', '小朋友', '中考', '校服'];
+  '高一', '高二', '高三', '七年级', '八年级', '九年级', '10后', '幼儿', '儿童', '小朋友', '中考'];
+const MINOR_CHECK_WORDS = ['校服'];
 const MINOR_REFUSAL = '🚫 小橘不搜、不转未成年人的视频。';
-const BUILTIN_RULES = [{ id: 'minor', name: '未成年人保护（固定规则，不能关闭）', words: MINOR_WORDS, scope: 'both', action: 'filter', enabled: true, builtin: true }];
+const BUILTIN_RULES = [
+  { id: 'minor', name: '未成年人保护（固定规则，不能关闭）', words: MINOR_WORDS, scope: 'both', action: 'filter', enabled: true, builtin: true },
+  { id: 'minor-search', name: '未成年人保护·搜索词（固定规则，不能关闭）', words: MINOR_CHECK_WORDS, scope: 'keyword', action: 'filter', enabled: true, builtin: true },
+  { id: 'minor-check', name: '未成年人保护·要人工确认（固定规则，不能关闭）', words: MINOR_CHECK_WORDS, scope: 'caption', action: 'flag', enabled: true, builtin: true,
+    hint: '确认视频里都是成年人再通过' },
+];
 const RULE_SCOPES = ['keyword', 'caption', 'both'], RULE_ACTIONS = ['filter', 'flag'];
 
-// 现在生效的规则：固定规则 + 管理员启用的；「过滤」的排在「只标记」前面（同时命中时按过滤算）
+// 现在生效的规则：固定规则 + 管理员启用的；「过滤」的都排在「只标记」前面（同时命中时按过滤算）
 async function filterRules(L) {
-  const mine = (await L.listFilterRules()).filter(r => r.enabled);
-  return [...BUILTIN_RULES, ...mine.filter(r => r.action === 'filter'), ...mine.filter(r => r.action === 'flag')];
+  const all = [...BUILTIN_RULES, ...(await L.listFilterRules()).filter(r => r.enabled)];
+  return [...all.filter(r => r.action === 'filter'), ...all.filter(r => r.action === 'flag')];
 }
 
 // 一段文字（kind：keyword 搜索词 / caption 作品文案）命中的第一条规则 → { rule, word }；没命中 → null
@@ -2291,7 +2299,7 @@ function hitEntry(hit, stage, result, subject, text) {
 // 管理页送来的一条规则 → 存进表的样子；不像样 → { error }
 function cleanRule(b) {
   if (!b || typeof b !== 'object') return { error: '格式不对' };
-  if (String(b.id) === 'minor') return { error: '固定规则不能改' };
+  if (String(b.id).startsWith('minor')) return { error: '固定规则不能改' };
   const name = String(b.name || '').trim().slice(0, 30);
   const raw = Array.isArray(b.words) ? b.words : String(b.words || '').split(/[,，、\n]/);
   const words = [...new Set(raw.map(w => String(w).trim()).filter(Boolean))].slice(0, 100);
@@ -2304,7 +2312,7 @@ function cleanRule(b) {
 }
 
 function refusal(hit, what) {
-  return hit.rule.id === 'minor' ? `${MINOR_REFUSAL}${what}` : `🚫 命中过滤规则「${hit.rule.name}」（词：${hit.word}），${what}`;
+  return String(hit.rule.id).startsWith('minor') ? `${MINOR_REFUSAL}${what}` : `🚫 命中过滤规则「${hit.rule.name}」（词：${hit.word}），${what}`;
 }
 
 // 交给云电脑之前按现在的规则再查一遍排队的词（规则可能是排队之后才加的）：命中过滤规则的出队、记录、告诉频道主
@@ -2635,7 +2643,7 @@ async function submitForReview(env, L, owner, kws, ids, rows) {
       continue;
     }
     let flag = '';
-    if (hit) { flag = `命中规则「${hit.rule.name}」（词：${hit.word}）`; log.push(hitEntry(hit, 'review', 'flagged', id, text)); }
+    if (hit) { flag = `命中规则「${hit.rule.name}」（词：${hit.word}）${hit.rule.hint ? `：${hit.rule.hint}` : ''}`; log.push(hitEntry(hit, 'review', 'flagged', id, text)); }
     else if (!text && captionRules) { flag = '没有文案，规则查不了'; log.push(hitEntry(null, 'review', 'unclear', id, '')); }
     else if (kwFlag) flag = `搜索词命中规则「${kwFlag.rule.name}」（词：${kwFlag.word}）`;
     if (flag) flagged++;
