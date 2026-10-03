@@ -1981,7 +1981,7 @@ const MAX_SELVES = 30;
 
 // ── 和审核机器人（verify.js）的交接 ──
 // 小橘：搜完生成完整清单 → 写进共享任务表 → 审核机器人发给频道主。频道主在审核机器人里点了，结果写回任务表，
-// 再叫小橘 onReviewDecision：小橘重新从任务表读状态，只有 approved 才转。送不到、超时、不通过，都不转。
+// 再叫小橘 onReviewDecision：小橘重新从任务表读状态，只有 approved 才转（只转这一批，不登记账号）。送不到、超时、不通过，都不转。
 function reviewDeps(env) {
   return { L: lib(env), owner: () => ownerId(env), onDecision: id => onReviewDecision(env, id) };
 }
@@ -2051,11 +2051,8 @@ async function transferApproved(env, L, owner, t) {
   if (r.status !== 200) return fail((r.data && r.data.detail) || '没转成');
   t.transfer = 'started';
   await V.saveTask(L, t);
-  // 审核通过 = 频道主确认这些都是自己的号：登记（以后云电脑也抓它们的全部作品）
-  const selves = await douyinSelves(L);
-  const add = [...new Set(t.items.map(x => x.sec))].filter(x => SEC_UID.test(x) && !selves.includes(x));
-  if (add.length) await L.setConfig('douyinSelf', JSON.stringify([...selves, ...add].slice(0, MAX_SELVES)));
-  return say(env, owner, `✅ ${what}审核通过，开始转 ${data.length} 条${add.length ? `，登记了 ${add.length} 个号` : ''}；进度点「📊 进度」看`);
+  // 只转这一批，不登记这些号（登记了云电脑每次开机都会抓它们的全部作品）；要长期同步的号用「添加抖音账号」单独加
+  return say(env, owner, `✅ ${what}审核通过，开始转 ${data.length} 条（只转这一批，不登记账号）；进度点「📊 进度」看`);
 }
 
 async function expireReviews(env) {

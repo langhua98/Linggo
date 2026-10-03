@@ -1220,8 +1220,8 @@ await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私�
   const go = bot.toStreamer.slice(before).filter(x => x.path === 'douyin/import');
   assert.equal(go.length, 1);
   assert.deepEqual(go[0].body.text.split('\n').map(l => JSON.parse(l).aweme_id), ['7600000000000000021', '7600000000000000022', '7600000000000000023']);
-  assert.ok((await lib.getConfig('douyinSelf')).includes(A), '通过后登记');
-  assert.match(lastSay().text, new RegExp(`✅ 审核单 ${t2}（「审批」3 条）审核通过，开始转 3 条，登记了 1 个号`));
+  assert.ok(!(await lib.getConfig('douyinSelf')).includes(A), '审核通过只转这一批，不登记账号');
+  assert.match(lastSay().text, new RegExp(`✅ 审核单 ${t2}（「审批」3 条）审核通过，开始转 3 条（只转这一批，不登记账号）`));
   assert.ok(bot.vout.some(o => o.method === 'editMessageText' && /✅ 审核通过/.test(o.text)), '审核机器人那条改成结果');
   await vpress(OWNER, `v:ok:${t2}`);
   assert.match(vAck(), /审核通过/);

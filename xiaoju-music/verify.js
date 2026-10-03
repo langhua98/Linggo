@@ -135,7 +135,7 @@ export function reviewMessages(t) {
 function decisionText(t) {
   const base = `🛂 审核单 ${t.id}（「${t.keywords.join('、')}」${t.items.length} 条）`;
   if (t.status === 'pending') {
-    return `${base}\n\n上面这些都是你自己的账号、你有权转进「小橘视频」吗？\n· 全部是 → 点「✅ 通过」，小橘才会转（这些号也会登记）\n· 只要有一条不是 → 点「❌ 不通过」，一条也不转，尊重原作者\n\n${Math.round(REVIEW_TTL_MS / 3600000)} 小时内不审就算超时，不转。`;
+    return `${base}\n\n上面这些都是你自己的账号、你有权转进「小橘视频」吗？\n· 全部是 → 点「✅ 通过」，小橘才会转这一批（不登记账号）\n· 只要有一条不是 → 点「❌ 不通过」，一条也不转，尊重原作者\n\n${Math.round(REVIEW_TTL_MS / 3600000)} 小时内不审就算超时，不转。`;
   }
   return `${base}\n\n${STATUS_TEXT[t.status] || t.status}${t.reason ? `：${t.reason}` : ''}`;
 }

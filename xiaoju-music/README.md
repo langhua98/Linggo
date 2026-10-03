@@ -241,7 +241,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     云电脑下次报进度收到 `{stop: true}` 就关掉 MediaCrawler（剩下的不送）；「⏹ 停止小橘转发」调 `/douyin/stop` 取消正在跑的任务。
   - **审核机器人（@xiaojuverify_bot，`verify.js`）**：搜到的作品转进视频频道前，必须由频道主本人在审核机器人里审核。两个机器人各用各的令牌、各收各的 webhook（审核机器人是 `POST /verify-webhook`，独立 secret `verifySecret`），数据交接走共享后端——同一个 Durable Object 里的审核任务表：`rv:<任务号>`（状态 pending / approved / rejected / expired / paused、完整清单：作品 ID、链接、来源账号和 sec_uid、文案、文件地址）、`rvRows:<任务号>:<段>`（审核时那份完整作品数据，每段 100 条，转发就用它）、`rvIds`（最近 30 个任务）。
     - 搜完：小橘 `submitForReview` 写任务 → `deliverTask` 用审核机器人的令牌把清单分几条私聊发给频道主，最后一条带「✅ 通过，都是我的号 / ❌ 不通过」。
-    - 频道主点了：审核机器人把结果写回任务表，再叫小橘 `onReviewDecision`；小橘重新从任务表读状态，只有 approved 才交给 `/douyin/import`，并登记这些号。登记过的号在清单里标 👤，只作参考，不跳过审核。
+    - 频道主点了：审核机器人把结果写回任务表，再叫小橘 `onReviewDecision`；小橘重新从任务表读状态，只有 approved 才交给 `/douyin/import`，只转这一批、不登记这些号（登记了云电脑每次开机都会抓它们的全部作品；要长期同步的号用「添加抖音账号」单独加）。登记过的号在清单里标 👤，只作参考，不跳过审核。
     - 不默认通过：没接审核机器人、频道主还没在审核机器人里点「开始」、Telegram 出错 → paused（小橘发「🔁 重新送审」按钮；频道主在审核机器人里点「开始」也会自动补发）；24 小时没审 → expired（cron 每 30 分钟查一次）；不通过 → rejected；通过了但流式服务没接上 → 状态仍是 approved，小橘给「🔁 再试转发」。旧清单上的「📤 转 N」「一键转」「全部转」按钮一律不能用。
     - 接上：频道主在小橘里发「审核机器人 <BotFather 给的令牌>」，Worker 用 `getMe` 认令牌、给审核机器人 `setWebhook`，令牌存进 Durable Object（config `verifyTok`，不进代码库；也可以用 secret `VERIFY_BOT_TOKEN`），发令牌的那条消息删掉。「审核」看接好没有、哪些在等。
   - **换最高画质**：流式服务 `POST /douyin/delete {target, ids}` 删掉旧的抖音视频帖（只删说明里带抖音视频链接的视频，
