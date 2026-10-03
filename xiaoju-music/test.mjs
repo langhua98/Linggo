@@ -1150,7 +1150,8 @@ await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私�
   // 接上审核机器人：令牌发给小橘 → 认令牌、给审核机器人设 webhook（独立 secret），令牌那条消息删掉
   await dm(FAN + 5, '审核机器人 ' + VTOKEN);
   assert.equal(await lib.getConfig('verifyTok'), null, '听众不能接');
-  await dm(OWNER, '审核机器人 ' + VTOKEN);
+  // 连 BotFather 的整段说明一起粘过来也认
+  await dm(OWNER, '审核机器人Here is the token for bot verify @xiaojuverify_bot:\n\n' + VTOKEN + '\n\nKeep your token secure');
   assert.equal(await lib.getConfig('verifyTok'), VTOKEN);
   const wh = bot.vout.find(o => o.method === 'setWebhook');
   assert.equal(wh.url, BASE + '/verify-webhook');

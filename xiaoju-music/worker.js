@@ -1327,7 +1327,10 @@ async function botUpdate(env, update, origin) {
   if (!t || /^\/(start|help)\b/.test(t) || t === '帮助') return isOwner ? ownerHelp(env, chat) : say(env, chat, PUBLIC_HELP);
   if (isOwner) {
     let c;
-    if ((c = /^(?:审核机器人|审核)(?:\s+(\d{5,15}:[\w-]{30,80}))?$/.exec(t))) return ownerVerify(env, chat, m.message_id, c[1], origin);
+    // 「审核机器人 令牌」：令牌前后带着 BotFather 的整段说明也认（直接整条转发过来最省事）
+    if (/^审核(?:机器人)?(?:$|[\s\S]*?\b\d{5,15}:[\w-]{30,80}\b)/.test(t)) {
+      return ownerVerify(env, chat, m.message_id, (/\b(\d{5,15}:[\w-]{30,80})\b/.exec(t) || [])[1], origin);
+    }
     if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());
     if (/^进度$/.test(t)) return ownerProgress(env, chat);
     if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
