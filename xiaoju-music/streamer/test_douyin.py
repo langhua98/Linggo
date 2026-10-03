@@ -708,7 +708,10 @@ def test_upload_parallel_sends_every_part_and_small_files_go_to_telethon(monkeyp
             got[req.file_part] = (req.bytes, req.file_total_parts)
             return True
 
-    assert asyncio.run(appmod.upload_parallel(Client(), str(small))) == str(small)
+        async def upload_file(self, path):
+            return ('telethon', path)
+
+    assert asyncio.run(appmod.upload_parallel(Client(), str(small))) == ('telethon', str(small))
     f = asyncio.run(appmod.upload_parallel(Client(), str(big)))
     assert got == {0: (b'abcd', 3), 1: (b'efgh', 3), 2: (b'ij', 3)}
     assert f.parts == 3 and f.name == 'b.mp4'
@@ -745,6 +748,103 @@ def test_mirror_downloads_the_next_video_while_posting_this_one():
     st = asyncio.run(go())
     assert [r['id'] for r in st['posted']] == ['1', '2', '3']
     assert log.index('下载2') < log.index('发完1') and log.index('下载3') < log.index('发完2')
+
+
+
+def test_mirror_prepares_several_videos_at_once_but_posts_them_in_order():
+    busy, peak, posted, closed = [0], [0], [], []
+
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            return [normalize(aweme(aweme_id=str(n), desc=str(n), create_time=n)) for n in range(1, 8)], \
+                {'hidden_newest': False, 'truncated': False}
+
+        async def download(self, item, max_bytes=0):
+            return b'x' * 20000, item['sources'][0]
+
+    class Prep:
+        def __init__(self, i):
+            self.id = i
+
+        def close(self):
+            closed.append(self.id)
+
+    async def prepare_video(data, item, src, target):
+        busy[0] += 1
+        peak[0] = max(peak[0], busy[0])
+        await asyncio.sleep(0.01 * (8 - int(item['id'])))  # 后面的反而先准备好
+        busy[0] -= 1
+        return Prep(item['id'])
+
+    async def post_video(prep, text, target):
+        assert text and target == VIDEO_CHANNEL
+        posted.append(prep.id)
+        prep.close()
+        return int(prep.id)
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        job = DouyinJob(web=Web(), send_video=post_video, prepare_video=prepare_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        await job.task
+        return job.state
+
+    st = asyncio.run(go())
+    assert posted == [str(n) for n in range(1, 8)]
+    assert [r['id'] for r in st['posted']] == posted
+    assert peak[0] == 3
+    assert sorted(closed) == sorted(posted)
+
+
+def test_stopping_a_mirror_cleans_up_videos_prepared_but_not_posted():
+    closed, posted = [], []
+
+    class Web(FakeWeb):
+        async def posts(self, sec_uid, limit=300):
+            return [normalize(aweme(aweme_id=str(n), desc=str(n), create_time=n)) for n in range(1, 6)], \
+                {'hidden_newest': False, 'truncated': False}
+
+        async def download(self, item, max_bytes=0):
+            return b'x' * 20000, item['sources'][0]
+
+    class Prep:
+        def __init__(self, i):
+            self.id = i
+
+        def close(self):
+            closed.append(self.id)
+
+    async def prepare_video(data, item, src, target):
+        return Prep(item['id'])
+
+    async def posted_ids(target):
+        return {}
+
+    async def go():
+        stop = asyncio.Event()
+
+        async def post_video(prep, text, target):
+            posted.append(prep.id)
+            prep.close()
+            stop.set()
+            await asyncio.sleep(10)  # 第一条发帖时被叫停
+            return 1
+
+        job = DouyinJob(web=Web(), send_video=post_video, prepare_video=prepare_video, posted_ids=posted_ids, pause=0)
+        job.start_mirror(SEC, target=VIDEO_CHANNEL)
+        await stop.wait()
+        await asyncio.sleep(0.01)
+        job.task.cancel()
+        try:
+            await job.task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert posted == ['1']
+    assert sorted(closed) == ['1', '2', '3', '4']  # 第 1 条发帖时自己删；2～4 备好了没发，停下时删掉
 
 
 # ── 图文 ──

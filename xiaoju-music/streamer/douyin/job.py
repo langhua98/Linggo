@@ -21,17 +21,21 @@ log = logging.getLogger('streamer.douyin')
 IMPORT_IDLE = 20 * 60  # 边抓边转：云电脑这么久没再送作品来、也没说抓完，就当它停了，收尾
 MESSAGE_LIMIT = 3500  # 一条消息放多少字的链接（Telegram 上限 4096）
 MAX_MESSAGES = 8
+AHEAD = 3  # 同时在下载、处理、上传的作品条数（发帖还是一条条按顺序发）
 
 
 class DouyinJob:
     def __init__(self, *, web, send_video, posted_ids, send_images=None, say=None, pause=3.0,
-                 import_idle=IMPORT_IDLE, poll=5.0, retag=None):
+                 import_idle=IMPORT_IDLE, poll=5.0, retag=None, prepare_video=None, ahead=AHEAD):
+        # prepare_video(字节, 作品, 档, 频道) → 已经传到 Telegram、只差发帖的视频；有它时 send_video(备好的, 说明, 频道) 只发帖。
+        # 这样几条视频的下载、ffmpeg、上传能同时做，发帖仍按顺序（频道里的先后不乱）
         # retag(频道, 消息号, 作品)：频道里已经有、但说明里还没有账号标签的旧帖，补上标签（改说明，不重发）
         # posted_ids(频道) → {作品号: 消息号}：频道里已经转过的（每次跑先翻一遍频道，查重靠它）
         self.web, self.send_video, self.send_images, self.posted_ids = web, send_video, send_images, posted_ids
         self.say, self.pause = say, pause
         self.import_idle, self.poll = import_idle, poll
         self.retag, self.tags = retag, {}
+        self.prepare_video, self.ahead = prepare_video, max(1, ahead)
         self._inbox, self._seen, self._final = [], set(), True
         self.task = None
         self.state = {'status': 'idle'}
@@ -127,16 +131,19 @@ class DouyinJob:
     async def _post(self, w, item, target, done):
         """转一条作品到 target 频道：done（频道里已有的 {作品号: 消息号}）里有就跳过 → (帖子的消息号, 是不是新发的)。
         视频发视频，图文发成相册。发了就记进 done，同一次里不会再发"""
-        return await self._send(item, await self._fetch(w, item, done), target, done)
+        return await self._send(item, await self._fetch(w, item, target, done), target, done)
 
-    async def _fetch(self, w, item, done):
-        """下载一条作品：频道里已有的不下载 → None"""
+    async def _fetch(self, w, item, target, done):
+        """下载一条作品（视频顺便处理好、传上去）：频道里已有的不下载 → None"""
         self._label(item)
         if item['id'] in done:
             return None
         if item['kind'] == 'images':
             return await w.download_images(item)
-        return await w.download(item)
+        data, src = await w.download(item)
+        if self.prepare_video:
+            return await self.prepare_video(data, item, src, target)
+        return data, src
 
     async def _send(self, item, got, target, done):
         if got is None and item['id'] not in done:
@@ -150,13 +157,15 @@ class DouyinJob:
             return done[item['id']], False
         if item['kind'] == 'images':
             done[item['id']] = await self.send_images(got, item, caption(item), target)
+        elif self.prepare_video:
+            done[item['id']] = await self.send_video(got, caption(item), target)
         else:
             data, src = got
             done[item['id']] = await self.send_video(data, item, src, caption(item), target)
         return done[item['id']], True
 
     async def _post_all(self, w, items, target, done):
-        """按顺序一条条发，但上一条在上传、在等限流间隔的时候，下一条已经在下载了（同一时刻最多一个下载、一个上传）"""
+        """按顺序一条条发帖，但后面 ahead 条已经在同时下载、处理、上传了（发帖只是最后一步，很快）"""
         st, todo = self.state, list(items)
         first = {}
         for n, i in enumerate(todo):
@@ -165,24 +174,25 @@ class DouyinJob:
         async def again(item):  # 同一次里重复出现的作品（置顶又在正常位置）不再下载，发的时候 done 里已经有它
             self._label(item)
 
-        def fetch(n):
-            if n >= len(todo):
-                return None
-            item = todo[n]
-            return asyncio.ensure_future(self._fetch(w, item, done) if first[item['id']] == n else again(item))
+        tasks = {}
 
-        task = fetch(0)
+        def fetch_upto(n):
+            for k in range(n, min(n + self.ahead, len(todo))):
+                if k not in tasks:
+                    item = todo[k]
+                    tasks[k] = asyncio.ensure_future(self._fetch(w, item, target, done) if first[item['id']] == k else again(item))
+
         try:
             for n, item in enumerate(todo):
+                fetch_upto(n)
                 row = {'id': item['id'], 'kind': item['kind'], 'desc': item['desc'][:60], 'time': item['time']}
                 try:
-                    got = await task
+                    got = await tasks.pop(n)
                 except (DownloadError, Gone) as e:
-                    task = fetch(n + 1)
                     row['reason'] = str(e)
                     st['failed'].append(row)
                     continue
-                task = fetch(n + 1)
+                fetch_upto(n + 1)
                 try:
                     row['msg'], fresh = await self._send(item, got, target, done)
                 except (DownloadError, Gone) as e:
@@ -191,10 +201,18 @@ class DouyinJob:
                     continue
                 (st['posted'] if fresh else st['skipped']).append(row)
                 if fresh:
-                    await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流（下一条照样在下载）
+                    await asyncio.sleep(self.pause)  # 慢慢发，免得被 Telegram 限流（后面几条照样在准备）
         finally:
-            if task is not None and not task.done():
-                task.cancel()
+            for t in tasks.values():
+                t.cancel()
+            for t in tasks.values():
+                try:
+                    left = await t
+                except BaseException:  # noqa: BLE001  没用上的那几条：出错、被取消都不管了
+                    continue
+                close = getattr(left, 'close', None)
+                if close:
+                    close()  # 备好了没发出去的视频：删掉临时文件
 
     async def _mirror(self, sec_uids, notify, target, quiet=False):
         """采集这几个账号能看到的作品，视频和图文按发布顺序（旧的先）转进频道，已有的跳过。

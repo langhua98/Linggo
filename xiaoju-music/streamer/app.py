@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import subprocess
+import shutil
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -536,7 +537,7 @@ async def lifespan(app):
 
     harvester = Harvester(http=Http(), send=post_audio, say=bot_say)
     global douyin_job
-    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_send_video, send_images=douyin_send_images, retag=douyin_retag,
+    douyin_job = DouyinJob(web=DouyinWeb, send_video=douyin_post_video, prepare_video=douyin_prepare_video, send_images=douyin_send_images, retag=douyin_retag,
                            posted_ids=douyin_posted, say=bot_say)
     # 抖音登录：Worker 的登录页上扫码。登录 cookie 在 /tmp，Space 重启就没了，
     # Worker 存了一份，每次调抖音接口都带上（state），这边缺了就写回去
@@ -875,13 +876,14 @@ async def flood_retry(send, tries=3):
 UPLOAD_PART = 512 * 1024  # Telegram 允许的最大分块
 UPLOAD_BIG = 10 * 1024 * 1024  # 超过这么大 Telegram 要求按「大文件」分块传
 UPLOAD_WORKERS = 8
+upload_gate = asyncio.Semaphore(12)  # 几条视频同时上传时，整个服务一共最多同时传这么多块（免得被 Telegram 限流）
 
 
 async def upload_parallel(client, path):
     """大文件同时传几块（Telethon 自己是一块传完再传下一块，每块都要等一个来回），小文件交给 Telethon"""
     size = os.path.getsize(path)
     if size <= UPLOAD_BIG:
-        return path
+        return await client.upload_file(path)
     file_id, parts = int.from_bytes(os.urandom(8), 'big', signed=True), -(-size // UPLOAD_PART)
     gate = asyncio.Semaphore(UPLOAD_WORKERS)
 
@@ -891,7 +893,7 @@ async def upload_parallel(client, path):
             return f.read(UPLOAD_PART)
 
     async def put(n):
-        async with gate:
+        async with gate, upload_gate:
             chunk = await asyncio.to_thread(read, n)
             for _ in range(3):
                 try:
@@ -907,23 +909,51 @@ async def upload_parallel(client, path):
     return InputFileBig(file_id, parts, os.path.basename(path))
 
 
-async def douyin_send_video(data, item, src, text, target):
-    """发进 target 频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
+class PreparedVideo:
+    """处理好、已经传到 Telegram、只差发帖的视频（临时目录里放着缩略图，发完或不发了就 close 删掉）"""
+
+    def __init__(self, d, file, thumb, attrs):
+        self.dir, self.file, self.thumb, self.attrs = d, file, thumb, attrs
+
+    def close(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+async def douyin_prepare_video(data, item, src, target):
+    """下载好的视频：挪 moov、截缩略图、分块传到 Telegram（几条可以同时做），还不发帖"""
     client = user_client or bot_client
-    chat = await channel_entity(client, target)
-    with tempfile.TemporaryDirectory() as d:
+    d = tempfile.mkdtemp()
+    try:
         raw, mp4, jpg = (os.path.join(d, n) for n in ('raw.mp4', f'douyin_{item["id"]}.mp4', 'thumb.jpg'))
         ready = is_faststart(data)
         with open(mp4 if ready else raw, 'wb') as f:
             f.write(data)
+        del data
         path = mp4 if ready or await asyncio.to_thread(remux_faststart, raw, mp4) else raw
         seconds = item['seconds'] or await asyncio.to_thread(probe_seconds, path)
         thumb = jpg if await asyncio.to_thread(video_thumb, path, jpg) else None
         file = await upload_parallel(client, path)
+        for f in (raw, mp4):
+            if os.path.exists(f):
+                os.remove(f)  # 传上去了，本地这份不用了（只留缩略图）
+        attrs = [DocumentAttributeVideo(duration=seconds, w=src.get('width') or item['width'] or 720,
+                                        h=src.get('height') or item['height'] or 1280, supports_streaming=True)]
+        return PreparedVideo(d, file, thumb, attrs)
+    except BaseException:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+
+
+async def douyin_post_video(prep, text, target):
+    """备好的视频发进 target 频道，返回消息号。和搬歌一样用频道主账号发；没登录就用机器人发"""
+    client = user_client or bot_client
+    try:
+        chat = await channel_entity(client, target)
         sent = await flood_retry(lambda: client.send_file(
-            chat, file, caption=text, thumb=thumb, supports_streaming=True, link_preview=False, mime_type='video/mp4',
-            attributes=[DocumentAttributeVideo(duration=seconds, w=src.get('width') or item['width'] or 720,
-                                               h=src.get('height') or item['height'] or 1280, supports_streaming=True)]))
+            chat, prep.file, caption=text, thumb=prep.thumb, supports_streaming=True, link_preview=False,
+            mime_type='video/mp4', attributes=prep.attrs))
+    finally:
+        prep.close()
     return sent.id
 
 
