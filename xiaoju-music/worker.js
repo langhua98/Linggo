@@ -915,6 +915,10 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS viz (id INTEGER PRIMARY KEY, data TEXT NOT NULL)');
       // 听众求歌的记录（限次用）
       this.sql.exec('CREATE TABLE IF NOT EXISTS asks (uid INTEGER NOT NULL, at INTEGER NOT NULL)');
+      // 试过的刷视频网页已经撤下：它存的视频池和封面不留
+      this.sql.exec('DROP TABLE IF EXISTS videos');
+      this.sql.exec('DROP TABLE IF EXISTS video_thumbs');
+      this.sql.exec("DELETE FROM config WHERE k IN ('vSyncAt', 'vSyncOk', 'vSyncErr')");
       this.dropSplitterLeftovers();
       const coversV = this.cfg('coversV');
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
@@ -1737,6 +1741,10 @@ async function cloudConfig(request, env) {
 // 结果 POST /dy-search（X-Token）。只整理成分享链接清单私聊发给频道主，点链接在抖音里看——别人的视频不下载、不转发
 const SEARCH_DEFAULT = 100, SEARCH_MAX = 500;
 
+// 未成年人的视频一律不搜、不送审、不转（搜的词、作品文案里带这些就不要）
+const MINOR = /初中|小学|中学生|高中生|未成年|学生妹|萝莉|幼女|女童|小女孩|童模|初[一二三]|高[一二三]|七年级|八年级|九年级|10后|幼儿|儿童|小朋友|中考|校服/;
+const MINOR_REFUSAL = '🚫 小橘不搜、不转未成年人的视频。';
+
 // 这次要搜多少条：排队的词里要得最多的那个（MediaCrawler 一次只能给一个数）
 async function douyinSearchMax(L, queue) {
   const counts = await douyinTagMap(L, 'dySearchCounts');
@@ -1746,7 +1754,7 @@ async function douyinSearchMax(L, queue) {
 async function douyinSearchQueue(L) {
   try {
     const a = JSON.parse((await L.getConfig('dySearchQueue')) || '[]');
-    return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x) : [];
+    return Array.isArray(a) ? a.filter(x => typeof x === 'string' && x && !MINOR.test(x)) : [];
   } catch {
     return [];
   }
@@ -1768,6 +1776,7 @@ async function ownerDouyinSearch(env, chat, kw) {
   const num = /^(.*?)\s+(\d{1,4})$/.exec(kw);
   if (num) { kw = num[1]; want = Math.min(SEARCH_MAX, Math.max(10, Number(num[2]))); }
   kw = kw.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').slice(0, 30);
+  if (MINOR.test(kw)) return say(env, chat, `${MINOR_REFUSAL}「${kw}」这个词不搜。`);
   if (!q.includes(kw)) q.push(kw);
   await L.setConfig('dySearchQueue', JSON.stringify(q.slice(-10)));
   const counts = await douyinTagMap(L, 'dySearchCounts');
@@ -2014,12 +2023,14 @@ function reviewDeps(env) {
 }
 
 async function submitForReview(env, L, owner, kws, ids, rows) {
+  if (kws.some(k => MINOR.test(k))) return say(env, owner, `${MINOR_REFUSAL}「${kws.join('、')}」这批不送审、不转。`);
   const mine = new Set(await douyinSelves(L));
   const items = [], data = [];
   let lost = 0;
   for (const id of ids) {
     const r = rows[id];
     if (!r) { lost++; continue; }
+    if (MINOR.test(String(r.desc || '') + ' ' + String(r.title || ''))) continue; // 文案看得出是未成年人的：不进清单
     const note = String(r.aweme_type || '') === '68' || String(r.note_download_url || '').startsWith('http');
     const sec = SEC_UID.test(String(r.xiaoju_sec_uid || '')) ? String(r.xiaoju_sec_uid) : '';
     items.push({
@@ -2062,8 +2073,9 @@ async function transferApproved(env, L, owner, t) {
   };
   if (t.status !== 'approved') return;
   if (t.transfer === 'started') return;
+  if (t.keywords.some(k => MINOR.test(k))) return say(env, owner, `${MINOR_REFUSAL}${what}不转。`);
   if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return fail('还没设置视频频道');
-  const data = await V.taskRows(L, t);
+  const data = (await V.taskRows(L, t)).filter(r => !MINOR.test(String((r && r.desc) || '') + ' ' + String((r && r.title) || '')));
   if (!data.length) return fail('作品数据不见了，重新搜一次');
   let r;
   try {

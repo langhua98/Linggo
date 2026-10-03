@@ -1498,6 +1498,35 @@ await t('搜抖音：云电脑连着就说半分钟内开始；结果里标的�
   await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ phase: 'done', mode: 'search' }) });
 });
 
+await t('未成年人：相关的词不搜，排着队的也不交给云电脑；文案看得出是未成年人的不进审核清单；这样的审核单通过了也不转', async () => {
+  const tok = await lib.getConfig('cloudTok');
+  const cfg = () => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok } });
+  await dm(OWNER, '搜抖音 女初中生');
+  assert.match(lastSay().text, /不搜、不转未成年人的视频[\s\S]*「女初中生」这个词不搜/);
+  assert.ok(!(await jsonOf(await cfg())).searches.includes('女初中生'));
+  await lib.setConfig('dySearchQueue', JSON.stringify(['校服变装', '秋冬穿搭']));
+  assert.deepEqual((await jsonOf(await cfg())).searches, ['秋冬穿搭'], '以前排进去的这类词也不交给云电脑');
+  // 搜到的结果里文案带「初中生」的：不进审核清单
+  await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phase: 'running', mode: 'search', keywords: ['秋冬穿搭'], per: {}, got: 2, sent: 0 }) });
+  const rows = [{ aweme_id: '7800000000000000001', desc: '10后初中生的日常 #初中生', source_keyword: '秋冬穿搭' },
+    { aweme_id: '7800000000000000002', desc: '秋冬穿搭分享', source_keyword: '秋冬穿搭' }];
+  assert.equal((await req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': '1' }, body: rows.map(r => JSON.stringify(r)).join('\n') + '\n' })).status, 200);
+  const V = await import('./verify.js');
+  const task = await V.getTask(lib, JSON.parse(await lib.getConfig('rvIds')).at(-1));
+  assert.deepEqual(task.keywords, ['秋冬穿搭']);
+  assert.deepEqual(task.items.map(i => i.id), ['7800000000000000002']);
+  // 搜这类词的审核单：就算点了通过也不转
+  Object.assign(task, { keywords: ['女初中生'], status: 'approved', transfer: '' });
+  await V.saveTask(lib, task);
+  const before = bot.toStreamer.length;
+  await hook({ update_id: 904, callback_query: { id: 'cqm', from: { id: OWNER }, data: 'rvt:' + task.id, message: { message_id: 81, chat: { id: OWNER, type: 'private' } } } });
+  assert.ok(!bot.toStreamer.slice(before).some(x => x.path === 'douyin/import'));
+  assert.match(lastSay().text, /不搜、不转未成年人的视频/);
+  await lib.setConfig('dySearchQueue', '[]');
+  await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ phase: 'done', mode: 'search' }) });
+});
+
 await t('任何响应里都不出现机器人 token、管理密钥、流式服务密钥', async () => {
   assert.ok(seen.length > 20);
   for (const s of seen) {

@@ -100,7 +100,8 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
 （原来的代码在它的 Git 历史里，提交 `031d368d79`）。
 
 更新代码：把 `streamer/` 下的 `app.py`、`Dockerfile`、`requirements.txt`、`README.md` 和 `harvest/`、`douyin/` 两个目录
-推到这个 Space 的仓库，Space 会自动重新构建（装 Chromium 那一步第一次要几分钟）。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
+推到这个 Space 的仓库，Space 会自动重新构建（装 Chromium 那一步第一次要几分钟）。
+**推之前先在机器人里发「进度」**：Space 一重新构建，正在跑的任务（转抖音作品、搬歌）就断了，排队的只在它的内存里。在转就等转完再推。环境变量见 [`streamer/README.md`](streamer/README.md)；Worker 的 `STREAMER_URL`
 填上面的地址，两边的 `STREAMER_KEY` 设成同一个值。
 
 ## 改完代码后
@@ -232,6 +233,8 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
   - **搜抖音 → 链接清单**：`搜抖音 舞蹈` 把词排进 `dySearchQueue`；云电脑开着时 `codespace-auto.sh` 每 20 秒问一次 `/dy-cloud-config` 有没有新排的词，有就跑 `cloud/search.sh`，发「搜抖音」不用敲命令就自动开搜（搜失败了 10 分钟后再试）
     （MediaCrawler 的 search 模式），结果每 30 秒一批 POST `/dy-search`（`X-Final: 0`，搜完 `X-Final: 1`），Worker 边收边发，编号接着排（`dySearchNum`），每批按点赞排好、私聊发频道主分享链接和文件地址（登记过的号标 👤），清单上不带转发按钮（作品数据存 config `dySearchRows`，最近 600 条）；搜完整份清单交给审核机器人（见下）。
     只私聊发链接，不下载、不转进频道（批量转进频道的只有登记过的账号）。
+    **未成年人的视频一律不搜、不转**（`MINOR`）：搜的词带初中、小学、校服、10后之类的不排队（以前排进去的也不交给云电脑），
+    搜到的作品文案看得出是未成年人的不进审核清单，这类词的审核单就算点了通过也不转。
   - **只抓新的**：crawl.sh 开抓前 POST `/dy-known`（Worker 转给流式服务 `GET /douyin/posted`，翻一遍视频频道）拿已有的作品号
     写进 `~/.xiaoju/known.txt`；补丁让 MediaCrawler 翻作品列表时扔掉转过的（不读详情、不送），一整页（置顶、私密、仅好友
     的不算）全是转过的就停这个号。频道里删掉的帖子不在里面，下次会重抓重转。`XJ_FULL=1` 全部重抓（给旧帖补标签用）。
