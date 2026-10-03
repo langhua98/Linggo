@@ -44,7 +44,7 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.contacts import SearchRequest
 from telethon.tl.functions.upload import SaveBigFilePartRequest
 from telethon.tl.types import (DocumentAttributeAudio, DocumentAttributeVideo, InputMessagesFilterMusic, InputMessagesFilterPhotos,
-                               InputFileBig, InputPeerNotifySettings)
+                               InputFileBig, InputMessagesFilterVideo, InputPeerNotifySettings)
 from telethon.sessions import StringSession
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -1234,6 +1234,95 @@ async def douyin_login_state(request: Request):
 async def douyin_status(request: Request):
     check_key(request)
     return douyin_job.state if douyin_job else {'status': 'idle'}
+
+
+
+# ── 视频频道（刷视频网页）──────────────────────────────────────────
+# 网页上随机刷「小橘视频」里的视频。私有频道只有数字 id；机器人是那里的管理员，按消息号取视频、边取边传，
+# 和音乐频道的大文件一样（各用各的 Streamer，消息缓存分开）。视频池要翻频道历史，机器人不能翻，用频道主账号翻（只读）。
+# 找不到的视频回 404 + detail 'gone'，Worker 认这个才把它从视频池去掉——别的 404（比如 Space 还是旧代码、没有这个接口）不算
+
+VIDEO_LIST_MAX = 20000
+video_streamers = {}  # 视频频道 → Streamer
+
+
+def video_target(target):
+    t = parse_target(target)
+    if t is None:
+        raise HTTPException(400, '没设置视频频道')
+    return t
+
+
+async def video_streamer(target):
+    s = video_streamers.get(target)
+    if s is None:
+        client = bot_client
+        entity = await channel_entity(client, target)
+
+        async def fetch_message(channel, message_id):
+            return await client.get_messages(channel, ids=message_id)
+
+        async def download_thumb(msg):
+            return await client.download_media(msg, file=bytes, thumb=-1)
+
+        s = video_streamers[target] = Streamer(channel=entity, fetch_message=fetch_message,
+                                               iter_download=client.iter_download, download_thumb=download_thumb)
+    return s
+
+
+def is_video(msg):
+    doc = getattr(msg, 'document', None)
+    return doc is not None and (getattr(doc, 'mime_type', '') or '').startswith('video/')
+
+
+@app.get('/vstream/{message_id}')
+async def vstream(message_id: int, target: str, request: Request):
+    check_key(request)
+    s = await video_streamer(video_target(target))
+    msg = await s.message(message_id)
+    if msg is None or not is_video(msg):
+        raise HTTPException(404, 'gone')
+    return ranged(s, msg, message_id, request)
+
+
+@app.get('/vthumb/{message_id}')
+async def vthumb(message_id: int, target: str, request: Request):
+    """视频的缩略图（转视频时 ffmpeg 截的第一秒，长边 320）；没有这条视频 → 'gone'，有视频没缩略图 → 'no thumb'"""
+    check_key(request)
+    s = await video_streamer(video_target(target))
+    msg = await s.message(message_id)
+    if msg is None or not is_video(msg):
+        raise HTTPException(404, 'gone')
+    data = await s.thumbnail(message_id)
+    if not data:
+        raise HTTPException(404, 'no thumb')
+    return Response(content=data, media_type='image/jpeg')
+
+
+def video_row(m):
+    """频道里的一条视频帖 → 视频池里的一行；不是视频（GIF、圆形视频、别的文件）→ None"""
+    f = getattr(m, 'file', None)
+    if f is None or not (f.mime_type or '').startswith('video/') or getattr(m, 'gif', None) or getattr(m, 'video_note', None):
+        return None
+    return {'id': m.id, 'date': int(m.date.timestamp()) if m.date else 0, 'size': f.size or 0, 'duration': round(f.duration or 0),
+            'w': f.width or 0, 'h': f.height or 0, 'mime': f.mime_type, 'text': m.message or ''}
+
+
+@app.get('/videos')
+async def videos(target: str, request: Request, min_id: int = 0):
+    """视频频道里的视频帖（刷视频网页的视频池），新的在前。complete 为 False 表示到上限没翻完（Worker 就不删旧的）"""
+    check_key(request)
+    t = video_target(target)
+    if user_client is None:
+        raise HTTPException(409, 'not logged in')
+    entity = await channel_entity(user_client, t)
+    out = []
+    async for m in user_client.iter_messages(entity, filter=InputMessagesFilterVideo, min_id=max(0, min_id),
+                                             limit=VIDEO_LIST_MAX, wait_time=0):
+        row = video_row(m)
+        if row:
+            out.append(row)
+    return {'videos': out, 'complete': len(out) < VIDEO_LIST_MAX}
 
 
 # ── 求歌：听众私聊机器人一个歌名，库里没有时到来源频道里找一首最像的搬进来 ──
