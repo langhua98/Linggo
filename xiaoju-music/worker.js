@@ -290,6 +290,17 @@ async function adminApi(request, env, url) {
     }
     return json({ sec_uids: await douyinSelves(lib(env)) });
   }
+  // 等云电脑去搜的词：GET 看；POST {clear: true} 清空（和机器人里「搜抖音 清空」一样）
+  if (action === 'douyin-search-queue') {
+    const L = lib(env);
+    if (request.method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      if (body.clear !== true) return json({ error: '参数不对' }, 400);
+      await L.setConfig('dySearchQueue', '[]');
+      await L.setConfig('dySearchCounts', '{}');
+    }
+    return json({ queue: await douyinSearchQueue(L), counts: await douyinTagMap(L, 'dySearchCounts') });
+  }
   // 抖音自动同步开关（和机器人里「抖音自动同步 开/关」一样）：POST {on: true|false}
   if (action === 'douyin-auto' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));

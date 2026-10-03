@@ -1273,6 +1273,12 @@ await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私�
   assert.equal(bot.out.slice(n1).filter(o => o.method === 'sendMessage').length, 4);
   await dm(OWNER, '搜抖音 清空');
   assert.deepEqual(JSON.parse(await lib.getConfig('dySearchQueue')), []);
+  // 管理接口也能看、能清
+  await dm(OWNER, '搜抖音 测试词 50');
+  assert.deepEqual(await jsonOf(await admin('douyin-search-queue')), { queue: ['测试词'], counts: { '测试词': 50 } });
+  assert.equal((await admin('douyin-search-queue', {})).status, 400);
+  assert.equal((await admin('douyin-search-queue', undefined, 'wrong')).status, 401);
+  assert.deepEqual(await jsonOf(await admin('douyin-search-queue', { clear: true })), { queue: [], counts: {} });
 });
 
 await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每个号抓了多少、小橘转了多少；点按钮停', async () => {
