@@ -1095,7 +1095,7 @@ await t('账号标签：视频频道按账号分类，默认用抖音昵称、�
 
 await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私聊发频道主；搜完完整清单交给审核机器人，频道主在那里审核通过才转（暂停、不通过、超时都不转）', async () => {
   await dm(OWNER, '搜抖音 舞蹈');
-  assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*search\.sh/);
+  assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*自动开搜，不用敲命令/);
   assert.match(lastSay().text, /搜 100 条/);
   await dm(OWNER, '搜抖音 街舞 300');
   assert.match(lastSay().text, /记下了「街舞」，搜 300 条（一共 2 个词等着搜：舞蹈、街舞）/);
