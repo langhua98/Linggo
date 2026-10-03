@@ -217,7 +217,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
   - **云电脑（全部作品）**：不登录只能拿到公开主页第一页，要全部就在频道主自己的云电脑上登录抓。机器人发「云电脑」→
     给一个 GitHub Codespaces 链接（仓库根目录 `.devcontainer/douyin/`：Python 镜像 + desktop-lite 网页桌面，端口 6080，
     密码 xiaoju；建好时 `cloud/codespace-setup.sh` 装 MediaCrawler 和 Chromium。免费额度内不用绑卡，超了就停、不扣费），
-    再给一条 `bash xiaoju-music/cloud/crawl.sh <上传令牌> <账号,…>`（令牌是 config `cloudTok`）。频道主在 iPad Safari 里开
+    再给一条 `bash xiaoju-music/cloud/codespace-auto.sh <上传令牌> <账号,…>`（令牌是 config `cloudTok`）。**开机不自己抓**：频道主在机器人里点「▶️ 运行爬虫」（`运行爬虫`、`/crawl`，或进度面板上的按钮）才抓，Worker 记 config `dyCrawlReq`，云电脑每 20 秒问 `/dy-cloud-config` 拿到 `crawl: true` 就跑 `crawl.sh`，开抓报 `starting` 进度时清掉；机器人按 `dyCloudSeen`（云电脑上次来问的时间，90 秒内算开着）告诉频道主是马上开始还是等打开再抓；「停止云电脑抓取」连还没开始的这次也取消。频道主在 iPad Safari 里开
     网页桌面，终端里粘贴命令，在桌面弹出的浏览器里自己扫码登录（验证也在那里做）；`crawl.sh` 跑 MediaCrawler（creator、
     jsonl）后把文件 POST 到 Worker 的 `/dy-import`（`X-Token`），转给 `/douyin/import` 逐条下载、发进视频频道。
     **边抓边转**：crawl.sh 每 30 秒把 jsonl 里新写的几行送一批（`X-Final: 0`），抓完送剩下的和 `X-Final: 1`；
@@ -229,7 +229,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     `账号标签 2 小美` 起的（config `douyinTags`）优先，没起就用抖音昵称（流式服务转作品时报回 `tags_used`，Worker
     记进 `douyinTagsSeen`）。频道里置顶一条「📂 目录」（config `dyDirMsg`），名字变了就改它。频道里已有、说明里还没标签
     的帖子，转作品碰到时 `douyin_retag` 改说明补上，不重发。crawl.sh 另存 `xiaoju_sec_uid` / `xiaoju_nickname` 认账号。
-  - **搜抖音 → 链接清单**：`搜抖音 舞蹈` 把词排进 `dySearchQueue`；云电脑打开时抓完作品接着 `cloud/search.sh`，之后 `codespace-auto.sh` 不退出、每 20 秒问一次 `/dy-cloud-config` 有没有新排的词，云电脑开着时发「搜抖音」不用敲命令就自动开搜（搜失败了 10 分钟后再试）
+  - **搜抖音 → 链接清单**：`搜抖音 舞蹈` 把词排进 `dySearchQueue`；云电脑开着时 `codespace-auto.sh` 每 20 秒问一次 `/dy-cloud-config` 有没有新排的词，有就跑 `cloud/search.sh`，发「搜抖音」不用敲命令就自动开搜（搜失败了 10 分钟后再试）
     （MediaCrawler 的 search 模式），结果每 30 秒一批 POST `/dy-search`（`X-Final: 0`，搜完 `X-Final: 1`），Worker 边收边发，编号接着排（`dySearchNum`），每批按点赞排好、私聊发频道主分享链接和文件地址（登记过的号标 👤），清单上不带转发按钮（作品数据存 config `dySearchRows`，最近 600 条）；搜完整份清单交给审核机器人（见下）。
     只私聊发链接，不下载、不转进频道（批量转进频道的只有登记过的账号）。
   - **只抓新的**：crawl.sh 开抓前 POST `/dy-known`（Worker 转给流式服务 `GET /douyin/posted`，翻一遍视频频道）拿已有的作品号
@@ -248,7 +248,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     正在转作品时不删），之后查重认不出，下次就按最高画质重转。
     不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找
     api.github.com 认出是仓库主人（`CLOUD_GH_USER`）才回上传令牌和账号。令牌存在云电脑的 `~/.xiaoju/env`，devcontainer 的 `postAttachCommand`（`cloud/codespace-auto.sh`）
-    每次打开都自动跑 `crawl.sh`（`flock` 防重复）；MediaCrawler 自己存登录状态，没过期就不用再扫码。
+    每次打开都连上小橘、等机器人的指令（`flock` 防重复），点「运行爬虫」才跑 `crawl.sh`；MediaCrawler 自己存登录状态，没过期就不用再扫码。
     自己有 VPS 的话 `cloud/setup.sh <令牌> <账号>` 一键装 XFCE + xrdp（RDP 连），桌面放「抓抖音发给小橘」。
     也可以手动把导出文件发给机器人。抖音账号和验证全程只在频道主自己的机器上。
   - 视频频道的数字 id 用流式服务 `GET /channels/owned?title=小橘视频` 查（只在频道主自己建的频道里按名字找，不列别的聊天）。

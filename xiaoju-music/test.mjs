@@ -1300,7 +1300,7 @@ await t('进度：云电脑每 30 秒报进度；频道主发「进度」看每�
   const msg = lastSay();
   assert.match(msg.text, /云电脑（抓自己的号）：正在抓（\d+ 秒前）\n1\. #[^：]+：这次抓了 52 \/ 共 300\n2\. #冰美人：还没轮到\n这次一共抓了 52 条，送给小橘 40 条/);
   assert.match(msg.text, /小橘（转云电脑送来的作品）：进行中\n新转进频道 2 条，已有跳过 1 条，失败 0 条\n收到 40 条，还有 37 条排着队/);
-  assert.deepEqual(msg.reply_markup.inline_keyboard.flat().map(b => b.callback_data), ['prg:r', 'prg:cloud', 'prg:post']);
+  assert.deepEqual(msg.reply_markup.inline_keyboard.flat().map(b => b.callback_data), ['prg:run', 'prg:r', 'prg:cloud', 'prg:post']);
   const press = async data => hook({ update_id: 901, callback_query: { id: 'cq' + data, from: { id: OWNER }, data, message: { message_id: 78, chat: { id: OWNER, type: 'private' } } } });
   await press('prg:cloud');
   assert.equal(await lib.getConfig('dyStop'), '1');
@@ -1325,7 +1325,7 @@ await t('频道主的菜单：常驻按钮和 / 命令（只设给频道主）�
   assert.ok(set.commands.some(c => c.command === 'progress'));
   const help = lastSay();
   assert.match(help.text, /📊 进度[\s\S]*🎬 抖音[\s\S]*🔎 抖音搜索[\s\S]*🎵 音乐/);
-  assert.deepEqual(help.reply_markup.keyboard[0], ['📊 进度', '🎬 转抖音视频']);
+  assert.deepEqual(help.reply_markup.keyboard[0], ['▶️ 运行爬虫', '📊 进度', '🎬 转抖音视频']);
   const n = bot.out.filter(o => o.method === 'setMyCommands').length;
   await dm(OWNER, '❓ 帮助');
   assert.equal(bot.out.filter(o => o.method === 'setMyCommands').length, n, '设过一次就不再设');
@@ -1358,7 +1358,7 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   const says = bot.out.filter(o => o.method === 'sendMessage');
   assert.match(says.at(-2).text, /codespaces\.new\/langhua98\/Linggo\?devcontainer_path=\.devcontainer%2Fdouyin%2Fdevcontainer\.json/);
   const cmd = lastSay().text;
-  const m = cmd.match(/^bash xiaoju-music\/cloud\/crawl\.sh ([0-9a-f]{48}) (\S+)$/);
+  const m = cmd.match(/^bash xiaoju-music\/cloud\/codespace-auto\.sh ([0-9a-f]{48}) (\S+)$/);
   assert.ok(m, cmd);
   assert.equal(m[2], sec);
   await dm(OWNER, '云电脑');
@@ -1384,7 +1384,7 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   assert.equal(bot.out.filter(o => o.method === 'sendMessage').length, n0 + 1, '只在开始时说一次');
   bot.importing = false;
   await dm(FAN + 4, '云电脑');
-  assert.ok(!/crawl\.sh/.test(lastSay().text), '听众拿不到命令');
+  assert.ok(!/codespace-auto\.sh/.test(lastSay().text), '听众拿不到命令');
   // 云电脑拿 Codespaces 自带的 GitHub 令牌领口令：只认仓库主人
   const cfg = gh => req('/dy-cloud-config', { method: 'POST', headers: gh ? { Authorization: 'token ' + gh } : {} });
   assert.deepEqual(await jsonOf(await cfg('gh-owner')), { token: m[1], creators: sec, searches: [], search_max: 100 });
@@ -1393,7 +1393,28 @@ await t('云电脑：发 Codespaces 链接和抓取命令（带令牌和自己�
   assert.equal((await cfg('')).status, 401);
   // 云电脑带上传令牌拿最新账号名单
   const byTok = t => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': t } });
-  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec, searches: [], search_max: 100 });
+  assert.deepEqual(await jsonOf(await byTok(m[1])), { token: m[1], creators: sec, searches: [], search_max: 100, crawl: false }, '开机不自己抓');
+  assert.equal((await byTok('wrong')).status, 403);
+  // 运行爬虫：点了才抓。云电脑开着（刚来问过）→ 说半分钟内开始；下一次来问就拿到 crawl: true；开抓报 starting 后清掉
+  await dm(OWNER, '▶️ 运行爬虫');
+  assert.match(lastSay().text, /云电脑开着，半分钟内开始抓/);
+  assert.equal((await jsonOf(await byTok(m[1]))).crawl, true);
+  const rep = body => req('/dy-progress', { method: 'POST', headers: { 'X-Token': m[1], 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await rep({ phase: 'starting', mode: 'crawl' });
+  assert.equal((await jsonOf(await byTok(m[1]))).crawl, false, '开抓了就不再叫它抓');
+  await dm(OWNER, '运行爬虫');
+  assert.match(lastSay().text, /正在抓，不用再点/);
+  await rep({ phase: 'done', mode: 'crawl' });
+  // 云电脑好久没来问 → 记下来，等它打开再抓；点「停止云电脑抓取」连没开始的这次也取消
+  await lib.setConfig('dyCloudSeen', String(Date.now() - 10 * 60 * 1000));
+  await dm(OWNER, '/crawl');
+  assert.match(lastSay().text, /云电脑现在没开[\s\S]*codespaces\.new/);
+  await hook({ update_id: 902, callback_query: { id: 'cqx', from: { id: OWNER }, data: 'prg:cloud', message: { message_id: 79, chat: { id: OWNER, type: 'private' } } } });
+  assert.equal((await jsonOf(await byTok(m[1]))).crawl, false);
+  await lib.setConfig('dyStop', '0');
+  // 听众发「运行爬虫」不管用
+  await dm(FAN + 4, '运行爬虫');
+  assert.notEqual(await lib.getConfig('dyCrawlReq'), '1');
   assert.equal((await byTok('wrong')).status, 403);
 });
 

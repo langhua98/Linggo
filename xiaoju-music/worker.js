@@ -1248,12 +1248,15 @@ async function streamerCall(env, path, body) {
 
 const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮；左下角「菜单」里也有。全部功能：
 
+▶️ 运行爬虫
+运行爬虫 —— 让云电脑抓你登记过的抖音号的新作品（云电脑开机不会自己抓，点了才抓；没开的话下次打开时抓）
+
 📊 进度
 进度 —— 云电脑抓到哪了（每个号一共多少、抓了多少、送了多少）、小橘转了多少；可以点按钮停下
 
 🎬 抖音（视频频道「小橘视频」）
 转抖音视频 —— 把你自己抖音账号的作品（视频和图文）都转进视频频道，已有的跳过
-云电脑 —— 打开云电脑的链接：在云电脑上登录抖音，抓你所有账号的全部作品，按最高画质边抓边转进频道
+云电脑 —— 打开云电脑的链接：在云电脑上登录抖音；点「▶️ 运行爬虫」才抓你所有账号的作品，按最高画质边抓边转进频道
 添加抖音账号 主页分享链接 —— 再加一个你自己的号（小号），转作品、自动同步都会带上它
 账号标签 —— 每个号在频道里的标签（点标签只看这个号）；「账号标签 2 小美」给第 2 个号改名
 抖音自动同步 开 / 关 —— 每 30 分钟看一次你的抖音公开主页，有新作品自动转进频道
@@ -1282,10 +1285,11 @@ const tooLong = s => s.length > 60;
 
 // 频道主的菜单：输入框下面常驻的按钮（点了等于发对应的文字），和左下角「菜单」里的 / 命令
 const OWNER_KEYBOARD = {
-  keyboard: [['📊 进度', '🎬 转抖音视频'], ['🔎 搜抖音', '🏷 账号标签'], ['☁️ 云电脑', '📈 统计'], ['🎵 搬运设置', '❓ 帮助']],
+  keyboard: [['▶️ 运行爬虫', '📊 进度', '🎬 转抖音视频'], ['🔎 搜抖音', '🏷 账号标签'], ['☁️ 云电脑', '📈 统计'], ['🎵 搬运设置', '❓ 帮助']],
   resize_keyboard: true, is_persistent: true,
 };
 const OWNER_COMMANDS = [
+  ['crawl', '▶️ 运行爬虫：云电脑抓你登记过的抖音号'],
   ['progress', '📊 进度：云电脑抓到哪、小橘转了多少，可以停下'],
   ['douyin', '🎬 把你抖音号的作品转进视频频道'],
   ['cloud', '☁️ 云电脑：抓你所有账号的全部作品（最高画质）'],
@@ -1296,12 +1300,12 @@ const OWNER_COMMANDS = [
   ['help', '❓ 全部功能'],
 ];
 const OWNER_ALIAS = {
-  '📊 进度': '进度', '🎬 转抖音视频': '转抖音视频', '🔎 搜抖音': '搜抖音', '🏷 账号标签': '账号标签', '☁️ 云电脑': '云电脑',
+  '▶️ 运行爬虫': '运行爬虫', '📊 进度': '进度', '🎬 转抖音视频': '转抖音视频', '🔎 搜抖音': '搜抖音', '🏷 账号标签': '账号标签', '☁️ 云电脑': '云电脑',
   '📈 统计': '统计', '🎵 搬运设置': '搬运设置', '❓ 帮助': '帮助',
-  '/progress': '进度', '/douyin': '转抖音视频', '/cloud': '云电脑', '/search': '搜抖音', '/tags': '账号标签',
+  '/crawl': '运行爬虫', '/progress': '进度', '/douyin': '转抖音视频', '/cloud': '云电脑', '/search': '搜抖音', '/tags': '账号标签',
   '/stats': '统计', '/harvest': '搬运设置',
 };
-const COMMANDS_VERSION = '1';
+const COMMANDS_VERSION = '2';
 
 // 频道主的「菜单」命令只设给频道主自己看（听众那边不变）；版本变了才重设
 async function ensureOwnerCommands(env, owner) {
@@ -1344,6 +1348,7 @@ async function botUpdate(env, update, origin) {
     }
     if ((c = /^搜抖音\s*(.*)$/.exec(t))) return ownerDouyinSearch(env, chat, c[1].trim());
     if (/^进度$/.test(t)) return ownerProgress(env, chat);
+    if (/^(运行爬虫|开始爬|开始抓|抓作品)$/.test(t)) return ownerCrawlRun(env, chat);
     if ((c = /^搜\s*(.+)$/.exec(t))) return ownerSearch(env, chat, c[1].trim());
     if ((c = /^搬\s*@?(\w{4,64})(?:\s+(\d{1,4}))?\s*(?:首)?$/.exec(t))) return ownerCopy(env, chat, c[1], Number(c[2] || 50));
     if ((c = /^找\s*(.+)$/.exec(t))) return ownerFind(env, chat, c[1].trim(), origin);
@@ -1490,7 +1495,10 @@ async function botButton(env, cb, owner, origin) {
     let tip = '';
     if (a === 'cloud') {
       await L.setConfig('dyStop', '1');
+      await L.setConfig('dyCrawlReq', '0');  // 还没开抓的那次也不抓了
       tip = '好，云电脑下次报进度时（半分钟内）停下';
+    } else if (a === 'run') {
+      tip = (await douyinSelves(L)).length ? (await requestCrawl(L)).short : '还没设置你自己的抖音账号';
     } else if (a === 'post') {
       let r = null;
       try { r = await streamerCall(env, '/douyin/stop', {}); } catch {}
@@ -1705,7 +1713,8 @@ async function cloudConfig(request, env) {
     const selves = await douyinSelves(L);
     if (!selves.length) return json({ error: '还没设置你自己的抖音账号' }, 400);
     const q = await douyinSearchQueue(L);
-    return json({ token: tok, creators: selves.join(','), searches: q, search_max: await douyinSearchMax(L, q) });
+    await L.setConfig('dyCloudSeen', String(Date.now()));  // 云电脑开着时每 20 秒来问一次，机器人据此说它在不在
+    return json({ token: tok, creators: selves.join(','), searches: q, search_max: await douyinSearchMax(L, q), crawl: (await L.getConfig('dyCrawlReq')) === '1' });
   }
   const gh = (request.headers.get('Authorization') || '').replace(/^(Bearer|token)\s+/i, '');
   if (!gh) return json({ error: '没带 GitHub 令牌' }, 401);
@@ -1836,6 +1845,7 @@ async function cloudProgress(request, env) {
     keywords: (Array.isArray(p.keywords) ? p.keywords : []).slice(0, 10).map(String), per: p.per && typeof p.per === 'object' ? p.per : {},
     at: Date.now() };
   await L.setConfig('dyCloud', JSON.stringify(keep));
+  if (keep.mode === 'crawl' && keep.phase === 'starting') await L.setConfig('dyCrawlReq', '0');  // 这次「运行爬虫」开始了
   const stop = (await L.getConfig('dyStop')) === '1';
   if (['done', 'stopped', 'failed'].includes(keep.phase)) await L.setConfig('dyStop', '0');
   return json({ ok: true, stop });
@@ -1851,7 +1861,7 @@ async function progressText(env) {
   let c = null;
   try { c = JSON.parse((await L.getConfig('dyCloud')) || 'null'); } catch {}
   if (!c) {
-    lines.push('☁️ 云电脑：还没报过进度（打开云电脑就会开始抓）');
+    lines.push('☁️ 云电脑：还没报过进度（点「▶️ 运行爬虫」才会开始抓）');
   } else {
     const quiet = Date.now() - c.at > 3 * 60 * 1000 && !['done', 'stopped', 'failed'].includes(c.phase);
     lines.push(`☁️ 云电脑（${c.mode === 'search' ? '搜索' : '抓自己的号'}）：${CLOUD_PHASE[c.phase] || c.phase}${quiet ? '——不过已经好久没报了，可能云电脑停了或关了' : ''}（${ago(Date.now() - c.at)}）`);
@@ -1869,6 +1879,7 @@ async function progressText(env) {
     }
     if ((await L.getConfig('dyStop')) === '1') lines.push('⏹ 已经叫它停了，下次报进度时（半分钟内）停下');
   }
+  if ((await L.getConfig('dyCrawlReq')) === '1') lines.push(`▶️ 已经点了运行爬虫，${cloudOnline(Number(await L.getConfig('dyCloudSeen')) || 0) ? '云电脑半分钟内开始抓' : '等云电脑打开就抓'}`);
   lines.push('');
   let st = null;
   if (streamerOn(env)) {
@@ -1890,7 +1901,7 @@ async function progressText(env) {
   return lines.join('\n');
 }
 
-const PROGRESS_KB = [[{ text: '🔄 刷新', callback_data: 'prg:r' }],
+const PROGRESS_KB = [[{ text: '▶️ 运行爬虫', callback_data: 'prg:run' }, { text: '🔄 刷新', callback_data: 'prg:r' }],
   [{ text: '⏹ 停止云电脑抓取', callback_data: 'prg:cloud' }, { text: '⏹ 停止小橘转发', callback_data: 'prg:post' }]];
 
 async function ownerProgress(env, chat) {
@@ -2095,6 +2106,30 @@ async function cloudToken(L) {
   return tok;
 }
 
+// ── 运行爬虫：云电脑开机不自己抓，频道主点了才抓（dyCrawlReq）。云电脑开着时每 20 秒问 /dy-cloud-config，看到就开抓，
+// 开抓时报 starting 进度把它清掉；没开的话等下次打开 ──
+const cloudOnline = seen => Date.now() - seen < 90 * 1000;
+
+async function requestCrawl(L) {
+  let c = null;
+  try { c = JSON.parse((await L.getConfig('dyCloud')) || 'null'); } catch {}
+  if (c && c.mode === 'crawl' && ['starting', 'running'].includes(c.phase) && Date.now() - c.at < 3 * 60 * 1000) {
+    return { short: '正在抓了', text: '☁️ 云电脑正在抓，不用再点。发「进度」看抓到哪了。' };
+  }
+  await L.setConfig('dyCrawlReq', '1');
+  await L.setConfig('dyStop', '0');
+  if (cloudOnline(Number(await L.getConfig('dyCloudSeen')) || 0)) {
+    return { short: '好，云电脑半分钟内开始抓', text: '▶️ 好，云电脑开着，半分钟内开始抓你登记过的抖音号（只抓频道里还没有的）。要扫码的话去云电脑的「桌面」。发「进度」看抓到哪了。' };
+  }
+  return { short: '记下了，云电脑没开，打开就抓', text: `▶️ 记下了。云电脑现在没开（或者还是旧版脚本）：打开它就开始抓。\n${CODESPACE_URL}\n已经开着的话，把网页刷新一下。` };
+}
+
+async function ownerCrawlRun(env, chat) {
+  const L = lib(env);
+  if (!(await douyinSelves(L)).length) return say(env, chat, '还没设置你自己的抖音账号（发「添加抖音账号 主页分享链接」）');
+  return say(env, chat, (await requestCrawl(L)).text, [[{ text: '📊 进度', callback_data: 'prg:r' }]]);
+}
+
 async function ownerCloud(env, chat) {
   const L = lib(env), selves = await douyinSelves(L);
   if (!selves.length) return say(env, chat, '还没设置你自己的抖音账号');
@@ -2104,13 +2139,13 @@ async function ownerCloud(env, chat) {
     '',
     `1. 用 iPad 的 Safari 打开这个链接，点绿色的「Create codespace」，等它装好（第一次大约 5～10 分钟）：\n${CODESPACE_URL}`,
     '2. 装好后在下面「PORTS（端口）」里打开 6080「桌面」，密码 xiaoju，这就是云电脑的桌面',
-    '3. 不用粘贴：装好它会自己开始抓（手机上没动静就把网页刷新一下）',
-    '4. 桌面上会弹出抖音登录页，用手机抖音扫码（要验证就在那里做；手机打开的话先截屏，再用抖音扫一扫里的相册），抓完自动发回小橘',
+    '3. 不用粘贴：装好它会自己连上小橘，但不会自己抓。要抓的时候在这里点「▶️ 运行爬虫」，半分钟内开始（没反应就把网页刷新一下）',
+    '4. 开抓后桌面上会弹出抖音登录页，用手机抖音扫码（要验证就在那里做；手机打开的话先截屏，再用抖音扫一扫里的相册），抓完自动发回小橘',
     '',
-    '万一没自己开始，就把下一条消息粘贴进网页编辑器下面的「TERMINAL（终端）」回车。用完在 github.com/codespaces 里点「⋯ → Stop codespace」停掉（别删）；以后想抓新作品，打开它就自动开抓，登录没过期连码都不用扫。',
+    '万一没自己开始，就把下一条消息粘贴进网页编辑器下面的「TERMINAL（终端）」回车。用完在 github.com/codespaces 里点「⋯ → Stop codespace」停掉（别删）；以后想抓新作品，打开它再点「▶️ 运行爬虫」，登录没过期连码都不用扫。',
     '下一条命令里有你的上传令牌，别发给别人。',
   ].join('\n'));
-  return say(env, chat, `bash xiaoju-music/cloud/crawl.sh ${tok} ${ids}`);
+  return say(env, chat, `bash xiaoju-music/cloud/codespace-auto.sh ${tok} ${ids}`);
 }
 
 async function cloudImport(request, env) {
