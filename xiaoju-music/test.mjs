@@ -1095,7 +1095,7 @@ await t('账号标签：视频频道按账号分类，默认用抖音昵称、�
 
 await t('搜抖音：关键词排队给云电脑；搜索结果按点赞排私聊发频道主；搜完完整清单交给审核机器人，频道主在那里审核通过才转（暂停、不通过、超时都不转）', async () => {
   await dm(OWNER, '搜抖音 舞蹈');
-  assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*自动开搜，不用敲命令/);
+  assert.match(lastSay().text, /记下了「舞蹈」[\s\S]*云电脑现在没连上：打开云电脑就会自动做/);
   assert.match(lastSay().text, /搜 100 条/);
   await dm(OWNER, '搜抖音 街舞 300');
   assert.match(lastSay().text, /记下了「街舞」，搜 300 条（一共 2 个词等着搜：舞蹈、街舞）/);
@@ -1479,6 +1479,23 @@ await t('审核清单：账号多、文件地址长也按 Telegram 上限分段�
   for (let i = 0; i < 45; i++) { assert.ok(all.includes(sec(i))); assert.ok(all.includes(items[i].id)); }
   assert.ok(all.replace(/\n/g, '').includes('a'.repeat(9000)), '超长的文件地址切开了也要完整');
   assert.match(msgs[0], /🛂 审核单 T1[\s\S]*一共 45 条，来自 45 个账号/);
+});
+
+await t('搜抖音：云电脑连着就说半分钟内开始；结果里标的词和排队的写法对不上也出队，不会一直重搜', async () => {
+  const tok = await lib.getConfig('cloudTok');
+  const cfg = () => req('/dy-cloud-config', { method: 'POST', headers: { 'X-Token': tok } });
+  await dm(OWNER, '搜抖音 #lululemon #define');
+  await cfg();  // 云电脑来问过
+  await dm(OWNER, '搜抖音');
+  assert.match(lastSay().text, /等云电脑去搜的词：.*#lululemon #define[\s\S]*云电脑连着（\d+ 秒前来问过）/);
+  assert.deepEqual((await jsonOf(await cfg())).searches.slice(-1), ['#lululemon #define']);
+  await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phase: 'running', mode: 'search', keywords: ['#lululemon #define'], per: {}, got: 1, sent: 0 }) });
+  const r = await req('/dy-search', { method: 'POST', headers: { 'X-Token': tok, 'X-Final': '1' },
+    body: JSON.stringify({ aweme_id: '7600000000000009999', desc: 'x', source_keyword: 'lululemon define' }) + '\n' });
+  assert.equal(r.status, 200);
+  assert.ok(!(await jsonOf(await cfg())).searches.includes('#lululemon #define'), '搜完出队');
+  await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ phase: 'done', mode: 'search' }) });
 });
 
 await t('任何响应里都不出现机器人 token、管理密钥、流式服务密钥', async () => {

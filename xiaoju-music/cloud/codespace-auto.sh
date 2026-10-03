@@ -36,20 +36,31 @@ if [ ! -s "$HOME/.xiaoju/env" ]; then
   exit 0
 fi
 [ -d "$HOME/MediaCrawler" ] || bash "$HERE/codespace-setup.sh"
-# 重新连上网页也会触发一次，同一时间只跑一个
+LOG="$HOME/.xiaoju/watch.log"
+if [ "${1:-}" != "--watch" ]; then
+  # 守着机器人指令的那个进程不挂在终端上（setsid）：关掉终端、网页断开、手机切走都照常等；同一时间只跑一个
+  if flock -n "$HOME/.xiaoju/lock" true; then
+    setsid nohup bash "$0" --watch >> "$LOG" 2>&1 < /dev/null &
+    sleep 1
+  fi
+  echo "== 小橘：云电脑连上了，不会自己抓。在机器人里点「▶️ 运行爬虫」开始抓，发「搜抖音 关键词」开始搜 =="
+  echo "== 下面是云电脑的记录（关掉这个终端不影响；要扫码的话去「桌面」标签页）=="
+  exec tail -n 30 -f "$LOG"
+fi
 exec 9>"$HOME/.xiaoju/lock"
-flock -n 9 || { echo "== 已经连上小橘了，在等机器人的指令（点「▶️ 运行爬虫」开始抓）=="; exit 0; }
+flock -n 9 || exit 0
 source "$HOME/.xiaoju/env"
 # 每 ${XJ_WATCH_EVERY:-20} 秒问一次小橘：点了「运行爬虫」就抓，排了「搜抖音」的词就搜。
-# 没成（登录过期之类）等 10 分钟再看，别一直刷
-echo "== 小橘：云电脑连上了，不会自己抓。在机器人里点「▶️ 运行爬虫」开始抓，发「搜抖音 关键词」开始搜 =="
+# 没成（登录过期之类）等 10 分钟再看，别一直刷。每 10 分钟拉一次仓库，脚本改了就换新的接着守（不用刷新网页）
+echo "== $(date '+%F %T') 开始等机器人的指令 =="
+TICK=0
 while :; do
   CFG=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" "$API/dy-cloud-config" 2>/dev/null)
   RUN=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(1 if json.load(sys.stdin).get("crawl") else "")' 2>/dev/null)
   Q=$(printf '%s' "$CFG" | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin).get("searches") or []))' 2>/dev/null)
   ok=1
   if [ -n "$RUN" ]; then
-    echo "== 你在机器人里点了运行爬虫，开始抓。要扫码的话去「桌面」那个标签页 =="
+    echo "== $(date '+%F %T') 你在机器人里点了运行爬虫，开始抓。要扫码的话去「桌面」那个标签页 =="
     bash "$HERE/crawl.sh" || ok=""
   fi
   if [ -n "$ok" ] && [ -n "$Q" ]; then
@@ -62,4 +73,14 @@ while :; do
     echo "== 好了，接着等机器人的指令 =="
   fi
   sleep "${XJ_WATCH_EVERY:-20}"
+  TICK=$((TICK + 1))
+  if [ $((TICK % 30)) = 0 ] && [ -z "${XJ_NO_PULL:-}" ]; then
+    before=$(sha1sum "$0" 2>/dev/null)
+    git -C "$HERE" pull --ff-only -q >/dev/null 2>&1 || true
+    if [ "$(sha1sum "$0" 2>/dev/null)" != "$before" ]; then
+      echo "== 脚本更新了，换新的接着等 =="
+      exec 9>&-
+      XIAOJU_UPDATED=1 exec bash "$0" --watch
+    fi
+  fi
 done

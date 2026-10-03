@@ -1756,7 +1756,7 @@ async function ownerDouyinSearch(env, chat, kw) {
   const L = lib(env), q = await douyinSearchQueue(L);
   if (!kw) {
     return say(env, chat, q.length
-      ? `等云电脑去搜的词：${q.join('、')}\n打开云电脑就会自动搜；不想搜了发「搜抖音 清空」`
+      ? `等云电脑去搜的词：${q.join('、')}\n${await cloudStatusLine(L)}\n不想搜了发「搜抖音 清空」`
       : '发「搜抖音 关键词」，比如「搜抖音 舞蹈」');
   }
   if (kw === '清空') {
@@ -1777,7 +1777,8 @@ async function ownerDouyinSearch(env, chat, kw) {
     `🔎 记下了「${kw}」，搜 ${want} 条${q.length > 1 ? `（一共 ${q.length} 个词等着搜：${q.join('、')}）` : ''}`,
     `想多搜一些：「搜抖音 ${kw} 300」（最多 ${SEARCH_MAX} 条；搜得越多越容易被抖音限制）`,
     '',
-    '搜索要用云电脑上登录的抖音：云电脑正开着的话，抓完你的作品后半分钟内自动开搜，不用敲命令；没开的话，下次打开云电脑抓完作品就搜。搜完把链接清单私聊发你。',
+    '搜索要用云电脑上登录的抖音，搜完把链接清单私聊发你。',
+    await cloudStatusLine(L),
   ].join('\n'));
 }
 
@@ -1879,6 +1880,7 @@ async function progressText(env) {
     }
     if ((await L.getConfig('dyStop')) === '1') lines.push('⏹ 已经叫它停了，下次报进度时（半分钟内）停下');
   }
+  lines.push(await cloudStatusLine(L));
   if ((await L.getConfig('dyCrawlReq')) === '1') lines.push(`▶️ 已经点了运行爬虫，${cloudOnline(Number(await L.getConfig('dyCloudSeen')) || 0) ? '云电脑半分钟内开始抓' : '等云电脑打开就抓'}`);
   lines.push('');
   let st = null;
@@ -1989,9 +1991,13 @@ async function cloudSearchResult(request, env) {
   for (const kw of touched) await say(env, owner, `✅ 「${kw}」搜完了，一共 ${nums[kw]} 条`);
   // 这一轮的完整清单交给审核机器人（审核任务写进共享的任务表）；审核通过前一条不转
   if (owner) await submitForReview(env, L, owner, touched, [...seen], rows);
-  await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !touched.includes(k))));
+  // 出队：结果里标的词，加上云电脑报进度时说这次在搜的词（结果里的 source_keyword 和排队的写法对不上时，不出队就会一直重搜）
+  let ran = [];
+  try { const c = JSON.parse((await L.getConfig('dyCloud')) || 'null'); if (c && c.mode === 'search') ran = c.keywords || []; } catch {}
+  const done = new Set([...touched, ...ran]);
+  await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !done.has(k))));
   const counts = await douyinTagMap(L, 'dySearchCounts');
-  for (const k of touched) delete counts[k];
+  for (const k of done) delete counts[k];
   await L.setConfig('dySearchCounts', JSON.stringify(counts));
   await L.setConfig('dySearchNum', '{}');
   await L.setConfig('dySearchRun', '[]');
@@ -2109,6 +2115,13 @@ async function cloudToken(L) {
 // ── 运行爬虫：云电脑开机不自己抓，频道主点了才抓（dyCrawlReq）。云电脑开着时每 20 秒问 /dy-cloud-config，看到就开抓，
 // 开抓时报 starting 进度把它清掉；没开的话等下次打开 ──
 const cloudOnline = seen => Date.now() - seen < 90 * 1000;
+
+// 云电脑现在在不在等指令（它开着时每 20 秒来问一次 /dy-cloud-config）
+async function cloudStatusLine(L) {
+  const seen = Number(await L.getConfig('dyCloudSeen')) || 0;
+  if (cloudOnline(seen)) return `☁️ 云电脑连着（${ago(Date.now() - seen)}来问过），半分钟内开始（正在抓、正在搜的话等它做完）`;
+  return `☁️ 云电脑现在没连上${seen ? `（上次是${ago(Date.now() - seen)}）` : ''}：打开云电脑就会自动做；已经开着的话把网页刷新一下（旧脚本要刷新一次才换成新的）`;
+}
 
 async function requestCrawl(L) {
   let c = null;
