@@ -280,7 +280,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
   assert.deepEqual(tables, ['asks', 'config', 'covers', 'dy_resume', 'filter_log', 'filter_rules', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'video_thumbs', 'videos', 'viz']);
-  assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
+  assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'filterSeeded', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
 });
@@ -1541,8 +1541,8 @@ await t('未成年人：相关的词不搜，排着队的也不交给云电脑�
   await dm(OWNER, '搜抖音 女初中生');
   assert.match(lastSay().text, /不搜、不转未成年人的视频[\s\S]*「女初中生」这个词不搜/);
   assert.ok(!(await jsonOf(await cfg())).searches.includes('女初中生'));
-  await lib.setConfig('dySearchQueue', JSON.stringify(['校服变装', '秋冬穿搭']));
-  assert.deepEqual((await jsonOf(await cfg())).searches, ['秋冬穿搭'], '以前排进去的这类词也不交给云电脑');
+  await lib.setConfig('dySearchQueue', JSON.stringify(['初三变装', '校服变装', '秋冬穿搭']));
+  assert.deepEqual((await jsonOf(await cfg())).searches, ['校服变装', '秋冬穿搭'], '直接写明未成年人的词不交给云电脑；「校服」的搜索限制默认是关的，搜');
   // 搜到的结果里文案带「初中生」的：不进审核清单；只带「校服」的（成年人的校服穿搭也常见，看文案定不了）：进清单，标待人工确认
   await req('/dy-progress', { method: 'POST', headers: { 'X-Token': tok, 'Content-Type': 'application/json' },
     body: JSON.stringify({ phase: 'running', mode: 'search', keywords: ['秋冬穿搭'], per: {}, got: 2, sent: 0 }) });
@@ -1555,7 +1555,7 @@ await t('未成年人：相关的词不搜，排着队的也不交给云电脑�
   const task = await V.getTask(lib, JSON.parse(await lib.getConfig('rvIds')).at(-1));
   assert.deepEqual(task.keywords, ['秋冬穿搭']);
   assert.deepEqual(task.items.map(i => [i.id, i.flag || '']), [['7800000000000000002', ''],
-    ['7800000000000000003', '命中规则「未成年人保护·要人工确认（固定规则，不能关闭）」（词：校服）：确认视频里都是成年人再通过']]);
+    ['7800000000000000003', '命中规则「校服·文案要人工确认」（词：校服）：确认视频里都是成年人再通过']]);
   // 搜这类词的审核单：就算点了通过也不转
   Object.assign(task, { keywords: ['女初中生'], status: 'approved', transfer: '' });
   await V.saveTask(lib, task);
@@ -1582,15 +1582,26 @@ await t('内容过滤规则：只由管理员在管理页加改删开关；机�
   // 管理接口：要管理密钥；一开始只有固定的未成年人保护，别的规则一条都没有（机器人不自己加）
   assert.equal((await admin('filters', undefined, 'wrong')).status, 401);
   let f = await jsonOf(await admin('filters'));
-  assert.deepEqual(f.rules, []);
-  assert.deepEqual(f.builtin.map(r => [r.id, r.scope, r.action, r.enabled, r.builtin]),
-    [['minor', 'both', 'filter', true, true], ['minor-search', 'keyword', 'filter', true, true], ['minor-check', 'caption', 'flag', true, true]]);
-  assert.equal((await admin('filters-delete', { id: 'minor-check' })).status, 400, '固定规则不能删');
+  // 代码里只剩直接写明未成年人的固定词表；「校服」的两条是第一次启动放进去的默认规则，管理员可以改、关、删：搜索那条默认关着（搜得了）
+  assert.deepEqual(f.builtin.map(r => [r.id, r.scope, r.action, r.enabled, r.builtin]), [['minor', 'both', 'filter', true, true]]);
+  assert.deepEqual(f.rules.map(r => [r.name, r.scope, r.action, r.enabled, r.hint]),
+    [['校服·搜索词', 'keyword', 'filter', false, ''], ['校服·文案要人工确认', 'caption', 'flag', true, '确认视频里都是成年人再通过']]);
+  const seeded = f.rules.map(r => r.id);
+  await dm(OWNER, '搜抖音 校服变装');
+  assert.match(lastSay().text, /记下了「校服变装」/, '「校服」的搜索限制默认是关的');
+  await dm(OWNER, '搜抖音 清空');
+  await admin('filters', { ...f.rules[0], enabled: true });
+  await dm(OWNER, '搜抖音 校服变装');
+  assert.match(lastSay().text, /命中过滤规则「校服·搜索词」（词：校服），「校服变装」这个词不搜/, '管理员打开它就生效');
+  await admin('filters', { ...f.rules[0], enabled: false });
+  assert.equal((await jsonOf(await admin('filters-delete', { id: seeded[0] }))).ok, true, '默认规则管理员也能删');
+  assert.equal((await jsonOf(await admin('filters-delete', { id: seeded[1] }))).ok, true);
+  assert.deepEqual((await jsonOf(await admin('filters'))).rules, [], '删了不会再放回来');
   assert.equal((await admin('filters', { name: '', words: ['x'], scope: 'both', action: 'filter' })).status, 400);
   assert.equal((await admin('filters', { name: 'a', words: [], scope: 'both', action: 'filter' })).status, 400);
   assert.equal((await admin('filters', { name: 'a', words: ['x'], scope: 'everywhere', action: 'filter' })).status, 400);
-  assert.equal((await admin('filters', { id: 'minor', name: 'a', words: ['x'], scope: 'both', action: 'filter' })).status, 400, '固定规则不能改');
-  assert.equal((await admin('filters-delete', { id: 'minor' })).status, 400, '固定规则不能删');
+  assert.equal((await admin('filters', { id: 'minor', name: 'a', words: ['x'], scope: 'both', action: 'filter' })).status, 400, '固定词表不能改');
+  assert.equal((await admin('filters-delete', { id: 'minor' })).status, 400, '固定词表不能删');
 
   // 没有规则时：照常搜、照常进清单（只有固定规则在管）
   await dm(OWNER, '搜抖音 牛仔裤');

@@ -73,6 +73,7 @@ form.rule .actions{display:flex;gap:8px;flex-wrap:wrap}
       <label>关键词（用逗号、顿号或换行分开；文字里包含任意一个就算命中，不分大小写）<textarea id="r-words" required placeholder="比如：代购、私信下单"></textarea></label>
       <label>查哪里<select id="r-scope"><option value="both">搜索词和作品文案都查</option><option value="keyword">只查搜索词</option><option value="caption">只查作品文案</option></select></label>
       <label>命中后<select id="r-action"><option value="filter">过滤（不搜、不进清单、不转）</option><option value="flag">只标记（标成待人工确认，我来决定）</option></select></label>
+      <label>命中「只标记」时给我看的提示（可不写）<input id="r-hint" type="text" maxlength="60" placeholder="比如：确认视频里都是成年人再通过"></label>
       <label class="check"><input id="r-enabled" type="checkbox" checked> 启用</label>
       <div class="actions"><button type="submit" id="r-save">加上</button><button type="button" id="r-cancel" class="link" hidden>不改了</button></div>
       <p id="r-err" class="err"></p>
@@ -134,7 +135,7 @@ form.rule .actions{display:flex;gap:8px;flex-wrap:wrap}
     if(!r.builtin){
       var b = el('div', 'btns');
       var tg = el('button', '', r.enabled ? '停用' : '启用'); tg.type = 'button';
-      tg.addEventListener('click', function(){ saveRule({ id: r.id, name: r.name, words: r.words, scope: r.scope, action: r.action, enabled: !r.enabled }); });
+      tg.addEventListener('click', function(){ saveRule({ id: r.id, name: r.name, words: r.words, scope: r.scope, action: r.action, enabled: !r.enabled, hint: r.hint }); });
       var ed = el('button', '', '改'); ed.type = 'button';
       ed.addEventListener('click', function(){ startEdit(r); });
       var rm = el('button', 'danger', '删'); rm.type = 'button';
@@ -176,6 +177,7 @@ form.rule .actions{display:flex;gap:8px;flex-wrap:wrap}
     $('r-scope').value = r ? r.scope : 'both';
     $('r-action').value = r ? r.action : 'filter';
     $('r-enabled').checked = r ? r.enabled : true;
+    $('r-hint').value = r ? (r.hint || '') : '';
     $('r-save').textContent = r ? '保存' : '加上';
     $('r-cancel').hidden = !r;
     $('r-err').textContent = '';
@@ -190,7 +192,7 @@ form.rule .actions{display:flex;gap:8px;flex-wrap:wrap}
   $('rule-form').addEventListener('submit', function(e){
     e.preventDefault();
     saveRule({ id: editing || undefined, name: $('r-name').value, words: $('r-words').value, scope: $('r-scope').value,
-      action: $('r-action').value, enabled: $('r-enabled').checked });
+      action: $('r-action').value, enabled: $('r-enabled').checked, hint: $('r-hint').value });
   });
   $('r-cancel').addEventListener('click', function(){ startEdit(null); });
 

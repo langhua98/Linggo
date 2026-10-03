@@ -323,7 +323,7 @@ async function adminApi(request, env, url) {
     const L = lib(env);
     return json({ total: (await L.listVideos()).length, syncedAt: Number(await L.getConfig('vSyncOk')) || 0 });
   }
-  // 内容过滤规则：管理员在这里加、改、删、开关；固定规则（未成年人保护）只读
+  // 内容过滤规则：管理员在这里加、改、删、开关；只有直接写明未成年人的固定词表只读
   if (action === 'filters' && request.method === 'GET') {
     return json({ builtin: BUILTIN_RULES, rules: await lib(env).listFilterRules() });
   }
@@ -339,7 +339,7 @@ async function adminApi(request, env, url) {
   if (action === 'filters-delete' && request.method === 'POST') {
     let body;
     try { body = await request.json(); } catch { return json({ error: '格式不对' }, 400); }
-    if (String(body.id).startsWith('minor')) return json({ error: '固定规则不能删' }, 400);
+    if (String(body.id) === 'minor') return json({ error: '固定词表不能删' }, 400);
     return json({ ok: await lib(env).deleteFilterRule(Number(body.id) || 0) });
   }
   if (action === 'filter-log' && request.method === 'GET') {
@@ -1193,6 +1193,15 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS dy_resume (seq INTEGER PRIMARY KEY, batch INTEGER NOT NULL, body TEXT NOT NULL)');
       // 内容过滤规则：全部由管理员在管理页里加、改、删、开关（机器人自己不加、不改）。words 是 JSON 数组
       this.sql.exec('CREATE TABLE IF NOT EXISTS filter_rules (id INTEGER PRIMARY KEY, name TEXT NOT NULL, words TEXT NOT NULL, scope TEXT NOT NULL, action TEXT NOT NULL, enabled INTEGER NOT NULL, updated INTEGER NOT NULL)');
+      try { this.sql.exec("ALTER TABLE filter_rules ADD COLUMN hint TEXT NOT NULL DEFAULT ''"); } catch {}  // 老库补一列：标记时给管理员看的提示
+      // 第一次启动放进两条默认规则（以前写死在代码里的「校服」处理），放了就记下，之后管理员删了不会再放回来
+      if (this.cfg('filterSeeded') !== '1') {
+        for (const r of SEEDED_RULES) {
+          this.sql.exec('INSERT INTO filter_rules (name, words, scope, action, enabled, updated, hint) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, Date.now(), r.hint || '');
+        }
+        this.setCfg('filterSeeded', '1');
+      }
       // 每次按规则过滤、标记的记录：命中哪条规则、哪个词、在哪一步、是哪条作品（或哪个搜索词）
       this.sql.exec('CREATE TABLE IF NOT EXISTS filter_log (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, rule_id TEXT NOT NULL, rule_name TEXT NOT NULL, word TEXT NOT NULL, stage TEXT NOT NULL, result TEXT NOT NULL, subject TEXT NOT NULL, text TEXT NOT NULL)');
       // 刷视频网页的视频池：视频频道「小橘视频」里的视频帖，rec 是完整记录（含 Bot API 的 file_id）
@@ -1382,6 +1391,7 @@ export class Library extends DurableObject {
   async listFilterRules() {
     return this.sql.exec('SELECT * FROM filter_rules ORDER BY id').toArray().map(r => ({
       id: r.id, name: r.name, words: JSON.parse(r.words), scope: r.scope, action: r.action, enabled: !!r.enabled, updated: r.updated,
+      hint: r.hint || '',
     }));
   }
 
@@ -1389,12 +1399,12 @@ export class Library extends DurableObject {
     const now = Date.now();
     if (r.id) {
       if (!this.sql.exec('SELECT id FROM filter_rules WHERE id = ?', r.id).toArray().length) return 0;
-      this.sql.exec('UPDATE filter_rules SET name = ?, words = ?, scope = ?, action = ?, enabled = ?, updated = ? WHERE id = ?',
-        r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, now, r.id);
+      this.sql.exec('UPDATE filter_rules SET name = ?, words = ?, scope = ?, action = ?, enabled = ?, updated = ?, hint = ? WHERE id = ?',
+        r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, now, r.hint || '', r.id);
       return r.id;
     }
-    this.sql.exec('INSERT INTO filter_rules (name, words, scope, action, enabled, updated) VALUES (?, ?, ?, ?, ?, ?)',
-      r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, now);
+    this.sql.exec('INSERT INTO filter_rules (name, words, scope, action, enabled, updated, hint) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      r.name, JSON.stringify(r.words), r.scope, r.action, r.enabled ? 1 : 0, now, r.hint || '');
     return this.sql.exec('SELECT last_insert_rowid() AS id').toArray()[0].id;
   }
 
@@ -2260,22 +2270,22 @@ const SEARCH_DEFAULT = 100, SEARCH_MAX = 500;
 // 每条规则：关键词（文字里包含任意一个就算命中，不分大小写）、查哪里（搜索词 keyword / 作品文案 caption / 两个都查 both）、
 // 命中了怎么办（filter 不进清单、不转；flag 只标「待人工确认」，照常进清单，审核时管理员决定）。
 // 查不了的（作品没有文案，文案规则无从判断）也只标「待人工确认」，不替管理员下结论。每次过滤、标记都记进 filter_log。
-// 唯一的固定规则是未成年人保护（管理员要求保留）：在管理页里照样列出、命中照样记录，但不能关、不能删。
-// 明确指向未成年人的词直接过滤；「校服」成年人的穿搭分享里也常见（女大、学姐的校服 ootd），光看文案定不了：
-// 作品文案里有它只标待人工确认，由管理员看过视频、确认都是成年人再通过；主动拿它当搜索词仍然不搜
+// 代码里只剩一处固定的：直接写明未成年人的词（初中、未成年、萝莉……）不搜、不进清单、不转，管理页里列出来、命中照样记录，
+// 不做成可以关的开关。其余全部是管理员的规则：包括第一次启动时放进去的两条默认规则（SEEDED_RULES，「校服」的处理），
+// 管理员可以改、关、删，删了不会再放回来。
 const MINOR_WORDS = ['初中', '小学', '中学生', '高中生', '未成年', '学生妹', '萝莉', '幼女', '女童', '小女孩', '童模', '初一', '初二', '初三',
   '高一', '高二', '高三', '七年级', '八年级', '九年级', '10后', '幼儿', '儿童', '小朋友', '中考'];
-const MINOR_CHECK_WORDS = ['校服'];
 const MINOR_REFUSAL = '🚫 小橘不搜、不转未成年人的视频。';
 const BUILTIN_RULES = [
-  { id: 'minor', name: '未成年人保护（固定规则，不能关闭）', words: MINOR_WORDS, scope: 'both', action: 'filter', enabled: true, builtin: true },
-  { id: 'minor-search', name: '未成年人保护·搜索词（固定规则，不能关闭）', words: MINOR_CHECK_WORDS, scope: 'keyword', action: 'filter', enabled: true, builtin: true },
-  { id: 'minor-check', name: '未成年人保护·要人工确认（固定规则，不能关闭）', words: MINOR_CHECK_WORDS, scope: 'caption', action: 'flag', enabled: true, builtin: true,
-    hint: '确认视频里都是成年人再通过' },
+  { id: 'minor', name: '未成年人保护·直接写明未成年人的词（固定词表）', words: MINOR_WORDS, scope: 'both', action: 'filter', enabled: true, builtin: true },
+];
+const SEEDED_RULES = [
+  { name: '校服·搜索词', words: ['校服'], scope: 'keyword', action: 'filter', enabled: false, hint: '' },
+  { name: '校服·文案要人工确认', words: ['校服'], scope: 'caption', action: 'flag', enabled: true, hint: '确认视频里都是成年人再通过' },
 ];
 const RULE_SCOPES = ['keyword', 'caption', 'both'], RULE_ACTIONS = ['filter', 'flag'];
 
-// 现在生效的规则：固定规则 + 管理员启用的；「过滤」的都排在「只标记」前面（同时命中时按过滤算）
+// 现在生效的规则：固定词表 + 管理员启用的；「过滤」的都排在「只标记」前面（同时命中时按过滤算）
 async function filterRules(L) {
   const all = [...BUILTIN_RULES, ...(await L.listFilterRules()).filter(r => r.enabled)];
   return [...all.filter(r => r.action === 'filter'), ...all.filter(r => r.action === 'flag')];
@@ -2302,7 +2312,7 @@ function hitEntry(hit, stage, result, subject, text) {
 // 管理页送来的一条规则 → 存进表的样子；不像样 → { error }
 function cleanRule(b) {
   if (!b || typeof b !== 'object') return { error: '格式不对' };
-  if (String(b.id).startsWith('minor')) return { error: '固定规则不能改' };
+  if (String(b.id) === 'minor') return { error: '固定词表不能改' };
   const name = String(b.name || '').trim().slice(0, 30);
   const raw = Array.isArray(b.words) ? b.words : String(b.words || '').split(/[,，、\n]/);
   const words = [...new Set(raw.map(w => String(w).trim()).filter(Boolean))].slice(0, 100);
@@ -2311,11 +2321,11 @@ function cleanRule(b) {
   if (words.some(w => w.length > 30)) return { error: '关键词太长（一个最多 30 个字）' };
   if (!RULE_SCOPES.includes(b.scope)) return { error: '查哪里不对' };
   if (!RULE_ACTIONS.includes(b.action)) return { error: '命中后怎么办不对' };
-  return { id: Number(b.id) || 0, name, words, scope: b.scope, action: b.action, enabled: b.enabled !== false };
+  return { id: Number(b.id) || 0, name, words, scope: b.scope, action: b.action, enabled: b.enabled !== false, hint: String(b.hint || '').trim().slice(0, 60) };
 }
 
 function refusal(hit, what) {
-  return String(hit.rule.id).startsWith('minor') ? `${MINOR_REFUSAL}${what}` : `🚫 命中过滤规则「${hit.rule.name}」（词：${hit.word}），${what}`;
+  return hit.rule.id === 'minor' ? `${MINOR_REFUSAL}${what}` : `🚫 命中过滤规则「${hit.rule.name}」（词：${hit.word}），${what}`;
 }
 
 // 交给云电脑之前按现在的规则再查一遍排队的词（规则可能是排队之后才加的）：命中过滤规则的出队、记录、告诉频道主
