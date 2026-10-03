@@ -238,6 +238,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
     作品数写进 `~/.xiaoju/creators.jsonl`；抓了多少——结果文件里 `xiaoju_sec_uid` 是它的行；送了多少），POST `/dy-progress`
     存进 config `dyCloud`。机器人发「进度」看云电脑和流式服务（`/douyin/status`）两边；按钮「⏹ 停止云电脑抓取」设 `dyStop`，
     云电脑下次报进度收到 `{stop: true}` 就关掉 MediaCrawler（剩下的不送）；「⏹ 停止小橘转发」调 `/douyin/stop` 取消正在跑的任务。
+  - **账号审批**：搜完 Worker 把这一轮结果按作者归在一起发一条消息（`dyPick`），频道主勾自己的号（登记过的默认勾好）再点「转选中的」才转；勾上的号顺便登记（最多 30 个）。没勾的不转。
   - **换最高画质**：流式服务 `POST /douyin/delete {target, ids}` 删掉旧的抖音视频帖（只删说明里带抖音视频链接的视频，
     正在转作品时不删），之后查重认不出，下次就按最高画质重转。
     不用粘贴也行：`codespace-auto.sh` 拿 Codespaces 自带的 `GITHUB_TOKEN` POST `/dy-cloud-config`，Worker 找

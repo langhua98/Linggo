@@ -277,7 +277,7 @@ async function adminApi(request, env, url) {
       const body = await request.json().catch(() => ({}));
       const list = body.sec_uids !== undefined ? body.sec_uids : [...await douyinSelves(lib(env)), body.sec_uid];
       const clean = [...new Set((Array.isArray(list) ? list : []).map(x => String(x || '').trim()))];
-      if (!clean.length || clean.length > 10 || !clean.every(x => SEC_UID.test(x))) return json({ error: '参数不对' }, 400);
+      if (!clean.length || clean.length > MAX_SELVES || !clean.every(x => SEC_UID.test(x))) return json({ error: '参数不对' }, 400);
       await lib(env).setConfig('douyinSelf', JSON.stringify(clean));
     }
     return json({ sec_uids: await douyinSelves(lib(env)) });
@@ -1475,6 +1475,45 @@ async function botButton(env, cb, owner, origin) {
     await ack(tip);
     return tg(env, 'editMessageText', { chat_id: chat, message_id: cb.message.message_id, text: await progressText(env), reply_markup: { inline_keyboard: PROGRESS_KB } });
   }
+  if (kind === 'dyp' || kind === 'dyq') { // 账号审批：勾 / 取消勾，最后「转选中的」
+    let p = null;
+    try { p = JSON.parse((await L.getConfig('dyPick')) || 'null'); } catch {}
+    if (!p || p.msg !== cb.message.message_id) return ack('这条审批过期了，以最新的一条为准');
+    if (p.done) return ack('已经转过了');
+    if (kind === 'dyp') {
+      const i = Number(a);
+      if (!p.authors[i]) return ack();
+      p.picked = p.picked.includes(i) ? p.picked.filter(x => x !== i) : [...p.picked, i];
+      await L.setConfig('dyPick', JSON.stringify(p));
+      await ack();
+      return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
+    }
+    if (!p.picked.length) return ack('还没勾选号');
+    if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
+    const all = await searchRows(L);
+    const picked = p.picked.map(i => p.authors[i]);
+    const rows = picked.flatMap(x => x.ids).map(id => all[id]).filter(Boolean);
+    if (!rows.length) return ack('作品数据过期了，重新搜一次');
+    let r;
+    try {
+      r = await streamerCall(env, '/douyin/import', {
+        text: rows.map(x => JSON.stringify(x)).join('\n'), target: env.VIDEO_CHANNEL_ID, notify: owner, final: true,
+        tags: await douyinTagMap(L, 'douyinTags'),
+      });
+    } catch {
+      return ack('小橘的服务正在唤醒，过一两分钟再点');
+    }
+    if (r.status === 409) return ack('小橘正在转别的，转完再点');
+    if (r.status !== 200) return ack((r.data && r.data.detail) || '没转成');
+    // 频道主确认是自己的号：登记（以后搜到自动勾好，云电脑也转它的全部作品）
+    const selves = await douyinSelves(L);
+    const add = picked.map(x => x.sec).filter(x => SEC_UID.test(x) && !selves.includes(x));
+    await L.setConfig('douyinSelf', JSON.stringify([...selves, ...add].slice(0, MAX_SELVES)));
+    p.done = true;
+    await L.setConfig('dyPick', JSON.stringify(p));
+    await ack(`开始转 ${rows.length} 条${add.length ? `，登记了 ${add.length} 个号` : ''}；进度点「📊 进度」看`);
+    return tg(env, 'editMessageReplyMarkup', { chat_id: chat, message_id: p.msg, reply_markup: pickKeyboard(p) });
+  }
   if (kind === 'dys' || kind === 'dya') { // 搜索清单里点「📤 转 N」/「一键转这批里你的号」：交给流式服务按最高画质转进视频频道（已有的跳过）
     if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return ack('还没设置视频频道');
     const all = await searchRows(L);
@@ -1978,6 +2017,8 @@ async function cloudSearchResult(request, env) {
   }
   // 搜完了：每个词说一声一共几条，出队，这一轮的编号清零
   for (const kw of touched) await say(env, owner, `✅ 「${kw}」搜完了，一共 ${nums[kw]} 条`);
+  // 账号审批：这一轮搜到的按作者归在一起，发一条消息让频道主勾自己的号，点「转选中的」才转（先审后转，没勾的不转）
+  if (owner) await sendAccountPick(env, L, owner, touched, [...seen], rows);
   await L.setConfig('dySearchQueue', JSON.stringify((await douyinSearchQueue(L)).filter(k => !touched.includes(k))));
   const counts = await douyinTagMap(L, 'dySearchCounts');
   for (const k of touched) delete counts[k];
@@ -1985,6 +2026,37 @@ async function cloudSearchResult(request, env) {
   await L.setConfig('dySearchNum', '{}');
   await L.setConfig('dySearchRun', '[]');
   return json({ ok: true, keywords: touched, total: fresh });
+}
+
+const MAX_SELVES = 30;
+
+function pickKeyboard(p) {
+  const kb = p.authors.map((a, i) => [{
+    text: `${p.picked.includes(i) ? '☑' : '☐'} ${a.mine ? '👤' : ''}@${a.name || '（没名字）'}（${a.ids.length} 条）`, callback_data: `dyp:${i}`,
+  }]);
+  const n = p.picked.reduce((t, i) => t + p.authors[i].ids.length, 0);
+  kb.push([{ text: p.done ? `✅ 已转 ${n} 条` : `📤 转选中的（${n} 条）`, callback_data: p.done ? 'dyp:x' : 'dyq:go' }]);
+  return { inline_keyboard: kb };
+}
+
+async function sendAccountPick(env, L, owner, kws, ids, rows) {
+  const mine = new Set(await douyinSelves(L));
+  const by = new Map();
+  for (const id of ids) {
+    const r = rows[id];
+    if (!r || !r.xiaoju_sec_uid) continue;
+    const k = String(r.xiaoju_sec_uid);
+    if (!by.has(k)) by.set(k, { sec: k, name: String(r.xiaoju_nickname || '').slice(0, 20), ids: [], mine: mine.has(k) });
+    by.get(k).ids.push(id);
+  }
+  const authors = [...by.values()].sort((x, y) => (y.mine - x.mine) || (y.ids.length - x.ids.length)).slice(0, 40);
+  if (!authors.length) return;
+  const p = { authors, picked: authors.map((a, i) => (a.mine ? i : -1)).filter(i => i >= 0), done: false };
+  const r = await tg(env, 'sendMessage', {
+    chat_id: owner, reply_markup: pickKeyboard(p),
+    text: `🔍 账号审批：「${kws.join('、')}」搜到的 ${authors.reduce((t, a) => t + a.ids.length, 0)} 条来自 ${authors.length} 个号。\n点选你自己的号（👤 是登记过的，已经勾好），再点「转选中的」。没勾的号一条也不转，尊重原作者。\n勾上的号会顺便登记：以后搜到自动勾好，云电脑也会转它的全部作品。`,
+  });
+  if (r.ok) await L.setConfig('dyPick', JSON.stringify({ ...p, msg: r.result.message_id }));
 }
 
 async function cloudToken(L) {
@@ -2075,7 +2147,7 @@ async function ownerDouyinAdd(env, chat, text) {
   if (r.data.kind !== 'user') return say(env, chat, '这是作品链接。要发账号主页的分享链接（抖音里点「我」→ 右上角 ··· →「分享主页」→ 复制链接）');
   const L = lib(env), list = await douyinSelves(L);
   if (list.includes(r.data.id)) return say(env, chat, '这个账号已经在里面了 👌');
-  if (list.length >= 10) return say(env, chat, '最多 10 个账号');
+  if (list.length >= MAX_SELVES) return say(env, chat, `最多 ${MAX_SELVES} 个账号`);
   await L.setConfig('douyinSelf', JSON.stringify([...list, r.data.id]));
   return say(env, chat, `✅ 加好了，现在有 ${list.length + 1} 个抖音账号。发「转抖音视频」马上转一次；开了自动同步的话之后会自动转。\n视频频道里每条帖子会带上账号标签（默认用抖音昵称），想改名发「账号标签」看看`);
 }

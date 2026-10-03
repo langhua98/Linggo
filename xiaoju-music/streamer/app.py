@@ -1091,7 +1091,7 @@ async def douyin_mirror(request: Request):
     check_key(request)
     body = await request.json()
     sec_uids = body.get('sec_uids') or [body.get('sec_uid', '')]
-    sec_uids = [str(x).strip() for x in sec_uids][:10]
+    sec_uids = [str(x).strip() for x in sec_uids][:30]
     if not sec_uids or not all(dy_links.USER.search('/user/' + x) and len(x) <= 140 for x in sec_uids):
         raise HTTPException(400, 'bad sec_uid')
     target = parse_target(body.get('target'))
