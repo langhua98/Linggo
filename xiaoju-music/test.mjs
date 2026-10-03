@@ -56,8 +56,6 @@ const calls = [];
 const OWNER = 777, FAN = 555;
 const bot = { vout: [], vStarted: false, out: [], toStreamer: [], search: [], pickId: 0, autoStatus: { status: 'idle' }, adminAsks: 0, copyBusy: false, streamerDown: false, copyFail: '' };
 const mode = { getFile: 'ok', expireOnce: false, streamer: 'ok', thumbs: 'ok', lrclib: 'ok', netease: 'ok', viz: 'ok' };
-// 视频频道（刷视频网页）：流式服务翻出来的视频帖、只有它取得到的大视频和缩略图。mode：ok / down（没连上）/ old（旧版 Space，没有这些接口）
-const vids = { scan: [], complete: true, scanMode: 'ok', scans: 0, big: new Map(), thumbs: new Map(), streamMode: 'ok' };
 // 模拟歌词来源：LRCLIB 的歌词库，网易云的歌和歌词
 const lrclibDb = [];
 const neteaseDb = [];
@@ -113,21 +111,6 @@ globalThis.fetch = async (input, init = {}) => {
     if (!f) return new Response('Not Found', { status: 404 });
     if (mode.streamer === 'short') return new Response(f.slice(0, 10), { status: headers.get('Range') ? 206 : 200, headers: { 'Content-Length': '10' } });
     return serve(f, headers.get('Range'), { 'Content-Type': 'application/octet-stream' });
-  }
-  if ((m = url.match(/^https:\/\/streamer\.example\/(videos|vstream\/(\d+)|vthumb\/(\d+))\?(.*)$/))) {
-    assert.equal(headers.get('X-Key'), SKEY);
-    assert.equal(new URLSearchParams(m[4]).get('target'), String(VIDEO_CHANNEL));
-    const which = m[1].split('/')[0], mode2 = which === 'videos' ? vids.scanMode : vids.streamMode;
-    if (mode2 === 'down') throw new TypeError('fetch failed');
-    if (mode2 === 'old') return Response.json({ detail: 'Not Found' }, { status: 404 });
-    if (which === 'videos') { vids.scans++; return Response.json({ videos: vids.scan, complete: vids.complete }); }
-    if (which === 'vstream') {
-      const f = vids.big.get(Number(m[2]));
-      return f ? serve(f, headers.get('Range'), { 'Content-Type': 'application/octet-stream' }) : Response.json({ detail: 'gone' }, { status: 404 });
-    }
-    const img = vids.thumbs.get(Number(m[3]));
-    if (img === undefined) return Response.json({ detail: 'gone' }, { status: 404 });
-    return img ? new Response(img, { headers: { 'Content-Type': 'image/jpeg' } }) : Response.json({ detail: 'no thumb' }, { status: 404 });
   }
   if (url === 'https://api.github.com/user') {
     const who = { 'gh-owner': 'langhua98', 'gh-other': 'someone' }[headers.get('Authorization').replace('Bearer ', '')];
@@ -293,7 +276,7 @@ await t('切片那一版的数据库：歌搬进 songs，状态列、chats 表�
   const old = await makeLibrary({ TRACKS: makeKV(oldTracks) }, db);
   assert.deepEqual((await old.listTracks()).map(x => x.id), [51, 7]); // 没有再从 KV 搬 4 和 12
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(tables, ['asks', 'config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'video_thumbs', 'videos', 'viz']);
+  assert.deepEqual(tables, ['asks', 'config', 'covers', 'logo_covers', 'lyrics', 'photos', 'playlists', 'songs', 'viz']);
   assert.deepEqual(db.prepare('SELECT k FROM config ORDER BY k').all().map(r => r.k), ['coversV', 'migrated']);
   await makeLibrary({}, db); // 再启动一次：什么都不用做，也不报错
   assert.equal((await old.getTrack(7)).title, '旧版里的歌');
@@ -1472,153 +1455,8 @@ await t('路由：404、405、CORS 预检', async () => {
   assert.match(r.headers.get('Access-Control-Allow-Headers'), /Range/);
 });
 
-await t('刷视频网页：视频频道的视频帖登记进视频池（不进歌单），说明拆成账号、日期、文案；图片帖不当歌的封面', async () => {
-  const vchat = { id: VIDEO_CHANNEL, type: 'channel', title: '小橘视频' };
-  const small = bytesOf(4000, 21), thumb = JPEG(300);
-  await lib.setConfig('vSyncAt', String(Date.now())); // 先别和频道对（后面单独测）
-  await hook({ channel_post: { message_id: 501, chat: vchat, date: 1790812800, caption: '跳舞的小美\n\n📹 抖音 #小美 · 2026-09-30\nhttps://www.douyin.com/video/7600000000000000001',
-    video: { file_id: addFile(small), file_unique_id: 'V501', mime_type: 'video/mp4', file_size: small.length, duration: 15, width: 1080, height: 1920, thumbnail: { file_id: addFile(thumb), width: 180, height: 320 } } } });
-  await hook({ channel_post: { message_id: 502, chat: vchat, date: 1790812800, caption: '📹 抖音 @某 人 · 2026-09-01\nhttps://www.douyin.com/video/7600000000000000002',
-    document: { file_id: 'BIGV', file_unique_id: 'V502', file_name: 'douyin_2.mp4', mime_type: 'video/mp4', file_size: 25 * MB, thumbnail: { file_id: 'NOPE' } } } });
-  await hook({ channel_post: { message_id: 503, chat: vchat, date: 1790899200, caption: '频道主自己拍的', video: { file_id: addFile(small), file_unique_id: 'V503', mime_type: 'video/quicktime', file_size: small.length, duration: 3 } } });
-  await hook({ channel_post: { message_id: 504, chat: vchat, photo: [{ file_id: 'PHOTO504', width: 800, height: 800 }] } });
-  await hook({ channel_post: { message_id: 505, chat: vchat, text: '目录' } });
-  const list = (await jsonOf(await req('/api/videos'))).videos;
-  assert.deepEqual(list, [
-    { id: 503, d: 3, w: 0, h: 0, day: '2026-10-02', by: '', text: '频道主自己拍的' },
-    { id: 502, d: 0, w: 0, h: 0, day: '2026-09-01', by: '某 人', text: '' },
-    { id: 501, d: 15, w: 1080, h: 1920, day: '2026-09-30', by: '小美', text: '跳舞的小美' },
-  ]);
-  assert.ok(!JSON.stringify(list).includes('BIGV'), 'file_id 不给出去');
-  assert.ok(!(await publicTracks()).some(x => x.id >= 501 && x.id <= 505), '不进歌单');
-  assert.ok(!(await lib.listPhotos()).some(p => p.id === 504), '视频频道的图片不当歌的封面');
-  // 编辑以后不是视频了：从视频池去掉
-  await hook({ edited_channel_post: { message_id: 503, chat: vchat, text: '改成文字' } });
-  assert.deepEqual((await jsonOf(await req('/api/videos'))).videos.map(v => v.id), [502, 501]);
-});
-
-await t('刷视频网页：20 MB 以内走 Bot API、更大的走流式服务（带 Range）；封面取一次存起来', async () => {
-  const small = files.get([...files.keys()].find(k => files.get(k).length === 4000));
-  let r = await req('/vf/501', { headers: { Range: 'bytes=0-1' } });
-  assert.equal(r.status, 206);
-  assert.deepEqual([r.headers.get('Content-Type'), r.headers.get('Content-Range'), r.headers.get('Accept-Ranges')], ['video/mp4', 'bytes 0-1/4000', 'bytes']);
-  same(await bytes(r), small, 0, 2);
-  r = await req('/vf/501');
-  assert.equal(r.status, 200);
-  same(await bytes(r), small, 0, 4000);
-  assert.equal((await req('/vf/501', { method: 'HEAD' })).headers.get('Content-Length'), '4000');
-  assert.equal((await req('/vf/999')).status, 404);
-  // 大视频：流式服务按消息号取（带上视频频道），拖到中间也对
-  const big = bytesOf(25 * MB, 77);
-  vids.big.set(502, big);
-  calls.length = 0;
-  r = await req('/vf/502', { headers: { Range: `bytes=${20 * MB}-${20 * MB + 99}` } });
-  assert.equal(r.status, 206);
-  same(await bytes(r), big, 20 * MB, 20 * MB + 100);
-  assert.ok(calls.some(c => c.url.startsWith(STREAMER + '/vstream/502?') && c.range === `bytes=${20 * MB}-${20 * MB + 99}`));
-  // 封面：有 Bot API 的缩略图就用它，存起来以后不再取
-  r = await req('/vp/501');
-  assert.equal(r.status, 200);
-  assert.equal(r.headers.get('Content-Type'), 'image/jpeg');
-  assert.equal((await bytes(r)).length, JPEG(300).length);
-  calls.length = 0;
-  assert.equal((await req('/vp/501')).status, 200);
-  assert.equal(calls.length, 0, '第二次直接从数据库给');
-  // 502 的缩略图 file_id 取不到：改请流式服务取
-  vids.thumbs.set(502, JPEG(120));
-  r = await req('/vp/502');
-  assert.equal(r.status, 200);
-  assert.equal((await bytes(r)).length, JPEG(120).length);
-});
-
-await t('刷视频网页：有人打开时和频道对一遍：补上 webhook 收不到的、去掉删了的；对完以后才发的新帖不误删；半小时内不再对', async () => {
-  const vchat = { id: VIDEO_CHANNEL, type: 'channel', title: '小橘视频' };
-  // 频道里现在有 501、502（文案改过）、510（机器人自己转进去的，webhook 收不到）；更早的 499 删了
-  await lib.upsertVideo({ id: 499, file_id: '', file_unique_id: '', thumb: '', mime: 'video/mp4', size: 10, duration: 1, w: 0, h: 0, date: 1, caption: '' });
-  vids.scan = [
-    { id: 510, date: 1790900000, size: 3000, duration: 8, w: 720, h: 1280, mime: 'video/mp4', text: '频道主转来的' },
-    { id: 502, date: 1790812800, size: 25 * MB, duration: 40, w: 1080, h: 1920, mime: 'video/mp4', text: '新文案\n\n📹 抖音 #某人 · 2026-09-01\nhttps://www.douyin.com/video/7600000000000000002' },
-    { id: 501, date: 1790812800, size: 4000, duration: 15, w: 1080, h: 1920, mime: 'video/mp4', text: '跳舞的小美\n\n📹 抖音 #小美 · 2026-09-30\nhttps://www.douyin.com/video/7600000000000000001' },
-  ];
-  // 对的同时（流式服务翻完之后）频道里又发了 520：webhook 登记的这条不能当成删了
-  await hook({ channel_post: { message_id: 520, chat: vchat, date: 1790990000, caption: '刚发的', video: { file_id: addFile(bytesOf(10, 5)), file_unique_id: 'V520', mime_type: 'video/mp4', file_size: 10, duration: 2 } } });
-  await lib.setConfig('vSyncAt', String(Date.now() - 31 * 60 * 1000));
-  const before = vids.scans;
-  let j = await jsonOf(await req('/api/videos'));
-  assert.equal(vids.scans, before + 1);
-  assert.equal(j.syncing, false);
-  assert.deepEqual(j.videos.map(v => v.id), [520, 510, 502, 501]);
-  assert.deepEqual([j.videos[2].by, j.videos[2].text, j.videos[2].d], ['某人', '新文案', 40]);
-  // 501 还沿用 webhook 记下的 Bot API file_id：小文件照样不经过流式服务
-  calls.length = 0;
-  assert.equal((await req('/vf/501', { headers: { Range: 'bytes=0-1' } })).status, 206);
-  assert.ok(!calls.some(c => c.url.includes('/vstream/')));
-  // 510 没有 file_id：走流式服务
-  vids.big.set(510, bytesOf(3000, 10));
-  assert.equal((await req('/vf/510', { headers: { Range: 'bytes=0-9' } })).status, 206);
-  assert.ok(calls.some(c => c.url.startsWith(STREAMER + '/vstream/510?')));
-  // 半小时内再打开：不再对
-  await req('/api/videos');
-  assert.equal(vids.scans, before + 1);
-  // 管理接口：看一眼、马上对一遍
-  assert.equal((await jsonOf(await admin('videos'))).total, 4);
-  const r = await jsonOf(await admin('videos', {}));
-  assert.deepEqual([r.ok, r.added, r.removed, r.total], [true, 0, 0, 4]);
-  // 没翻完（到上限）的时候不删
-  vids.scan = vids.scan.slice(0, 1);
-  vids.complete = false;
-  assert.equal((await jsonOf(await admin('videos', {}))).removed, 0);
-  vids.complete = true;
-  vids.scan = j.videos.filter(v => v.id !== 520).map(v => ({ id: v.id, date: 1, size: v.id === 502 ? 25 * MB : v.id === 501 ? 4000 : 3000, duration: v.d, w: 0, h: 0, mime: 'video/mp4', text: '' }));
-});
-
-await t('刷视频网页：流式服务说视频没了（404 gone）才从视频池去掉；旧版 Space、没连上不算；对不成两分钟后再试', async () => {
-  // 旧版 Space 没有 /vstream：404 但不是 gone → 502，网页会重试，视频池不动
-  vids.streamMode = 'old';
-  let r = await req('/vf/502', { headers: { Range: 'bytes=0-1' } });
-  assert.equal(r.status, 502);
-  assert.ok(await lib.getVideo(502));
-  vids.streamMode = 'down';
-  r = await req('/vf/502', { headers: { Range: 'bytes=0-1' } });
-  assert.equal(r.status, 503);
-  vids.streamMode = 'ok';
-  vids.big.delete(502);
-  r = await req('/vf/502', { headers: { Range: 'bytes=0-1' } });
-  assert.equal(r.status, 404);
-  assert.equal(await lib.getVideo(502), null, '频道里删了：从视频池去掉');
-  assert.ok(!(await jsonOf(await req('/api/videos'))).videos.some(v => v.id === 502));
-  // 封面：确定没有记下来，以后直接 404；旧版 Space 的 404 不算没有（503，过会儿再试）
-  vids.thumbs.set(510, null);
-  assert.equal((await req('/vp/510')).status, 404);
-  vids.thumbs.set(510, JPEG(50));
-  assert.equal((await req('/vp/510')).status, 404, '记下了没有封面');
-  // 520 帖子里没带缩略图，要请流式服务取：旧版 Space 的 404 不算「没有封面」，过会儿再试
-  vids.streamMode = 'old';
-  assert.equal((await req('/vp/520')).status, 503);
-  vids.streamMode = 'ok';
-  vids.thumbs.set(520, JPEG(60));
-  assert.equal((await req('/vp/520')).status, 200);
-  // 对不成（流式服务在休眠）：两分钟后再试，不是半小时
-  vids.scanMode = 'down';
-  await lib.setConfig('vSyncAt', '0');
-  const n0 = vids.scans;
-  const j = await jsonOf(await req('/api/videos'));
-  assert.equal(j.videos.length, 3, '视频池照样给');
-  assert.match(j.error, /流式服务没连上/, '告诉网页上次没对成');
-  const at = Number(await lib.getConfig('vSyncAt'));
-  assert.ok(Date.now() - at > 27 * 60 * 1000 && Date.now() - at < 29 * 60 * 1000, '过两分钟就该再对');
-  vids.scanMode = 'old';
-  await lib.setConfig('vSyncAt', '0');
-  await req('/api/videos');
-  assert.equal(vids.scans, n0);
-  assert.equal((await jsonOf(await req('/api/videos'))).videos.length, 3, '旧版 Space 给不了列表：什么都不删');
-  vids.scanMode = 'ok';
-  await lib.setConfig('vSyncAt', '0');
-  assert.equal((await jsonOf(await req('/api/videos'))).error, '', '对成了：清掉');
-});
-
 await t('播放页和管理页都能取到，内嵌脚本能通过语法检查', async () => {
-  for (const path of ['/', '/admin', '/video']) {
+  for (const path of ['/', '/admin']) {
     const r = await req(path);
     assert.equal(r.headers.get('Content-Type'), 'text/html; charset=utf-8');
     const html = await textOf(r);

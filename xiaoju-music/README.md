@@ -6,8 +6,6 @@
 - 播放页：https://xiaoju-music.langhua98.workers.dev
 - 分享单曲：在网址后加 `#消息号`，例如 `…/#4`
 - 管理页：https://xiaoju-music.langhua98.workers.dev/admin（用管理密钥登录，用来移除频道里已删掉的歌）
-- 刷视频：https://xiaoju-music.langhua98.workers.dev/video（像快手那样随机刷视频频道「小橘视频」里的视频，见下方「刷视频网页」；
-  分享某一条在网址后加 `#消息号`。和播放页一样**谁拿到链接都能看**，频道本身是私有的也一样）
 
 ## 工作原理
 
@@ -40,11 +38,6 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 | `POST /admin/api/reshuffle-photo-covers` | 频道里新加了图片后用：没有自带封面、用着频道图片的歌清掉封面，下次打开时从现在的图库里重新挑 |
 | `POST /admin/api/ban-cover` | 这首现在的封面不要了（`{track}`）：用这张图的歌都改用频道图片，以后也不再用它 |
 | `POST /admin/api/playlists` | 整体设置歌单：`{playlists: [{id?, name, cover?, tracks: [消息号…]}]}`，顺序就是显示顺序；带 `id` 的原地改，没列出的删掉 |
-| `GET /video` | 刷视频网页（`video.html`），见下方「刷视频网页」 |
-| `GET /api/videos` | 视频池 JSON：`{videos: [{id, d 秒数, w, h, day, by 账号, text 文案}], syncing}`，新的在前，不含 `file_id`。离上次和频道对一遍超过 30 分钟，就在后台再对一遍 |
-| `GET /vf/<消息号>` | 视频流，支持 Range。20 MB 以内、webhook 记下了 Bot API `file_id` 的走 Bot API，其余走流式服务 `/vstream` |
-| `GET /vp/<消息号>` | 视频封面（转视频时截的第一秒），取一次存进数据库 |
-| `GET/POST /admin/api/videos` | 视频池有多少条、上次什么时候和频道对过 / 马上对一遍 |
 
 管理接口都要 `Authorization: Bearer <ADMIN_KEY>`，响应不带 CORS 头。
 
@@ -60,9 +53,7 @@ Worker 先回 `503` + `Retry-After`，播放页提示「正在唤醒」并每 10
 - `lyrics`：每首歌的歌词原文，`src` 是 `lrclib` / `netease` / `manual`（频道里手动发的）/ `none`（确定没有）；
   `retry_at` 不为 0 时，过了这个时间再去外面找一次；
 - `playlists`：管理员编的歌单（`pos` 顺序、`name`、`cover` 封面用哪首歌的消息号、`tracks` 消息号 JSON 数组）；
-- `videos`：刷视频网页的视频池，视频频道里每条视频帖一行（`rec` 含 Bot API 的 `file_id`、缩略图、大小、时长、宽高、说明）；
-- `video_thumbs`：视频封面（base64；`mime='none'` 表示确定没有）；
-- `config`：`migrated`（已从 KV 迁移过）；`vSyncAt` / `vSyncOk`（视频池上次开始对、对成功的时间）。
+- `config`：`migrated`（已从 KV 迁移过）。
 
 **收藏（我喜欢）不在服务器上**：存在各人浏览器的 localStorage 里（`xm-favs`，消息号数组，新收藏的在前；
 页签、从哪一页点的歌之类的偏好在 `xm-prefs`）。所以换设备、换浏览器看不到，清网站数据就没了。
@@ -101,26 +92,6 @@ UTF-8、GBK、UTF-16 编码都认；配上之后可以把频道里的这条 `.lr
 `TG_WEBHOOK_SECRET` 在 Cloudflare 里读不回来；丢了就生成一个新的，同时更新 Worker 的 secret 和
 Telegram 的 webhook（见下方「重设 webhook」）。
 
-## 刷视频网页
-
-`/video`：像快手那样竖着刷视频频道「小橘视频」里的视频。上滑下一条、下滑回上一条，点一下暂停，双击喜欢，底下的进度条可以拖；
-电脑上用滚轮、键盘 ↑↓ 或右边的按钮。
-
-- **随机 + 浏览记录**：看过的视频按顺序记在浏览器里（`localStorage` 的 `xv-hist`，最近 300 条，`xv-pos` 是正在看第几条）。
-  下滑按记录往回走，记录不变；往回翻过再上滑也按记录往前；走到记录最新那条再上滑，才从视频池里随机抽一条新的
-  （最近看过的约八成先不抽，都看过了再放开）。下一条是预先抽好、提前加载的，所以上滑马上能放。
-  每次重新打开网页从一条随机的新视频开始（接在记录后面），往下滑就是上次看的；刷新页面（地址里带着 `#消息号`）停在原来那条。
-  右边「记录」打开浏览记录和「我喜欢」，点一条就跳过去。喜欢存在 `xv-favs`。**都只在这个浏览器里**，换设备看不到。
-- **视频池从哪来**：webhook 收到视频频道的新视频帖马上登记（帖子说明拆成账号标签/作者、日期、文案）；机器人自己转进去的帖子
-  （发视频文件点「转到视频频道」）webhook 收不到，更早的帖子也是，所以有人打开网页时，离上次超过 30 分钟就请流式服务
-  `GET /videos` 把频道翻一遍（频道主账号翻，只读）：补上没登记的，去掉频道里删了的（只删比这次翻到的最新一条还旧的，
-  翻完以后才发的新帖不会被误删；没翻完、给不了列表都不删）。对不成（流式服务在休眠）两分钟后再试。
-  第一次打开时视频池还是空的，网页会显示「正在从频道取视频」，等对完自己开始放。
-- **播放**：和音乐一样，20 MB 以内走 Bot API，更大的（抖音最高画质大多超过 20 MB）走流式服务 `/vstream/<消息号>`，
-  机器人身份按消息号边取边传。流式服务在休眠时网页提示「正在唤醒」并自己重试；流式服务明确说这条没了
-  （404 + `detail: gone`）才从视频池去掉，网页跳到下一条。Space 还是旧代码（没有 `/vstream`）时的 404 当作暂时取不到，不会误删。
-- **声音**：浏览器一般不让网页一打开就出声：先静音放，顶上提示「点一下打开声音」，点一下（或滑一下）以后都有声音。
-
 ## 部署流式服务
 
 流式服务跑在 Hugging Face Space **`langhua1998/douyin-proxy`** 上，地址
@@ -156,8 +127,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
      -F 'verify.js=@xiaoju-music/verify.js;type=application/javascript+module' \
      -F 'page.html=@xiaoju-music/page.html;type=text/plain' \
      -F 'admin.html=@xiaoju-music/admin.html;type=text/plain' \
-     -F 'douyin-login.html=@xiaoju-music/douyin-login.html;type=text/plain' \
-     -F 'video.html=@xiaoju-music/video.html;type=text/plain'
+     -F 'douyin-login.html=@xiaoju-music/douyin-login.html;type=text/plain'
    ```
 
    `page.html`、`admin.html` 以 `text/plain` 上传，就是 Workers 的文本模块，`worker.js` 里 `import` 进来当字符串用。
@@ -308,7 +278,7 @@ Docker Space 都要 PRO 订阅，已有的 Space 还能免费运行，所以复�
 - 大文件的播放依赖流式服务在线：Space 休眠时第一次播放要等它醒（约 1～2 分钟），重启时正在播的会中断后自动重试。
 - 频道里删掉的帖子不会自动从歌单消失，在管理页移除。
 - 查重：频道里新发的歌如果和已有的歌名、歌手一样、时长相差 3 秒以内，就不进歌单（帖子本身还在频道里）。
-- 收藏只存在当前浏览器里，不跨设备同步。刷视频网页的浏览记录、喜欢也是。iPhone 的 Safari 还会在连续 7 天（按用过 Safari 的天数算）没打开这个网站后
+- 收藏只存在当前浏览器里，不跨设备同步。iPhone 的 Safari 还会在连续 7 天（按用过 Safari 的天数算）没打开这个网站后
   清掉它存的数据，收藏也在内。
 - `workers.dev` 在中国大陆被屏蔽，不开 VPN 打不开；要给国内用户用，需要绑定自定义域名。
 - 音频不经 Cloudflare 缓存，每次都从 Telegram 现取，第一次播放首字节约 1～2 秒。
