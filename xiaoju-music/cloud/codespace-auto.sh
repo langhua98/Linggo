@@ -34,5 +34,20 @@ exec 9>"$HOME/.xiaoju/lock"
 flock -n 9 || { echo "== 已经在抓了 =="; exit 0; }
 echo "== 小橘：开始抓。要扫码的话去「桌面」那个标签页 =="
 bash "$HERE/crawl.sh"
-# 机器人里「搜抖音 关键词」排了队的话，接着搜（没有就不出声）
-XJ_QUIET_EMPTY=1 bash "$HERE/search.sh"
+# 抓完不退出，守着机器人里「搜抖音 关键词」的队列：云电脑开着的时候发了词，一会儿就自动搜，不用自己敲 search.sh。
+# 每 ${XJ_WATCH_EVERY:-20} 秒问一次小橘有没有排队的词；搜失败了（登录过期之类）等 10 分钟再试，别一直刷
+source "$HOME/.xiaoju/env"
+echo "== 作品抓完了。云电脑开着就一直等机器人里的「搜抖音」，发了词会自动开搜 =="
+while :; do
+  Q=$(curl -sS -m 20 -X POST -H "X-Token: $TOKEN" "$API/dy-cloud-config" 2>/dev/null \
+    | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin).get("searches") or []))' 2>/dev/null)
+  if [ -n "$Q" ]; then
+    if XJ_QUIET_EMPTY=1 bash "$HERE/search.sh"; then
+      echo "== 继续等机器人里的「搜抖音」 =="
+    else
+      echo "== 这次没搜成，10 分钟后自动再试（登录过期的话去「桌面」标签页扫码）=="
+      sleep 600
+    fi
+  fi
+  sleep "${XJ_WATCH_EVERY:-20}"
+done

@@ -24,7 +24,7 @@ fi
 if [ -n "${XJ_SEARCH_MODE:-}" ]; then
   KW="${XJ_SEARCH:-$QUEUE}"
   if [ -z "$KW" ]; then
-    [ -n "${XJ_QUIET_EMPTY:-}" ] || echo "== 没有要搜的词。在机器人里发「搜抖音 舞蹈」，或者 bash xiaoju-music/cloud/search.sh 舞蹈 =="
+    [ -n "${XJ_QUIET_EMPTY:-}" ] || echo "== 没有要搜的词。在机器人里发「搜抖音 舞蹈」，云电脑开着就会自动搜 =="
     exit 0
   fi
 else
@@ -301,7 +301,7 @@ if [ -n "${XJ_SEARCH_MODE:-}" ]; then
   for i in $(seq 10); do send 1 && { ok=1; break; }; sleep 30; done
   if [ -z "$ok" ]; then
     report failed
-    echo "== 清单没发成（上面有原因），过一会儿再运行一次 bash xiaoju-music/cloud/search.sh =="
+    echo "== 清单没发成（上面有原因），云电脑开着的话过一会儿会自动再搜一次 =="
     exit 1
   fi
   report done
