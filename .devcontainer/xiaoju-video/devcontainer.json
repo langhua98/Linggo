@@ -1,7 +1,8 @@
 {
-  "name": "小橘视频 · 云电脑",
-  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "name": "小橘视频 · 云电脑（MediaCrawler）",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
   "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" },
     "ghcr.io/devcontainers/features/desktop-lite:1": {}
   },
   "forwardPorts": [6080],

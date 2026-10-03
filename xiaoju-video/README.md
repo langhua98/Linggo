@@ -18,7 +18,7 @@
 | 小橘视频机器人 | `TG_BOT_TOKEN` | 频道主私聊：发分享链接、「进度」「云电脑」「重试失败」；它是视频频道管理员，频道新帖由它的 webhook 登记 |
 | 审核机器人 | @xiaojuverify_bot（`VERIFY_BOT_TOKEN`） | 每条作品转之前在这里点「通过 / 不转」；云电脑一次来很多条时可以「全部通过」 |
 | 流式服务 | `streamer/`（HF Space `langhua1998/douyin-proxy`，原小橘音乐的流式服务改建，`https://langhua1998-douyin-proxy.hf.space`） | 认分享链接、下载、ffmpeg、用频道主账号发帖；超过 20 MB 的视频按 Range 走 MTProto 现取现传。详见 `streamer/README.md` |
-| 云电脑 | `cloud/` + 仓库根的 `.devcontainer/xiaoju-video/` | Codespaces 里用真 Chromium 登录你自己的抖音，翻「我的作品」页，把作品送给 Worker |
+| 云电脑 | `cloud/`（MediaCrawler + `mc_sync.py`）+ 仓库根的 `.devcontainer/xiaoju-video/` | Codespaces 里用 MediaCrawler 扫码登录你自己的抖音，抓你主页的作品送给 Worker |
 
 ### 一条作品怎么走
 
@@ -74,7 +74,7 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 ```bash
 node xiaoju-video/test.mjs                                     # Worker（模拟 Durable Object、Telegram、流式服务）
 cd xiaoju-video/streamer && python -m pytest -q                # 流式服务
-cd xiaoju-video/cloud && python -m pytest -q                   # 云电脑脚本（不用浏览器的部分）
+cd xiaoju-video/cloud && python -m pytest -q                   # 云电脑脚本（不用浏览器、不用 MediaCrawler 的部分）
 ```
 
 重新部署 Worker（`keep_bindings` 保留线上的 secret；第一次部署要加 `"migrations":{"new_tag":"v1","new_sqlite_classes":["Library"]}`，之后不要带）：
@@ -104,9 +104,16 @@ done
 改了流式服务：把 `streamer/` 下的 `app.py`、`douyin.py`、`Dockerfile`、`requirements.txt`、`README.md`（顶部是 Space 配置）
 推到 Space `langhua1998/douyin-proxy`，它会自动重新构建。重新构建会打断正在转的作品，它起来后报到，Worker 会重交。
 
-## 云电脑
+## 云电脑（MediaCrawler）
 
-1. 在 GitHub 上用 `.devcontainer/xiaoju-video` 这个配置建 Codespace（建好会自动装 Playwright 和 Chromium）。
-2. 在小橘视频机器人里发「云电脑」，把它给的 `setup` 命令粘进终端。
-3. `bash xiaoju-video/cloud/run.sh login`，打开端口 6080 的网页桌面（密码 `vscode`），用抖音 App 扫码。
-4. `bash xiaoju-video/cloud/run.sh sync`，然后去 @xiaojuverify_bot 审核。以后有新作品再跑一次 sync，收过的会跳过。
+爬虫用的是 [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)（NON-COMMERCIAL LEARNING LICENSE 1.1，只能非商业使用），
+`run.sh install` 把它装进 Codespace 的 `~/.xiaoju-video/MediaCrawler`，固定在验证过的版本 `bf28178`，并改配置：不连本机 Chrome（CDP）、
+有界面（在网页桌面里扫码、看验证码）、不抓评论、保存登录状态。它在浏览器里登录、自己算接口签名，所以不受「海外 IP 打开分享页没有作品数据」的限制。
+
+1. 在 GitHub 上用 `.devcontainer/xiaoju-video` 这个配置建 Codespace（Python 3.11 + Node 20 + 网页桌面；建好会自动跑 `run.sh install`）。
+2. 在小橘视频机器人里发「云电脑」，把它给的命令粘进终端，末尾换成**你自己的**抖音主页链接（`https://www.douyin.com/user/MS4wLjABAAAA…`）。
+3. `bash xiaoju-video/cloud/run.sh sync`：MediaCrawler 的 creator 模式只抓这一个主页的作品（不搜关键词、不抓评论），
+   第一次要在端口 6080 的网页桌面（密码 `vscode`）里 60 秒内扫码。抓完 `mc_sync.py` 读 jsonl，问 Worker 哪些收过，新的送过去，再去 @xiaojuverify_bot 审核。
+4. `bash xiaoju-video/cloud/run.sh link <链接>...`：只抓这几条（detail 模式），用于你自己的或有授权的作品。
+
+抓到的视频地址几个小时后过期：审核拖太久，流式服务下载会失败，满 3 次记成失败；再跑一次 sync，失败的会带着新地址重新待审核。

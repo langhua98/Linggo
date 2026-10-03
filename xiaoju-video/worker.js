@@ -318,11 +318,11 @@ async function cloudInfo(env, chat, origin) {
   await lib(env).setConfig('cloudToken', token);
   await say(env, chat, `云电脑的新上传令牌已生成（旧的作废了）。在云电脑（GitHub Codespaces，配置是 .devcontainer/xiaoju-video）的终端里粘贴：
 
-bash xiaoju-video/cloud/run.sh setup ${origin} ${token}
+bash xiaoju-video/cloud/run.sh setup ${origin} ${token} <你自己的抖音主页链接>
 
-然后：
-1. bash xiaoju-video/cloud/run.sh login —— 打开端口 6080 的网页桌面（密码 vscode），用抖音 App 扫码登录你自己的账号
-2. bash xiaoju-video/cloud/run.sh sync —— 抓你账号的全部作品，新的交给审核机器人
+主页链接形如 https://www.douyin.com/user/MS4wLjABAAAA…（抖音网页版点自己头像，复制地址栏）。然后：
+bash xiaoju-video/cloud/run.sh sync —— 用 MediaCrawler 抓你主页的全部作品，新的交给审核机器人。
+第一次会要求扫码：打开端口 6080 的网页桌面（密码 vscode），60 秒内用抖音 App 扫浏览器里的二维码。
 
 令牌只发这一次，别给别人。`);
 }
