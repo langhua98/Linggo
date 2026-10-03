@@ -111,6 +111,8 @@ done
 有界面（在网页桌面里扫码、看验证码）、不抓评论、保存登录状态。它在浏览器里登录、自己算接口签名，所以不受「海外 IP 打开分享页没有作品数据」的限制。
 
 1. 在 GitHub 上用 `.devcontainer/xiaoju-video` 这个配置建 Codespace（Python 3.11 + Node 20 + 网页桌面；建好会自动跑 `run.sh install`）。
+   一键链接：https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json
+   只想先登录抖音：`bash xiaoju-video/cloud/run.sh login`，在端口 6080 的网页桌面里扫码（最多等 10 分钟），登录状态存进 MediaCrawler 的浏览器档案。
 2. 在小橘视频机器人里发「云电脑」，把它给的命令粘进终端，末尾换成**你自己的**抖音主页链接（`https://www.douyin.com/user/MS4wLjABAAAA…`）。
 3. `bash xiaoju-video/cloud/run.sh sync`：MediaCrawler 的 creator 模式只抓这一个主页的作品（不搜关键词、不抓评论），
    第一次要在端口 6080 的网页桌面（密码 `vscode`）里 60 秒内扫码。抓完 `mc_sync.py` 读 jsonl，问 Worker 哪些收过，新的送过去，再去 @xiaojuverify_bot 审核。

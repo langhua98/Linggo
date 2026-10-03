@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 小橘视频 · 云电脑入口（MediaCrawler）。在 Codespaces（.devcontainer/xiaoju-video）的终端里：
 #   bash xiaoju-video/cloud/run.sh install                                  装 MediaCrawler、uv、Chromium（建 Codespace 时自动跑过）
+#   bash xiaoju-video/cloud/run.sh login                                    只登录抖音（网页桌面里扫码），登录状态存进 MediaCrawler 的浏览器档案
 #   bash xiaoju-video/cloud/run.sh setup <Worker 地址> <令牌> <你的抖音主页链接>   令牌在小橘视频机器人里发「云电脑」拿
 #   bash xiaoju-video/cloud/run.sh sync                                     抓你主页的全部作品，新的送 Worker
 #   bash xiaoju-video/cloud/run.sh link <链接>...                            只抓这几条（你自己的或有授权的）
@@ -35,4 +36,5 @@ if [ "$cmd" = install ]; then install; exit 0; fi
 [ -d "$MC/.venv" ] || install
 # 网页桌面（desktop-lite）的显示器是 :1
 if [ -z "${DISPLAY:-}" ] && [ -S /tmp/.X11-unix/X1 ]; then export DISPLAY=:1; fi
+if [ "$cmd" = login ]; then cd "$MC" && exec uv run python "$HERE/login.py"; fi
 exec python3 "$HERE/mc_sync.py" "$@"
