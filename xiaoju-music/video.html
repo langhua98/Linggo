@@ -748,7 +748,7 @@ function hideTip() {
   store.set('xv-tip', 1);
 }
 
-// ── 切到后台暂停，回来接着放；隔了十分钟以上回来就顺便更新一下视频池 ──
+// ── 切到后台暂停，回来接着放；隔了一分钟以上回来就顺便更新一下视频池 ──
 let resumeOnShow = false;
 document.addEventListener('visibilitychange', () => {
   const s = current();
@@ -756,9 +756,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) { resumeOnShow = !s.v.paused; s.v.pause(); }
   else {
     if (resumeOnShow) play(s);
-    if (Date.now() - poolAt > 10 * 60 * 1000) loadPool(false);
+    if (Date.now() - poolAt > POOL_REFRESH_MS) loadPool(false);
   }
 });
+// 开着网页时每分钟更新一次视频池：新转进频道的视频不用刷新网页就能刷到
+const POOL_REFRESH_MS = 60 * 1000;
+setInterval(() => { if (!document.hidden) loadPool(false); }, POOL_REFRESH_MS);
 window.addEventListener('hashchange', () => {
   const id = Number(location.hash.slice(1));
   if (id && current() && current().id !== id) jumpToId(id);
