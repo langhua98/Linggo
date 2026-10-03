@@ -14,6 +14,10 @@
 //   GET  /c/<消息号>        封面：音乐文件自带的缩略图；没有就从频道的图片帖里随机挑一张，挑定后存进数据库
 //   GET  /l/<消息号>        歌词 JSON：先看数据库；没有就去 LRCLIB、网易云找，找到（或确定没有）就存起来
 //   POST /tg-webhook       Telegram 推送频道新帖，音频自动登记；回复某首歌发的 .lrc 文件就是这首的歌词
+//   GET  /video            刷视频网页（video.html）：随机刷视频频道「小橘视频」里的视频，上滑下一条、下滑回上一条
+//   GET  /api/videos       视频池 JSON（新的在前）；离上次和频道对一遍超过 30 分钟，就在后台再对一遍
+//   GET  /vf/<消息号>       视频流，支持 Range（20 MB 以内走 Bot API，更大的走流式服务）
+//   GET  /vp/<消息号>       视频封面（缩略图），取一次就存起来
 //   GET  /admin            管理页（admin.html，管理密钥登录）：把频道里已删掉的帖子从歌单移除
 //   *    /admin/api/...    管理接口（Authorization: Bearer <ADMIN_KEY>）
 //
@@ -29,6 +33,7 @@ import { DurableObject } from 'cloudflare:workers';
 import PAGE from './page.html';
 import ADMIN_PAGE from './admin.html';
 import DOUYIN_LOGIN_PAGE from './douyin-login.html';
+import VIDEO_PAGE from './video.html';
 import * as V from './verify.js';
 
 const TG = 'https://api.telegram.org';
@@ -48,6 +53,12 @@ const VIZ_WAIT_MS = 90 * 1000;
 const COVER_LIMIT = 512 * 1024;
 // 同一张图被这么多首歌当封面，就当它是别的频道的台标
 const LOGO_MIN_SONGS = 8;
+// 刷视频网页：有人打开网页时，离上次和视频频道对一遍（补上 webhook 收不到的、去掉删了的）超过这么久就再对一遍
+const VIDEO_SYNC_MS = 30 * 60 * 1000;
+// 对不成（流式服务在休眠之类）过这么久再试
+const VIDEO_SYNC_RETRY_MS = 2 * 60 * 1000;
+// 翻一遍视频频道最多等多久（几千条视频要翻几十页）
+const VIDEO_SYNC_WAIT_MS = 120 * 1000;
 
 // 歌词：LRCLIB 是公开的歌词库（本来就给播放器用）；网易云用的是它网页版的接口，不是公开 API，随时可能变
 const LRCLIB = 'https://lrclib.net/api/search';
@@ -78,6 +89,8 @@ const MIME_BY_EXT = {
 const filePaths = new Map(); // file_id -> { path, exp }
 const recCache = new Map();  // 消息号 -> { rec, exp }
 let listCache = null;        // { body, exp }
+const videoRecCache = new Map(); // 视频频道的消息号 -> { rec, exp }
+let videoListCache = null;       // { body, exp }
 
 class HttpError extends Error {
   constructor(status, message, headers) {
@@ -123,6 +136,12 @@ export default {
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
       if (path === '/') return html(PAGE, method);
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
+      if (path === '/video') return html(VIDEO_PAGE, method);
+      if (path === '/api/videos') return await videoList(env, ctx);
+      const vf = path.match(/^\/vf\/(\d{1,10})(?:\.mp4)?$/);
+      if (vf) return await videoFile(request, env, Number(vf[1]));
+      const vp = path.match(/^\/vp\/(\d{1,10})$/);
+      if (vp) return await videoPoster(env, Number(vp[1]));
       if (path === '/douyin-login') return html(DOUYIN_LOGIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
       const dl = path.match(/^\/dl\/([\w-]{20,64})\/(start|status|qr|shot)$/);
       if (dl) return await douyinLoginApi(env, dl[1], dl[2]);
@@ -169,6 +188,14 @@ async function webhook(request, env, ctx) {
     return text('ok');
   }
   const post = update && (update.channel_post || update.edited_channel_post);
+  // 视频频道「小橘视频」的视频帖：登记进刷视频网页的视频池（不进歌单）。编辑后不再是视频的从池里去掉
+  if (post && Number.isInteger(post.message_id) && env.VIDEO_CHANNEL_ID && String(post.chat && post.chat.id) === String(env.VIDEO_CHANNEL_ID)) {
+    const v = toVideo(post);
+    if (v) await lib(env).upsertVideo(v);
+    else if (update.edited_channel_post) await lib(env).removeVideo(post.message_id);
+    forgetVideo(post.message_id);
+    return text('ok');
+  }
   // 只收自己频道的帖子；别的群、私聊一律忽略，但仍回 200，免得 Telegram 反复重发
   if (!post || !Number.isInteger(post.message_id) || String(post.chat && post.chat.id) !== String(env.CHANNEL_ID)) {
     return text('ok');
@@ -233,6 +260,26 @@ function toRecord(post) {
   };
 }
 
+// 视频频道的一条帖子 → 视频池里的一条记录；不是视频 → null。file_id、缩略图只在服务端用
+function toVideo(post) {
+  const d = post.document;
+  const f = post.video || (d && /^video\//.test(d.mime_type || '') ? d : null);
+  if (!f || !f.file_id) return null;
+  return {
+    id: post.message_id,
+    file_id: f.file_id,
+    file_unique_id: f.file_unique_id || '',
+    thumb: (f.thumbnail || f.thumb || {}).file_id || '',
+    mime: /^video\//.test(f.mime_type || '') ? f.mime_type : 'video/mp4',
+    size: f.file_size || 0,
+    duration: f.duration || 0,
+    w: f.width || 0,
+    h: f.height || 0,
+    date: post.date || 0,
+    caption: (post.caption || '').trim(),
+  };
+}
+
 // 边长不超过 800 的最大一档；都超过就取最小的
 function pickPhotoSize(sizes) {
   const area = s => (s.width || 0) * (s.height || 0);
@@ -264,6 +311,12 @@ async function adminApi(request, env, url) {
   if (!env.ADMIN_KEY || !sameString(key, env.ADMIN_KEY)) return json({ error: '管理密钥不对' }, 401);
 
   const action = url.pathname.slice('/admin/api/'.length);
+  // 刷视频网页的视频池：GET 看有多少条、上次什么时候和频道对过；POST 马上对一遍
+  if (action === 'videos') {
+    if (request.method === 'POST') return json(await syncVideos(env));
+    const L = lib(env);
+    return json({ total: (await L.listVideos()).length, syncedAt: Number(await L.getConfig('vSyncOk')) || 0 });
+  }
   if (action === 'state' && request.method === 'GET') {
     return json({ channel: env.CHANNEL_USERNAME || '', streamer: streamerOn(env), tracks: await tracksFor(env), playlists: await lib(env).listPlaylists() });
   }
@@ -750,6 +803,192 @@ function decodeText(bytes) {
   }
 }
 
+// ── 刷视频网页：视频池、视频流、封面 ───────────────────────────────────
+// 视频池是视频频道「小橘视频」里的视频帖：webhook 收到新帖马上登记；机器人自己转过去的帖子（发视频文件点「转到视频频道」）
+// webhook 收不到，更早的帖子也是，所以有人打开网页时，离上次超过 30 分钟就请流式服务把频道翻一遍（GET /videos），
+// 补上没登记的、去掉频道里删了的。播放时流式服务说这条没了（404 gone），也马上去掉
+
+async function videoList(env, ctx) {
+  const L = lib(env), now = Date.now();
+  // 该和频道对一遍了：在后台对（「该不该对、记下开始对了」在 Durable Object 里一步做完，同时打开的人不会各对一遍）
+  if (streamerOn(env) && env.VIDEO_CHANNEL_ID && (await L.claimVideoSync(now, VIDEO_SYNC_MS))) {
+    const sync = syncVideos(env, now).catch(() => {});
+    if (ctx && ctx.waitUntil) ctx.waitUntil(sync); else await sync;
+    videoListCache = null;
+  }
+  if (!videoListCache || videoListCache.exp < now) {
+    const at = Number(await L.getConfig('vSyncAt')) || 0;
+    // 正在对（第一次打开时视频池还是空的）：网页看到 syncing 就过几秒再来要；上次没对成，error 是原因
+    const syncing = Date.now() - at < VIDEO_SYNC_WAIT_MS && !(Number(await L.getConfig('vSyncOk')) >= at);
+    const error = (await L.getConfig('vSyncErr')) || '';
+    videoListCache = { body: JSON.stringify({ videos: await L.listVideos(), syncing, error }), exp: now + LIST_TTL_MS };
+  }
+  return new Response(videoListCache.body, {
+    headers: cors({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }),
+  });
+}
+
+// started：videoList 已经记下的开始时间；管理接口手动对的时候不带
+async function syncVideos(env, started) {
+  if (!streamerOn(env) || !env.VIDEO_CHANNEL_ID) return { ok: false, why: '没配置视频频道或流式服务' };
+  const L = lib(env);
+  if (!started) await L.setConfig('vSyncAt', String((started = Date.now())));
+  const fail = async why => {
+    await L.setConfig('vSyncAt', String(started - VIDEO_SYNC_MS + VIDEO_SYNC_RETRY_MS)); // 过两分钟再试
+    await L.setConfig('vSyncErr', why);
+    videoListCache = null;
+    return { ok: false, why };
+  };
+  let res;
+  try {
+    res = await fetch(`${streamerBase(env)}/videos?target=${encodeURIComponent(env.VIDEO_CHANNEL_ID)}`, {
+      headers: { 'X-Key': env.STREAMER_KEY },
+      signal: AbortSignal.timeout(VIDEO_SYNC_WAIT_MS),
+    });
+  } catch {
+    return fail('流式服务没连上（可能在休眠，过两分钟再试）');
+  }
+  const j = res.ok ? await res.json().catch(() => null) : null;
+  if (!j || !Array.isArray(j.videos)) {
+    if (!res.bodyUsed && res.body) await res.body.cancel();
+    return fail(`流式服务没给视频列表（${res.status}）`);
+  }
+  const list = j.videos.map(scannedVideo).filter(Boolean);
+  const r = await L.syncVideos(list, j.complete !== false);
+  await L.setConfig('vSyncOk', String(Date.now()));
+  await L.setConfig('vSyncErr', '');
+  videoRecCache.clear();
+  videoListCache = null;
+  return { ok: true, ...r };
+}
+
+// 流式服务翻出来的一行（MTProto 没有 Bot API 的 file_id，Library 会沿用 webhook 记下的）
+function scannedVideo(v) {
+  if (!v || !Number.isInteger(v.id) || v.id <= 0) return null;
+  const int = x => (Number.isFinite(x) && x > 0 ? Math.round(x) : 0);
+  return {
+    id: v.id, file_id: '', file_unique_id: '', thumb: '',
+    mime: /^video\/[\w.+-]+$/.test(v.mime || '') ? v.mime : 'video/mp4',
+    size: int(v.size), duration: int(v.duration), w: int(v.w), h: int(v.h), date: int(v.date),
+    caption: String(v.text || '').trim(),
+  };
+}
+
+// 抖音转来的帖子说明是「文案\n\n📹 抖音 #账号标签 · 2026-09-30\n原视频链接」（没标签的是 @作者），
+// 拆成文案、账号、日期给网页；别的视频（频道主自己发的）整段当文案
+function videoCaption(caption) {
+  const lines = String(caption || '').split('\n');
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 3); i--) {
+    const m = /^(?:📹|🖼) 抖音(?: [#@](.+?))?(?: · (\d{4}-\d{2}-\d{2}))?$/.exec(lines[i].trim());
+    if (m) return { by: (m[1] || '').trim(), day: m[2] || '', text: lines.slice(0, i).join('\n').trim() };
+  }
+  return { by: '', day: '', text: String(caption || '').trim() };
+}
+
+// 网页上的一条：id、秒数、宽高、日期、账号、文案。file_id 不给出去
+function videoSummary(v) {
+  const c = videoCaption(v.caption);
+  const day = c.day || (v.date ? new Date((v.date + 8 * 3600) * 1000).toISOString().slice(0, 10) : '');
+  return { id: v.id, d: v.duration || 0, w: v.w || 0, h: v.h || 0, day, by: c.by, text: c.text.slice(0, 300) };
+}
+
+async function getVideoRec(env, id) {
+  const hit = videoRecCache.get(id);
+  if (hit && hit.exp > Date.now()) return hit.rec;
+  const rec = await lib(env).getVideo(id);
+  if (videoRecCache.size > 500) videoRecCache.clear();
+  videoRecCache.set(id, { rec, exp: Date.now() + REC_TTL_MS });
+  return rec;
+}
+
+function forgetVideo(id) {
+  videoRecCache.delete(id);
+  videoListCache = null;
+}
+
+async function videoFile(request, env, id) {
+  const rec = await getVideoRec(env, id);
+  if (!rec) throw new HttpError(404, '没有这个视频');
+  const viaBot = !!rec.file_id && rec.size > 0 && rec.size <= BOT_DOWNLOAD_LIMIT;
+  if (!viaBot && !streamerOn(env)) throw new HttpError(503, '这个视频超过 20 MB，暂时不能在网页播放');
+  const headers = cors({ 'Content-Type': rec.mime || 'video/mp4', 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400' });
+  if (request.method === 'HEAD') {
+    if (rec.size) headers['Content-Length'] = String(rec.size);
+    return new Response(null, { headers });
+  }
+  if (!rec.size) {
+    if (rec.file_id) return await passthrough(request, env, rec, headers);
+    throw new HttpError(502, MSG.unavailable);
+  }
+  const range = parseRange(request.headers.get('Range'), rec.size);
+  if (!range) {
+    return new Response(null, { status: 416, headers: { ...headers, 'Content-Range': `bytes */${rec.size}`, 'Cache-Control': 'no-store' } });
+  }
+  headers['Content-Length'] = String(range.end - range.start + 1);
+  if (range.partial) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${rec.size}`;
+  const viaStreamer = () => fromStreamer(env, rec, range, `/vstream/${rec.id}?target=${encodeURIComponent(env.VIDEO_CHANNEL_ID)}`);
+  let res;
+  try {
+    // Bot API 取不到（file_id 失效之类）就改走流式服务
+    res = viaBot ? await fromBotApi(env, rec, range).catch(e => (streamerOn(env) ? viaStreamer() : Promise.reject(e))) : await viaStreamer();
+  } catch (e) {
+    // 流式服务明确说频道里没这条了：从视频池去掉，网页跳过它
+    if (e instanceof HttpError && e.gone) {
+      await lib(env).removeVideo(id);
+      forgetVideo(id);
+      throw new HttpError(404, '频道里找不到这个视频了');
+    }
+    // 别的 404（Space 还是旧代码、没有 /vstream）不能让网页当成视频没了：当作暂时取不到，网页会重试
+    if (e instanceof HttpError && e.status === 404) throw new HttpError(502, MSG.unavailable);
+    throw e;
+  }
+  return new Response(res.body, { status: range.partial ? 206 : 200, headers });
+}
+
+// 视频封面：转视频时 ffmpeg 截的第一秒（长边 320）。取一次就存进数据库
+async function videoPoster(env, id) {
+  const L = lib(env);
+  let c = await L.getVideoThumb(id);
+  if (!c) {
+    const rec = await getVideoRec(env, id);
+    if (!rec) throw new HttpError(404, '没有这个视频');
+    const got = await fetchVideoThumb(env, rec);
+    if (!got) throw new HttpError(503, '封面暂时取不到', { 'Retry-After': '60' });
+    c = got === 'none' ? { none: true } : { mime: got.mime, b64: toBase64(got.data) };
+    await L.putVideoThumb(id, c.none ? 'none' : c.mime, c.none ? '' : c.b64);
+  }
+  if (c.none) throw new HttpError(404, '这个视频没有封面', { 'Cache-Control': 'public, max-age=86400' });
+  return new Response(fromBase64(c.b64), {
+    headers: cors({ 'Content-Type': c.mime, 'Cache-Control': 'public, max-age=604800' }),
+  });
+}
+
+// 有 Bot API 的缩略图 file_id 先用它；没有（或取不到）请流式服务取。确定没有 → 'none'，暂时取不到 → null
+async function fetchVideoThumb(env, rec) {
+  if (rec.thumb) {
+    try {
+      const img = await imageFrom(await fetchFile(env, rec.thumb, null), 'image/jpeg');
+      if (img) return img;
+    } catch {
+      // file_id 失效之类：下面改请流式服务取
+    }
+  }
+  if (!streamerOn(env)) return rec.thumb ? null : 'none';
+  try {
+    const res = await fetch(`${streamerBase(env)}/vthumb/${rec.id}?target=${encodeURIComponent(env.VIDEO_CHANNEL_ID)}`, {
+      headers: { 'X-Key': env.STREAMER_KEY },
+      signal: AbortSignal.timeout(STREAMER_WAIT_MS),
+    });
+    if (res.status === 404) {
+      const j = await res.json().catch(() => null);
+      return j && (j.detail === 'no thumb' || j.detail === 'gone') ? 'none' : null; // 别的 404（旧版流式服务没这个接口）不算
+    }
+    return await imageFrom(res, null);
+  } catch {
+    return null;
+  }
+}
+
 // ── 音频流 ───────────────────────────────────────────────────────
 
 async function audio(request, env, id, download) {
@@ -817,7 +1056,7 @@ async function fromBotApi(env, rec, range) {
   return res;
 }
 
-async function fromStreamer(env, rec, range) {
+async function fromStreamer(env, rec, range, path = `/stream/${rec.id}`) {
   const want = upstreamRange(rec, range);
   const headers = { 'X-Key': env.STREAMER_KEY };
   if (want) headers.Range = want;
@@ -826,15 +1065,20 @@ async function fromStreamer(env, rec, range) {
   const timer = setTimeout(() => abort.abort(), STREAMER_WAIT_MS);
   let res;
   try {
-    res = await fetch(`${streamerBase(env)}/stream/${rec.id}`, { headers, signal: abort.signal });
+    res = await fetch(`${streamerBase(env)}${path}`, { headers, signal: abort.signal });
   } catch {
     throw waking();
   } finally {
     clearTimeout(timer);
   }
   if (bodyMatches(res, want, range, true)) return res;
+  if (res.status === 404) {
+    const j = await res.json().catch(() => null);
+    const e = new HttpError(404, MSG.gone);
+    e.gone = !!j && j.detail === 'gone'; // 流式服务自己说的「频道里没这条」；Space 没有这个接口的 404 不算
+    throw e;
+  }
   if (res.body) res.body.cancel();
-  if (res.status === 404) throw new HttpError(404, MSG.gone);
   // 5xx 或者一张网页（Hugging Face 的「正在启动」页）：服务还没醒
   if (res.status >= 500 || (res.headers.get('Content-Type') || '').includes('text/html')) throw waking();
   throw new HttpError(502, MSG.unavailable);
@@ -915,10 +1159,10 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE TABLE IF NOT EXISTS viz (id INTEGER PRIMARY KEY, data TEXT NOT NULL)');
       // 听众求歌的记录（限次用）
       this.sql.exec('CREATE TABLE IF NOT EXISTS asks (uid INTEGER NOT NULL, at INTEGER NOT NULL)');
-      // 试过的刷视频网页已经撤下：它存的视频池和封面不留
-      this.sql.exec('DROP TABLE IF EXISTS videos');
-      this.sql.exec('DROP TABLE IF EXISTS video_thumbs');
-      this.sql.exec("DELETE FROM config WHERE k IN ('vSyncAt', 'vSyncOk', 'vSyncErr')");
+      // 刷视频网页的视频池：视频频道「小橘视频」里的视频帖，rec 是完整记录（含 Bot API 的 file_id）
+      this.sql.exec('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, updated INTEGER NOT NULL)');
+      // 视频封面（base64；mime 为 'none' 表示确定没有）
+      this.sql.exec('CREATE TABLE IF NOT EXISTS video_thumbs (id INTEGER PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)');
       this.dropSplitterLeftovers();
       const coversV = this.cfg('coversV');
       // 以前没封面的歌记成了「没有」；现在改用频道图片，清掉这些记号让它们重新配图
@@ -1023,6 +1267,70 @@ export class Library extends DurableObject {
     this.sql.exec('DELETE FROM covers WHERE id = ?', id);
     this.sql.exec('DELETE FROM lyrics WHERE id = ?', id);
     this.sql.exec('DELETE FROM viz WHERE id = ?', id);
+  }
+
+  // ── 视频池 ──
+  async listVideos() {
+    return this.sql.exec('SELECT rec FROM videos ORDER BY id DESC').toArray().map(r => videoSummary(JSON.parse(r.rec)));
+  }
+
+  async getVideo(id) {
+    const r = this.sql.exec('SELECT rec FROM videos WHERE id = ?', id).toArray()[0];
+    return r ? JSON.parse(r.rec) : null;
+  }
+
+  // 返回是不是第一次登记。流式服务翻出来的记录没有 Bot API 的 file_id、缩略图：沿用 webhook 记下的（文件没换的话）
+  async upsertVideo(rec) {
+    const old = await this.getVideo(rec.id);
+    let v = rec;
+    if (old) {
+      const sameFile = rec.file_unique_id && old.file_unique_id ? rec.file_unique_id === old.file_unique_id : !rec.size || !old.size || rec.size === old.size;
+      if (!sameFile) this.sql.exec('DELETE FROM video_thumbs WHERE id = ?', rec.id);
+      if (!rec.file_id && sameFile) v = { ...rec, file_id: old.file_id || '', file_unique_id: old.file_unique_id || '', thumb: old.thumb || '' };
+    }
+    this.sql.exec(`INSERT INTO videos (id, rec, updated) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, updated = excluded.updated`, rec.id, JSON.stringify(v), Date.now());
+    return !old;
+  }
+
+  async removeVideo(id) {
+    this.sql.exec('DELETE FROM videos WHERE id = ?', id);
+    this.sql.exec('DELETE FROM video_thumbs WHERE id = ?', id);
+  }
+
+  // 和频道对一遍：list 是频道里现在的视频（新的在前）。complete（翻完了）时，比 list 里最新那条还旧、又不在 list 里的，
+  // 是频道里删掉的，从视频池去掉；比它新的是翻完以后才发的帖子（webhook 登记的），不动
+  async syncVideos(list, complete) {
+    let added = 0, removed = 0;
+    for (const rec of list) if (await this.upsertVideo(rec)) added++;
+    if (complete && list.length) {
+      const keep = new Set(list.map(r => r.id)), top = Math.max(...keep);
+      for (const r of this.sql.exec('SELECT id FROM videos WHERE id <= ?', top).toArray()) {
+        if (!keep.has(r.id)) { await this.removeVideo(r.id); removed++; }
+      }
+    }
+    const total = this.sql.exec('SELECT COUNT(*) AS n FROM videos').toArray()[0].n;
+    return { added, removed, total };
+  }
+
+  async getVideoThumb(id) {
+    const r = this.sql.exec('SELECT mime, data FROM video_thumbs WHERE id = ?', id).toArray()[0];
+    if (!r) return null;
+    return r.mime === 'none' ? { none: true } : { mime: r.mime, b64: r.data };
+  }
+
+  // 离上次开始对超过 every 毫秒：记下现在开始对，返回 true；否则 false（中间没有 await，不会两个请求都拿到 true）
+  async claimVideoSync(now, every) {
+    if (now - (Number(this.cfg('vSyncAt')) || 0) < every) return false;
+    this.setCfg('vSyncAt', String(now));
+    return true;
+  }
+
+  async putVideoThumb(id, mime, data) {
+    // 视频还在池里才存（取封面的时候帖子可能刚被删）
+    if (!this.sql.exec('SELECT 1 FROM videos WHERE id = ?', id).toArray().length) return;
+    this.sql.exec(`INSERT INTO video_thumbs (id, mime, data) VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET mime = excluded.mime, data = excluded.data`, id, mime, data);
   }
 
   // 贴网址搬运的设置：开着的网站、接受的授权、每次最多几首、放进哪个歌单（空 = 按类型分）
@@ -1264,6 +1572,7 @@ const HELP = `我是小橘音乐的管理助手 🍊 常用的点下面的按钮
 添加抖音账号 主页分享链接 —— 再加一个你自己的号（小号），转作品、自动同步都会带上它
 账号标签 —— 每个号在频道里的标签（点标签只看这个号）；「账号标签 2 小美」给第 2 个号改名
 抖音自动同步 开 / 关 —— 每 30 分钟看一次你的抖音公开主页，有新作品自动转进频道
+刷视频网页：https://xiaoju-music.langhua98.workers.dev/video —— 随机刷「小橘视频」里的视频（上滑下一条、下滑回上一条），有链接的人都能看
 抖音视频的分享链接 —— 把这条转进视频频道
 抖音主页的分享链接 —— 把这个号作品的链接整理给你
 发一个视频文件 —— 点按钮转进视频频道

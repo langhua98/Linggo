@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>小橘视频</title>
+<meta name="theme-color" content="#000000">
+<meta name="description" content="随机刷「小橘视频」里的视频：上滑下一条，下滑回上一条">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23fb923c'/%3E%3Cpath d='M25 19v26l21-13z' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+:root{
+  --fg:#fff;--muted:rgba(255,255,255,.78);--faint:rgba(255,255,255,.5);--accent:#fb923c;--love:#f43f5e;
+  --glass:rgba(20,16,14,.62);--line:rgba(255,255,255,.12);
+  --top:env(safe-area-inset-top,0px);--bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:dark;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0;background:#000;overflow:hidden;overscroll-behavior:none}
+body{color:var(--fg);font:15px/1.45 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;-webkit-user-select:none;user-select:none}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+svg{display:block}
+
+/* 三张一模一样的「卡片」轮流用：上一条在上面、正在看的在中间、下一条在下面 */
+#feed{position:fixed;inset:0;overflow:hidden;touch-action:none;background:#000}
+.slide{position:absolute;inset:0;overflow:hidden;will-change:transform;background:#000}
+.bg{position:absolute;inset:-12%;background:center/cover no-repeat;filter:blur(28px) brightness(.45) saturate(1.3);transform:translateZ(0)}
+.slide video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:transparent}
+.slide.blank{background:#000}
+.slide.blank>*{display:none}
+
+/* 文字、按钮、进度条放在中间一栏（电脑上是手机那么宽，手机上就是整屏） */
+.ui{position:absolute;inset:0;margin:0 auto;max-width:max(480px,calc(56.25vh + 160px));pointer-events:none}
+.ui>*{pointer-events:auto}
+.shade{position:absolute;left:0;right:0;bottom:0;height:45%;background:linear-gradient(transparent,rgba(0,0,0,.55));pointer-events:none}
+.meta{position:absolute;left:16px;right:84px;bottom:calc(var(--bottom) + 26px);text-shadow:0 1px 3px rgba(0,0,0,.55)}
+.by{font-size:17px;font-weight:700;letter-spacing:.2px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.day{margin-left:8px;font-size:13px;font-weight:400;color:var(--faint)}
+.day.solo{margin-left:0}
+.txt{margin-top:6px;font-size:15px;line-height:1.5;color:var(--muted);white-space:pre-line;word-break:break-word;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.txt.open{display:block;max-height:40vh;overflow-y:auto;-webkit-line-clamp:unset;touch-action:pan-y}
+.txt:empty{display:none}
+
+.side{position:absolute;right:8px;bottom:calc(var(--bottom) + 120px);display:flex;flex-direction:column;align-items:center;gap:20px}
+.act{display:flex;flex-direction:column;align-items:center;gap:4px;width:64px;font-size:12px;color:var(--muted);text-shadow:0 1px 3px rgba(0,0,0,.6)}
+.act svg{width:34px;height:34px;filter:drop-shadow(0 1px 3px rgba(0,0,0,.45));transition:transform .15s}
+.act:active svg{transform:scale(.86)}
+.act.like.on svg{color:var(--love)}
+.act.like.on svg path{fill:currentColor;stroke:currentColor}
+.act.like.pop svg{animation:pop .35s ease}
+@keyframes pop{40%{transform:scale(1.3)}}
+
+/* 进度条：平时一根细线，按住拖的时候变粗、显示时间 */
+.bar{position:absolute;left:0;right:0;bottom:var(--bottom);height:22px;display:flex;align-items:flex-end;touch-action:none;cursor:pointer}
+.bar-track{position:relative;width:100%;height:2px;background:rgba(255,255,255,.18);transition:height .15s}
+.bar-fill{position:absolute;inset:0;background:rgba(255,255,255,.75);transform-origin:left;transform:scaleX(0)}
+.bar-knob{position:absolute;top:50%;left:0;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#fff;opacity:0;transition:opacity .15s}
+.bar-time{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);font-size:22px;font-weight:700;letter-spacing:1px;text-shadow:0 2px 8px rgba(0,0,0,.6);white-space:nowrap;opacity:0;transition:opacity .15s;pointer-events:none}
+.bar.seeking .bar-track,.slide.paused .bar-track{height:4px}
+.bar.seeking .bar-knob,.slide.paused .bar-knob{opacity:1}
+.bar.seeking .bar-time{opacity:1}
+.bar.seeking .bar-fill,.slide.paused .bar-fill{background:var(--accent)}
+.meta,.side{transition:opacity .15s}
+.slide.seeking .meta,.slide.seeking .side{opacity:0}
+
+/* 暂停的大三角、加载中的转圈、出错的提示 */
+.play-icon{position:absolute;left:50%;top:50%;width:72px;height:72px;margin:-36px 0 0 -36px;opacity:0;transform:scale(1.25);transition:opacity .15s,transform .15s;pointer-events:none;filter:drop-shadow(0 2px 10px rgba(0,0,0,.4))}
+.slide.paused .play-icon{opacity:.85;transform:none}
+.spin{position:absolute;left:50%;top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:3px solid rgba(255,255,255,.22);border-top-color:#fff;opacity:0;transition:opacity .2s;pointer-events:none}
+.slide.loading .spin{opacity:1;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.msg{position:absolute;left:50%;top:calc(50% + 34px);transform:translateX(-50%);width:min(84%,340px);text-align:center;font-size:14px;color:var(--muted);text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none}
+.msg:empty{display:none}
+
+/* 顶上：名字、声音、浏览记录 */
+#top{position:fixed;left:0;right:0;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;padding:calc(var(--top) + 10px) 12px 10px 16px;pointer-events:none;
+  background:linear-gradient(rgba(0,0,0,.42),transparent)}
+#top>*{pointer-events:auto}
+.brand{font-size:17px;font-weight:800;letter-spacing:.5px;text-shadow:0 1px 4px rgba(0,0,0,.5);color:inherit;text-decoration:none}
+.brand b{color:var(--accent)}
+.tools{display:flex;gap:4px}
+.tool{width:40px;height:40px;display:grid;place-items:center;border-radius:50%}
+.tool svg{width:24px;height:24px;filter:drop-shadow(0 1px 3px rgba(0,0,0,.5))}
+.tool:active{background:rgba(255,255,255,.12)}
+
+#unmute{position:fixed;z-index:6;left:50%;top:calc(var(--top) + 62px);transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:9px 16px;border-radius:999px;
+  background:var(--glass);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border:1px solid var(--line);font-size:14px;white-space:nowrap}
+#unmute svg{width:18px;height:18px}
+#toast{position:fixed;z-index:9;left:50%;top:42%;transform:translate(-50%,-50%);padding:10px 18px;border-radius:12px;background:var(--glass);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+  font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+#toast.show{opacity:1}
+.burst{position:fixed;z-index:8;width:96px;height:96px;margin:-48px 0 0 -48px;color:var(--love);pointer-events:none;animation:burst .8s ease-out forwards;filter:drop-shadow(0 4px 16px rgba(244,63,94,.45))}
+@keyframes burst{0%{transform:scale(.4) rotate(var(--r));opacity:0}15%{transform:scale(1.15) rotate(var(--r));opacity:1}30%{transform:scale(1) rotate(var(--r))}100%{transform:scale(1.5) translateY(-40px) rotate(var(--r));opacity:0}}
+
+/* 第一次来：提示上滑 */
+#tip{position:fixed;z-index:7;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(0,0,0,.45);font-size:16px;pointer-events:none;transition:opacity .4s}
+#tip svg{width:44px;height:44px;animation:nudge 1.2s ease-in-out infinite}
+@keyframes nudge{50%{transform:translateY(-14px)}}
+#tip small{color:var(--muted);font-size:13px}
+
+#empty{position:fixed;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:0 32px;text-align:center;color:var(--muted)}
+#empty .spin{position:static;margin:0;opacity:1;animation:spin .8s linear infinite}
+#empty.still .spin{display:none}
+
+/* 电脑：右边上一条/下一条按钮 */
+#arrows{position:fixed;z-index:5;right:18px;top:50%;transform:translateY(-50%);display:none;flex-direction:column;gap:12px}
+#arrows button{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:var(--glass);border:1px solid var(--line);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+#arrows button:hover{background:rgba(255,255,255,.16)}
+#arrows svg{width:22px;height:22px}
+@media (hover:hover) and (pointer:fine){#arrows{display:flex}}
+
+/* 浏览记录 / 我喜欢：从下面拉出来的面板 */
+#sheet{position:fixed;inset:0;z-index:10}
+.sheet-bg{position:absolute;inset:0;background:rgba(0,0,0,.5);animation:fade .2s}
+.sheet-panel{position:absolute;left:0;right:0;bottom:0;margin:0 auto;max-width:640px;height:min(72vh,720px);display:flex;flex-direction:column;border-radius:18px 18px 0 0;
+  background:#161210;border:1px solid var(--line);border-bottom:0;padding-bottom:var(--bottom);animation:rise .25s cubic-bezier(.2,.8,.2,1)}
+@keyframes fade{from{opacity:0}}
+@keyframes rise{from{transform:translateY(100%)}}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;padding:10px 10px 6px 16px}
+.tabs{display:flex;gap:4px}
+.tab{padding:8px 12px;border-radius:999px;font-size:15px;font-weight:600;color:var(--faint)}
+.tab.on{color:var(--fg);background:rgba(255,255,255,.08)}
+.sheet-close{width:40px;height:40px;display:grid;place-items:center;border-radius:50%;color:var(--muted)}
+.sheet-close svg{width:22px;height:22px}
+.grid{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:4px 12px 12px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;align-content:start}
+.cell{position:relative;aspect-ratio:3/4;border-radius:8px;overflow:hidden;background:#2a2320}
+.cell img{width:100%;height:100%;object-fit:cover;display:block}
+.cell .dur{position:absolute;right:6px;bottom:5px;font-size:12px;font-weight:600;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.cell .now{position:absolute;left:6px;top:6px;padding:1px 7px;border-radius:6px;background:var(--accent);color:#1c1917;font-size:11px;font-weight:700}
+.cell.cur{outline:2px solid var(--accent);outline-offset:-2px}
+.cell .by{position:absolute;left:6px;right:6px;bottom:5px;font-size:12px;font-weight:500;padding-right:36px;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.grid-empty{grid-column:1/-1;padding:48px 0;text-align:center;color:var(--faint)}
+.sheet-foot{padding:8px 16px 12px;text-align:center}
+.sheet-foot button{font-size:13px;color:var(--faint);padding:6px 10px}
+
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<main id="feed" aria-label="视频"></main>
+
+<header id="top">
+  <a class="brand" href="/video"><b>小橘</b>视频</a>
+  <div class="tools">
+    <button class="tool" id="sound" aria-label="声音"></button>
+    <button class="tool" id="openHist" aria-label="浏览记录">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+    </button>
+  </div>
+</header>
+
+<button id="unmute" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/></svg>点一下打开声音</button>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="empty" hidden><i class="spin"></i><p></p></div>
+<div id="tip" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 11 6-6 6 6"/><path d="M12 5v14"/></svg>
+  上滑看下一条<small>下滑回到上一条 · 双击喜欢 · 点一下暂停</small>
+</div>
+<nav id="arrows">
+  <button id="prevBtn" aria-label="上一条"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg></button>
+  <button id="nextBtn" aria-label="下一条"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+</nav>
+
+<div id="sheet" hidden>
+  <div class="sheet-bg"></div>
+  <div class="sheet-panel" role="dialog" aria-label="浏览记录和喜欢">
+    <div class="sheet-head">
+      <div class="tabs"><button class="tab on" data-tab="hist">浏览记录</button><button class="tab" data-tab="fav">我喜欢</button></div>
+      <button class="sheet-close" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="grid"></div>
+    <div class="sheet-foot"><button id="clearHist">清空浏览记录</button></div>
+  </div>
+</div>
+
+<template id="slideTpl">
+  <section class="slide">
+    <div class="bg"></div>
+    <video playsinline webkit-playsinline x5-playsinline x5-video-player-type="h5-page" loop preload="metadata" disablepictureinpicture disableremoteplayback></video>
+    <i class="spin"></i>
+    <svg class="play-icon" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="#fff"/></svg>
+    <p class="msg"></p>
+    <div class="shade"></div>
+    <div class="ui">
+      <div class="side">
+        <button class="act like" aria-label="喜欢"><svg viewBox="0 0 24 24"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.5 8.2 3.4 4.5 7 4.5c2.1 0 3.6 1.2 5 3 1.4-1.8 2.9-3 5-3 3.6 0 5.5 3.7 4.3 6.8-1.8 4.6-9.3 9.2-9.3 9.2z" fill="rgba(255,255,255,.92)" stroke="rgba(255,255,255,.92)" stroke-width="1.2" stroke-linejoin="round"/></svg><span>喜欢</span></button>
+        <button class="act rec" aria-label="浏览记录"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg><span>记录</span></button>
+        <button class="act share" aria-label="分享"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><span>分享</span></button>
+      </div>
+      <div class="meta"><div class="by"></div><div class="txt"></div></div>
+      <div class="bar"><div class="bar-track"><i class="bar-fill"></i><i class="bar-knob"></i></div><span class="bar-time"></span></div>
+    </div>
+  </section>
+</template>
+
+<script>
+'use strict';
+// 小橘视频：随机刷视频频道「小橘视频」里的视频。
+// 浏览记录（看过的视频，按顺序）存在这个浏览器里：下滑回上一条（记录不变），在记录里往回翻过的再上滑就按记录往前，
+// 翻到最新一条再上滑才从视频池里随机抽一条新的（最近看过的先不抽）。双击喜欢，喜欢的也只存在这个浏览器里。
+const $ = s => document.querySelector(s);
+const feed = $('#feed');
+const HIST_MAX = 300;
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const fmt = s => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+let pool = [], byId = new Map(), poolAt = 0;
+let hist = (store.get('xv-hist', []) || []).filter(Number.isInteger);
+let pos = Number.isInteger(store.get('xv-pos', -1)) ? store.get('xv-pos', -1) : -1;
+let favs = (store.get('xv-favs', []) || []).filter(Number.isInteger);
+let wantSound = store.get('xv-sound', true) !== false;
+let soundBlocked = false;   // 浏览器不让一打开就出声：先静音播，等用户点一下
+let upcoming = null;        // 记录走到头时，下一条预先抽好（好提前加载）
+let busy = false;           // 正在滑动画
+let slides = [];            // [上一条, 正在看, 下一条]
+
+function save() { store.set('xv-hist', hist); store.set('xv-pos', pos); }
+function toast(t) {
+  const el = $('#toast');
+  el.textContent = t;
+  el.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => el.classList.remove('show'), 1600);
+}
+
+// ── 视频池 ──
+async function loadPool(first) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch('/api/videos', { cache: 'no-store' });
+      const j = await r.json();
+      // 视频池还空着：正在和频道对、或者上次没对成（服务器过两分钟会再对），就隔一会儿再来要，最多等十来分钟
+      if (j.videos.length || !first || (!j.syncing && !j.error) || i >= 120) return setPool(j.videos);
+      showEmpty(j.syncing ? '正在从「小橘视频」频道取视频…' : '视频列表暂时取不到，正在重试…', true);
+    } catch {
+      if (!first) return;
+      showEmpty('网络不太好，正在重试…', true);
+    }
+    await sleep(5000);
+  }
+}
+function setPool(list) {
+  pool = list;
+  byId = new Map(list.map(v => [v.id, v]));
+  poolAt = Date.now();
+  if (upcoming != null && !byId.has(upcoming)) upcoming = null;
+}
+function showEmpty(t, spinning) {
+  const el = $('#empty');
+  el.hidden = !t;
+  el.classList.toggle('still', !spinning);
+  el.querySelector('p').textContent = t || '';
+}
+
+// 随机抽一条：最近看过的先不抽（池子小就只避开最近那大部分），都看过了再放开
+function pickRandom(exclude) {
+  const ids = pool.map(v => v.id).filter(id => id !== exclude);
+  if (!ids.length) return null;
+  const avoid = new Set(hist.slice(-Math.min(500, Math.floor(pool.length * 0.8))));
+  const fresh = ids.filter(id => !avoid.has(id));
+  const from = fresh.length ? fresh : ids;
+  return from[Math.floor(Math.random() * from.length)];
+}
+function nextId() {
+  if (pos < hist.length - 1) return hist[pos + 1];
+  if (upcoming == null || upcoming === hist[pos] || !byId.has(upcoming)) upcoming = pickRandom(hist[pos]);
+  return upcoming;
+}
+
+// ── 三张卡片 ──
+function makeSlide() {
+  const el = $('#slideTpl').content.firstElementChild.cloneNode(true);
+  const s = { el, id: undefined, v: el.querySelector('video'), bg: el.querySelector('.bg'), msg: el.querySelector('.msg'),
+    by: el.querySelector('.by'), txt: el.querySelector('.txt'), like: el.querySelector('.like'),
+    bar: el.querySelector('.bar'), fill: el.querySelector('.bar-fill'), knob: el.querySelector('.bar-knob'), time: el.querySelector('.bar-time'), tries: 0 };
+  const v = s.v;
+  let wait = 0, slow = 0;
+  // 转圈晚 0.3 秒才出来（缓存里有的一下就好，不闪）；6 秒还没出画面多半是视频服务在休眠，说一声
+  const loading = on => {
+    clearTimeout(wait);
+    clearTimeout(slow);
+    if (on) {
+      wait = setTimeout(() => el.classList.add('loading'), 300);
+      slow = setTimeout(() => { if (!s.msg.textContent) { s.msg.textContent = '有点慢，视频服务可能在唤醒（大约一分钟）…'; s.slowMsg = true; hideTip(); } }, 6000);
+    } else {
+      el.classList.remove('loading');
+      if (s.slowMsg) { s.msg.textContent = ''; s.slowMsg = false; }
+    }
+  };
+  v.addEventListener('waiting', () => { if (s === slides[1]) loading(true); });
+  v.addEventListener('playing', () => { loading(false); s.msg.textContent = ''; s.slowMsg = false; s.tries = 0; el.classList.remove('paused'); });
+  v.addEventListener('canplay', () => { if (!v.paused || s !== slides[1]) loading(false); });
+  v.addEventListener('pause', () => { if (s === slides[1] && !busy && !document.hidden && !v.error && !s.msg.textContent) el.classList.add('paused'); });
+  v.addEventListener('error', () => videoError(s));
+  s.loading = loading;
+  s.like.addEventListener('click', e => { e.stopPropagation(); unlockSound(); toggleLike(s.id, s.like); });
+  el.querySelector('.rec').addEventListener('click', e => { e.stopPropagation(); unlockSound(); openSheet('hist'); });
+  el.querySelector('.share').addEventListener('click', e => { e.stopPropagation(); share(s.id); });
+  s.txt.addEventListener('click', e => { if (s.txt.scrollHeight > s.txt.clientHeight + 2 || s.txt.classList.contains('open')) { e.stopPropagation(); s.txt.classList.toggle('open'); } });
+  for (const t of ['touchstart', 'pointerdown']) s.txt.addEventListener(t, e => { if (s.txt.classList.contains('open')) e.stopPropagation(); }, { passive: true });
+  seekable(s);
+  feed.appendChild(el);
+  return s;
+}
+
+// 换上这条视频（同一条就不动）。preload：下一条提前加载，上一条只要开头
+function assign(s, id, preload) {
+  s.v.preload = preload;
+  if (s.id === id) return;
+  s.id = id;
+  s.tries = 0;
+  const v = s.v;
+  v.pause();
+  s.loading(false);
+  s.el.classList.remove('paused');
+  s.msg.textContent = '';
+  s.txt.classList.remove('open');
+  s.fill.style.transform = 'scaleX(0)';
+  if (id == null) {
+    s.el.classList.add('blank');
+    v.removeAttribute('src');
+    v.removeAttribute('poster');
+    v.load();
+    return;
+  }
+  s.el.classList.remove('blank');
+  const info = byId.get(id) || {};
+  s.bg.style.backgroundImage = `url(/vp/${id})`;
+  v.poster = `/vp/${id}`;
+  v.src = `/vf/${id}`;
+  s.by.textContent = info.by ? '@' + info.by : '';
+  if (info.day) { const d = document.createElement('span'); d.className = info.by ? 'day' : 'day solo'; d.textContent = info.day; s.by.appendChild(d); }
+  s.txt.textContent = info.text || '';
+  s.like.classList.toggle('on', favs.includes(id));
+}
+
+function layout(dy, animate) {
+  slides.forEach((s, i) => {
+    s.el.style.transition = animate ? 'transform .32s cubic-bezier(.2,.8,.2,1)' : 'none';
+    s.el.style.transform = `translate3d(0,calc(${(i - 1) * 100}% + ${dy}px),0)`;
+  });
+}
+
+function fillNeighbors() {
+  assign(slides[0], pos > 0 ? hist[pos - 1] : null, 'metadata');
+  assign(slides[2], nextId(), 'auto');
+}
+
+// 放正在看的这条。浏览器不让出声就先静音播，顶上提示点一下打开声音
+function play(s) {
+  const v = s.v;
+  if (s.id == null) return;
+  v.muted = !wantSound || soundBlocked;
+  s.el.classList.remove('paused');
+  if (v.readyState < 3) s.loading(true);
+  const p = v.play();
+  if (p && p.catch) p.catch(e => {
+    if (!e || e.name !== 'NotAllowedError' || s !== slides[1] && !busy) return;
+    if (!v.muted) {
+      soundBlocked = true;
+      v.muted = true;
+      showSound();
+      v.play().catch(() => { s.loading(false); s.el.classList.add('paused'); });
+    } else {
+      s.loading(false);
+      s.el.classList.add('paused');
+    }
+  });
+}
+
+// 有了用户手势（点、滑、按键）：之前不让出声的，现在打开
+function unlockSound() {
+  if (!soundBlocked) return;
+  soundBlocked = false;
+  const v = slides[1] && slides[1].v;
+  if (v && wantSound) v.muted = false;
+  showSound();
+}
+
+function current() { return slides[1]; }
+
+function settle() {
+  for (const s of [slides[0], slides[2]]) {
+    s.v.pause();
+    s.loading(false);
+    s.el.classList.remove('paused');
+    try { if (s.v.currentTime) s.v.currentTime = 0; } catch {}
+  }
+  fillNeighbors();
+  const id = current().id;
+  if (id != null) history.replaceState(null, '', '#' + id);
+  if (!$('#sheet').hidden) renderSheet();
+}
+
+// dir：+1 上滑（下一条），-1 下滑（上一条）。gesture：在用户手势里调用的（iPhone 要在手势里 play 才有声音）
+function go(dir) {
+  if (busy || !slides.length) return;
+  if (dir < 0 && pos <= 0) { toast('已经是第一条了'); layout(0, true); return; }
+  const target = slides[dir > 0 ? 2 : 0];
+  if (target.id == null) { if (dir > 0) toast('没有别的视频了'); layout(0, true); return; }
+  hideTip();
+  unlockSound();
+  busy = true;
+  current().v.pause();
+  play(target);
+  layout(dir > 0 ? -feed.clientHeight : feed.clientHeight, true);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (dir > 0) {
+      if (pos < hist.length - 1) pos++;
+      else {
+        hist.push(target.id);
+        upcoming = null;
+        if (hist.length > HIST_MAX) hist = hist.slice(-HIST_MAX);
+        pos = hist.length - 1;
+      }
+      slides = [slides[1], slides[2], slides[0]];
+    } else {
+      pos--;
+      slides = [slides[2], slides[0], slides[1]];
+    }
+    save();
+    layout(0, false);
+    busy = false;
+    settle();
+  };
+  target.el.addEventListener('transitionend', finish, { once: true });
+  setTimeout(finish, 420);
+}
+
+// 跳到记录里的某一条（浏览记录面板里点的）
+function jumpTo(i) {
+  if (busy || i < 0 || i >= hist.length) return;
+  pos = i;
+  save();
+  for (const s of slides) s.v.pause();
+  assign(slides[1], hist[pos], 'auto');
+  layout(0, false);
+  settle();
+  unlockSound();
+  play(current());
+}
+// 跳到某一条视频：接在浏览记录最后（前面的记录不动）
+function jumpToId(id) {
+  if (!byId.has(id)) return toast('这条视频已经不在了');
+  if (hist[pos] === id) return;
+  hist.push(id);
+  if (hist.length > HIST_MAX) hist = hist.slice(-HIST_MAX);
+  jumpTo(hist.length - 1);
+}
+
+// ── 出错：流式服务在休眠（503）就等它醒了重试；帖子删了（404）就跳过 ──
+async function videoError(s) {
+  const id = s.id;
+  if (id == null || !s.v.getAttribute('src')) return;
+  let status = 0;
+  try {
+    const r = await fetch(`/vf/${id}`, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+    status = r.status;
+    if (r.body) r.body.cancel();
+  } catch {}
+  if (s.id !== id) return;
+  s.loading(false);
+  s.slowMsg = false;
+  s.el.classList.remove('paused');
+  if (s === current()) hideTip();
+  if (status === 404) {
+    s.msg.textContent = '这条视频已经不在了';
+    setPool(pool.filter(v => v.id !== id));
+    if (s === current()) setTimeout(() => { if (current().id === id && !busy) go(1); }, 1200);
+    else if (s === slides[2] && pos === hist.length - 1) { upcoming = null; assign(s, nextId(), 'auto'); }
+    return;
+  }
+  if (++s.tries > 18) { s.msg.textContent = '这条视频暂时放不了，滑走看看别的'; return; }
+  s.msg.textContent = status === 503 || !status ? '视频服务正在唤醒，大约一分钟…' : '加载出错了，正在重试…';
+  if (s === current()) s.loading(true);
+  await sleep(status === 206 || status === 200 ? 500 : 8000);
+  if (s.id !== id) return;
+  const t = s.v.currentTime;
+  s.v.load();
+  if (t) try { s.v.currentTime = t; } catch {}
+  if (s === current()) play(s);
+}
+
+// ── 进度条（拖动换位置）──
+function seekable(s) {
+  let on = false;
+  const ratio = e => { const r = s.bar.getBoundingClientRect(); return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); };
+  const show = q => {
+    const d = s.v.duration || (byId.get(s.id) || {}).d || 0;
+    s.fill.style.transform = `scaleX(${q})`;
+    s.knob.style.left = q * 100 + '%';
+    s.time.textContent = `${fmt(q * d)} / ${fmt(d)}`;
+  };
+  s.bar.addEventListener('pointerdown', e => {
+    e.stopPropagation();
+    on = true;
+    s.bar.setPointerCapture(e.pointerId);
+    s.bar.classList.add('seeking');
+    s.el.classList.add('seeking');
+    show(ratio(e));
+  });
+  s.bar.addEventListener('pointermove', e => { if (on) show(ratio(e)); });
+  const end = e => {
+    if (!on) return;
+    on = false;
+    s.bar.classList.remove('seeking');
+    s.el.classList.remove('seeking');
+    const d = s.v.duration;
+    if (d && isFinite(d)) s.v.currentTime = ratio(e) * d;
+    if (s === current() && s.v.paused) { unlockSound(); play(s); }
+  };
+  s.bar.addEventListener('pointerup', end);
+  s.bar.addEventListener('pointercancel', () => { on = false; s.bar.classList.remove('seeking'); s.el.classList.remove('seeking'); });
+  for (const t of ['touchstart', 'mousedown']) s.bar.addEventListener(t, e => e.stopPropagation(), { passive: true });
+}
+(function tick() {
+  const s = current();
+  if (s && !s.bar.classList.contains('seeking')) {
+    const d = s.v.duration;
+    if (d && isFinite(d)) {
+      const q = s.v.currentTime / d;
+      s.fill.style.transform = `scaleX(${q})`;
+      s.knob.style.left = q * 100 + '%';
+    }
+  }
+  requestAnimationFrame(tick);
+})();
+
+// ── 手势：上下滑、点一下暂停、双击喜欢 ──
+let drag = null, lastTap = 0, tapTimer = 0;
+function dragStart(x, y, target) {
+  if (busy || !slides.length || !$('#sheet').hidden || target.closest('button, .bar, .txt.open')) return false;
+  drag = { x0: x, y0: y, t0: performance.now(), dy: 0, moved: false };
+  return true;
+}
+function dragMove(x, y) {
+  if (!drag) return false;
+  const dx = x - drag.x0, dy = y - drag.y0;
+  if (!drag.moved && Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) drag.moved = true;
+  if (!drag.moved) return false;
+  drag.dy = dy;
+  // 第一条往下拉、没有下一条往上拉：拉不动，有阻力
+  const stuck = (dy > 0 && pos <= 0) || (dy < 0 && slides[2].id == null);
+  layout(stuck ? dy * 0.3 : dy, false);
+  return true;
+}
+function dragEnd(x, y) {
+  const d = drag;
+  drag = null;
+  if (!d) return;
+  if (!d.moved) return tap(x, y);
+  const h = feed.clientHeight, speed = d.dy / Math.max(1, performance.now() - d.t0);
+  if (d.dy < -h * 0.16 || (speed < -0.45 && d.dy < -30)) go(1);
+  else if (d.dy > h * 0.16 || (speed > 0.45 && d.dy > 30)) go(-1);
+  else layout(0, true);
+}
+function tap(x, y) {
+  const s = current(), wasMuted = soundBlocked;
+  unlockSound();
+  const now = Date.now();
+  if (wasMuted && s && !s.v.paused) { lastTap = now; return; } // 这一下只是打开声音
+  if (s && s.id != null && s.v.paused && now - lastTap >= 300) { lastTap = now; play(s); return; } // 暂停着：马上接着放
+  if (now - lastTap < 300) {
+    clearTimeout(tapTimer);
+    lastTap = 0;
+    burst(x, y);
+    if (s && s.id != null && !favs.includes(s.id)) toggleLike(s.id, s.like);
+    return;
+  }
+  lastTap = now;
+  tapTimer = setTimeout(togglePause, 300);
+}
+function togglePause() {
+  const s = current();
+  if (!s || s.id == null) return;
+  if (s.v.paused) play(s);
+  else { s.v.pause(); s.el.classList.add('paused'); }
+}
+
+feed.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1) { drag = null; return; }
+  dragStart(e.touches[0].clientX, e.touches[0].clientY, e.target);
+}, { passive: true });
+feed.addEventListener('touchmove', e => {
+  if (drag && dragMove(e.touches[0].clientX, e.touches[0].clientY)) e.preventDefault();
+}, { passive: false });
+feed.addEventListener('touchend', e => {
+  if (!drag) return;
+  const t = e.changedTouches[0];
+  if (!drag.moved) e.preventDefault(); // 自己处理点一下，不要浏览器再补一个 click
+  dragEnd(t.clientX, t.clientY);
+});
+feed.addEventListener('touchcancel', () => { if (drag) { drag = null; layout(0, true); } });
+// 鼠标：拖动也能换条，点一下暂停
+feed.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse' || e.button !== 0) return;
+  if (dragStart(e.clientX, e.clientY, e.target)) feed.setPointerCapture(e.pointerId);
+});
+feed.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') dragMove(e.clientX, e.clientY); });
+feed.addEventListener('pointerup', e => { if (e.pointerType === 'mouse') dragEnd(e.clientX, e.clientY); });
+
+// 滚轮（触控板的惯性会连着来一串，换一条之后歇一会儿）、键盘
+let wheelSum = 0, wheelLock = 0;
+feed.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (Date.now() < wheelLock || busy) return;
+  wheelSum += e.deltaY;
+  clearTimeout(feed.wt);
+  feed.wt = setTimeout(() => { wheelSum = 0; }, 160);
+  if (Math.abs(wheelSum) > 40) {
+    go(wheelSum > 0 ? 1 : -1);
+    wheelSum = 0;
+    wheelLock = Date.now() + 650;
+  }
+}, { passive: false });
+document.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!$('#sheet').hidden) { if (e.key === 'Escape') closeSheet(); return; }
+  if (['ArrowDown', 'PageDown', 'j'].includes(e.key)) { e.preventDefault(); go(1); }
+  else if (['ArrowUp', 'PageUp', 'k'].includes(e.key)) { e.preventDefault(); go(-1); }
+  else if (e.key === ' ') { e.preventDefault(); unlockSound(); togglePause(); }
+  else if (e.key === 'm') toggleSound();
+  else if (e.key === 'l') { const s = current(); if (s.id != null) toggleLike(s.id, s.like); }
+});
+$('#prevBtn').addEventListener('click', () => go(-1));
+$('#nextBtn').addEventListener('click', () => go(1));
+
+// ── 喜欢、分享、声音 ──
+function toggleLike(id, btn) {
+  if (id == null) return;
+  const on = !favs.includes(id);
+  favs = on ? [id, ...favs] : favs.filter(x => x !== id);
+  store.set('xv-favs', favs);
+  for (const s of slides) if (s.id === id) s.like.classList.toggle('on', on);
+  if (btn) { btn.classList.remove('pop'); void btn.offsetWidth; if (on) btn.classList.add('pop'); }
+  if (!on) toast('取消喜欢');
+  else if (!store.get('xv-liked', 0)) { toast('已喜欢（只存在这个浏览器里）'); store.set('xv-liked', 1); }
+}
+function burst(x, y) {
+  const el = document.createElement('div');
+  el.className = 'burst';
+  el.style.left = x + 'px';
+  el.style.top = y + 'px';
+  el.style.setProperty('--r', (Math.random() * 40 - 20).toFixed(0) + 'deg');
+  el.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.5 8.2 3.4 4.5 7 4.5c2.1 0 3.6 1.2 5 3 1.4-1.8 2.9-3 5-3 3.6 0 5.5 3.7 4.3 6.8-1.8 4.6-9.3 9.2-9.3 9.2z" fill="currentColor"/></svg>';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 850);
+}
+async function share(id) {
+  if (id == null) return;
+  const url = `${location.origin}/video#${id}`;
+  const info = byId.get(id) || {};
+  try {
+    if (navigator.share) return await navigator.share({ title: '小橘视频', text: (info.text || '').slice(0, 60), url });
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(url); toast('链接已复制'); }
+  catch { prompt('复制这个链接：', url); }
+}
+const SOUND_ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg>';
+const SOUND_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/></svg>';
+function showSound() {
+  const on = wantSound && !soundBlocked;
+  $('#sound').innerHTML = on ? SOUND_ON : SOUND_OFF;
+  $('#sound').setAttribute('aria-label', on ? '静音' : '打开声音');
+  $('#unmute').hidden = !(wantSound && soundBlocked);
+}
+function toggleSound() {
+  if (soundBlocked) { unlockSound(); return; }
+  wantSound = !wantSound;
+  store.set('xv-sound', wantSound);
+  const s = current();
+  if (s) s.v.muted = !wantSound;
+  showSound();
+}
+$('#sound').addEventListener('click', toggleSound);
+$('#unmute').addEventListener('click', unlockSound);
+
+// ── 浏览记录 / 我喜欢 ──
+let sheetTab = 'hist';
+function openSheet(tab) { sheetTab = tab; $('#sheet').hidden = false; renderSheet(); }
+function closeSheet() { $('#sheet').hidden = true; }
+function cell(id, cur) {
+  const info = byId.get(id);
+  const b = document.createElement('button');
+  b.className = 'cell' + (cur ? ' cur' : '');
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.alt = '';
+  img.src = `/vp/${id}`;
+  img.onerror = () => img.remove();
+  b.appendChild(img);
+  if (cur) { const n = document.createElement('span'); n.className = 'now'; n.textContent = '正在看'; b.appendChild(n); }
+  if (info && info.by) { const by = document.createElement('span'); by.className = 'by'; by.textContent = '@' + info.by; b.appendChild(by); }
+  if (info && info.d) { const d = document.createElement('span'); d.className = 'dur'; d.textContent = fmt(info.d); b.appendChild(d); }
+  if (!info) b.style.opacity = '.35';
+  return b;
+}
+function renderSheet() {
+  for (const t of document.querySelectorAll('.tab')) t.classList.toggle('on', t.dataset.tab === sheetTab);
+  const grid = $('.grid');
+  grid.textContent = '';
+  $('.sheet-foot').hidden = sheetTab !== 'hist';
+  const items = sheetTab === 'hist' ? hist.map((id, i) => [id, i]).reverse() : favs.map(id => [id, -1]);
+  if (!items.length) {
+    const p = document.createElement('p');
+    p.className = 'grid-empty';
+    p.textContent = sheetTab === 'hist' ? '还没有浏览记录' : '还没有喜欢的视频，双击视频就能喜欢';
+    grid.appendChild(p);
+    return;
+  }
+  for (const [id, i] of items) {
+    const b = cell(id, sheetTab === 'hist' ? i === pos : current() && current().id === id);
+    b.addEventListener('click', () => {
+      closeSheet();
+      if (sheetTab === 'hist') { if (byId.has(id)) jumpTo(i); else toast('这条视频已经不在了'); }
+      else jumpToId(id);
+    });
+    grid.appendChild(b);
+  }
+}
+for (const t of document.querySelectorAll('.tab')) t.addEventListener('click', () => { sheetTab = t.dataset.tab; renderSheet(); });
+$('.sheet-bg').addEventListener('click', closeSheet);
+$('.sheet-close').addEventListener('click', closeSheet);
+$('#openHist').addEventListener('click', () => { unlockSound(); openSheet('hist'); });
+$('#clearHist').addEventListener('click', () => {
+  if (!confirm('清空浏览记录？正在看的这条会留下。')) return;
+  hist = pos >= 0 ? [hist[pos]] : [];
+  pos = hist.length - 1;
+  save();
+  fillNeighbors();
+  renderSheet();
+});
+
+// ── 第一次来的提示 ──
+function hideTip() {
+  const t = $('#tip');
+  if (t.hidden) return;
+  t.style.opacity = '0';
+  setTimeout(() => { t.hidden = true; }, 400);
+  store.set('xv-tip', 1);
+}
+
+// ── 切到后台暂停，回来接着放；隔了十分钟以上回来就顺便更新一下视频池 ──
+let resumeOnShow = false;
+document.addEventListener('visibilitychange', () => {
+  const s = current();
+  if (!s || s.id == null) return;
+  if (document.hidden) { resumeOnShow = !s.v.paused; s.v.pause(); }
+  else {
+    if (resumeOnShow) play(s);
+    if (Date.now() - poolAt > 10 * 60 * 1000) loadPool(false);
+  }
+});
+window.addEventListener('hashchange', () => {
+  const id = Number(location.hash.slice(1));
+  if (id && current() && current().id !== id) jumpToId(id);
+});
+
+// ── 开始 ──
+(async function boot() {
+  showSound();
+  await loadPool(true);
+  if (!pool.length) return showEmpty('「小橘视频」频道里还没有视频', false);
+  showEmpty('');
+  // 记录里频道已经删掉的视频去掉
+  const keepCur = hist[pos];
+  hist = hist.filter(id => byId.has(id)).slice(-HIST_MAX);
+  pos = keepCur != null && hist.lastIndexOf(keepCur) >= 0 ? hist.lastIndexOf(keepCur) : hist.length - 1;
+  // 带着 #消息号（分享的链接、刷新页面）就看那一条；不然每次打开从一条随机的新视频开始，往下滑是以前的记录
+  const want = Number(location.hash.slice(1));
+  if (!(want && byId.has(want) && hist[pos] === want)) { // 刷新页面的话停在原来那条
+    const id = want && byId.has(want) ? want : pickRandom(hist[hist.length - 1]);
+    if (id != null) hist.push(id);
+    if (hist.length > HIST_MAX) hist = hist.slice(-HIST_MAX);
+    pos = hist.length - 1;
+  }
+  save();
+  slides = [makeSlide(), makeSlide(), makeSlide()];
+  assign(slides[1], hist[pos], 'auto');
+  layout(0, false);
+  settle();
+  if (!store.get('xv-tip', 0)) { $('#tip').hidden = false; setTimeout(hideTip, 3500); }
+  play(current());
+})();
+</script>
+</body>
+</html>
