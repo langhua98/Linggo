@@ -16,7 +16,7 @@
 |---|---|---|
 | Worker | `worker.js`（Cloudflare，`xiaoju-video`） | 两个机器人的 webhook、作品状态机、视频池、刷视频网页、管理页、云电脑和流式服务的接口 |
 | 小橘视频机器人 | `TG_BOT_TOKEN` | 频道主私聊：发分享链接、「进度」「云电脑」「重试失败」；它是视频频道管理员，频道新帖由它的 webhook 登记 |
-| 审核机器人 | @xiaojuverify_bot（`VERIFY_BOT_TOKEN`） | 每条作品转之前在这里点「通过 / 不转」；云电脑一次来很多条时可以「全部通过」 |
+| 审核机器人 | @xiaojuverify_bot（`VERIFY_BOT_TOKEN`） | 一批作品一张「🛂 审核单」，只有「✅ 审核通过 / ❌ 审核失败」两个按钮，整批定 |
 | 流式服务 | `streamer/`（HF Space `langhua1998/douyin-proxy`，原小橘音乐的流式服务改建，`https://langhua1998-douyin-proxy.hf.space`） | 认分享链接、下载、ffmpeg、用频道主账号发帖；超过 20 MB 的视频按 Range 走 MTProto 现取现传。详见 `streamer/README.md` |
 | 云电脑 | 流式服务里的 MediaCrawler（`streamer/jobs.py`、`dy_login.py`）；备用：`cloud/` + `.devcontainer/xiaoju-video/`（Codespaces） | 「登录抖音」把二维码发给频道主扫；「同步作品」抓登录账号自己主页的全部作品；发链接抓那几条。新的送 Worker 交审核 |
 
@@ -47,7 +47,8 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 | `GET /vf/<消息号>` | 网页 | 视频流，支持 Range；≤20 MB 走 Bot API，更大的转流式服务；它休眠时回 503 + `Retry-After`，网页 10 秒后重试 |
 | `GET /vp/<消息号>` | 网页 | 封面，取一次就存进数据库 |
 | `POST /tg-webhook` | 小橘视频机器人 | 频道新帖登记、私聊 |
-| `POST /verify-webhook` | 审核机器人 | 按钮、私聊 |
+| `POST /verify-webhook` | 审核机器人 | 审核单的两个按钮、私聊 |
+| `GET /review/<编号>` | 频道主 | 审核单整批列表（编号就是凭证，页面 noindex） |
 | `POST /dy-known` `/dy-import` `/dy-progress` | 云电脑（`X-Token`） | 哪些已收过、送作品（一次 ≤200 条）、报进度 |
 | `POST /streamer-up` `/streamer-done` `/streamer-say` | 流式服务（`X-Key`） | 推送用的老接口：HF 机房连不上 `*.workers.dev`，实际由 Worker 轮询发件箱 |
 | `GET /admin`；`/admin/api/state`、`review`、`retry-failed`、`dispatch`、`video-delete` | 管理页（`Authorization: Bearer <ADMIN_KEY>`） | 看状态、审核、移出视频池 |
@@ -123,13 +124,17 @@ done
 2. 登录好了：打开自己的主页，从作品列表接口认出 `sec_uid` 和昵称，连同 cookie 存进 Worker（`/dy-session`，只收 `X-Key`）。
    Space 重启后浏览器档案没了，抓作品时 Worker 把存着的 cookie 带过去，MediaCrawler 用 cookie 登录。
 3. 「同步作品」→ MediaCrawler creator 模式**只抓登录账号自己的主页**（地址由 `sec_uid` 拼，不接受外面给的），
-   发分享链接 → detail 模式抓那几条。读 jsonl，问 Worker 哪些收过，新的送 `/dy-import`：主页同步的发一条汇总，链接抓的逐条交审核。
+   发分享链接 → detail 模式抓那几条。读 jsonl，问 Worker 哪些收过，新的送 `/dy-import`，每一批成一张审核单。
 4. 一次只干一件（登录 / 同步 / 抓链接），忙的时候机器人会说正在干什么。
 
 **关键词搜索**：机器人里发「搜索 关键词」（多个用逗号隔开，最多 5 个，每个最多 50 条）→ MediaCrawler search 模式。
-搜出来的作品里有别人的：交审核机器人时**没有「全部通过」**，审核消息带作者昵称、作者主页链接，没认过的号标「可能是别人的作品」。
-频道主通过某条，就把那个作者记进「你的号」（config `myAccounts`）；之后搜到这些号的作品会标出来，可以「通过你认过的号的」一键通过，
-别的仍要逐条看。作者信息是 `mc_patch.py` 让 MediaCrawler 多存的（它默认把昵称打码、作者只存散列）。
+作者信息是 `mc_patch.py` 让 MediaCrawler 多存的（它默认把昵称打码、作者只存散列）。
+
+**审核单**：每次送来的一批（私聊链接、主页同步、关键词搜索）存成一个批次（表 `batches`，作品的 `batch` 列），
+审核机器人发一张：`🛂 审核单 <14 位编号>（#来源 #关键词… #批次数量N 条）`，下面是作者统计（通过过的号标 ✓）、前 5 条说明和
+「查看全部」链接（`GET /review/<编号>`，整批列表，每条带作者主页和抖音链接）。只有两个按钮：
+「✅ 审核通过」整批排队转发，并把这批的作者记进「你的号」（config `myAccounts`）；「❌ 审核失败」整批不转。
+私聊审核机器人会把没审的审核单再发一遍。
 
 **备用：自己的 GitHub Codespaces**（会话里的 GitHub 权限建不了 Codespace，要频道主自己建）：
 一键链接 https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json ，

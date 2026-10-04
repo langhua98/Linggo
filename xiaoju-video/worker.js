@@ -44,8 +44,6 @@ const MAX_ATTEMPTS = 3;
 const DISPATCH_BATCH = 10;
 // 云电脑一次最多送多少条
 const IMPORT_MAX = 200;
-// 逐条审核时一次发几条
-const REVIEW_PAGE = 10;
 const THUMB_LIMIT = 512 * 1024;
 // 轮询流式服务的发件箱：每次最多等它 20 秒（长轮询）；一次定时器最多连着问 12 分钟（Durable Object 的定时器最多跑 15 分钟）
 const POLL_WAIT_S = 20;
@@ -102,6 +100,8 @@ export default {
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, ctx, url);
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
       if (path === '/' || path === '/video') return html(PAGE, method);
+      const rv = path.match(/^\/review\/([a-z0-9]{14})$/);
+      if (rv) return await reviewPage(env, rv[1], method);
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
       if (path === '/api/videos') return await videoList(env);
       const f = path.match(/^\/vf\/(\d{1,10})(?:\.mp4)?$/);
@@ -314,9 +314,7 @@ async function submitLinks(env, chat, links) {
   if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务，暂时认不了链接');
   const session = await dySession(env);
   if (session) return await startCrawl(env, chat, { mode: 'detail', targets: links, session });
-  const L = lib(env);
-  const owner = await ownerId(env);
-  let added = 0, dup = 0;
+  const items = [];
   const bad = [];
   for (const link of links) {
     const r = await streamerCall(env, '/douyin/resolve', { url: link }).catch(() => null);
@@ -325,14 +323,12 @@ async function submitLinks(env, chat, links) {
       bad.push(r ? (r.data && r.data.error) || `流式服务回 ${r.status}` : '流式服务没响应（可能在休眠，1 分钟后再发一次）');
       continue;
     }
-    const fresh = await L.addItems([item], 'link');
-    if (!fresh.length) { dup++; continue; }
-    added++;
-    await sendReview(env, owner, item);
+    items.push(item);
   }
+  const res = await importItems(env, items, 'link');
   const parts = [];
-  if (added) parts.push(`${added} 条已交审核机器人 @xiaojuverify_bot，去那里点「通过」`);
-  if (dup) parts.push(`${dup} 条以前已经收过`);
+  if (res.added) parts.push(`${res.added} 条成了审核单 ${res.batch}，去审核机器人 @xiaojuverify_bot 审`);
+  if (res.skipped) parts.push(`${res.skipped} 条以前已经收过`);
   if (bad.length) parts.push(`${bad.length} 条认不出：${bad.join('；')}\n先发「登录抖音」扫码，之后链接改由云电脑（MediaCrawler）抓。`);
   await say(env, chat, parts.join('\n'));
 }
@@ -420,17 +416,18 @@ function randomToken() {
 const KIND = { video: '视频', images: '图文' };
 
 const SRC = { cloud: '云电脑同步', link: '私聊链接', search: '关键词搜索' };
+const SRC_TAG = { cloud: '#主页同步', link: '#私聊链接', search: '#关键词搜索' };
+const PUBLIC_URL = 'https://xiaoju-video.langhua98.workers.dev';
 
-// mine：频道主通过过的账号（sec_uid 列表），搜出来的作品要标出是不是这些号发的
+// mine：频道主通过过的账号（sec_uid 列表），作品要标出是不是这些号发的
 function reviewText(item, mine = []) {
   const known = item.author_sec_uid && mine.includes(item.author_sec_uid);
   return [
-    `待审核 · 抖音${KIND[item.type] || '作品'}（${SRC[item.src] || '私聊链接'}）`,
+    `抖音${KIND[item.type] || '作品'}（${SRC[item.src] || '私聊链接'}）`,
     item.desc ? item.desc.slice(0, 300) : '（没有文字）',
     item.author || item.author_sec_uid ? `作者：${item.author || '（没有昵称）'}${known ? '  ✓ 你通过过这个号的作品' : ''}` : '',
     item.author_sec_uid ? `作者主页：https://www.douyin.com/user/${item.author_sec_uid}` : '',
     item.url,
-    item.src === 'search' && !known ? '⚠️ 搜出来的，可能是别人的作品：认得出是你小号的才通过' : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -438,55 +435,62 @@ async function myAccounts(env) {
   return JSON.parse((await lib(env).getConfig('myAccounts')) || '[]');
 }
 
-// 频道主通过了搜出来的一条：记住这个号是他的
-async function rememberAccount(env, item) {
-  if (!item || item.src !== 'search' || !item.author_sec_uid) return;
+// 频道主通过了一批：这批作品的作者都记成他的号，之后再搜到会标出来
+async function rememberAccounts(env, items) {
   const mine = await myAccounts(env);
-  if (mine.includes(item.author_sec_uid)) return;
-  mine.push(item.author_sec_uid);
-  await lib(env).setConfig('myAccounts', JSON.stringify(mine.slice(-500)));
+  for (const i of items) if (i.author_sec_uid && !mine.includes(i.author_sec_uid)) mine.push(i.author_sec_uid);
+  await lib(env).setConfig('myAccounts', JSON.stringify(mine.slice(-2000)));
 }
 
-// 待审核的搜索结果里，作者是频道主通过过的号的那些
-async function searchMine(env) {
-  const mine = await myAccounts(env);
-  return (await lib(env).listItems('review', 10000, 'search')).filter(i => i.author_sec_uid && mine.includes(i.author_sec_uid));
+// 审核单编号：14 位小写字母和数字
+function newBatchId() {
+  const abc = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const b = new Uint8Array(14);
+  crypto.getRandomValues(b);
+  return [...b].map(x => abc[x % abc.length]).join('');
 }
 
-// 搜出来一批：先发一条汇总。没有「全部通过」：别人的作品混在里面，只能逐条看，或者一键通过认过的号的
-async function announceSearch(env, n) {
+// 标签：来源 + 搜的关键词（「橘猫」「猫」→ #橘猫 #猫）
+function batchTags(src, what) {
+  const words = [...String(what || '').matchAll(/「([^」]+)」/g)].map(m => '#' + m[1].replace(/\s+/g, ''));
+  return [SRC_TAG[src] || '#私聊链接', ...words].slice(0, 8);
+}
+
+function sheetHeader(b) {
+  return `🛂 审核单 ${b.id}（${b.tags.join(' ')} #批次数量${b.total} 条）`;
+}
+
+// 审核单：一批一张，只有两个按钮。上面列作者统计和前几条，「查看全部」打开整批的列表
+async function sendSheet(env, id) {
+  const L = lib(env);
   const owner = await ownerId(env);
-  if (!owner) return;
-  const total = (await lib(env).counts()).searchReview || n;
-  const known = (await searchMine(env)).length;
-  const buttons = [[{ text: '👀 逐条审核', callback_data: 'search-each' }, { text: `❌ 全部不转（${total}）`, callback_data: 'search-no' }]];
-  if (known) buttons.unshift([{ text: `✅ 通过你认过的号的（${known}）`, callback_data: 'search-mine' }]);
-  await verifySay(env, owner, `关键词搜索新找到 ${n} 条作品，现在一共 ${total} 条搜索结果等你审核` +
-    (known ? `，其中 ${known} 条是你通过过的号发的` : '') + '。\n搜出来的也有别人的作品：逐条看作者，是你小号的才通过。', buttons);
-}
-
-async function sendReview(env, owner, item, mine) {
-  if (!owner) return;
-  await verifySay(env, owner, reviewText(item, mine || await myAccounts(env)), [[
-    { text: '✅ 通过', callback_data: `ok:${item.aweme}` },
-    { text: '❌ 不转', callback_data: `no:${item.aweme}` },
+  const b = await L.getBatch(id);
+  if (!owner || !b) return;
+  const items = await L.batchItems(id);
+  const mine = await myAccounts(env);
+  const by = new Map();
+  for (const i of items) {
+    const k = i.author || '（没有作者信息）';
+    const e = by.get(k) || { n: 0, known: i.author_sec_uid && mine.includes(i.author_sec_uid) };
+    e.n++;
+    by.set(k, e);
+  }
+  const authors = [...by.entries()].sort((a, b2) => b2[1].n - a[1].n).slice(0, 8)
+    .map(([k, e]) => `${k} ×${e.n}${e.known ? ' ✓' : ''}`);
+  const lines = [
+    sheetHeader(b),
+    '',
+    `作者：${authors.join('、')}${by.size > 8 ? ` 等 ${by.size} 个` : ''}`,
+    ...items.slice(0, 5).map(i => `• ${(i.desc || i.aweme).replace(/\s+/g, ' ').slice(0, 40)}`),
+    items.length > 5 ? `……一共 ${items.length} 条` : '',
+    '',
+    `查看全部：${PUBLIC_URL}/review/${id}`,
+  ].filter(x => x !== undefined && x !== false);
+  const r = await verifySay(env, owner, lines.join('\n').replace(/\n{3,}/g, '\n\n'), [[
+    { text: '✅ 审核通过', callback_data: `batch-ok:${id}` },
+    { text: '❌ 审核失败', callback_data: `batch-no:${id}` },
   ]]);
-}
-
-async function reviewEach(env, items) {
-  const owner = await ownerId(env);
-  for (const item of items) await sendReview(env, owner, { ...item, src: 'link' });
-}
-
-// 云电脑一次送来很多条：先发一条汇总，频道主可以全部通过、逐条看、或全部不转
-async function announceCloud(env, n) {
-  const owner = await ownerId(env);
-  if (!owner) return;
-  const total = (await lib(env).counts()).cloudReview || n;
-  await verifySay(env, owner, `云电脑新同步来 ${n} 条你自己账号的作品，现在一共 ${total} 条等你审核。`, [
-    [{ text: `✅ 全部通过（${total}）`, callback_data: 'cloud-ok' }],
-    [{ text: '👀 逐条审核', callback_data: 'cloud-each' }, { text: '❌ 全部不转', callback_data: 'cloud-no' }],
-  ]);
+  if (r && r.result && r.result.message_id) await L.setBatchMsg(id, r.result.message_id);
 }
 
 async function verifyChat(env, msg) {
@@ -495,9 +499,9 @@ async function verifyChat(env, msg) {
     await verifySay(env, msg.chat.id, '这是小橘视频的审核机器人，只有频道主能用。');
     return;
   }
-  const c = await lib(env).counts();
-  const buttons = c.review ? [[{ text: `👀 看待审核的（${c.review}）`, callback_data: 'pending' }]] : null;
-  await verifySay(env, msg.chat.id, c.review ? `有 ${c.review} 条作品等你审核。` : '现在没有待审核的作品。', buttons);
+  const open = await lib(env).openBatches(5);
+  if (!open.length) return await verifySay(env, msg.chat.id, '现在没有待审核的审核单。');
+  for (const b of open) await sendSheet(env, b.id);
 }
 
 async function reviewButton(env, cb, ctx) {
@@ -505,50 +509,23 @@ async function reviewButton(env, cb, ctx) {
   const owner = await ownerId(env);
   if (!owner || cb.from.id !== owner) return await answer('只有频道主能审核');
   const L = lib(env);
-  const data = String(cb.data || '');
-  const chat = cb.message && cb.message.chat.id;
-  const msgId = cb.message && cb.message.message_id;
-  const edit = t => tg(env.VERIFY_BOT_TOKEN, 'editMessageText', { chat_id: chat, message_id: msgId, text: t, disable_web_page_preview: true });
-  const one = /^(ok|no):(\d{6,25})$/.exec(data);
-  if (one) {
-    const to = one[1] === 'ok' ? 'queued' : 'rejected';
-    const n = await L.review([one[2]], to);
-    const item = await L.getItem(one[2]);
-    await answer(n ? (to === 'queued' ? '已通过，排队转发' : '不转了') : '这条已经审过了');
-    if (n && to === 'queued') await rememberAccount(env, item);
-    if (item) await edit(`${to === 'queued' ? '✅ 已通过' : '❌ 不转'}\n${reviewText(item, await myAccounts(env))}`);
-    if (n && to === 'queued') await dispatch(env);
-    return;
+  const m = /^batch-(ok|no):([a-z0-9]{14})$/.exec(String(cb.data || ''));
+  if (!m) return await answer('这个按钮已经不用了，看最新的审核单');
+  const to = m[1] === 'ok' ? 'queued' : 'rejected';
+  const items = to === 'queued' ? (await L.batchItems(m[2])).filter(i => i.status === 'review') : [];
+  const n = await L.reviewBatch(m[2], to);
+  const b = await L.getBatch(m[2]);
+  await answer(n ? (to === 'queued' ? `${n} 条已通过，排队转发` : `${n} 条不转了`) : '这张审核单已经审过了');
+  if (b) {
+    await tg(env.VERIFY_BOT_TOKEN, 'editMessageText', {
+      chat_id: cb.message && cb.message.chat.id, message_id: cb.message && cb.message.message_id, disable_web_page_preview: true,
+      text: `${sheetHeader(b)}\n\n${to === 'queued' ? `✅ 审核通过：${n} 条排队转发进频道` : `❌ 审核失败：${n} 条不转`}\n查看全部：${PUBLIC_URL}/review/${b.id}`,
+    });
   }
-  if (data === 'cloud-ok' || data === 'cloud-no') {
-    const to = data === 'cloud-ok' ? 'queued' : 'rejected';
-    const n = await L.reviewAllCloud(to);
-    await answer(`${n} 条${to === 'queued' ? '已通过' : '不转了'}`);
-    await edit(`云电脑同步的 ${n} 条作品：${to === 'queued' ? '✅ 全部通过，排队转发' : '❌ 全部不转'}`);
-    if (n && to === 'queued') await dispatch(env);
-    return;
+  if (n && to === 'queued') {
+    await rememberAccounts(env, items);
+    await dispatch(env);
   }
-  if (data === 'search-mine' || data === 'search-no') {
-    const ids = data === 'search-mine' ? (await searchMine(env)).map(i => i.aweme)
-      : (await L.listItems('review', 10000, 'search')).map(i => i.aweme);
-    const to = data === 'search-mine' ? 'queued' : 'rejected';
-    const n = await L.review(ids, to);
-    await answer(`${n} 条${to === 'queued' ? '已通过' : '不转了'}`);
-    await edit(data === 'search-mine' ? `你认过的号发的 ${n} 条：✅ 通过，排队转发` : `搜索结果 ${n} 条：❌ 全部不转`);
-    if (n && to === 'queued') await dispatch(env);
-    return;
-  }
-  if (data === 'cloud-each' || data === 'search-each' || data === 'pending') {
-    const src = { 'cloud-each': 'cloud', 'search-each': 'search' }[data] || '';
-    const items = await L.listItems('review', REVIEW_PAGE, src);
-    await answer(items.length ? '' : '没有待审核的了');
-    const mine = await myAccounts(env);
-    for (const item of items) await sendReview(env, owner, item, mine);
-    const left = (await L.counts()).review - items.length;
-    if (left > 0) await verifySay(env, owner, `还有 ${left} 条。`, [[{ text: `👀 再来 ${Math.min(left, REVIEW_PAGE)} 条`, callback_data: 'pending' }]]);
-    return;
-  }
-  await answer();
 }
 
 // ── 交给流式服务 ──────────────────────────────────────────────────
@@ -683,17 +660,18 @@ async function saveProgress(env, body) {
   await lib(env).setConfig('cloudProgress', JSON.stringify(p));
 }
 
-// 收作品：查重、存进待审核；链接抓来的逐条交审核，主页同步来的先发一条汇总
-async function importItems(env, raw, src) {
+// 收作品：查重、存进待审核，新的成一批，发一张审核单
+async function importItems(env, raw, src, what = '') {
   const list = Array.isArray(raw) ? raw : [];
   const items = list.map(normalizeItem).filter(Boolean);
-  const fresh = await lib(env).addItems(items, src);
+  const L = lib(env);
+  const batch = newBatchId();
+  const fresh = await L.addItems(items, src, batch);
   if (fresh.length) {
-    if (src === 'link') await reviewEach(env, items.filter(i => fresh.includes(i.aweme)));
-    else if (src === 'search') await announceSearch(env, fresh.length);
-    else await announceCloud(env, fresh.length);
+    await L.addBatch(batch, src, batchTags(src, what));
+    await sendSheet(env, batch);
   }
-  return { added: fresh.length, skipped: items.length - fresh.length, invalid: list.length - items.length };
+  return { added: fresh.length, skipped: items.length - fresh.length, invalid: list.length - items.length, batch: fresh.length ? batch : '' };
 }
 
 // ── 流式服务的发件箱 ──────────────────────────────────────────────
@@ -744,10 +722,11 @@ async function handleEvent(env, ev) {
   } else if (ev.kind === 'progress') {
     await saveProgress(env, ev);
   } else if (ev.kind === 'import') {
-    const r = await importItems(env, (ev.items || []).slice(0, 10000), ['link', 'search'].includes(ev.src) ? ev.src : 'cloud');
+    const r = await importItems(env, (ev.items || []).slice(0, 10000), ['link', 'search'].includes(ev.src) ? ev.src : 'cloud', ev.what);
     const total = r.added + r.skipped;
     await saveProgress(env, { stage: '完成', done: r.added, total, note: `新送 ${r.added} 条，已有 ${r.skipped} 条` });
-    await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过，新的 ${r.added} 条已交审核机器人 @xiaojuverify_bot。`);
+    await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过` +
+      (r.added ? `，新的 ${r.added} 条成了审核单 ${r.batch}，去审核机器人 @xiaojuverify_bot 审。` : '，没有新的。'));
   }
 }
 
@@ -1067,6 +1046,13 @@ export class Library extends DurableObject {
         data TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
         msg INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '')`);
       this.sql.exec('CREATE INDEX IF NOT EXISTS items_status ON items (status, created)');
+      // 审核单：每次同步、搜索、发链接收进来的一批作品。频道主整批审：通过 / 失败
+      if (!this.sql.exec('PRAGMA table_info(items)').toArray().some(r => r.name === 'batch')) {
+        this.sql.exec("ALTER TABLE items ADD COLUMN batch TEXT NOT NULL DEFAULT ''");
+      }
+      this.sql.exec('CREATE INDEX IF NOT EXISTS items_batch ON items (batch)');
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, src TEXT NOT NULL, tags TEXT NOT NULL,
+        created INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'review', msg INTEGER NOT NULL DEFAULT 0)`);
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
     });
   }
@@ -1158,18 +1144,51 @@ export class Library extends DurableObject {
 
   // ── 抖音作品 ──
   // 新的进待审核；已有的跳过。只有失败过的会用新数据（新的下载地址）重新待审核
-  addItems(items, src) {
+  addItems(items, src, batch = '') {
     const now = Date.now();
     const fresh = [];
     for (const item of items) {
       const old = this.sql.exec('SELECT status FROM items WHERE aweme = ?', item.aweme).toArray()[0];
       if (old && old.status !== 'failed') continue;
-      this.sql.exec(`INSERT INTO items (aweme, status, src, data, created, updated) VALUES (?, 'review', ?, ?, ?, ?)
-        ON CONFLICT(aweme) DO UPDATE SET status = 'review', src = excluded.src, data = excluded.data, updated = excluded.updated, attempts = 0, error = ''`,
-      item.aweme, src, JSON.stringify(item), now, now);
+      this.sql.exec(`INSERT INTO items (aweme, status, src, data, created, updated, batch) VALUES (?, 'review', ?, ?, ?, ?, ?)
+        ON CONFLICT(aweme) DO UPDATE SET status = 'review', src = excluded.src, data = excluded.data, updated = excluded.updated,
+          attempts = 0, error = '', batch = excluded.batch`,
+      item.aweme, src, JSON.stringify(item), now, now, batch);
       fresh.push(item.aweme);
     }
     return fresh;
+  }
+
+  // ── 审核单 ──
+  addBatch(id, src, tags) {
+    this.sql.exec('INSERT INTO batches (id, src, tags, created) VALUES (?, ?, ?, ?)', id, src, JSON.stringify(tags), Date.now());
+  }
+
+  getBatch(id) {
+    const r = this.sql.exec('SELECT * FROM batches WHERE id = ?', id).toArray()[0];
+    if (!r) return null;
+    const counts = {};
+    for (const c of this.sql.exec('SELECT status, COUNT(*) AS n FROM items WHERE batch = ? GROUP BY status', id).toArray()) counts[c.status] = c.n;
+    return { ...r, tags: JSON.parse(r.tags), counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
+  }
+
+  batchItems(id) {
+    return this.sql.exec('SELECT * FROM items WHERE batch = ? ORDER BY created, aweme', id).toArray().map(r => this.row(r));
+  }
+
+  openBatches(limit) {
+    return this.sql.exec("SELECT id FROM batches WHERE status = 'review' ORDER BY created LIMIT ?", limit).toArray();
+  }
+
+  setBatchMsg(id, msg) {
+    this.sql.exec('UPDATE batches SET msg = ? WHERE id = ?', msg, id);
+  }
+
+  // 整批审：只动这批里还在待审核的；返回动了几条
+  reviewBatch(id, to) {
+    const n = this.sql.exec("UPDATE items SET status = ?, updated = ? WHERE batch = ? AND status = 'review' RETURNING aweme", to, Date.now(), id).toArray().length;
+    this.sql.exec('UPDATE batches SET status = ? WHERE id = ?', to === 'queued' ? 'approved' : 'rejected', id);
+    return n;
   }
 
   // 失败的不算「已知」：云电脑会再送一次带新下载地址的
@@ -1305,6 +1324,32 @@ function json(data, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
   });
+}
+
+// 审核单的「查看全部」：这批作品的文字、作者、作者主页、抖音链接（审核单编号随机 14 位，知道编号才打得开）
+async function reviewPage(env, id, method) {
+  const L = lib(env);
+  const b = await L.getBatch(id);
+  if (!b) return text('没有这张审核单', 404);
+  const items = await L.batchItems(id);
+  const mine = await myAccounts(env);
+  const esc = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const state = { review: '待审核', queued: '排队', sending: '在转', posted: '已转', failed: '失败', rejected: '不转' };
+  const rows = items.map((i, n) => `<li><div class="d">${esc(i.desc || '（没有文字）')}</div>
+<div class="m">${n + 1}. ${KIND[i.type] || '作品'} · ${esc(state[i.status] || i.status)} ·
+${i.author_sec_uid ? `<a href="https://www.douyin.com/user/${esc(i.author_sec_uid)}" target="_blank" rel="noopener">${esc(i.author || '作者主页')}</a>` : esc(i.author || '（没有作者信息）')}
+${i.author_sec_uid && mine.includes(i.author_sec_uid) ? '<b>✓ 认过的号</b>' : ''} ·
+<a href="${esc(i.url)}" target="_blank" rel="noopener">抖音上看</a></div></li>`).join('\n');
+  const page = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>审核单 ${esc(id)}</title><style>
+:root{--bg:#fafaf7;--fg:#222;--dim:#777;--line:#e5e2da;--ok:#2e7d32}
+@media (prefers-color-scheme:dark){:root{--bg:#151413;--fg:#eee;--dim:#999;--line:#333;--ok:#81c784}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"PingFang SC","Noto Sans SC",sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}h1{font-size:18px}ol{list-style:none;padding:0}
+li{border-top:1px solid var(--line);padding:10px 0}.d{white-space:pre-wrap;word-break:break-word}.m{color:var(--dim);font-size:13px}
+a{color:inherit}b{color:var(--ok);font-weight:normal}</style></head><body><main>
+<h1>${esc(sheetHeader(b))}</h1><p class="m">回审核机器人点「✅ 审核通过」或「❌ 审核失败」，整批一起。</p><ol>${rows}</ol></main></body></html>`;
+  return html(page, method, { 'X-Robots-Tag': 'noindex' });
 }
 
 function html(body, method, extra) {

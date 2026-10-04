@@ -265,17 +265,26 @@ await test('陌生人私聊只给网页地址', async () => {
   assert.equal(sent.verify.length, 0);
 });
 
-await test('频道主发分享链接 → 交审核机器人；重复的不再收', async () => {
+// 审核单：一批一张，只有两个按钮
+const sheets = () => sent.verify.filter(m => m.method === 'sendMessage' && /🛂 审核单/.test(m.text));
+const bidOf = m => /审核单 ([a-z0-9]{14})/.exec(m.text)[1];
+let B1;
+await test('频道主发分享链接 → 成一张审核单（只有两个按钮）；重复的不再收', async () => {
   await dm(OWNER, '复制打开抖音 https://v.douyin.com/aaa/ 看看 https://v.douyin.com/bad/');
-  assert.equal(sent.verify.length, 1);
-  assert.equal(sent.verify[0].chat_id, OWNER);
-  assert.match(sent.verify[0].text, /我的第一条/);
-  assert.deepEqual(sent.verify[0].reply_markup.inline_keyboard[0].map(b => b.callback_data), [`ok:${AW1}`, `no:${AW1}`]);
-  assert.match(last('bot').text, /1 条已交审核/);
+  assert.equal(sheets().length, 1);
+  const sh = sheets()[0];
+  assert.equal(sh.chat_id, OWNER);
+  assert.match(sh.text, /🛂 审核单 [a-z0-9]{14}（#私聊链接 #批次数量1 条）/);
+  assert.match(sh.text, /我的第一条/);
+  assert.match(sh.text, /查看全部：https:\/\/xiaoju-video\.langhua98\.workers\.dev\/review\/[a-z0-9]{14}/);
+  B1 = bidOf(sh);
+  assert.deepEqual(sh.reply_markup.inline_keyboard, [[
+    { text: '✅ 审核通过', callback_data: `batch-ok:${B1}` }, { text: '❌ 审核失败', callback_data: `batch-no:${B1}` }]]);
+  assert.match(last('bot').text, new RegExp(`1 条成了审核单 ${B1}`));
   assert.match(last('bot').text, /1 条认不出：认不出这个链接/);
   reset();
   await dm(OWNER, 'https://v.douyin.com/aaa/');
-  assert.equal(sent.verify.length, 0);
+  assert.equal(sheets().length, 0);
   assert.match(last('bot').text, /以前已经收过/);
 });
 
@@ -287,30 +296,33 @@ await test('流式服务没醒时，链接如实告诉频道主', async () => {
 });
 
 await test('只有频道主能按审核按钮', async () => {
-  await press(STRANGER, `ok:${AW1}`);
+  await press(STRANGER, `batch-ok:${B1}`);
   assert.equal(last('verify').method, 'answerCallbackQuery');
   assert.match(last('verify').text, /只有频道主/);
   assert.equal((await L.getItem(AW1)).status, 'review');
 });
 
-await test('通过 → 排队并立刻交给流式服务（在转）', async () => {
-  await press(OWNER, `ok:${AW1}`);
+await test('审核通过 → 整批排队并立刻交给流式服务（在转）', async () => {
+  await press(OWNER, `batch-ok:${B1}`);
   assert.equal(toStreamer.length, 1);
   assert.equal(toStreamer[0].aweme, AW1);
   assert.equal(toStreamer[0].video_url, 'https://cdn.example/1.mp4');
   assert.equal((await L.getItem(AW1)).status, 'sending');
-  assert.ok(sent.verify.some(m => m.method === 'editMessageText' && /已通过/.test(m.text)));
+  assert.ok(sent.verify.some(m => m.method === 'editMessageText' && /✅ 审核通过：1 条排队转发/.test(m.text)));
   reset();
-  await press(OWNER, `ok:${AW1}`); // 再按一次：已经审过
+  await press(OWNER, `batch-ok:${B1}`); // 再按一次：已经审过
   assert.equal(toStreamer.length, 0);
   assert.match(sent.verify.find(m => m.method === 'answerCallbackQuery').text, /已经审过/);
+  await press(OWNER, 'ok:7300000000000000001'); // 老按钮不再管用
+  assert.match(last('verify').text, /已经不用了/);
 });
 
 await test('流式服务交不进去：放回队列，定时任务再交', async () => {
   state.resolve['https://v.douyin.com/bbb/'] = { aweme: AW2, type: 'images', desc: '图文', images: ['https://cdn.example/a.jpg'] };
+  reset();
   await dm(OWNER, 'https://v.douyin.com/bbb/');
   state.streamer = 'down';
-  await press(OWNER, `ok:${AW2}`);
+  await press(OWNER, `batch-ok:${bidOf(sheets()[0])}`);
   assert.equal((await L.getItem(AW2)).status, 'queued');
   state.streamer = 'ok';
   await worker.scheduled({}, env, { waitUntil: p => p });
@@ -381,7 +393,7 @@ await test('「云电脑」生成令牌，换新的旧的作废', async () => {
 });
 
 const C1 = '7300000000000000101', C2 = '7300000000000000102', C3 = '7300000000000000103';
-await test('云电脑：查已知、导入、进度', async () => {
+await test('云电脑：查已知、导入（成一张审核单）、进度', async () => {
   const H = { 'X-Token': token };
   let r = await post('/dy-known', { ids: [AW1, C1, 'junk'] }, H);
   assert.deepEqual((await r.json()).known, [AW1]);
@@ -392,9 +404,11 @@ await test('云电脑：查已知、导入、进度', async () => {
     { aweme: AW1, type: 'video' },
     { aweme: 'bad' },
   ] }, H);
-  assert.deepEqual(await r.json(), { ok: true, added: 3, skipped: 1, invalid: 1 });
-  assert.equal(sent.verify.length, 1);
-  assert.match(sent.verify[0].text, /新同步来 3 条/);
+  const j = await r.json();
+  assert.deepEqual({ ...j, batch: undefined }, { ok: true, added: 3, skipped: 1, invalid: 1, batch: undefined });
+  assert.equal(sheets().length, 1);
+  assert.match(sheets()[0].text, /（#主页同步 #批次数量3 条）/);
+  assert.equal(bidOf(sheets()[0]), j.batch);
   r = await post('/dy-progress', { stage: '抓作品', done: 30, total: 120 }, H);
   assert.equal(r.status, 200);
   reset();
@@ -404,15 +418,19 @@ await test('云电脑：查已知、导入、进度', async () => {
   assert.equal((await post('/dy-import', { items: new Array(201).fill({}) }, H)).status, 413);
 });
 
-await test('逐条审核、全部通过：按发布时间从旧到新交出去', async () => {
-  await press(OWNER, 'cloud-each');
-  assert.equal(sent.verify.filter(m => m.method === 'sendMessage').length, 3);
-  await press(OWNER, `no:${C3}`);
+await test('审核通过整批：按发布时间从旧到新交出去；审核失败整批不转', async () => {
+  const open = await L.openBatches(10);
+  const B = open[open.length - 1].id;
   reset();
-  await press(OWNER, 'cloud-ok');
-  assert.deepEqual(toStreamer.map(i => i.aweme).filter(a => a.startsWith('73000000000000001')), [C2, C1]);
-  assert.equal((await L.getItem(C3)).status, 'rejected');
-  assert.ok(sent.verify.some(m => m.method === 'editMessageText' && /全部通过/.test(m.text)));
+  await press(OWNER, `batch-ok:${B}`);
+  assert.deepEqual(toStreamer.map(i => i.aweme).filter(a => a.startsWith('73000000000000001')), [C2, C3, C1]);
+  assert.equal((await L.getBatch(B)).status, 'approved');
+  // 再来一批，审核失败
+  const r = await post('/dy-import', { items: [{ aweme: '7300000000000000104', type: 'video', video_url: 'https://cdn/c4.mp4' }] }, { 'X-Token': token });
+  const B2 = (await r.json()).batch;
+  await press(OWNER, `batch-no:${B2}`);
+  assert.equal((await L.getItem('7300000000000000104')).status, 'rejected');
+  assert.ok(sent.verify.some(m => m.method === 'editMessageText' && /❌ 审核失败：1 条不转/.test(m.text)));
 });
 
 await test('失败过的作品，云电脑再送来会用新地址重新待审核', async () => {
@@ -431,9 +449,11 @@ await test('失败过的作品，云电脑再送来会用新地址重新待审�
 });
 
 // ── 审核机器人私聊、管理接口 ──
-await test('审核机器人私聊：告诉频道主有几条待审核', async () => {
+await test('审核机器人私聊：把没审的审核单再发一遍', async () => {
+  reset();
   await hook({ message: { chat: { id: OWNER, type: 'private' }, from: { id: OWNER }, text: '/start' } }, true);
-  assert.match(last('verify').text, /1 条作品等你审核/);
+  assert.equal(sheets().length, (await L.openBatches(5)).length);
+  assert.ok(sheets().length >= 1);
   await hook({ message: { chat: { id: STRANGER, type: 'private' }, from: { id: STRANGER }, text: '/start' } }, true);
   assert.match(last('verify').text, /只有频道主/);
 });
@@ -513,21 +533,21 @@ await test('「同步作品」带着登录状态交给流式服务；链接也�
   assert.equal(jobCalls[1][1].mode, 'detail');
 });
 
-await test('流式服务送来链接抓的作品：逐条交审核；主页同步的发汇总', async () => {
+await test('流式服务送来的作品：按来源打标签成审核单；Codespaces 令牌一律当主页同步', async () => {
   reset();
   const K = { 'X-Key': SKEY };
   let r = await post('/dy-import', { src: 'link', items: [{ aweme: '7300000000000000201', type: 'video', desc: '链接作品', video_url: 'https://cdn.example/201.mp4' }] }, K);
   assert.equal((await r.json()).added, 1);
-  assert.equal(sent.verify.length, 1);
-  assert.match(sent.verify[0].text, /私聊链接/);
-  assert.deepEqual(sent.verify[0].reply_markup.inline_keyboard[0].map(b => b.callback_data), ['ok:7300000000000000201', 'no:7300000000000000201']);
+  assert.equal(sheets().length, 1);
+  assert.match(sheets()[0].text, /（#私聊链接 #批次数量1 条）/);
+  assert.match(sheets()[0].text, /链接作品/);
+  assert.deepEqual(sheets()[0].reply_markup.inline_keyboard[0].map(b => b.callback_data).map(d => d.split(':')[0]), ['batch-ok', 'batch-no']);
   reset();
   r = await post('/dy-import', { src: 'cloud', items: [{ aweme: '7300000000000000202', type: 'video', video_url: 'https://cdn.example/202.mp4' }] }, K);
-  assert.match(sent.verify[0].text, /新同步来 1 条/);
-  // Codespaces 的令牌送不了 link：一律当主页同步
+  assert.match(sheets()[0].text, /（#主页同步 #批次数量1 条）/);
   reset();
   await post('/dy-import', { src: 'link', items: [{ aweme: '7300000000000000203', type: 'video', video_url: 'https://cdn.example/203.mp4' }] }, { 'X-Token': token });
-  assert.match(sent.verify[0].text, /新同步来 1 条/);
+  assert.match(sheets()[0].text, /（#主页同步 #批次数量1 条）/);
 });
 
 await test('/streamer-say：流式服务托 Worker 给频道主发消息和图片，别人不发', async () => {
@@ -585,8 +605,8 @@ await test('定时器轮询发件箱：重启检测、转完的结果、二维�
   assert.equal(await photo.photo.text(), 'QRPNG');
   assert.ok(!sent.bot.some(m => m.chat_id === STRANGER || m.chat_id === String(STRANGER)));
   assert.equal(JSON.parse(await L.getConfig('dySession')).nickname, '新号');
-  assert.match(sent.bot.map(m => m.text).join('\n'), /抓到 1 条，0 条以前收过，新的 1 条已交审核机器人/);
-  assert.equal(sent.verify.filter(m => /抓来的/.test(m.text)).length, 1);
+  assert.match(sent.bot.map(m => m.text).join('\n'), /抓到 1 条，0 条以前收过，新的 1 条成了审核单 [a-z0-9]{14}/);
+  assert.equal(sheets().filter(m => /抓来的/.test(m.text)).length, 1);
   assert.equal(JSON.parse(await L.getConfig('cloudProgress')).stage, '完成');
   assert.equal(libStorage.alarm, null); // 不忙了：不再设定时器
 });
@@ -657,7 +677,7 @@ await test('带按钮的话：键盘临时换成登录页的选项；登录结�
   assert.deepEqual(done.reply_markup.keyboard[0].map(b => b.text), ['登录抖音', '同步作品']);
 });
 
-// ── 关键词搜索：搜出来的有别人的作品，逐条审核；通过过的号记住 ──
+// ── 关键词搜索：一批一张审核单；通过过的号记住，下次标 ✓ ──
 await test('「搜索 关键词」交给流式服务；没给关键词说用法', async () => {
   jobCalls.length = 0;
   await dm(OWNER, '搜索 坏脾气小橘，小橘 猫咪、第三个');
@@ -671,48 +691,43 @@ await test('「搜索 关键词」交给流式服务；没给关键词说用法'
 
 const ALT = 'MS4wLjABAAAAmyaltaccount0001', OTHER = 'MS4wLjABAAAAsomeoneelse0001';
 const sitem = (n, author, sec) => ({ aweme: `73000000000000005${n}`, type: 'video', desc: `搜到的${n}`, author, author_sec_uid: sec, video_url: `https://cdn.example/s${n}.mp4` });
-await test('搜索结果：汇总没有「全部通过」；审核消息有作者主页和提醒', async () => {
+let SB;
+await test('搜索结果：一张审核单，标签带关键词，列出作者，只有两个按钮', async () => {
   reset();
   await importBatch([sitem(1, '小号一', ALT), sitem(2, '路人', OTHER)]);
-  const ann = sent.verify.find(m => /关键词搜索新找到 2 条/.test(m.text));
-  assert.ok(ann);
-  const datas = ann.reply_markup.inline_keyboard.flat().map(b => b.callback_data);
-  assert.deepEqual(datas, ['search-each', 'search-no']); // 还没认过任何号：没有一键通过
-  reset();
-  await press(OWNER, 'search-each');
-  const msgs = sent.verify.filter(m => m.method === 'sendMessage' && /搜到的/.test(m.text));
-  assert.equal(msgs.length, 2);
-  assert.match(msgs[0].text, /作者：小号一/);
-  assert.match(msgs[0].text, new RegExp(`作者主页：https://www.douyin.com/user/${ALT}`));
-  assert.match(msgs[0].text, /可能是别人的作品/);
+  assert.equal(sheets().length, 1);
+  const sh = sheets()[0];
+  SB = bidOf(sh);
+  assert.match(sh.text, /（#关键词搜索 #橘猫 #猫 #批次数量2 条）/);
+  assert.match(sh.text, /作者：小号一 ×1、路人 ×1/);
+  assert.doesNotMatch(sh.text, /✓/);
+  assert.equal(sh.reply_markup.inline_keyboard.flat().length, 2);
+  const page = await call(`/review/${bidOf(sh)}`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /搜到的1/);
+  assert.match(html, new RegExp(`douyin.com/user/${ALT}`));
+  assert.equal((await call('/review/aaaaaaaaaaaaaa')).status, 404);
 });
 
-await test('通过一条：记住这个号；下次这个号的作品标出来，可以一键通过，别人的还要逐条看', async () => {
-  await press(OWNER, 'ok:730000000000000051');
-  assert.deepEqual(JSON.parse(await L.getConfig('myAccounts')), [ALT]);
-  await press(OWNER, 'no:730000000000000052');
-  assert.deepEqual(JSON.parse(await L.getConfig('myAccounts')), [ALT]); // 不转的不记
+await test('审核通过：整批作者记住；下次这些号的作品在审核单上标 ✓；审核失败的不记', async () => {
+  await press(OWNER, `batch-ok:${SB}`);
+  assert.deepEqual(JSON.parse(await L.getConfig('myAccounts')), [ALT, OTHER]);
+  assert.notEqual((await L.getItem('730000000000000051')).status, 'review');
   reset();
-  await importBatch([sitem(3, '小号一', ALT), sitem(4, '路人', OTHER), sitem(5, '小号一', ALT)]);
-  const ann = sent.verify.find(m => /关键词搜索新找到 3 条/.test(m.text));
-  assert.match(ann.text, /其中 2 条是你通过过的号发的/);
-  assert.equal(ann.reply_markup.inline_keyboard[0][0].callback_data, 'search-mine');
-  reset();
-  await press(OWNER, 'search-each');
-  const m3 = sent.verify.find(m => /搜到的3/.test(m.text));
-  assert.match(m3.text, /✓ 你通过过这个号的作品/);
-  assert.doesNotMatch(m3.text, /可能是别人的作品/);
-  await press(OWNER, 'search-mine');
-  assert.equal((await L.getItem('730000000000000053')).status === 'review', false);
-  assert.equal((await L.getItem('730000000000000055')).status === 'review', false);
-  assert.equal((await L.getItem('730000000000000054')).status, 'review'); // 路人的还在等
-  await press(OWNER, 'search-no');
+  const THIRD = 'MS4wLjABAAAAthirdperson0001';
+  await importBatch([sitem(3, '小号一', ALT), sitem(4, '第三人', THIRD)]);
+  const sh = sheets()[0];
+  assert.match(sh.text, /小号一 ×1 ✓/);
+  assert.match(sh.text, /第三人 ×1(?! ✓)/);
+  await press(OWNER, `batch-no:${bidOf(sh)}`);
   assert.equal((await L.getItem('730000000000000054')).status, 'rejected');
+  assert.deepEqual(JSON.parse(await L.getConfig('myAccounts')), [ALT, OTHER]);
 });
 
 async function importBatch(items) {
   const seq = (Number(await L.getConfig('outboxSeq')) || 0) + 1;
-  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [{ seq, kind: 'import', chat_id: OWNER, src: 'search', what: '关键词', items }] };
+  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [{ seq, kind: 'import', chat_id: OWNER, src: 'search', what: '「橘猫」「猫」', items }] };
   await L.alarm();
 }
 
