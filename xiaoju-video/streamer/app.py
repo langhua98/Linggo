@@ -545,3 +545,10 @@ async def debug_net(request: Request):
             r['https'] = f'{type(e).__name__}: {e}'[:200]
         out[host] = r
     return out
+
+
+@app.get('/douyin/debug')
+async def douyin_debug(request: Request):
+    """登录页最近的诊断：点选项时鼠标落在哪、之后抖音的请求和返回、控制台、新窗口"""
+    check_key(request)
+    return {'debug': list(jobs.debug)}

@@ -210,6 +210,51 @@ async def find_qr(page):
         return None
 
 
+# ── 诊断：点了选项以后页面里发生了什么（只给维护的人看，不发给频道主）──
+TRACE = {'net': [], 'console': [], 'popups': []}
+LAST_CLICK = {}
+HIT_JS = r"""
+([x, y]) => {
+  const e = document.elementFromPoint(x, y);
+  if (!e) return null;
+  const chain = [];
+  for (let n = e; n && chain.length < 6; n = n.parentElement)
+    chain.push(n.tagName + '.' + String(n.className).slice(0, 60) + ' cursor=' + getComputedStyle(n).cursor);
+  return chain;
+}
+"""
+
+
+def trace(page):
+    """记下抖音的请求、控制台、新窗口；只留最近的"""
+    def keep(lst, item, n=60):
+        lst.append(item)
+        del lst[:-n]
+
+    async def on_response(res):
+        url = res.url
+        if not re.search(r'douyin|bytedance|zijie|snssdk|amemv|byteimg', url) or re.search(r'\.(js|css|png|jpe?g|webp|woff2?|svg)(\?|$)', url):
+            return
+        body = ''
+        if re.search(r'verify|passport|safe|risk|face|ticket|auth', url):
+            try:
+                body = (await res.text())[:400]
+            except Exception:  # noqa: BLE001
+                pass
+        keep(TRACE['net'], {'t': round(time.time(), 1), 'status': res.status, 'url': url[:200], 'body': body})
+
+    page.on('response', on_response)
+    page.on('console', lambda m: keep(TRACE['console'], {'t': round(time.time(), 1), 'type': m.type, 'text': m.text[:300]}, 30))
+    page.context.on('page', lambda p: keep(TRACE['popups'], {'t': round(time.time(), 1), 'url': p.url}, 10))
+
+
+def debug(what, **kw):
+    since = kw.pop('since', 0)
+    emit('debug', what=what, net=[x for x in TRACE['net'] if x['t'] >= since],
+         console=[x for x in TRACE['console'] if x['t'] >= since],
+         popups=[x for x in TRACE['popups'] if x['t'] >= since], **kw)
+
+
 async def click_option(page, text):
     """点弹窗里的一个选项：找到那张能点的卡片，滚到看得见，拿真鼠标点它正中间。返回点中的那项的字，没找到返回空"""
     try:
@@ -217,6 +262,11 @@ async def click_option(page, text):
     except Exception:  # noqa: BLE001
         pos = None
     if pos:
+        try:
+            hit = await page.evaluate(HIT_JS, [pos['x'], pos['y']])
+        except Exception:  # noqa: BLE001
+            hit = None
+        LAST_CLICK.update(pos=pos, hit=hit)
         await page.mouse.click(pos['x'], pos['y'])
         return pos['text']
     try:  # 退回：按字找看得见的那一处点
@@ -305,9 +355,14 @@ async def handle_input(ctx, page, text):
     if text == '截图':
         await show(page)
         return True
+    if text == '调试':
+        debug('调试', dialog=await dialog_text(page), options=await options(page))
+        return False
     # 别的当成要点的字：验证方式（手机刷脸验证、接收短信验证码……）、确定、下一步……
     pages_before = len(ctx.pages)
     before = await dialog_text(page)
+    t0 = round(time.time(), 1)
+    LAST_CLICK.clear()
     clicked = await click_option(page, text)
     if not clicked:
         await show(page, f'页面上没找到「{text}」，现在是这样：')
@@ -339,6 +394,7 @@ async def handle_input(ctx, page, text):
         await asyncio.sleep(1)
         await show(view, '短信验证码应该发到你手机上了，收到后直接把数字发给我。现在是这样：')
         return True
+    debug(f'点了 {clicked}', since=t0, click=dict(LAST_CLICK), changed=changed, dialog=await dialog_text(view))
     await show(view, f'点了「{clicked}」，' + ('现在是这样（没看到二维码）：' if changed else '页面没有变化：'))
     return True
 
@@ -436,6 +492,7 @@ async def main():
         if os.path.exists('libs/stealth.min.js'):
             await ctx.add_init_script(path='libs/stealth.min.js')
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        trace(page)
         try:
             await page.goto(INDEX, wait_until='domcontentloaded', timeout=60000)
             await page.wait_for_timeout(3000)

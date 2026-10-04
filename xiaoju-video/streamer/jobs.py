@@ -128,6 +128,7 @@ class Jobs:
         self.current = None   # {'kind', 'since', 'proc'}
         self.task = None
         self.poll_interval = 0.3  # 多久读一次登录页的事件文件
+        self.debug = collections.deque(maxlen=10)  # 登录页的诊断（GET /douyin/debug 看，不发给频道主）
 
     def status(self):
         c = self.current
@@ -208,6 +209,9 @@ class Jobs:
             png = ev.get('png') or None
             kind = ev['event']
             opts = [str(o)[:20] for o in (ev.get('options') or []) if o][:6]
+            if kind == 'debug':
+                self.debug.append(ev)
+                continue
             if kind == 'qr':
                 self._say(chat_id, QR_TEXT, png)
             elif kind == 'verify':
