@@ -222,6 +222,54 @@ async def solve_slider(ctx, page):
     return False
 
 
+def net_diag():
+    """打不开快手首页时看看是哪一步不通：本机的出口 IP；www 和 id 两个域名各自 TCP 连不连得上、TLS 握手过不过。
+    www 握手不回、id 好好的 = 快手按 IP 拦了这台机器"""
+    import socket
+    import ssl
+    import urllib.request
+    lines = []
+    try:
+        req = urllib.request.Request('https://api.ipify.org', headers={'User-Agent': 'xiaoju-video'})
+        lines.append('出口 IP ' + urllib.request.urlopen(req, timeout=8).read().decode()[:40])
+    except Exception as e:  # noqa: BLE001
+        lines.append(f'出口 IP 查不到（{type(e).__name__}）')
+    for host in ('www.kuaishou.com', 'id.kuaishou.com'):
+        try:
+            ip = socket.getaddrinfo(host, 443, socket.AF_INET)[0][4][0]
+        except Exception as e:  # noqa: BLE001
+            lines.append(f'{host}：解析不了（{type(e).__name__}）')
+            continue
+        try:
+            sock = socket.create_connection((ip, 443), timeout=8)
+        except Exception as e:  # noqa: BLE001
+            lines.append(f'{host}（{ip}）：TCP 连不上（{type(e).__name__}）')
+            continue
+        try:
+            with ssl.create_default_context().wrap_socket(sock, server_hostname=host) as t:
+                t.settimeout(8)
+                t.sendall(f'GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n'.encode())
+                head = t.recv(64).decode('latin1').split('\r\n')[0]
+            lines.append(f'{host}（{ip}）：通，{head}')
+        except Exception as e:  # noqa: BLE001
+            lines.append(f'{host}（{ip}）：TCP 通，TLS 握手不过（{type(e).__name__}）')
+    return '\n'.join(lines)
+
+
+async def open_index(page):
+    """打开快手首页；超时多试两次（偶尔抽风）。都不行抛出去，带上网络诊断"""
+    last = None
+    for _ in range(3):
+        try:
+            await page.goto(INDEX, wait_until='domcontentloaded', timeout=45000)
+            return
+        except Exception as e:  # noqa: BLE001
+            last = e
+            await page.wait_for_timeout(3000)
+    diag = await asyncio.to_thread(net_diag)
+    raise RuntimeError(f'打不开快手首页（试了 3 次）：{str(last).splitlines()[0][:120]}\n网络诊断：\n{diag}')
+
+
 async def logged_in(ctx):
     cookies = await ctx.cookies(COOKIE_URL)
     return any(c['name'] == 'passToken' and c['value'] for c in cookies)
@@ -248,7 +296,7 @@ async def who_am_i(ctx, page):
     uid = next((c['value'] for c in cookies if c['name'] == 'userId' and c['value']), '')
     nickname = ''
     try:
-        await page.goto(INDEX, wait_until='domcontentloaded', timeout=60000)
+        await open_index(page)
         await page.wait_for_timeout(3000)
         nickname = await page.evaluate(r"""() => {
           for (const a of document.querySelectorAll('a[href*="/profile/"]')) {
@@ -325,7 +373,7 @@ async def main():
             await ctx.add_init_script(path='libs/stealth.min.js')
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         try:
-            await page.goto(INDEX, wait_until='domcontentloaded', timeout=60000)
+            await open_index(page)
             await page.wait_for_timeout(3000)
             if not await logged_in(ctx) and not await wait_login(ctx, page, inputs):
                 return
@@ -341,7 +389,7 @@ async def main():
                 png = b64(await page.screenshot())
             except Exception:  # noqa: BLE001
                 png = ''
-            emit('error', text=f'{type(e).__name__}: {str(e)[:200]}', png=png)
+            emit('error', text=str(e)[:900] if isinstance(e, RuntimeError) else f'{type(e).__name__}: {str(e)[:200]}', png=png)
         finally:
             await ctx.close()
 
