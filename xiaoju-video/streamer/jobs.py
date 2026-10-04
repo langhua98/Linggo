@@ -28,6 +28,7 @@ log = logging.getLogger('jobs')
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGIN_TIMEOUT = 12 * 60
 CRAWL_TIMEOUT = 60 * 60
+FLUSH_EVERY = 15  # 边抓边交：每隔几秒把新抓到的交给 Worker
 SEC_UID = re.compile(r'^MS4wLjABAAAA[\w-]{10,200}$')
 # 关键词搜索：一次最多几个关键词、每个最多要几条（都要频道主逐条审核，太多审不过来）
 SEARCH_KEYWORDS = 5
@@ -305,16 +306,35 @@ class Jobs:
             self._crawl(chat_id, mode, target, cookies, src, what, max_notes), CRAWL_TIMEOUT))
 
     async def _crawl(self, chat_id, mode, target, cookies, src, what, max_notes=100000):
+        """边抓边交：MediaCrawler 抓到一条就往 jsonl 里追加一行，这里每隔 FLUSH_EVERY 秒把新出现的交给 Worker
+        （同一个 job 号），抓完再交最后一批（final）。中途出错、超时，已经交出去的照常转/审"""
         data_dir = tempfile.mkdtemp(prefix='mc-')
+        job = os.urandom(6).hex()
+        handed = set()
+
+        def flush(final=False):
+            fresh = [i for i in items_from(read_rows(data_dir)) if i['aweme'] not in handed]
+            if not fresh and not (final and handed):
+                return
+            handed.update(i['aweme'] for i in fresh)
+            self.emit('import', chat_id=chat_id, items=fresh, src=src, what=what, job=job, final=final)
+
+        async def pump():
+            while True:
+                await asyncio.sleep(FLUSH_EVERY)
+                flush()
+
+        pumper = None
         try:
             self.emit('progress', stage=f'抓{what}')
-            then = '抓完新的直接排队转进频道' if src == 'alt' else '抓完把新的交给审核机器人'
+            then = '抓到的新作品边抓边排队转进频道' if src == 'alt' else '抓到的边抓边交给审核机器人'
             self._say(chat_id, f'开始抓{what}（MediaCrawler），{then}。作品多的话要好一会儿。')
             mc_mode = 'creator' if mode == 'accounts' else mode
             argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mc_mode, target, data_dir, cookies, max_notes)
             unlock_profile(self.mc_dir)
             proc = await self.spawn(argv, self.mc_dir)
             self.current['proc'] = proc
+            pumper = asyncio.ensure_future(pump())
             tail = collections.deque(maxlen=15)
             seen = 0
             async for line in proc.lines():
@@ -324,15 +344,19 @@ class Jobs:
                     if seen % 20 == 0:
                         self.emit('progress', stage=f'抓{what}', done=seen)
             code = await proc.wait()
-            items = items_from(read_rows(data_dir))
-            if not items:
+            pumper.cancel()
+            flush(final=True)
+            if not handed:
                 self.emit('progress', stage='完成', note=f'抓{what}：一条作品也没抓到')
                 self._say(chat_id, f'一条作品也没抓到（MediaCrawler 退出码 {code}）。最后几行日志：\n' +
                           '\n'.join(list(tail)[-8:]))
-                return
-            # 整批交给 Worker：它查重、存进待审核、交审核机器人，再告诉频道主抓到几条、新的几条
-            self.emit('import', chat_id=chat_id, items=items, src=src, what=what)
+        except asyncio.CancelledError:
+            # 超时、取消：已经抓到还没交的也交出去，Worker 好发汇总
+            flush(final=True)
+            raise
         finally:
+            if pumper:
+                pumper.cancel()
             shutil.rmtree(data_dir, ignore_errors=True)
 
 

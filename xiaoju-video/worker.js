@@ -583,7 +583,7 @@ function sheetHeader(b) {
 }
 
 // 审核单：一批一张，只有两个按钮。上面列作者统计和前几条，「查看全部」打开整批的列表
-async function sendSheet(env, id) {
+async function sendSheet(env, id, edit = false) {
   const L = lib(env);
   const owner = await ownerId(env);
   const b = await L.getBatch(id);
@@ -608,10 +608,19 @@ async function sendSheet(env, id) {
     '',
     `查看全部：${PUBLIC_URL}/review/${id}`,
   ].filter(x => x !== undefined && x !== false);
-  const r = await verifySay(env, owner, lines.join('\n').replace(/\n{3,}/g, '\n\n'), [[
+  const text = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  const buttons = [[
     { text: '✅ 审核通过', callback_data: `batch-ok:${id}` },
     { text: '❌ 审核失败', callback_data: `batch-no:${id}` },
-  ]]);
+  ]];
+  // 边抓边交：同一次抓取后面送来的并进这张单子，原地改条数，不再发新的
+  if (edit && b.msg) {
+    await tg(env.VERIFY_BOT_TOKEN, 'editMessageText', {
+      chat_id: owner, message_id: b.msg, text, disable_web_page_preview: true, reply_markup: { inline_keyboard: buttons },
+    });
+    return;
+  }
+  const r = await verifySay(env, owner, text, buttons);
   if (r && r.result && r.result.message_id) await L.setBatchMsg(id, r.result.message_id);
 }
 
@@ -798,8 +807,9 @@ async function saveProgress(env, body) {
   await lib(env).setConfig('cloudProgress', JSON.stringify(p));
 }
 
-// 收作品：查重、存进待审核，新的成一批，发一张审核单
-async function importItems(env, raw, src, what = '') {
+// 收作品：查重、存进待审核，新的成一批，发一张审核单。
+// into：同一次抓取上一段用的批次（{ batch, autoBatch }）：还没审的就并进去、改原来那张单子
+async function importItems(env, raw, src, what = '', into = {}) {
   const list = Array.isArray(raw) ? raw : [];
   const items = list.map(normalizeItem).filter(Boolean);
   const L = lib(env);
@@ -813,25 +823,28 @@ async function importItems(env, raw, src, what = '') {
     await L.setConfig('altAccounts', JSON.stringify(alts));
     const secs = new Set(alts.map(a => a.sec));
     const mine = items.filter(i => secs.has(i.author_sec_uid));
-    const batch = newBatchId();
+    const old = into.autoBatch && (await L.getBatch(into.autoBatch));
+    const batch = old ? into.autoBatch : newBatchId();
     const fresh = await L.addItems(mine, 'alt', batch);
     let auto = 0;
     if (fresh.length) {
-      await L.addBatch(batch, 'alt', ['#小号同步']);
+      if (!old) await L.addBatch(batch, 'alt', ['#小号同步']);
       auto = await L.reviewBatch(batch, 'queued');
       await rememberAccounts(env, mine);
       await dispatch(env);
     }
-    const r = await importItems(env, items.filter(i => !secs.has(i.author_sec_uid)), 'cloud', what);
-    return { ...r, auto, skipped: r.skipped + mine.length - fresh.length, invalid: list.length - items.length };
+    const r = await importItems(env, items.filter(i => !secs.has(i.author_sec_uid)), 'cloud', what, into);
+    return { ...r, auto, autoBatch: fresh.length || old ? batch : '', skipped: r.skipped + mine.length - fresh.length, invalid: list.length - items.length };
   }
-  const batch = newBatchId();
+  const prev = into.batch && (await L.getBatch(into.batch));
+  const open = prev && prev.status === 'review';
+  const batch = open ? into.batch : newBatchId();
   const fresh = await L.addItems(items, src, batch);
   if (fresh.length) {
-    await L.addBatch(batch, src, batchTags(src, what));
-    await sendSheet(env, batch);
+    if (!open) await L.addBatch(batch, src, batchTags(src, what));
+    await sendSheet(env, batch, open);
   }
-  return { added: fresh.length, skipped: items.length - fresh.length, invalid: list.length - items.length, batch: fresh.length ? batch : '' };
+  return { added: fresh.length, skipped: items.length - fresh.length, invalid: list.length - items.length, batch: fresh.length || open ? batch : '' };
 }
 
 // ── 流式服务的发件箱 ──────────────────────────────────────────────
@@ -882,15 +895,36 @@ async function handleEvent(env, ev) {
   } else if (ev.kind === 'progress') {
     await saveProgress(env, ev);
   } else if (ev.kind === 'import') {
-    const r = await importItems(env, (ev.items || []).slice(0, 10000), ['link', 'search', 'alt'].includes(ev.src) ? ev.src : 'cloud', ev.what);
-    const auto = r.auto || 0;
-    const total = r.added + r.skipped + auto;
-    await saveProgress(env, { stage: '完成', done: r.added + auto, total, note: `新的 ${r.added + auto} 条，已有 ${r.skipped} 条` });
-    const parts = [];
-    if (auto) parts.push(`新的 ${auto} 条是小号的作品，直接排队转进频道`);
-    if (r.added) parts.push(`新的 ${r.added} 条成了审核单 ${r.batch}，去审核机器人 @xiaojuverify_bot 审`);
-    await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过` + (parts.length ? `，${parts.join('；')}。` : '，没有新的。'));
+    await importEvent(env, ev);
   }
+}
+
+// 云电脑边抓边交：同一次抓取（job）分好几段送来，最后一段带 final。
+// 小号的每段一到就排队转发；要审的并进同一张审核单；条数攒着，最后一段到了才发汇总。没有 job 的当成一次送完
+async function importEvent(env, ev) {
+  const L = lib(env);
+  const job = /^[0-9a-f]{6,32}$/.test(String(ev.job || '')) ? String(ev.job) : '';
+  let st = JSON.parse((await L.getConfig('crawlJob')) || '{}');
+  if (!job || st.job !== job) st = { job, added: 0, skipped: 0, auto: 0, batch: '', autoBatch: '' };
+  const src = ['link', 'search', 'alt'].includes(ev.src) ? ev.src : 'cloud';
+  const r = await importItems(env, (ev.items || []).slice(0, 10000), src, ev.what, st);
+  st.added += r.added;
+  st.skipped += r.skipped;
+  st.auto += r.auto || 0;
+  st.batch = r.batch || st.batch;
+  st.autoBatch = r.autoBatch || st.autoBatch;
+  const total = st.added + st.skipped + st.auto;
+  if (job && ev.final === false) {
+    await L.setConfig('crawlJob', JSON.stringify(st));
+    await saveProgress(env, { stage: `抓${ev.what || ''}`, done: total, note: `边抓边交：新的 ${st.added + st.auto} 条，已有 ${st.skipped} 条` });
+    return;
+  }
+  await L.setConfig('crawlJob', '{}');
+  await saveProgress(env, { stage: '完成', done: st.added + st.auto, total, note: `新的 ${st.added + st.auto} 条，已有 ${st.skipped} 条` });
+  const parts = [];
+  if (st.auto) parts.push(`新的 ${st.auto} 条是小号的作品，已经排队转进频道`);
+  if (st.added) parts.push(`新的 ${st.added} 条在审核单 ${st.batch}，去审核机器人 @xiaojuverify_bot 审`);
+  await sendToOwner(env, ev.chat_id, `抓完了：一共 ${total} 条，${st.skipped} 条以前收过` + (parts.length ? `，${parts.join('；')}。` : '，没有新的。'));
 }
 
 // ── 云电脑 ────────────────────────────────────────────────────────

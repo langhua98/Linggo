@@ -231,6 +231,44 @@ def test_crawl_alt_accounts():
     asyncio.run(go())
 
 
+def test_crawl_hands_over_while_crawling(monkeypatch):
+    """边抓边交：MediaCrawler 还没退出，已经写进 jsonl 的就交给 Worker；最后一批带 final"""
+    monkeypatch.setattr(J, 'FLUSH_EVERY', 0.01)
+
+    async def go():
+        w = World()
+        box = {}
+
+        def make(argv):
+            d = argv[argv.index('--save_data_path') + 1]
+            os.makedirs(os.path.join(d, 'dy', 'jsonl'), exist_ok=True)
+            box['path'] = os.path.join(d, 'dy', 'jsonl', 'creator_contents_2026-10-04.jsonl')
+            box['proc'] = FakeProc([])
+            return box['proc']
+
+        j = w.jobs(make)
+        j.crawl(9, {'sec_uid': SEC, 'cookies': []}, 'accounts', [SEC], 'alt')
+        imports = lambda: [b for k, b in w.calls if k == 'import']
+        await until(lambda: 'path' in box)
+        with open(box['path'], 'a') as f:
+            f.write(json.dumps(row('7300000000000000001')) + '\n' + json.dumps(row('7300000000000000002')) + '\n{"aweme_id": "73')
+        await until(lambda: imports())
+        first = imports()[0]
+        assert [i['aweme'] for i in first['items']] == ['7300000000000000001', '7300000000000000002']  # 写了一半的行先不要
+        assert first['final'] is False and first['src'] == 'alt' and first['job']
+        assert j.current is not None  # 还在抓
+        with open(box['path'], 'a') as f:
+            f.write('00000000000000003"}\n'.replace('"}', '", "desc": "d", "create_time": 1, "video_download_url": "https://v.douyinvod.com/3"}'))
+            f.write(json.dumps(row('7300000000000000001')) + '\n')
+        box['proc'].close()
+        await settle(j)
+        last = imports()[-1]
+        assert last['final'] is True and last['job'] == first['job']
+        handed = [i['aweme'] for b in imports() for i in b['items']]
+        assert sorted(handed) == ['7300000000000000001', '7300000000000000002', '7300000000000000003']  # 不重复交
+    asyncio.run(go())
+
+
 def test_crawl_requires_login_and_valid_links():
     w = World()
     j = w.jobs(mc_writes([]))

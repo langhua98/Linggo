@@ -612,7 +612,7 @@ await test('定时器轮询发件箱：重启检测、转完的结果、二维�
   assert.equal(await photo.photo.text(), 'QRPNG');
   assert.ok(!sent.bot.some(m => m.chat_id === STRANGER || m.chat_id === String(STRANGER)));
   assert.equal(JSON.parse(await L.getConfig('dySession')).nickname, '新号');
-  assert.match(sent.bot.map(m => m.text).join('\n'), /抓到 1 条，0 条以前收过，新的 1 条成了审核单 [a-z0-9]{14}/);
+  assert.match(sent.bot.map(m => m.text).join('\n'), /抓完了：一共 1 条，0 条以前收过，新的 1 条在审核单 [a-z0-9]{14}/);
   assert.equal(sheets().filter(m => /抓来的/.test(m.text)).length, 1);
   assert.equal(JSON.parse(await L.getConfig('cloudProgress')).stage, '完成');
   assert.equal(libStorage.alarm, null); // 不忙了：不再设定时器
@@ -783,8 +783,43 @@ await test('小号抓来的作品：小号的直接排队转发不用审；登�
   assert.equal((await L.getItem('7300000000000000602')).status, 'review');
   assert.equal(sheets().length, 1);
   assert.match(sheets()[0].text, /（#主页同步 #批次数量1 条）/);
-  assert.match(sent.bot.map(m => m.text).join('\n'), /抓到 3 条，1 条以前收过，新的 1 条是小号的作品，直接排队转进频道；新的 1 条成了审核单/);
+  assert.match(sent.bot.map(m => m.text).join('\n'), /抓完了：一共 3 条，1 条以前收过，新的 1 条是小号的作品，已经排队转进频道；新的 1 条在审核单/);
   assert.equal(JSON.parse(await L.getConfig('altAccounts'))[0].name, '小号二');
+});
+
+await test('边抓边交：小号的每段一到就转；要审的并进同一张审核单（原地改条数）；最后一段才发汇总', async () => {
+  reset();
+  const own = JSON.parse(await L.getConfig('dySession')).sec_uid;
+  const it = (n, sec) => ({ aweme: `73000000000000007${n}`, type: 'video', desc: `段${n}`, author: sec === ALT2 ? '小号二' : '新号', author_sec_uid: sec, video_url: `https://cdn.example/7${n}.mp4` });
+  const send = async (events) => {
+    let seq = Number(await L.getConfig('outboxSeq')) || 0;
+    state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: events.map(e => ({ seq: ++seq, kind: 'import', chat_id: OWNER, src: 'alt', what: '小号主页', job: 'abc123abc123', ...e })) };
+    await L.alarm();
+  };
+  await send([{ final: false, items: [it(1, ALT2), it(2, own)] }]);
+  assert.equal((await L.getItem('730000000000000071')).status, 'sending'); // 没等抓完就转了
+  assert.equal(sheets().length, 1);
+  assert.match(sheets()[0].text, /#批次数量1 条/);
+  assert.ok(!sent.bot.some(m => /抓完了/.test(m.text || ''))); // 还没发汇总
+  assert.match(JSON.parse(await L.getConfig('cloudProgress')).note, /边抓边交：新的 2 条/);
+  await send([{ final: false, items: [it(3, own), it(4, ALT2)] }, { final: true, items: [it(5, own)] }]);
+  assert.equal(sheets().length, 1); // 没发新单子
+  const edits = sent.verify.filter(m => m.method === 'editMessageText' && /🛂 审核单/.test(m.text));
+  assert.match(edits[edits.length - 1].text, /#批次数量3 条/);
+  assert.deepEqual(edits[edits.length - 1].reply_markup.inline_keyboard[0].map(b => b.callback_data), [`batch-ok:${bidOf(sheets()[0])}`, `batch-no:${bidOf(sheets()[0])}`]);
+  assert.equal((await L.getItem('730000000000000074')).status === 'review', false);
+  const sum = sent.bot.filter(m => /抓完了/.test(m.text || ''));
+  assert.equal(sum.length, 1);
+  assert.match(sum[0].text, /一共 5 条，0 条以前收过，新的 2 条是小号的作品，已经排队转进频道；新的 3 条在审核单/);
+  // 中途审过了：后面送来的另开一张
+  reset();
+  await send([{ job: 'def456def456', final: false, items: [it(6, own)] }]);
+  await press(OWNER, `batch-ok:${bidOf(sheets()[0])}`);
+  reset();
+  await send([{ job: 'def456def456', final: true, items: [it(7, own)] }]);
+  assert.equal(sheets().length, 1);
+  assert.match(sheets()[0].text, /#批次数量1 条/);
+  assert.equal((await L.getItem('730000000000000077')).status, 'review');
 });
 
 await test('「小号」列表、「同步小号」、「删除小号」', async () => {
