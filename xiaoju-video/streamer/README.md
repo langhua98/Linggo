@@ -20,7 +20,7 @@ pinned: false
 | `POST /douyin/crawl` `{chat_id, session, mode, targets}` | 云电脑：MediaCrawler 抓作品（`creator` 只抓 `session.sec_uid` 那个主页，`detail` 抓 `targets` 里的链接），新的送 Worker `/dy-import` |
 | `GET /douyin/jobs` | 云电脑正在干什么（一次只干一件，忙时上面两个接口回 409） |
 | `POST /douyin/resolve` `{url}` | 不登录的分享页解析（备用；海外机房拿不到作品数据） |
-| `POST /douyin/post` `{items}` | 审核通过的作品排进队列：下载 → ffmpeg 挪 moov（不重编码）→ 用频道主账号发进视频频道，说明里带 `#dy<作品号>`；每条转完 POST Worker `/streamer-done` |
+| `POST /douyin/post` `{items}` | 审核通过的作品排进队列：下载 → ffmpeg 挪 moov（不重编码）→ 用频道主账号发进视频频道，说明里带 `#dy<作品号>`；每条转完的结果放进发件箱 |
 | `GET /douyin/status` | 队列状态 |
 | `GET /stream/<消息号>` | 超过 20 MB 的视频按 Range 走 MTProto 现取现传 |
 | `GET /thumb/<消息号>` | 视频自带的封面 |
@@ -31,7 +31,10 @@ pinned: false
 Playwright Chromium、Node（它算抖音接口签名）、Xvfb（有界面的浏览器跑在虚拟屏幕上）、中文字体。
 起子进程时不把 Telegram、Worker 的密钥传给它们。
 
-刚起来时 POST Worker 的 `/streamer-up` 报到，Worker 把之前交过来、还没转完的作品再交一次（Space 重启、休眠后队列就丢了）。
+**这里找不到 Worker**（HF 机房按域名挡掉了 `*.workers.dev` 和 `api.telegram.org`，TLS 握手超时），要报的事都放进发件箱：
+`GET /outbox?boot=&after=&wait=` 由 Worker 长轮询（`outbox.py`）。事件有 `done`（一条转完）、`say`（给频道主的话、截图，Worker 代发）、
+`session`（抖音登录状态）、`progress`、`import`（抓到的整批作品）。启动号变了 Worker 就知道这里重启过，把还没转完的再交一次。
+`GET /debug/net` 查出站网络（哪些域名连得上）。
 防重复发：这次运行里发过的作品直接报回那条消息号；重启后靠 Worker 的作品状态（已转的不会再交过来）。
 **不去频道里搜索、读取帖子和标签**（频道主要求）——只按消息号取网页要播的那个视频文件。
 
@@ -46,7 +49,6 @@ Playwright Chromium、Node（它算抖音接口签名）、Xvfb（有界面的�
 | `TG_USER_SESSION` | 频道主账号的登录凭证（Telethon StringSession），发帖用 |
 | `VIDEO_CHANNEL_ID` | 视频频道的数字 id（`-100` 开头），或私有频道的邀请链接（`GET /` 会显示认出的数字 id） |
 | `STREAMER_KEY` | 和小橘视频 Worker 的 `STREAMER_KEY` 相同（视频自己的密钥，和小橘音乐的不是同一个） |
-| `WORKER_URL` | `https://xiaoju-video.langhua98.workers.dev` |
 
 ## 本地测试
 

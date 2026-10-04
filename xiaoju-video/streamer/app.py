@@ -10,7 +10,9 @@ Worker 管登记、审核和网页；这里干 Worker 干不了的重活：
 3. 大视频流（GET /stream/<消息号>）：Bot API 只能下 20 MB 以内的文件，更大的由这里走 MTProto 按 Range 现取现传；
    GET /thumb/<消息号> 给视频自带的封面。
 
-刚起来时 POST Worker 的 /streamer-up 报到：Worker 把之前交过来、还没转完的作品再交一次（Space 重启时队列丢了）。
+要报给 Worker 的事（每条作品转完的结果、给频道主的话和截图、抓到的作品、抖音登录状态）都放进发件箱（outbox.py），
+由 Worker 来取（GET /outbox，长轮询）：Hugging Face 的机房按域名挡掉了 *.workers.dev 和 api.telegram.org，这里主动找不到 Worker。
+发件箱带启动号：Worker 看到启动号变了，就知道这里重启过、队列丢了，把之前交过来还没转完的作品再交一次。
 
 环境变量（Space → Settings → Variables and secrets，都设成 secret）：
   TG_API_ID / TG_API_HASH   my.telegram.org 申请的应用凭据
@@ -18,12 +20,10 @@ Worker 管登记、审核和网页；这里干 Worker 干不了的重活：
   TG_USER_SESSION           频道主账号的登录凭证（StringSession），发帖用
   VIDEO_CHANNEL_ID          视频频道的数字 id（-100 开头），或私有频道的邀请链接
   STREAMER_KEY              和 Worker 之间的密钥（X-Key 请求头）
-  WORKER_URL                Worker 地址，报到、报结果用
   MC_DIR / MC_PY            MediaCrawler 的目录和它的 Python（Dockerfile 里装好，默认 /opt/MediaCrawler、/opt/mc-venv/bin/python）
 """
 
 import asyncio
-import base64
 import hmac
 import json
 import logging
@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import jobs as jobs_mod
 from douyin import DESKTOP_UA, Douyin, DouyinError
+from outbox import Outbox
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
 CHUNK = 512 * 1024
@@ -166,7 +167,7 @@ class Poster:
         self.send_video = send_video          # async (信息, 说明) -> 消息号
         self.send_images = send_images        # async ([图片路径], 说明) -> 第一条的消息号
         self.already_posted = already_posted  # async (作品号) -> 这次运行里已经发过的消息号或 None（防重复发）
-        self.report = report                  # async (dict) -> None
+        self.report = report                  # (dict) -> None：放进发件箱
         self.queue = []
         self.current = None
         self.wake = asyncio.Event()
@@ -189,6 +190,9 @@ class Poster:
     def status(self):
         return {'current': self.current and self.current['aweme'], 'queued': len(self.queue), 'done': self.done}
 
+    def busy(self):
+        return bool(self.queue or self.current)
+
     async def run(self):
         while True:
             if not self.queue:
@@ -205,10 +209,7 @@ class Poster:
                 result = {'aweme': item['aweme'], 'ok': False, 'error': str(e)[:300] or type(e).__name__}
             self.current = None
             result['idle'] = not self.queue
-            try:
-                await self.report(result)
-            except Exception:  # noqa: BLE001
-                log.exception('report to worker failed')
+            self.report(result)
 
     async def post(self, item):
         old = await self.already_posted(item['aweme'])
@@ -294,6 +295,7 @@ streamer = None
 poster = None
 douyin = None
 jobs = None
+outbox = Outbox()
 state = {'bot': False, 'user': False, 'channel': None, 'channel_id': None}
 
 
@@ -302,24 +304,6 @@ def check_key(request):
     want = os.environ.get('STREAMER_KEY', '').encode()
     if not want or not hmac.compare_digest(got, want):
         raise HTTPException(403)
-
-
-async def worker_post(http, path, body):
-    base = os.environ.get('WORKER_URL', '').rstrip('/')
-    if not base:
-        return {}
-    r = await http.post(base + path, json=body, headers={'X-Key': os.environ['STREAMER_KEY']}, timeout=30)
-    r.raise_for_status()
-    return r.json() if r.content else {}
-
-
-async def tg_send(http, chat_id, text, png=None):
-    """给频道主发消息、图片（二维码、验证截图）。Hugging Face 的机房连不上 api.telegram.org（MTProto 能连），
-    所以交给 Worker 代发（/streamer-say，它只发给频道主）"""
-    body = {'chat_id': chat_id, 'text': text}
-    if png:
-        body['png'] = base64.b64encode(png).decode()
-    await worker_post(http, '/streamer-say', body)
 
 
 @asynccontextmanager
@@ -332,8 +316,7 @@ async def lifespan(app):
     env = os.environ
     http = httpx.AsyncClient(http2=False)
     douyin = Douyin(http)
-    jobs = jobs_mod.Jobs(spawn=jobs_mod.spawn, tg=lambda chat, text, png=None: tg_send(http, chat, text, png),
-                         worker=lambda path, body: worker_post(http, path, body),
+    jobs = jobs_mod.Jobs(spawn=jobs_mod.spawn, emit=outbox.put,
                          mc_dir=env.get('MC_DIR', '/opt/MediaCrawler'), mc_py=env.get('MC_PY', '/opt/mc-venv/bin/python'))
     api_id, api_hash = int(env['TG_API_ID']), env['TG_API_HASH']
     # receive_updates=False：只调用、不订阅推送。机器人同时挂在官方 Bot API 上收 webhook，
@@ -393,29 +376,19 @@ async def lifespan(app):
     async def prepare(src, work):
         return await asyncio.to_thread(ffmpeg_prepare, src, work)
 
-    async def report(body):
+    def report(body):
         if body.get('ok'):
             posted[body['aweme']] = body['message_id']
-        await worker_post(http, '/streamer-done', body)
+        outbox.put('done', **body)
 
     poster = Poster(douyin=douyin, download=lambda u, p: http_download(http, u, p), prepare=prepare,
                     send_video=send_video, send_images=send_images, already_posted=already_posted,
                     report=report)
     poster.task = asyncio.create_task(poster.run())
 
-    async def say_up():
-        for attempt in range(5):
-            try:
-                await worker_post(http, '/streamer-up', {})
-                return
-            except Exception:  # noqa: BLE001
-                log.warning('streamer-up failed (attempt %s)', attempt + 1)
-                await asyncio.sleep(10 * (attempt + 1))
-    up = asyncio.create_task(say_up())
     try:
         yield
     finally:
-        up.cancel()
         poster.task.cancel()
         await user.disconnect()
         await bot.disconnect()
@@ -423,6 +396,16 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.get('/outbox')
+async def outbox_get(request: Request, boot: str = '', after: int = 0, wait: int = 0):
+    """Worker 来取要报的事：先扔掉它说处理过的（启动号对得上才扔），没事就最多等 wait 秒（长轮询）"""
+    check_key(request)
+    outbox.ack(boot, after)
+    await outbox.wait(max(0, min(wait, 25)))
+    return {'boot': outbox.boot, 'events': outbox.batch(),
+            'busy': bool((jobs and jobs.current) or (poster and poster.busy()))}
 
 
 @app.get('/')
@@ -538,3 +521,26 @@ async def douyin_crawl(request: Request):
 async def douyin_jobs(request: Request):
     check_key(request)
     return jobs.status()
+
+
+@app.get('/debug/net')
+async def debug_net(request: Request):
+    """排查出站网络：解析、TCP 直连、HTTPS 请求几个要用的地址（要 X-Key）"""
+    import socket
+    check_key(request)
+    out = {}
+    for host in ('xiaoju-video.langhua98.workers.dev', 'api.telegram.org', 'www.douyin.com', 'huggingface.co'):
+        r = {}
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            r['addrs'] = sorted({f'{"v6" if i[0] == socket.AF_INET6 else "v4"} {i[4][0]}' for i in infos})
+        except Exception as e:  # noqa: BLE001
+            r['dns'] = repr(e)
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                res = await c.get(f'https://{host}/')
+                r['https'] = res.status_code
+        except Exception as e:  # noqa: BLE001
+            r['https'] = f'{type(e).__name__}: {e}'[:200]
+        out[host] = r
+    return out

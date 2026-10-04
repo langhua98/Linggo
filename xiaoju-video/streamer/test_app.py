@@ -130,7 +130,7 @@ class Fakes:
     async def already_posted(self, aweme):
         return self.posted.get(aweme)
 
-    async def report(self, body):
+    def report(self, body):
         self.reports.append(body)
 
 
@@ -249,3 +249,23 @@ def test_post_and_resolve_endpoints():
     r = c.post('/douyin/resolve', json={'url': '没有链接'}, headers=h)
     assert r.status_code == 400 and r.json()['error'] == '没找到抖音链接'
     assert c.post('/douyin/resolve', json={'url': 'x'}).status_code == 403
+
+
+def test_outbox_endpoint():
+    from outbox import Outbox
+    appmod.outbox = Outbox(boot='b1')
+    appmod.jobs = None
+    appmod.poster = make_poster(Fakes(), FakeDouyin({}))
+    appmod.outbox.put('done', aweme=AW, ok=True, message_id=5, idle=True)
+    appmod.outbox.put('say', chat_id=1, text='hi', png=None)
+    c = TestClient(appmod.app)
+    assert c.get('/outbox').status_code == 403
+    h = {'X-Key': 'k'}
+    r = c.get('/outbox', headers=h).json()
+    assert r['boot'] == 'b1' and [e['seq'] for e in r['events']] == [1, 2] and r['busy'] is False
+    r = c.get('/outbox?boot=b1&after=1', headers=h).json()
+    assert [e['kind'] for e in r['events']] == ['say']
+    r = c.get('/outbox?boot=b1&after=2&wait=1', headers=h).json()  # 没事：等 1 秒后空手回
+    assert r['events'] == []
+    appmod.poster.add([{'aweme': AW, 'type': 'video'}])
+    assert c.get('/outbox?boot=b1&after=2', headers=h).json()['busy'] is True

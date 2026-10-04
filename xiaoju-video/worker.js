@@ -15,8 +15,8 @@
 //   POST /tg-webhook        小橘视频机器人：频道新帖登记进视频池；频道主私聊（分享链接、命令）
 //   POST /verify-webhook    审核机器人：频道主按「通过 / 不转」
 //   POST /dy-known、/dy-import、/dy-progress   云电脑用（X-Token 认人，令牌在机器人里发「云电脑」拿）
-//   POST /streamer-up、/streamer-done          流式服务报到、报结果（X-Key 认人）
-//   POST /streamer-say                         流式服务托 Worker 给频道主发消息、图片（HF 机房连不上 api.telegram.org）
+//   POST /streamer-up、/streamer-done、/streamer-say   流式服务主动推（X-Key）。HF 机房按域名挡掉了 *.workers.dev，
+//                                              实际上用不上：改由这里长轮询流式服务的发件箱（GET /outbox，见 pollStreamer）
 //   GET  /admin             管理页；/admin/api/...（Authorization: Bearer <ADMIN_KEY>）
 //
 // 数据在 Durable Object「Library」的 SQLite 里。
@@ -47,6 +47,11 @@ const IMPORT_MAX = 200;
 // 逐条审核时一次发几条
 const REVIEW_PAGE = 10;
 const THUMB_LIMIT = 512 * 1024;
+// 轮询流式服务的发件箱：每次最多等它 20 秒（长轮询）；一次定时器最多连着问 12 分钟（Durable Object 的定时器最多跑 15 分钟）
+const POLL_WAIT_S = 20;
+const POLL_WINDOW_MS = 12 * 60 * 1000;
+// 交给流式服务的活（登录、抓作品）这么久以内，定时任务还会去问它
+const JOB_RECENT_MS = 2 * 3600 * 1000;
 
 const MSG = {
   unavailable: 'Telegram 暂时取不到这个视频，请稍后再试',
@@ -110,6 +115,8 @@ export default {
 };
 
 function lib(env) {
+  // 在 Durable Object 自己里面（定时轮询流式服务）直接用它，不再绕一圈 RPC
+  if (env.__self) return env.__self;
   return env.LIB.get(env.LIB.idFromName('library'), { locationHint: 'apac' });
 }
 
@@ -321,7 +328,15 @@ async function douyinLogin(env, chat) {
   if (!r) return await say(env, chat, '云电脑没响应（可能在休眠），1 分钟后再发一次「登录抖音」。');
   if (r.status === 409) return await say(env, chat, `云电脑正在「${r.data.busy}」，等它干完再发。`);
   if (r.status !== 200) return await say(env, chat, `云电脑没接：${(r.data && r.data.error) || r.status}`);
+  await jobStarted(env);
   await say(env, chat, '正在打开抖音登录页，二维码大约半分钟后发过来…');
+}
+
+// 交给流式服务一件活：记下时间，开始轮询它的发件箱（二维码、结果都从那里来）
+async function jobStarted(env) {
+  const L = lib(env);
+  await L.setConfig('jobAt', String(Date.now()));
+  await L.kick();
 }
 
 // 交给云电脑抓：它自己会把「开始抓」「抓到几条」发给频道主，这里只处理没交出去的情况
@@ -330,6 +345,7 @@ async function startCrawl(env, chat, body) {
   if (!r) return await say(env, chat, '云电脑没响应（可能在休眠），1 分钟后再发一次。');
   if (r.status === 409) return await say(env, chat, `云电脑正在「${r.data.busy}」，等它干完再发。`);
   if (r.status !== 200) return await say(env, chat, `云电脑没接：${(r.data && r.data.error) || r.status}`);
+  await jobStarted(env);
 }
 
 async function progressText(env) {
@@ -487,6 +503,7 @@ async function dispatch(env) {
     await L.release(items.map(i => i.aweme));
     return 0;
   }
+  await L.kick(); // 结果在流式服务的发件箱里，去取
   return items.length;
 }
 
@@ -495,6 +512,11 @@ async function tick(env) {
   const failed = await L.expireSending(Date.now() - SENDING_STALE_MS, MAX_ATTEMPTS);
   if (failed.length) await notifyFailed(env, failed);
   await dispatch(env);
+  // 有交出去还没回音的、或者最近让它干过活：去它的发件箱看看。闲着就不去，免得把休眠的 Space 一直叫醒
+  if (!streamerOn(env)) return;
+  const c = await L.counts();
+  const lastJob = Number(await L.getConfig('jobAt')) || 0;
+  if (c.sending || c.queued || Date.now() - lastJob < JOB_RECENT_MS) await L.kick();
 }
 
 async function notifyFailed(env, items) {
@@ -518,37 +540,132 @@ async function streamerApi(request, env, ctx, path) {
     if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
     return json({ ok: true });
   }
-  if (path === '/streamer-say') return await relaySay(env, body);
+  if (path === '/streamer-say') {
+    const r = await sendToOwner(env, body.chat_id, body.text, body.png);
+    return json({ ok: r === 'ok', error: r === 'ok' ? undefined : r }, r === 'ok' ? 200 : r === 'only the owner' ? 403 : 502);
+  }
   const aweme = String(body.aweme || '');
   if (!/^\d{6,25}$/.test(aweme)) return json({ error: 'bad aweme' }, 400);
-  const res = await L.itemDone(aweme, !!body.ok, Number(body.message_id) || 0, String(body.error || '').slice(0, 300), MAX_ATTEMPTS);
-  if (res === 'failed') await notifyFailed(env, [await L.getItem(aweme)]);
-  // 它的队列空了才再交下一批
-  if (body.idle) {
-    const p = dispatch(env).catch(() => 0);
-    if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
-  }
+  const res = await itemDone(env, body);
   return json({ ok: true, status: res });
 }
 
-// 流式服务要发给频道主的二维码、验证截图、进度：Hugging Face 的机房连不上 api.telegram.org，由这里代发。只发给频道主
-async function relaySay(env, body) {
+// 流式服务转完一条：记结果；失败满次数告诉频道主；它的队列空了就再交下一批
+async function itemDone(env, body) {
+  const L = lib(env);
+  const aweme = String(body.aweme || '');
+  const res = await L.itemDone(aweme, !!body.ok, Number(body.message_id) || 0, String(body.error || '').slice(0, 300), MAX_ATTEMPTS);
+  if (res === 'failed') await notifyFailed(env, [await L.getItem(aweme)]);
+  if (body.idle) await dispatch(env);
+  return res;
+}
+
+// 流式服务要发给频道主的二维码、验证截图、进度（Hugging Face 的机房连不上 api.telegram.org，由这里代发）。只发给频道主；
+// 返回 'ok' 或出错原因
+async function sendToOwner(env, chatId, text, png) {
   const owner = await ownerId(env);
-  const chat = Number(body.chat_id);
-  if (!owner || chat !== owner) return json({ error: 'only the owner' }, 403);
+  const chat = Number(chatId);
+  if (!owner || chat !== owner) return 'only the owner';
   let res;
-  if (body.png) {
-    const bytes = fromBase64(String(body.png));
-    if (bytes.length > 8 * 1024 * 1024) return json({ error: 'too big' }, 413);
+  if (png) {
+    const bytes = fromBase64(String(png));
+    if (bytes.length > 8 * 1024 * 1024) return 'too big';
     const form = new FormData();
     form.append('chat_id', String(chat));
-    form.append('caption', String(body.text || '').slice(0, 1000));
+    form.append('caption', String(text || '').slice(0, 1000));
     form.append('photo', new Blob([bytes], { type: 'image/png' }), 'douyin.png');
     res = await fetch(`${TG}/bot${env.TG_BOT_TOKEN}/sendPhoto`, { method: 'POST', body: form }).then(r => r.json()).catch(() => ({}));
   } else {
-    res = await say(env, chat, String(body.text || '').slice(0, 4000) || '…');
+    res = await say(env, chat, String(text || '').slice(0, 4000) || '…');
   }
-  return json({ ok: !!res.ok }, res.ok ? 200 : 502);
+  return res.ok ? 'ok' : 'telegram failed';
+}
+
+// 抖音登录状态（流式服务登录成功后给的 cookie、sec_uid、昵称）；返回出错原因，存好了返回 ''
+async function saveSession(env, body) {
+  const cookies = (Array.isArray(body.cookies) ? body.cookies : [])
+    .filter(c => c && typeof c.name === 'string' && typeof c.value === 'string').slice(0, 200);
+  const sec = String(body.sec_uid || '');
+  if (!/^MS4wLjABAAAA[\w-]{10,200}$/.test(sec)) return 'bad sec_uid';
+  const session = { cookies, sec_uid: sec, nickname: String(body.nickname || '').slice(0, 60), at: Date.now() };
+  if (JSON.stringify(session).length > 64 * 1024) return 'too big';
+  await lib(env).setConfig('dySession', JSON.stringify(session));
+  return '';
+}
+
+async function saveProgress(env, body) {
+  const p = {
+    stage: String(body.stage || '').slice(0, 40), done: Number(body.done) || 0, total: Number(body.total) || 0,
+    note: String(body.note || '').slice(0, 200), at: Date.now(),
+  };
+  await lib(env).setConfig('cloudProgress', JSON.stringify(p));
+}
+
+// 收作品：查重、存进待审核；链接抓来的逐条交审核，主页同步来的先发一条汇总
+async function importItems(env, raw, src) {
+  const list = Array.isArray(raw) ? raw : [];
+  const items = list.map(normalizeItem).filter(Boolean);
+  const fresh = await lib(env).addItems(items, src);
+  if (fresh.length) {
+    if (src === 'link') await reviewEach(env, items.filter(i => fresh.includes(i.aweme)));
+    else await announceCloud(env, fresh.length);
+  }
+  return { added: fresh.length, skipped: items.length - fresh.length, invalid: list.length - items.length };
+}
+
+// ── 流式服务的发件箱 ──────────────────────────────────────────────
+// Hugging Face 的机房按域名挡掉了 *.workers.dev 和 api.telegram.org：流式服务找不到这里，只能这里去找它。
+// 交给它活（转作品、登录抖音、抓作品）以后，Durable Object 的定时器连着长轮询它的 /outbox，按序号一条条处理；
+// 闲下来就停，定时任务每 5 分钟看一眼还有没有交出去没回音的。
+
+async function pollStreamer(env, waitS) {
+  const L = lib(env);
+  const boot = (await L.getConfig('streamerBoot')) || '';
+  const after = Number(await L.getConfig('outboxSeq')) || 0;
+  const res = await fetch(`${streamerBase(env)}/outbox?boot=${encodeURIComponent(boot)}&after=${after}&wait=${waitS}`, {
+    headers: { 'X-Key': env.STREAMER_KEY }, signal: AbortSignal.timeout((waitS + 30) * 1000),
+  });
+  const data = res.status === 200 ? await res.json().catch(() => null) : null;
+  if (!data || typeof data.boot !== 'string' || !data.boot) {
+    if (res.body && !res.bodyUsed) res.body.cancel();
+    throw new Error(`outbox ${res.status}`); // 休眠、重启中
+  }
+  if (data.boot !== boot) {
+    // 流式服务重启过（或第一次连上）：它手上的队列丢了，「在转」的放回队列再交；发件箱序号从头算，这一批不认
+    await L.setConfig('streamerBoot', data.boot);
+    await L.setConfig('outboxSeq', '0');
+    await L.setConfig('streamerUp', String(Date.now()));
+    await L.releaseAllSending();
+    await dispatch(env);
+    return { busy: true, more: true };
+  }
+  const events = Array.isArray(data.events) ? data.events : [];
+  for (const ev of events) {
+    try {
+      await handleEvent(env, ev);
+    } catch {
+      // 一条出错不卡住后面的
+    }
+    await L.setConfig('outboxSeq', String(ev.seq));
+  }
+  return { busy: !!data.busy, more: events.length > 0 };
+}
+
+async function handleEvent(env, ev) {
+  if (ev.kind === 'done') {
+    if (/^\d{6,25}$/.test(String(ev.aweme || ''))) await itemDone(env, ev);
+  } else if (ev.kind === 'say') {
+    await sendToOwner(env, ev.chat_id, ev.text, ev.png);
+  } else if (ev.kind === 'session') {
+    await saveSession(env, ev);
+  } else if (ev.kind === 'progress') {
+    await saveProgress(env, ev);
+  } else if (ev.kind === 'import') {
+    const r = await importItems(env, (ev.items || []).slice(0, 10000), ev.src === 'link' ? 'link' : 'cloud');
+    const total = r.added + r.skipped;
+    await saveProgress(env, { stage: '完成', done: r.added, total, note: `新送 ${r.added} 条，已有 ${r.skipped} 条` });
+    await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过，新的 ${r.added} 条已交审核机器人 @xiaojuverify_bot。`);
+  }
 }
 
 // ── 云电脑 ────────────────────────────────────────────────────────
@@ -567,14 +684,8 @@ async function cloudApi(request, env, ctx, path) {
   if (path === '/dy-session') {
     // 抖音登录状态只收流式服务的：Codespaces 那边自己存在浏览器档案里
     if (!viaStreamer) return json({ error: 'forbidden' }, 403);
-    const cookies = (Array.isArray(body.cookies) ? body.cookies : [])
-      .filter(c => c && typeof c.name === 'string' && typeof c.value === 'string').slice(0, 200);
-    const sec = String(body.sec_uid || '');
-    if (!/^MS4wLjABAAAA[\w-]{10,200}$/.test(sec)) return json({ error: 'bad sec_uid' }, 400);
-    const session = { cookies, sec_uid: sec, nickname: String(body.nickname || '').slice(0, 60), at: Date.now() };
-    if (JSON.stringify(session).length > 64 * 1024) return json({ error: 'too big' }, 413);
-    await L.setConfig('dySession', JSON.stringify(session));
-    return json({ ok: true });
+    const err = await saveSession(env, body);
+    return err ? json({ error: err }, err === 'too big' ? 413 : 400) : json({ ok: true });
   }
   if (path === '/dy-known') {
     const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => /^\d{6,25}$/.test(x)).slice(0, 1000);
@@ -583,22 +694,11 @@ async function cloudApi(request, env, ctx, path) {
   if (path === '/dy-import') {
     const raw = Array.isArray(body.items) ? body.items : [];
     if (raw.length > IMPORT_MAX) return json({ error: `一次最多 ${IMPORT_MAX} 条` }, 413);
-    const items = raw.map(normalizeItem).filter(Boolean);
-    // 链接抓来的逐条交审核；主页同步来的先发一条汇总
-    const src = viaStreamer && body.src === 'link' ? 'link' : 'cloud';
-    const fresh = await L.addItems(items, src);
-    if (fresh.length) {
-      const p = (src === 'link' ? reviewEach(env, items.filter(i => fresh.includes(i.aweme))) : announceCloud(env, fresh.length)).catch(() => {});
-      if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
-    }
-    return json({ ok: true, added: fresh.length, skipped: items.length - fresh.length, invalid: raw.length - items.length });
+    const r = await importItems(env, raw, viaStreamer && body.src === 'link' ? 'link' : 'cloud');
+    return json({ ok: true, ...r });
   }
   if (path === '/dy-progress') {
-    const p = {
-      stage: String(body.stage || '').slice(0, 40), done: Number(body.done) || 0, total: Number(body.total) || 0,
-      note: String(body.note || '').slice(0, 200), at: Date.now(),
-    };
-    await L.setConfig('cloudProgress', JSON.stringify(p));
+    await saveProgress(env, body);
     return json({ ok: true });
   }
   return json({ error: 'not found' }, 404);
@@ -854,6 +954,8 @@ export class Library extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.polling = false; // 定时器正在轮询流式服务
+    this.kicked = false;  // 轮询期间又交了新活：这一轮别急着停
     ctx.blockConcurrencyWhile(async () => {
       // 视频池：频道里的视频帖，每条一行；rec 是完整记录（含 Bot API 的 file_id）
       this.sql.exec('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, date INTEGER NOT NULL)');
@@ -866,6 +968,45 @@ export class Library extends DurableObject {
       this.sql.exec('CREATE INDEX IF NOT EXISTS items_status ON items (status, created)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
     });
+  }
+
+  // ── 轮询流式服务的发件箱（见 pollStreamer）──
+  async alarm() {
+    const env = { ...this.env, __self: this };
+    const until = Date.now() + POLL_WINDOW_MS;
+    let busy = false;
+    let fails = 0;
+    this.polling = true;
+    try {
+      while (Date.now() < until) {
+        this.kicked = false;
+        let r;
+        try {
+          r = await pollStreamer(env, POLL_WAIT_S);
+          fails = 0;
+        } catch {
+          // 连不上（休眠、重启中）：歇 5 秒再试，连着 3 次不行就停，等定时任务
+          if (++fails >= 3) break;
+          await new Promise(res => setTimeout(res, 5000));
+          continue;
+        }
+        busy = r.busy;
+        if (!r.busy && !r.more && !this.kicked) break;
+      }
+    } finally {
+      this.polling = false;
+    }
+    // 跑满 12 分钟还在忙：接着来
+    if (busy && Date.now() >= until) await this.ctx.storage.setAlarm(Date.now() + 1000);
+  }
+
+  // 交给流式服务新活以后调：没在轮询就马上开始
+  async kick() {
+    if (this.polling) {
+      this.kicked = true;
+      return;
+    }
+    if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now());
   }
 
   getConfig(k) {

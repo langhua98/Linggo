@@ -1,15 +1,15 @@
 """云电脑的活（在流式服务里跑 MediaCrawler）：扫码登录抖音、抓自己主页 / 指定作品。一次只干一件。
 
-- 登录：子进程 dy_login.py（xvfb-run + MediaCrawler 的 Python 环境），它一行一个 JSON 事件；二维码、验证截图由小橘视频机器人
-  发给频道主，登录好了把 cookie 和账号存进 Worker（/dy-session），Space 重启后抓作品时由 Worker 带过来。
+- 登录：子进程 dy_login.py（xvfb-run + MediaCrawler 的 Python 环境），它一行一个 JSON 事件；二维码、验证截图交给 Worker
+  由小橘视频机器人发给频道主，登录好了把 cookie 和账号交给 Worker 存起来，Space 重启后抓作品时由 Worker 带过来。
 - 抓作品：子进程 MediaCrawler main.py（creator 模式只抓登录账号自己的主页，detail 模式抓指定作品），读它写的 jsonl，
-  问 Worker 哪些收过（/dy-known），新的送过去（/dy-import），Worker 再交审核机器人。
+  整批交给 Worker（它查重、交审核机器人、告诉频道主抓到几条）。
 
-外部依赖（起子进程、发 Telegram、调 Worker）都注入，方便测试。
+要交给 Worker 的都通过 emit 放进发件箱（outbox.py），由 Worker 来取：HF 机房连不上 Worker。
+外部依赖（起子进程、发件箱）都注入，方便测试。
 """
 
 import asyncio
-import base64
 import collections
 import glob
 import json
@@ -28,7 +28,6 @@ log = logging.getLogger('jobs')
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGIN_TIMEOUT = 8 * 60
 CRAWL_TIMEOUT = 60 * 60
-BATCH = 100
 SEC_UID = re.compile(r'^MS4wLjABAAAA[\w-]{10,200}$')
 DETAIL = re.compile(r'^(?:https://(?:v\.|www\.|m\.)?douyin\.com/\S{1,300}|\d{6,25})$')
 
@@ -92,10 +91,9 @@ def unlock_profile(mc_dir):
 
 
 class Jobs:
-    def __init__(self, *, spawn, tg, worker, mc_dir, mc_py, xvfb=('xvfb-run', '-a')):
+    def __init__(self, *, spawn, emit, mc_dir, mc_py, xvfb=('xvfb-run', '-a')):
         self.spawn = spawn    # async (argv, cwd) -> Proc
-        self.tg = tg          # async (chat_id, text, png=None)
-        self.worker = worker  # async (path, body) -> dict
+        self.emit = emit      # (kind, **data)：放进发件箱，Worker 来取
         self.mc_dir = mc_dir
         self.mc_py = mc_py
         self.xvfb = list(xvfb)
@@ -116,7 +114,7 @@ class Jobs:
                 await work()
             except Exception as e:  # noqa: BLE001 — 告诉频道主，别让任务悄悄死掉
                 log.exception('%s failed', kind)
-                await self._say(chat_id, f'{kind}出错了：{type(e).__name__}: {str(e)[:300]}')
+                self._say(chat_id, f'{kind}出错了：{type(e).__name__}: {str(e)[:300]}')
             finally:
                 proc = self.current and self.current.get('proc')
                 if proc:
@@ -125,11 +123,9 @@ class Jobs:
 
         self.task = asyncio.create_task(runner())
 
-    async def _say(self, chat_id, text, png=None):
-        try:
-            await self.tg(chat_id, text, png)
-        except Exception:  # noqa: BLE001
-            log.exception('telegram send failed')
+    def _say(self, chat_id, text, png=None):
+        """给频道主的话（png 是 base64 的截图）：Worker 取走后由小橘视频机器人发"""
+        self.emit('say', chat_id=chat_id, text=text, png=png or None)
 
     # ── 登录 ──
 
@@ -155,29 +151,29 @@ class Jobs:
             if not ev:
                 tail.append(line[:300])
                 continue
-            png = base64.b64decode(ev['png']) if ev.get('png') else None
+            png = ev.get('png') or None
             kind = ev['event']
             if kind == 'qr':
-                await self._say(chat_id, QR_TEXT, png)
+                self._say(chat_id, QR_TEXT, png)
             elif kind == 'verify':
-                await self._say(chat_id, VERIFY_TEXT.format(word=ev.get('text') or '验证'), png)
+                self._say(chat_id, VERIFY_TEXT.format(word=ev.get('text') or '验证'), png)
             elif kind == 'status':
-                await self._say(chat_id, ev.get('text') or '')
+                self._say(chat_id, ev.get('text') or '')
             elif kind == 'ok':
                 if not SEC_UID.match(ev.get('sec_uid') or ''):
-                    await self._say(chat_id, '登录好了，但认出来的账号号码不对，没存。再发一次「登录抖音」试试。')
+                    self._say(chat_id, '登录好了，但认出来的账号号码不对，没存。再发一次「登录抖音」试试。')
                 else:
-                    await self.worker('/dy-session', {'cookies': ev.get('cookies') or [], 'sec_uid': ev['sec_uid'],
-                                                      'nickname': ev.get('nickname') or ''})
-                    await self._say(chat_id, f'✓ 抖音登录好了：{ev.get("nickname") or ev["sec_uid"]}。'
-                                             '发「同步作品」就开始抓你主页的全部作品。')
+                    self.emit('session', cookies=ev.get('cookies') or [], sec_uid=ev['sec_uid'],
+                              nickname=ev.get('nickname') or '')
+                    self._say(chat_id, f'✓ 抖音登录好了：{ev.get("nickname") or ev["sec_uid"]}。'
+                                       '发「同步作品」就开始抓你主页的全部作品。')
                 finished = True
             elif kind == 'error':
-                await self._say(chat_id, '抖音登录没成功：' + (ev.get('text') or ''), png)
+                self._say(chat_id, '抖音登录没成功：' + (ev.get('text') or ''), png)
                 finished = True
         code = await proc.wait()
         if not finished:
-            await self._say(chat_id, f'抖音登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail))
+            self._say(chat_id, f'抖音登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail))
 
     # ── 抓作品 ──
 
@@ -200,8 +196,8 @@ class Jobs:
     async def _crawl(self, chat_id, mode, target, cookies, src, what):
         data_dir = tempfile.mkdtemp(prefix='mc-')
         try:
-            await self.worker('/dy-progress', {'stage': f'抓{what}'})
-            await self._say(chat_id, f'开始抓{what}（MediaCrawler），抓完把新的交给审核机器人。作品多的话要好一会儿。')
+            self.emit('progress', stage=f'抓{what}')
+            self._say(chat_id, f'开始抓{what}（MediaCrawler），抓完把新的交给审核机器人。作品多的话要好一会儿。')
             argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mode, target, data_dir, cookies)
             unlock_profile(self.mc_dir)
             proc = await self.spawn(argv, self.mc_dir)
@@ -213,32 +209,18 @@ class Jobs:
                 if 'update_douyin_aweme' in line:
                     seen += 1
                     if seen % 20 == 0:
-                        await self.worker('/dy-progress', {'stage': f'抓{what}', 'done': seen})
+                        self.emit('progress', stage=f'抓{what}', done=seen)
             code = await proc.wait()
             items = items_from(read_rows(data_dir))
             if not items:
-                await self.worker('/dy-progress', {'stage': '完成', 'note': f'抓{what}：一条作品也没抓到'})
-                await self._say(chat_id, f'一条作品也没抓到（MediaCrawler 退出码 {code}）。最后几行日志：\n' +
-                                '\n'.join(list(tail)[-8:]))
+                self.emit('progress', stage='完成', note=f'抓{what}：一条作品也没抓到')
+                self._say(chat_id, f'一条作品也没抓到（MediaCrawler 退出码 {code}）。最后几行日志：\n' +
+                          '\n'.join(list(tail)[-8:]))
                 return
-            total, known, added = await self.push(items, src)
-            await self._say(chat_id, f'抓到 {total} 条，{known} 条以前收过，新的 {added} 条已交审核机器人 @xiaojuverify_bot。')
+            # 整批交给 Worker：它查重、存进待审核、交审核机器人，再告诉频道主抓到几条、新的几条
+            self.emit('import', chat_id=chat_id, items=items, src=src, what=what)
         finally:
             shutil.rmtree(data_dir, ignore_errors=True)
-
-    async def push(self, items, src):
-        known = set()
-        for i in range(0, len(items), 1000):
-            r = await self.worker('/dy-known', {'ids': [x['aweme'] for x in items[i:i + 1000]]})
-            known |= set((r or {}).get('known') or [])
-        fresh = [x for x in items if x['aweme'] not in known]
-        added = 0
-        for i in range(0, len(fresh), BATCH):
-            r = await self.worker('/dy-import', {'items': fresh[i:i + BATCH], 'src': src})
-            added += (r or {}).get('added', 0)
-        await self.worker('/dy-progress', {'stage': '完成', 'done': added, 'total': len(items),
-                                           'note': f'新送 {added} 条，已有 {len(known)} 条'})
-        return len(items), len(known), added
 
 
 def parse_event(line):

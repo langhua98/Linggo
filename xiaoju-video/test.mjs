@@ -21,11 +21,17 @@ const ORIGIN = 'https://xiaoju-video.example';
 function makeSql(db = new DatabaseSync(':memory:')) {
   return { exec: (query, ...params) => { const rows = db.prepare(query).all(...params).map(r => ({ ...r })); return { toArray: () => rows }; } };
 }
+let libStorage; // 模拟的 Durable Object 存储（看定时器设了没有）
 async function makeLibrary(env) {
   let ready;
-  const ctx = { storage: { sql: makeSql() }, blockConcurrencyWhile(fn) { ready = fn(); return ready; } };
+  const storage = {
+    sql: makeSql(), alarm: null,
+    async getAlarm() { return this.alarm; }, async setAlarm(t) { this.alarm = t; }, async deleteAlarm() { this.alarm = null; },
+  };
+  const ctx = { storage, blockConcurrencyWhile(fn) { ready = fn(); return ready; } };
   const lib = new Library(ctx, env);
   await ready;
+  libStorage = storage;
   return new Proxy({}, {
     get: (_, name) => name === 'then' ? undefined : async (...args) => structuredClone(await lib[name](...structuredClone(args))),
   });
@@ -36,7 +42,8 @@ const files = new Map(); // file_id -> 字节
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
 const sent = { bot: [], verify: [] };
 const toStreamer = [];
-const state = { streamer: 'ok', resolve: {}, busy: '' };
+const state = { streamer: 'ok', resolve: {}, busy: '', outbox: { boot: 'B1', events: [], busy: false } };
+const outboxCalls = []; // Worker 来取发件箱时带的 boot、after
 const jobCalls = []; // 交给流式服务的云电脑活：[路径, 请求体]
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed) & 255; return b; };
 
@@ -89,6 +96,13 @@ globalThis.fetch = async (input, init = {}) => {
     if (path === '/douyin/post') {
       toStreamer.push(...body.items);
       return Response.json({ ok: true });
+    }
+    if (path.startsWith('/outbox?')) {
+      const q = new URL(STREAMER + path).searchParams;
+      outboxCalls.push({ boot: q.get('boot'), after: Number(q.get('after')) });
+      const ob = state.outbox;
+      if (q.get('boot') === ob.boot) ob.events = ob.events.filter(e => e.seq > Number(q.get('after')));
+      return Response.json({ boot: ob.boot, events: ob.events, busy: ob.busy });
     }
     if (path === '/douyin/login' || path === '/douyin/crawl') {
       jobCalls.push([path, body]);
@@ -522,6 +536,85 @@ await test('/streamer-say：流式服务托 Worker 给频道主发消息和图�
   assert.equal(photo.chat_id, String(OWNER));
   assert.equal(photo.caption, '扫码');
   assert.equal(await photo.photo.text(), 'PNGDATA');
+});
+
+// ── 发件箱：HF 机房连不上 Worker，由 Worker 的定时器去流式服务那里取 ──
+await test('交出活以后开始轮询；轮询期间再交活不重复设定时器', async () => {
+  libStorage.alarm = null;
+  await L.kick();
+  assert.ok(libStorage.alarm > 0);
+});
+
+await test('定时器轮询发件箱：重启检测、转完的结果、二维码、登录状态、进度、链接抓来的作品', async () => {
+  const AWX = '7300000000000000301';
+  await L.addItems([normalizeItem({ aweme: AWX, type: 'video', video_url: 'https://cdn.example/301.mp4' })], 'link');
+  await L.review([AWX], 'queued');
+  await L.claimQueued(50, Date.now());
+  reset();
+  outboxCalls.length = 0;
+  const png = Buffer.from('QRPNG').toString('base64');
+  state.outbox = { boot: 'B1', busy: false, events: [
+    { seq: 1, kind: 'done', aweme: AWX, ok: true, message_id: 77, idle: true },
+    { seq: 2, kind: 'say', chat_id: OWNER, text: '扫码', png },
+    { seq: 3, kind: 'say', chat_id: STRANGER, text: '别人' },
+    { seq: 4, kind: 'session', cookies: [{ name: 'sessionid', value: 's2', domain: '.douyin.com' }], sec_uid: 'MS4wLjABAAAAnewaccount12345', nickname: '新号' },
+    { seq: 5, kind: 'progress', stage: '抓主页', done: 20 },
+    { seq: 6, kind: 'import', chat_id: OWNER, src: 'link', what: '1 条链接', items: [{ aweme: '7300000000000000302', type: 'video', desc: '抓来的', video_url: 'https://cdn.example/302.mp4' }] },
+  ] };
+  libStorage.alarm = null; // 定时器触发时就被用掉了
+  await L.alarm();
+  // 第一次见到这个启动号：当成重启（在转的放回队列再交），这一批不认，从序号 0 重新取
+  assert.deepEqual(outboxCalls.map(c => [c.boot, c.after]), [['', 0], ['B1', 0], ['B1', 6]]);
+  assert.equal(await L.getConfig('streamerBoot'), 'B1');
+  assert.equal(await L.getConfig('outboxSeq'), '6');
+  const it = await L.getItem(AWX);
+  assert.equal(it.status, 'posted');
+  assert.equal(it.msg, 77);
+  const photo = sent.bot.find(m => m.method === 'sendPhoto');
+  assert.equal(photo.chat_id, String(OWNER));
+  assert.equal(await photo.photo.text(), 'QRPNG');
+  assert.ok(!sent.bot.some(m => m.chat_id === STRANGER || m.chat_id === String(STRANGER)));
+  assert.equal(JSON.parse(await L.getConfig('dySession')).nickname, '新号');
+  assert.match(sent.bot.map(m => m.text).join('\n'), /抓到 1 条，0 条以前收过，新的 1 条已交审核机器人/);
+  assert.equal(sent.verify.filter(m => /抓来的/.test(m.text)).length, 1);
+  assert.equal(JSON.parse(await L.getConfig('cloudProgress')).stage, '完成');
+  assert.equal(libStorage.alarm, null); // 不忙了：不再设定时器
+});
+
+await test('流式服务重启：启动号变了，在转的放回队列重交，序号从头算', async () => {
+  const AWY = '7300000000000000303';
+  await L.addItems([normalizeItem({ aweme: AWY, type: 'video', video_url: 'https://cdn.example/303.mp4' })], 'link');
+  await L.review([AWY], 'queued');
+  await L.claimQueued(50, Date.now());
+  reset();
+  outboxCalls.length = 0;
+  state.outbox = { boot: 'B2', busy: false, events: [{ seq: 1, kind: 'say', chat_id: OWNER, text: '重启后的第一句' }] };
+  await L.alarm();
+  assert.deepEqual(outboxCalls.map(c => [c.boot, c.after]), [['B1', 6], ['B2', 0], ['B2', 1]]);
+  assert.ok(toStreamer.some(i => i.aweme === AWY)); // 重交了
+  assert.equal((await L.getItem(AWY)).status, 'sending');
+  assert.ok(sent.bot.some(m => m.text === '重启后的第一句'));
+  assert.ok(Number(await L.getConfig('streamerUp')) > 0);
+});
+
+async function cron() {
+  const pending = [];
+  await worker.scheduled({}, env, { waitUntil: p => pending.push(p) });
+  await Promise.all(pending);
+}
+
+await test('定时任务：有交出去没回音的就去轮询，闲着不去', async () => {
+  libStorage.alarm = null;
+  await cron();
+  assert.ok(libStorage.alarm > 0); // 还有在转的
+  for (const it of await L.listItems('sending', 100, '')) await L.itemDone(it.aweme, true, 1, '', 3);
+  await L.setConfig('jobAt', '0');
+  libStorage.alarm = null;
+  await cron();
+  const c = await L.counts();
+  assert.equal(c.sending || 0, 0);
+  assert.equal(c.queued || 0, 0);
+  assert.equal(libStorage.alarm, null);
 });
 
 await test('网页', async () => {

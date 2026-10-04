@@ -31,8 +31,11 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 
 - 流式服务发帖时说明里带 `#dy<作品号>`：Telegram 推送这条新帖时 Worker 认这个标签也会记成已转（回报丢了也不怕）。
   **不会主动去频道里搜索、读取帖子的标签**（频道主要求）；流式服务只按消息号取网页要播的那个视频文件。
-- 流式服务重启后 POST `/streamer-up` 报到：Worker 把所有「在转」的放回队列重交；定时任务（每 5 分钟）把交出去
-  30 分钟没回音的也重交。
+- **流式服务找不到 Worker，一律由 Worker 去问它**：Hugging Face 的机房按域名挡掉了 `*.workers.dev` 和 `api.telegram.org`
+  （TLS 握手超时；MTProto、抖音都通）。流式服务要报的事（每条转完的结果、给频道主的话和截图、抓到的作品、抖音登录状态）
+  放进它的发件箱，Worker 交给它活以后用 Durable Object 的定时器长轮询 `GET /outbox`（每次等 20 秒、一轮最多 12 分钟，
+  忙就接着来），按序号逐条处理；定时任务（每 5 分钟）看到有交出去没回音的、或者 2 小时内让它干过活，也去问一次。
+- 发件箱带启动号：变了就是流式服务重启过，Worker 把所有「在转」的放回队列重交，序号从头算；交出去 30 分钟没回音的也重交。
 - 云电脑送来的视频地址过几个小时会过期，过期了流式服务按作品号去分享页重新取。
 
 ## 路由
@@ -46,7 +49,7 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 | `POST /tg-webhook` | 小橘视频机器人 | 频道新帖登记、私聊 |
 | `POST /verify-webhook` | 审核机器人 | 按钮、私聊 |
 | `POST /dy-known` `/dy-import` `/dy-progress` | 云电脑（`X-Token`） | 哪些已收过、送作品（一次 ≤200 条）、报进度 |
-| `POST /streamer-up` `/streamer-done` | 流式服务（`X-Key`） | 报到、报每条结果 |
+| `POST /streamer-up` `/streamer-done` `/streamer-say` | 流式服务（`X-Key`） | 推送用的老接口：HF 机房连不上 `*.workers.dev`，实际由 Worker 轮询发件箱 |
 | `GET /admin`；`/admin/api/state`、`review`、`retry-failed`、`dispatch`、`video-delete` | 管理页（`Authorization: Bearer <ADMIN_KEY>`） | 看状态、审核、移出视频池 |
 
 两个机器人的 webhook 用同一个 `TG_WEBHOOK_SECRET`。
@@ -102,7 +105,7 @@ done
 ```
 
 改了流式服务：把 `streamer/` 下的 `app.py`、`douyin.py`、`Dockerfile`、`requirements.txt`、`README.md`（顶部是 Space 配置）
-推到 Space `langhua1998/douyin-proxy`，它会自动重新构建。重新构建会打断正在转的作品，它起来后报到，Worker 会重交。
+推到 Space `langhua1998/douyin-proxy`，它会自动重新构建。重新构建会打断正在转的作品；它起来后启动号变了，Worker 轮询时发现，会重交。
 
 ## 云电脑（MediaCrawler）
 

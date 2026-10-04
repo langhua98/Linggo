@@ -11,7 +11,7 @@ import jobs as J
 from dy_login import nickname_from_title, sec_uid_from_url
 
 SEC = 'MS4wLjABAAAAabcdefghijklmnop'
-PNG = b'\x89PNG fake'
+PNG = base64.b64encode(b'\x89PNG fake').decode()
 
 
 class FakeProc:
@@ -52,23 +52,19 @@ def ev(event, **kw):
 
 
 class World:
+    """假的发件箱：say 记进 said，其余记进 calls"""
+
     def __init__(self):
         self.said = []
         self.calls = []
         self.spawned = []
         self.procs = []
-        self.known = set()
 
-    async def tg(self, chat, text, png=None):
-        self.said.append((chat, text, png))
-
-    async def worker(self, path, body):
-        self.calls.append((path, body))
-        if path == '/dy-known':
-            return {'known': [i for i in body['ids'] if i in self.known]}
-        if path == '/dy-import':
-            return {'added': len(body['items'])}
-        return {'ok': True}
+    def emit(self, kind, **data):
+        if kind == 'say':
+            self.said.append((data['chat_id'], data['text'], data['png']))
+        else:
+            self.calls.append((kind, data))
 
     def jobs(self, make_proc):
         async def spawn(argv, cwd):
@@ -76,7 +72,7 @@ class World:
             p = make_proc(argv)
             self.procs.append(p)
             return p
-        return J.Jobs(spawn=spawn, tg=self.tg, worker=self.worker, mc_dir='/mc', mc_py='/venv/python')
+        return J.Jobs(spawn=spawn, emit=self.emit, mc_dir='/mc', mc_py='/venv/python')
 
 
 async def settle(j):
@@ -95,9 +91,9 @@ def test_login_qr_verify_code_ok():
 
         j = w.jobs(lambda argv: FakeProc([
             'playwright noise',
-            ev('qr', png=base64.b64encode(PNG).decode()),
-            ev('qr', png=base64.b64encode(PNG).decode()),
-            ev('verify', text='身份验证', png=base64.b64encode(PNG).decode()),
+            ev('qr', png=PNG),
+            ev('qr', png=PNG),
+            ev('verify', text='身份验证', png=PNG),
         ], on_write=on_write))
         j.login(777)
         with pytest.raises(J.Busy):
@@ -112,8 +108,8 @@ def test_login_qr_verify_code_ok():
         assert w.procs[0].written == ['123456\n']
         assert [png for _, _, png in w.said[:3]] == [PNG, PNG, PNG]
         assert '扫这个二维码' in w.said[0][1] and '身份验证' in w.said[2][1]
-        assert w.calls == [('/dy-session', {'cookies': [{'name': 'sessionid', 'value': 's', 'domain': '.douyin.com'}],
-                                            'sec_uid': SEC, 'nickname': '小橘'})]
+        assert w.calls == [('session', {'cookies': [{'name': 'sessionid', 'value': 's', 'domain': '.douyin.com'}],
+                                        'sec_uid': SEC, 'nickname': '小橘'})]
         assert '登录好了：小橘' in w.said[-1][1]
         assert j.current is None and not j.code('1')
     asyncio.run(go())
@@ -159,10 +155,9 @@ def row(aid):
     return {'aweme_id': aid, 'desc': 'd', 'create_time': 1, 'video_download_url': f'https://v.douyinvod.com/{aid}'}
 
 
-def test_crawl_own_homepage_pushes_new_only():
+def test_crawl_own_homepage_emits_whole_batch():
     async def go():
         w = World()
-        w.known = {'7300000000000000001'}
         j = w.jobs(mc_writes([row('7300000000000000001'), row('7300000000000000002'), row('7300000000000000002')],
                              log_lines=['[store.douyin.update_douyin_aweme] x'] * 3))
         session = {'sec_uid': SEC, 'cookies': [{'name': 'sessionid', 'value': 's', 'domain': '.douyin.com'}]}
@@ -172,11 +167,14 @@ def test_crawl_own_homepage_pushes_new_only():
         assert argv[:4] == ['xvfb-run', '-a', '/venv/python', 'main.py'] and cwd == '/mc'
         assert argv[argv.index('--creator_id') + 1] == f'https://www.douyin.com/user/{SEC}'  # 只抓自己的主页
         assert argv[argv.index('--cookies') + 1] == 'sessionid=s'
-        imports = [b for p, b in w.calls if p == '/dy-import']
-        assert imports == [{'items': [{'aweme': '7300000000000000002', 'desc': 'd', 'create_time': 1, 'type': 'video',
-                                       'video_url': 'https://v.douyinvod.com/7300000000000000002',
-                                       'url': 'https://www.douyin.com/video/7300000000000000002'}], 'src': 'cloud'}]
-        assert '抓到 2 条，1 条以前收过，新的 1 条' in w.said[-1][1]
+        imports = [b for k, b in w.calls if k == 'import']
+        assert len(imports) == 1  # 整批交给 Worker，它来查重
+        assert imports[0]['chat_id'] == 9 and imports[0]['src'] == 'cloud' and imports[0]['what'] == '主页'
+        assert [i['aweme'] for i in imports[0]['items']] == ['7300000000000000001', '7300000000000000002']
+        assert imports[0]['items'][1] == {'aweme': '7300000000000000002', 'desc': 'd', 'create_time': 1, 'type': 'video',
+                                          'video_url': 'https://v.douyinvod.com/7300000000000000002',
+                                          'url': 'https://www.douyin.com/video/7300000000000000002'}
+        assert ('progress', {'stage': '抓主页'}) in w.calls
         assert not os.path.exists(argv[argv.index('--save_data_path') + 1])  # 临时目录删掉了
     asyncio.run(go())
 
@@ -200,7 +198,8 @@ def test_crawl_detail_nothing_found_reports_log():
         assert argv[argv.index('--specified_id') + 1] == 'https://v.douyin.com/abc/'
         assert argv[argv.index('--lt') + 1] == 'qrcode'  # 没有 cookie 就靠浏览器档案里的登录状态
         assert '一条作品也没抓到（MediaCrawler 退出码 2）' in w.said[-1][1] and 'login failed' in w.said[-1][1]
-        assert ('/dy-progress', {'stage': '完成', 'note': '抓1 条链接：一条作品也没抓到'}) in w.calls
+        assert ('progress', {'stage': '完成', 'note': '抓1 条链接：一条作品也没抓到'}) in w.calls
+        assert not [k for k, _ in w.calls if k == 'import']
     asyncio.run(go())
 
 
@@ -219,3 +218,30 @@ def test_unlock_profile_removes_stale_locks(tmp_path):
         (prof / name).write_text('x')
     J.unlock_profile(str(tmp_path))
     assert sorted(p.name for p in prof.iterdir()) == ['Cookies']
+
+
+def test_outbox_ack_batch_and_wait():
+    from outbox import Outbox
+
+    async def go():
+        o = Outbox(keep=5, boot='b1')
+        for i in range(7):
+            o.put('say', text=str(i))
+        assert [e['seq'] for e in o.events] == [3, 4, 5, 6, 7]  # 只留最近 5 条
+        o.ack('other-boot', 6)  # 启动号对不上：什么也不扔
+        assert len(o.events) == 5
+        o.ack('b1', 5)
+        assert [e['seq'] for e in o.batch()] == [6, 7]
+        big = 'x' * 2_000_000
+        o.put('say', png=big)
+        o.put('say', png=big)
+        assert [e['seq'] for e in o.batch()] == [6, 7, 8]  # 约 3 MB 封顶，但至少一条
+        o.ack('b1', 8)
+        assert [e['seq'] for e in o.batch()] == [9]
+        o.ack('b1', 9)
+        waiter = asyncio.create_task(o.wait(5))
+        await asyncio.sleep(0)
+        o.put('done', aweme='1')
+        await asyncio.wait_for(waiter, 1)  # 有新事立刻返回
+        await asyncio.wait_for(Outbox().wait(0.05), 1)  # 没事等到超时
+    asyncio.run(go())
