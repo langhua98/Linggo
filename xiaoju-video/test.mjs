@@ -716,14 +716,11 @@ async function importBatch(items) {
   await L.alarm();
 }
 
-await test('已经登录了再点「登录抖音」：先问，不直接开始；「重新登录」才开始', async () => {
+await test('已经登录了再点「登录抖音」：不登录；「重新登录」才登录', async () => {
   jobCalls.length = 0;
   await dm(OWNER, '登录抖音');
   assert.deepEqual(jobCalls, []);
-  assert.match(last('bot').text, /已经登录了「新号」.*要重新登录吗/);
-  assert.deepEqual(last('bot').reply_markup.keyboard[0].map(b => b.text), ['重新登录', '不用了']);
-  await dm(OWNER, '不用了');
-  assert.deepEqual(jobCalls, []);
+  assert.match(last('bot').text, /已经登录了「新号」，不用再登录/);
   await dm(OWNER, '重新登录');
   assert.deepEqual(jobCalls, [['/douyin/login', { chat_id: OWNER }]]);
 });
