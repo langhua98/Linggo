@@ -44,14 +44,24 @@ class Busy(Exception):
 
 
 class Proc:
-    """asyncio 子进程的薄包装：按行读输出（标准错误并进标准输出）、往标准输入写"""
+    """asyncio 子进程的薄包装：按行读标准输出、标准错误（分开时），往标准输入写"""
 
     def __init__(self, p):
         self.p = p
 
     async def lines(self):
+        async for line in self._read(self.p.stdout):
+            yield line
+
+    async def errors(self):
+        if self.p.stderr:
+            async for line in self._read(self.p.stderr):
+                yield line
+
+    @staticmethod
+    async def _read(stream):
         while True:
-            line = await self.p.stdout.readline()
+            line = await stream.readline()
             if not line:
                 return
             yield line.decode('utf-8', 'replace').rstrip('\r\n')
@@ -74,12 +84,14 @@ class Proc:
 SECRET_ENV = {'TG_BOT_TOKEN', 'TG_USER_SESSION', 'TG_API_HASH', 'TG_API_ID', 'STREAMER_KEY'}
 
 
-async def spawn(argv, cwd):
+async def spawn(argv, cwd, separate_stderr=False):
+    """separate_stderr：标准错误单独一路（登录页：标准输出只走事件，浏览器的日志不能插进去）；否则并进标准输出"""
     env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
     env['PYTHONUNBUFFERED'] = '1'
     p = await asyncio.create_subprocess_exec(
         *argv, cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT, limit=32 * 1024 * 1024,  # 截图的 base64 一行能有好几 MB
+        stderr=asyncio.subprocess.PIPE if separate_stderr else asyncio.subprocess.STDOUT,
+        limit=32 * 1024 * 1024,  # 截图的 base64 一行能有好几 MB
         start_new_session=True)  # 自成一个进程组，kill 时连子孙一起
     return Proc(p)
 
@@ -151,14 +163,24 @@ class Jobs:
 
     async def _login(self, chat_id):
         unlock_profile(self.mc_dir)
-        proc = await self.spawn(self.xvfb + [self.mc_py, os.path.join(HERE, 'dy_login.py')], self.mc_dir)
+        proc = await self.spawn(self.xvfb + [self.mc_py, os.path.join(HERE, 'dy_login.py')], self.mc_dir,
+                                separate_stderr=True)
         self.current['proc'] = proc
         tail = collections.deque(maxlen=12)
+
+        async def drain_errors():  # 浏览器的日志：留最后几行，出事了给频道主看；不读的话管道满了子进程会卡住
+            try:
+                async for line in proc.errors():
+                    tail.append(line[:200])
+            except Exception:  # noqa: BLE001
+                pass
+        errs = asyncio.create_task(drain_errors())
         finished = False
         async for line in proc.lines():
             ev = parse_event(line)
             if not ev:
-                tail.append(line[:300])
+                # 读不出来的事件（多半是被别的输出插断了）别把几十万字的截图原样发出去
+                tail.append('（有一条登录页的消息读不出来）' if line.startswith('{"event"') else line[:200])
                 continue
             png = ev.get('png') or None
             kind = ev['event']
@@ -186,6 +208,10 @@ class Jobs:
                 self._say(chat_id, '抖音登录没成功：' + (ev.get('text') or ''), png, menu=True)
                 finished = True
         code = await proc.wait()
+        try:
+            await asyncio.wait_for(errs, 5)
+        except asyncio.TimeoutError:
+            errs.cancel()
         if self.current and self.current.get('cancelled'):
             self._say(chat_id, '好，不登录了。', menu=True)
         elif not finished:

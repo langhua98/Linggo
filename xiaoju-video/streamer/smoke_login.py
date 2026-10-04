@@ -67,7 +67,12 @@ async def run(mc_dir, mc_py, base):
     env = {**os.environ, 'DY_LOGIN_INDEX': base + 'index.html', 'DY_LOGIN_SELF': base + 'self.html', 'PYTHONUNBUFFERED': '1'}
     p = await asyncio.create_subprocess_exec('xvfb-run', '-a', mc_py, os.path.join(HERE, 'dy_login.py'), cwd=work, env=env,
                                              stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                                             stderr=asyncio.subprocess.STDOUT, limit=32 << 20)
+                                             stderr=asyncio.subprocess.PIPE, limit=32 << 20)  # 和线上一样：浏览器日志单独一路
+
+    async def drain():
+        while await p.stderr.readline():
+            pass
+    errs = asyncio.create_task(drain())
     seen = []
     try:
         while True:
@@ -87,6 +92,7 @@ async def run(mc_dir, mc_py, base):
             if ev['event'] == 'ok':
                 assert ev['sec_uid'] == SEC and ev['nickname'] == '冒烟号'
         await p.wait()
+        await errs
     finally:
         shutil.rmtree(work, ignore_errors=True)
     assert seen == ['qr', 'verify', 'verify_qr', 'status', 'ok'], seen

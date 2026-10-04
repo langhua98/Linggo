@@ -15,8 +15,9 @@ PNG = base64.b64encode(b'\x89PNG fake').decode()
 
 
 class FakeProc:
-    def __init__(self, lines, on_write=None, code=0):
+    def __init__(self, lines, on_write=None, code=0, err_lines=()):
         self.queue = asyncio.Queue()
+        self.err_lines = list(err_lines)
         for line in lines:
             self.queue.put_nowait(line)
         self.on_write = on_write
@@ -33,6 +34,10 @@ class FakeProc:
             line = await self.queue.get()
             if line is None:
                 return
+            yield line
+
+    async def errors(self):
+        for line in self.err_lines:
             yield line
 
     def write(self, text):
@@ -69,8 +74,9 @@ class World:
             self.calls.append((kind, data))
 
     def jobs(self, make_proc):
-        async def spawn(argv, cwd):
+        async def spawn(argv, cwd, **kw):
             self.spawned.append((argv, cwd))
+            self.spawn_kw = kw
             p = make_proc(argv)
             self.procs.append(p)
             return p
@@ -308,3 +314,32 @@ def test_login_cancel():
         assert procs[0].killed and w.said[-1][1] == '好，不登录了。' and w.says[-1]['menu'] is True
         assert j.current is None
     asyncio.run(go())
+
+
+def test_login_unreadable_event_is_not_dumped():
+    async def go():
+        w = World()
+        broken = '{"event": "error", "text": "x", "png": "iVBORw0KGgo' + 'A' * 5000 + '[1:2:ERROR:gpu] boom'
+        j = w.jobs(lambda argv: FakeProc([broken, None], code=0, err_lines=['[0101/ERROR:chrome] something']))
+        j.login(1)
+        await settle(j)
+        assert w.spawn_kw == {'separate_stderr': True}  # 登录页：浏览器日志单独一路
+        msg = w.said[-1][1]
+        assert '意外退出了' in msg and '有一条登录页的消息读不出来' in msg and 'something' in msg
+        assert 'iVBOR' not in msg and len(msg) < 1000
+    asyncio.run(go())
+
+
+def test_dy_login_events_not_mixed_with_child_output():
+    """dy_login 把标准输出留给事件：之后起的子进程（Playwright、Chromium）往标准输出写的都去标准错误"""
+    import subprocess
+    import sys
+    code = ("import subprocess, dy_login\n"
+            "dy_login.events_out()\n"
+            "subprocess.run(['sh', '-c', 'echo CHILD-STDOUT'])\n"
+            "dy_login.emit('qr', png='x' * 200000)\n")
+    r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30,
+                       cwd=os.path.dirname(os.path.abspath(__file__)))
+    lines = r.stdout.splitlines()
+    assert len(lines) == 1 and J.parse_event(lines[0])['png'] == 'x' * 200000
+    assert 'CHILD-STDOUT' in r.stderr

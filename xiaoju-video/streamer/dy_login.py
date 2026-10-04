@@ -89,8 +89,25 @@ QR_JS = r"""
 """
 
 
+_events = None
+
+
+def events_out():
+    """事件专用的输出：把原来的标准输出复制一份留给事件，标准输出本身改指到标准错误。
+    这样 Playwright、Chromium 往标准输出写的东西都去了标准错误，插不进事件中间
+    （一张截图的 base64 有几十万字，和别的进程同时写同一个管道，会被插断，流式服务就认不出这条事件）。
+    要在启动浏览器之前调：子进程是启动时继承输出的。"""
+    global _events
+    if _events is None:
+        _events = os.fdopen(os.dup(1), 'w', encoding='utf-8', buffering=1)
+        os.dup2(2, 1)
+    return _events
+
+
 def emit(event, **kw):
-    print(json.dumps({'event': event, **kw}, ensure_ascii=False), flush=True)
+    out = events_out()
+    out.write(json.dumps({'event': event, **kw}, ensure_ascii=False) + '\n')
+    out.flush()
 
 
 def b64(png):
@@ -342,6 +359,7 @@ async def wait_login(ctx, page, inputs):
 
 
 async def main():
+    events_out()  # 先把输出分开，再启动浏览器
     from playwright.async_api import async_playwright
     inputs = asyncio.Queue()
     read_inputs(asyncio.get_running_loop(), inputs)
