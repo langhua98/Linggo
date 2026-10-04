@@ -32,10 +32,13 @@ def test_patch_real_mediacrawler(tmp_path):
     src = os.path.expanduser(os.environ.get('MC_DIR_FOR_TEST', '~/.xiaoju-video/MediaCrawler'))
     if not os.path.isdir(src):
         pytest.skip('没装 MediaCrawler')
-    for rel in ('config/base_config.py', 'store/douyin/__init__.py'):
+    for rel in ('config/base_config.py', 'store/douyin/__init__.py', 'media_platform/douyin/core.py'):
         os.makedirs(tmp_path / os.path.dirname(rel), exist_ok=True)
         shutil.copy(os.path.join(src, rel), tmp_path / rel)
     apply(str(tmp_path))
     store = (tmp_path / 'store/douyin/__init__.py').read_text(encoding='utf-8')
     compile(store, 'store', 'exec')
     assert 'author_sec_uid' in store
+    core = (tmp_path / 'media_platform/douyin/core.py').read_text(encoding='utf-8')
+    compile(core, 'core', 'exec')
+    assert 'wait_until="domcontentloaded"' in core
