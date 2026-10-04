@@ -42,7 +42,8 @@ const files = new Map(); // file_id -> 字节
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
 const sent = { bot: [], verify: [] };
 const toStreamer = [];
-const state = { streamer: 'ok', resolve: {}, expand: {}, busy: '', outbox: { boot: 'B1', events: [], busy: false } };
+const channelCalls = [];
+const state = { streamer: 'ok', resolve: {}, expand: {}, channel: [], busy: '', outbox: { boot: 'B1', events: [], busy: false } };
 const outboxCalls = []; // Worker 来取发件箱时带的 boot、after
 const jobCalls = []; // 交给流式服务的云电脑活：[路径, 请求体]
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed) & 255; return b; };
@@ -92,6 +93,11 @@ globalThis.fetch = async (input, init = {}) => {
     if (path === '/douyin/resolve') {
       const item = state.resolve[body.url];
       return item ? Response.json({ item }) : Response.json({ error: '认不出这个链接' }, { status: 400 });
+    }
+    if (path === '/channel/videos') {
+      channelCalls.push(body);
+      const page = state.channel.filter(v => v.id > body.after).slice(0, body.limit);
+      return Response.json({ videos: page, last: page.length ? page[page.length - 1].id : body.after, done: page.length < body.limit });
     }
     if (path === '/douyin/expand') {
       return Response.json({ results: body.urls.map(u => ({ url: u, ...(state.expand[u] || {}) })) });
@@ -911,6 +917,46 @@ await test('自动同步：到点抓小号和登录账号，一天一次；可�
   assert.deepEqual(jobCalls.filter(c => c[0] === '/douyin/crawl'), []);
   await dm(OWNER, '自动同步 25');
   assert.match(last('bot').text, /0 到 23/);
+});
+
+await test('补全视频池：翻频道历史，只收视频的播放字段；登记过的不动；翻完告诉频道主', async () => {
+  const A = { Authorization: 'Bearer ' + ADMIN };
+  await channelPost({ message_id: 40, video: { file_id: 'VREG', file_size: 100, duration: 1, width: 1, height: 1, mime_type: 'video/mp4' } });
+  const before = (await L.counts()).videos;
+  // 流式服务翻出来的（40 已经登记过，带 file_id）
+  state.channel = [
+    { id: 5, size: 1000, duration: 3, width: 720, height: 1280, mime: 'video/mp4', date: 1600000000 },
+    { id: 6, size: 30 * 1024 * 1024, duration: 60, width: 1080, height: 1920, mime: 'video/mp4', date: 1600000100, caption: '不该有的' },
+    { id: 40, size: 1, duration: 1, width: 1, height: 1, mime: 'video/mp4', date: 1 },
+  ];
+  channelCalls.length = 0;
+  reset();
+  let r = await post('/admin/api/scan-channel', { reset: true }, A);
+  const j = await r.json();
+  assert.equal(j.done, true);
+  assert.equal(j.added, 2);
+  assert.equal((await L.counts()).videos, before + 2);
+  assert.equal((await L.getVideo(40)).file_id, 'VREG'); // 登记过的不动
+  const v5 = await L.getVideo(5);
+  assert.deepEqual(Object.keys(v5).sort(), ['date', 'duration', 'file_id', 'height', 'id', 'mime', 'size', 'thumb', 'width']);
+  assert.ok(!JSON.stringify(await L.getVideo(6)).includes('不该有的'));
+  assert.match(last('bot').text, /视频池补全了：翻完频道历史，补进 2 条以前的视频/);
+  // 没有 file_id 的小视频也走流式服务
+  bigFiles.set(5, new Uint8Array(1000).fill(5));
+  r = await call('/vf/5', { headers: { Range: 'bytes=0-9' } });
+  assert.equal(r.status, 206);
+  assert.deepEqual([...new Uint8Array(await r.arrayBuffer())], new Array(10).fill(5));
+  // 翻完了：定时任务不再去翻
+  channelCalls.length = 0;
+  await cron();
+  assert.equal(channelCalls.length, 0);
+  // 分页：每次 500 条，翻到头为止
+  state.channel = Array.from({ length: 1200 }, (_, i) => ({ id: 10000 + i, size: 10, duration: 1, width: 1, height: 1, mime: 'video/mp4', date: 1 }));
+  channelCalls.length = 0;
+  await post('/admin/api/scan-channel', { reset: true }, A);
+  assert.deepEqual(channelCalls.map(c => c.after), [0, 10499, 10999]);
+  assert.equal(JSON.parse(await L.getConfig('channelScan')).added, 1200);
+  for (const v of [...state.channel, { id: 5 }, { id: 6 }, { id: 40 }]) await L.removeVideo(v.id);
 });
 
 await test('网页', async () => {

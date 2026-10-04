@@ -307,3 +307,37 @@ def test_ffmpeg_prepare_tags_hevc_for_apple(tmp_path):
         tagged = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_tag_string',
                                  '-of', 'csv=p=0', info['path']], capture_output=True, text=True).stdout.strip()
         assert tagged == want and info['width'] == 320 and info['height'] == 240
+
+
+def test_video_info_only_media_fields():
+    import datetime
+    when = datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
+    f = SimpleNamespace(mime_type='video/mp4', size=123, duration=9.6, width=1080, height=1920)
+    msg = SimpleNamespace(id=7, video=object(), document=object(), file=f, gif=None, video_note=None, date=when,
+                          message='说明 #标签')
+    info = appmod.video_info(msg)
+    assert info == {'id': 7, 'size': 123, 'duration': 10, 'width': 1080, 'height': 1920, 'mime': 'video/mp4',
+                    'date': int(when.timestamp())}
+    assert '说明' not in json.dumps(info, ensure_ascii=False)
+    assert appmod.video_info(SimpleNamespace(id=8, video=None, document=None, file=None)) is None  # 文字帖
+    photo = SimpleNamespace(id=9, video=None, document=object(), file=SimpleNamespace(mime_type='image/jpeg'), gif=None, video_note=None)
+    assert appmod.video_info(photo) is None
+    assert appmod.video_info(SimpleNamespace(**{**msg.__dict__, 'gif': object()})) is None
+
+
+def test_channel_videos_endpoint():
+    calls = []
+
+    async def scan(after, limit):
+        calls.append((after, limit))
+        return {'videos': [{'id': after + 1}], 'last': after + limit, 'done': False}
+
+    appmod.channel_scan = scan
+    c = TestClient(appmod.app)
+    h = {'X-Key': 'k'}
+    r = c.post('/channel/videos', json={'after': 100, 'limit': 9999}, headers=h)
+    assert r.json() == {'videos': [{'id': 101}], 'last': 600, 'done': False} and calls == [(100, 500)]
+    assert c.post('/channel/videos', json={'after': 'x'}, headers=h).status_code == 400
+    assert c.post('/channel/videos', json={}).status_code == 403
+    appmod.channel_scan = None
+    assert c.post('/channel/videos', json={}, headers=h).status_code == 503

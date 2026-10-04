@@ -448,6 +448,36 @@ async function autoSyncSetting(env, chat, arg) {
   await say(env, chat, a.on ? `自动同步开着：每天 ${a.hour} 点（北京时间）把小号和登录账号抓一遍。` : '自动同步关了。', { reply_markup: OWNER_KEYBOARD });
 }
 
+// 补全视频池：机器人只能收到加进频道以后的新帖，以前的视频让流式服务用频道主账号翻历史找出来。
+// 它只给视频帖的播放字段（消息号、大小、时长、尺寸、日期），不给说明、标签。每次最多翻 pages×500 条，
+// 定时任务接着翻，翻到头就停，告诉频道主一声
+async function scanChannel(env, pages) {
+  const L = lib(env);
+  const st = { after: 0, added: 0, seen: 0, done: false, ...JSON.parse((await L.getConfig('channelScan')) || '{}') };
+  if (st.done || !streamerOn(env)) return st;
+  for (let i = 0; i < pages && !st.done; i++) {
+    const r = await streamerCall(env, '/channel/videos', { after: st.after, limit: 500 }).catch(() => null);
+    if (!r || r.status !== 200 || !Array.isArray(r.data.videos)) break; // 在睡、在重启：下次再来
+    const list = r.data.videos.map(v => ({
+      id: Number(v.id), file_id: '', size: Number(v.size) || 0, duration: Number(v.duration) || 0,
+      width: Number(v.width) || 0, height: Number(v.height) || 0,
+      mime: /^video\//.test(String(v.mime || '')) ? String(v.mime) : 'video/mp4', thumb: '', date: Number(v.date) || 0,
+    })).filter(v => Number.isInteger(v.id) && v.id > 0);
+    st.added += await L.addScannedVideos(list);
+    st.seen += list.length;
+    const last = Number(r.data.last) || st.after;
+    st.done = !!r.data.done || last <= st.after;
+    st.after = Math.max(st.after, last);
+    listCache = null;
+  }
+  await L.setConfig('channelScan', JSON.stringify(st));
+  if (st.done) {
+    const owner = await ownerId(env);
+    if (owner) await say(env, owner, `视频池补全了：翻完频道历史，补进 ${st.added} 条以前的视频，现在一共 ${(await L.counts()).videos} 条。`);
+  }
+  return st;
+}
+
 // 定时任务里调：到了点、今天还没发起过，就交给云电脑抓。云电脑在睡或者在忙，这个小时里每 5 分钟再试
 async function maybeAutoSync(env, now = Date.now()) {
   const a = await autoSync(env);
@@ -725,6 +755,7 @@ async function tick(env) {
   const failed = await L.expireSending(Date.now() - SENDING_STALE_MS, MAX_ATTEMPTS);
   if (failed.length) await notifyFailed(env, failed);
   await maybeAutoSync(env);
+  await scanChannel(env, 2).catch(() => {});
   await refreshCards(env).catch(() => {});
   for (const id of await adoptOrphans(env)) await sendSheet(env, id);
   await dispatch(env);
@@ -1130,6 +1161,11 @@ async function adminApi(request, env, ctx, url) {
     return json({ ok: true, n });
   }
   if (action === 'dispatch') return json({ ok: true, n: await dispatch(env) });
+  // 补全视频池：从头（reset）或接着上次翻频道历史
+  if (action === 'scan-channel') {
+    if (body.reset) await L.setConfig('channelScan', '{}');
+    return json({ ok: true, ...(await scanChannel(env, 10)) });
+  }
   // 替频道主点「登录抖音」：二维码照样发到频道主和小橘视频机器人的私聊里
   if (action === 'douyin-login') {
     const owner = await ownerId(env);
@@ -1159,7 +1195,8 @@ async function videoList(env) {
 async function videoFile(request, env, id) {
   const rec = await lib(env).getVideo(id);
   if (!rec) throw new HttpError(404, '没有这个视频');
-  const big = !rec.size || rec.size > BOT_DOWNLOAD_LIMIT;
+  // 翻历史补进来的没有 Bot API 的 file_id：和大视频一样走流式服务（按消息号取）
+  const big = !rec.file_id || !rec.size || rec.size > BOT_DOWNLOAD_LIMIT;
   if (big && !streamerOn(env)) throw new HttpError(503, MSG.noStreamer);
   const headers = cors({
     'Content-Type': rec.mime,
@@ -1405,6 +1442,17 @@ export class Library extends DurableObject {
   }
 
   // ── 视频池 ──
+  // 翻频道历史补进来的：已经登记过的不动（webhook 登记的带 file_id，更好用）。返回新加了几条
+  addScannedVideos(list) {
+    let n = 0;
+    for (const v of list) {
+      if (this.sql.exec('SELECT 1 FROM videos WHERE id = ?', v.id).toArray().length) continue;
+      this.sql.exec('INSERT INTO videos (id, rec, date) VALUES (?, ?, ?)', v.id, JSON.stringify(v), v.date || 0);
+      n++;
+    }
+    return n;
+  }
+
   upsertVideo(rec) {
     const fresh = !this.sql.exec('SELECT 1 FROM videos WHERE id = ?', rec.id).toArray().length;
     this.sql.exec('INSERT INTO videos (id, rec, date) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, date = excluded.date',

@@ -293,12 +293,28 @@ def ffmpeg_prepare(src, work):
             'width': int(stream.get('width') or 0), 'height': int(stream.get('height') or 0)}
 
 
+def video_info(msg):
+    """频道帖是视频（不算 GIF、圆形视频）就给出播放要用的字段；只看媒体本身，不读说明和标签"""
+    doc = getattr(msg, 'video', None) or getattr(msg, 'document', None)
+    f = getattr(msg, 'file', None)
+    if not doc or not f or getattr(msg, 'gif', None) or getattr(msg, 'video_note', None):
+        return None
+    mime = str(getattr(f, 'mime_type', '') or '')
+    if not mime.startswith('video/'):
+        return None
+    date = getattr(msg, 'date', None)
+    return {'id': int(msg.id), 'size': int(getattr(f, 'size', 0) or 0), 'duration': int(round(getattr(f, 'duration', 0) or 0)),
+            'width': int(getattr(f, 'width', 0) or 0), 'height': int(getattr(f, 'height', 0) or 0), 'mime': mime,
+            'date': int(date.timestamp()) if date else 0}
+
+
 # ── 组装 ──────────────────────────────────────────────────────────
 
 streamer = None
 poster = None
 douyin = None
 jobs = None
+channel_scan = None  # (after, limit) → 频道里的视频帖（只有播放要用的字段）
 outbox = Outbox()
 state = {'bot': False, 'user': False, 'channel': None, 'channel_id': None}
 
@@ -312,7 +328,7 @@ def check_key(request):
 
 @asynccontextmanager
 async def lifespan(app):
-    global streamer, poster, douyin, jobs
+    global streamer, poster, douyin, jobs, channel_scan
     from telethon import TelegramClient
     from telethon.sessions import StringSession
     from telethon.tl.types import DocumentAttributeVideo, PeerChannel
@@ -355,6 +371,19 @@ async def lifespan(app):
         return await reader.download_media(msg, file=bytes, thumb=-1)
 
     streamer = Streamer(fetch_message=fetch_message, iter_download=reader.iter_download, download_thumb=download_thumb)
+
+    async def scan(after, limit):
+        # 机器人不能翻频道历史，用频道主账号翻。只交 video_info 认出的视频字段，帖子的说明、标签不碰
+        found, last, seen = [], after, 0
+        async for msg in user.iter_messages(channel, min_id=after, reverse=True, limit=limit):
+            seen += 1
+            last = max(last, msg.id)
+            info = video_info(msg)
+            if info:
+                found.append(info)
+        return {'videos': found, 'last': last, 'done': seen < limit}
+
+    channel_scan = scan
 
     async def send_video(info, caption):
         sent = await user.send_file(
@@ -455,6 +484,20 @@ async def resolve(request: Request):
     except httpx.HTTPError as e:
         return JSONResponse({'error': f'连不上抖音：{type(e).__name__}'}, status_code=502)
     return {'item': item}
+
+
+@app.post('/channel/videos')
+async def channel_videos(request: Request):
+    """翻频道历史，补全视频池：从消息号 after 往后最多看 limit 条，只给视频帖的播放字段（不给说明、标签）"""
+    check_key(request)
+    body = await request.json()
+    try:
+        after, limit = int(body.get('after') or 0), min(max(int(body.get('limit') or 200), 1), 500)
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(400)
+    if not channel_scan:
+        return JSONResponse({'error': '还没连上 Telegram'}, status_code=503)
+    return await channel_scan(after, limit)
 
 
 @app.post('/douyin/expand')
