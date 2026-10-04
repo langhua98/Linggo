@@ -158,26 +158,17 @@ async function webhook(request, env, ctx, verify) {
   if (!post || !Number.isInteger(post.message_id) || String(post.chat && post.chat.id) !== String(env.VIDEO_CHANNEL_ID)) {
     return text('ok');
   }
+  // 视频池只记播放要用的（文件、大小、时长、尺寸、封面）：频道帖的说明、标签一概不读、不存（频道主的要求）。
+  // 作品转完记「已转」只靠流式服务的回报（发件箱的 done）
   const rec = toRecord(post);
   const L = lib(env);
   if (rec) {
     await L.upsertVideo(rec);
-    // 流式服务发帖时在说明里带「#dy<作品号>」：就算它的回报丢了，这里也能把作品记成已转
-    if (rec.aweme) await L.markPosted(rec.aweme, rec.id);
   } else if (update.edited_channel_post) {
     await L.removeVideo(post.message_id); // 编辑后已不含视频
-  } else {
-    // 图文作品发成相册（几条图片帖）：记成已转，不进视频池
-    const aweme = awemeOf(post.caption || '');
-    if (aweme) await L.markPosted(aweme, post.message_id);
   }
   listCache = null;
   return text('ok');
-}
-
-function awemeOf(caption) {
-  const m = /#dy(\d{6,25})\b/.exec(caption || '');
-  return m ? m[1] : '';
 }
 
 function toRecord(post) {
@@ -194,9 +185,7 @@ function toRecord(post) {
     height: Number(v.height) || 0,
     mime: /^video\//.test(v.mime_type || '') ? v.mime_type : 'video/mp4',
     thumb: thumb && thumb.file_id ? thumb.file_id : '',
-    caption: String(post.caption || '').slice(0, 1024),
     date: Number(post.date) || 0,
-    aweme: awemeOf(post.caption || ''),
   };
 }
 
@@ -1348,6 +1337,8 @@ export class Library extends DurableObject {
       // 视频池：频道里的视频帖，每条一行；rec 是完整记录（含 Bot API 的 file_id）
       this.sql.exec('CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, date INTEGER NOT NULL)');
       this.sql.exec('CREATE TABLE IF NOT EXISTS thumbs (id INTEGER PRIMARY KEY, mime TEXT NOT NULL, data TEXT NOT NULL)');
+      // 以前的记录里存过频道帖的说明和标签：清掉，只留播放要用的
+      this.sql.exec("UPDATE videos SET rec = json_remove(rec, '$.caption', '$.aweme') WHERE json_type(rec, '$.caption') IS NOT NULL OR json_type(rec, '$.aweme') IS NOT NULL");
       // 抖音作品：status 是 review（待审核）/ rejected（不转）/ queued（排队）/ sending（交给流式服务了）/
       // posted（已发进频道，msg 是消息号）/ failed（试了 MAX_ATTEMPTS 次还不行）；src 是 cloud / link
       this.sql.exec(`CREATE TABLE IF NOT EXISTS items (aweme TEXT PRIMARY KEY, status TEXT NOT NULL, src TEXT NOT NULL,
@@ -1436,7 +1427,6 @@ export class Library extends DurableObject {
       const v = JSON.parse(r.rec);
       return {
         id: v.id, duration: v.duration, width: v.width, height: v.height, size: v.size, date: v.date,
-        caption: v.caption.replace(/\s*#dy\d+\s*/g, ' ').trim().slice(0, 300),
       };
     });
   }
@@ -1607,10 +1597,6 @@ export class Library extends DurableObject {
     const status = attempts >= maxAttempts ? 'failed' : 'queued';
     this.sql.exec('UPDATE items SET status = ?, attempts = ?, error = ?, updated = ? WHERE aweme = ?', status, attempts, error, Date.now(), aweme);
     return status;
-  }
-
-  markPosted(aweme, msg) {
-    this.sql.exec("UPDATE items SET status = 'posted', msg = CASE WHEN msg = 0 THEN ? ELSE msg END, error = '', updated = ? WHERE aweme = ?", msg, Date.now(), aweme);
   }
 
   retryFailed() {

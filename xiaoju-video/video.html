@@ -78,12 +78,10 @@
       s.appendChild(video);
       const info = document.createElement('div');
       info.className = 'info';
-      const p = document.createElement('p');
-      p.textContent = v.caption || '';
       const date = document.createElement('div');
       date.className = 'date';
       date.textContent = fmtDate(v.date);
-      info.append(p, date);
+      info.append(date);
       const bar = document.createElement('div');
       bar.className = 'bar';
       bar.appendChild(document.createElement('i'));

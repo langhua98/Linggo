@@ -205,7 +205,10 @@ await test('频道视频帖登记；别的频道、非视频帖不登记', async
   await channelPost({ message_id: 13, text: '纯文字' });
   const j = await (await call('/api/videos')).json();
   assert.deepEqual(j.videos.map(v => v.id), [11, 10]);
-  assert.equal(j.videos[1].caption, '小猫'); // 去掉 #dy 标签
+  // 只记播放要用的：帖子的说明、标签不读不存
+  assert.deepEqual(Object.keys(j.videos[1]).sort(), ['date', 'duration', 'height', 'id', 'size', 'width']);
+  assert.ok(!JSON.stringify(await L.getVideo(10)).includes('小猫'));
+  assert.ok(!JSON.stringify(await L.getVideo(10)).includes('#dy'));
 });
 
 await test('小视频走 Bot API，支持 Range', async () => {
@@ -334,13 +337,15 @@ await test('流式服务交不进去：放回队列，定时任务再交', async
   assert.deepEqual(toStreamer.map(i => i.aweme), [AW2]);
 });
 
-await test('流式服务报结果：成功记已转；频道帖带 #dy 也能记已转', async () => {
+await test('流式服务报结果：成功记已转；频道帖带 #dy 也不读', async () => {
   const H = { 'X-Key': SKEY };
   let r = await post('/streamer-done', { aweme: AW1, ok: true, message_id: 20 }, H);
   assert.equal((await r.json()).status, 'posted');
   assert.equal((await L.getItem(AW1)).msg, 20);
-  // 图文发成相册：频道帖带 #dy，没回报也记成已转
+  // 频道帖的标签不读：带 #dy 也不会记成已转，只认流式服务的回报
   await channelPost({ message_id: 21, photo: [{ file_id: 'P' }], caption: `图文 #dy${AW2}` });
+  assert.equal((await L.getItem(AW2)).status, 'sending');
+  r = await post('/streamer-done', { aweme: AW2, ok: true, message_id: 21 }, H);
   assert.equal((await L.getItem(AW2)).status, 'posted');
   assert.equal((await post('/streamer-done', { aweme: 'x', ok: true }, H)).status, 400);
 });

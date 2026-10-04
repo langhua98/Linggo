@@ -29,7 +29,8 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
                                          失败满 3 次 ──▶ failed（「重试失败」重新排队）
 ```
 
-- 流式服务发帖时说明里带 `#dy<作品号>`：Telegram 推送这条新帖时 Worker 认这个标签也会记成已转（回报丢了也不怕）。
+- **视频池只读视频直链，不读频道帖的说明和标签**（频道主的要求）：登记视频帖只存播放要用的（`file_id`、大小、时长、尺寸、封面），
+  作品记「已转」只靠流式服务的回报。以前存过的说明和作品号，Library 启动时清掉。
   **不会主动去频道里搜索、读取帖子的标签**（频道主要求）；流式服务只按消息号取网页要播的那个视频文件。
 - **流式服务找不到 Worker，一律由 Worker 去问它**：Hugging Face 的机房按域名挡掉了 `*.workers.dev` 和 `api.telegram.org`
   （TLS 握手超时；MTProto、抖音都通）。流式服务要报的事（每条转完的结果、给频道主的话和截图、抓到的作品、抖音登录状态）
@@ -57,7 +58,7 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 
 ## 数据（Durable Object `Library` 的 SQLite）
 
-- `videos`：视频池，`rec` 是完整记录（含 Bot API `file_id`、大小、时长、尺寸、说明、作品号）；`thumbs`：封面 base64
+- `videos`：视频池，`rec` 是播放要用的（Bot API `file_id`、大小、时长、尺寸、日期；不含帖子说明、标签）；`thumbs`：封面 base64
 - `items`：抖音作品，`status` 见上图，`data` 是作品信息（文字、作者、视频地址或图片地址）
 - `config`：`ownerId`（视频频道创建者，第一次问 Telegram）、`cloudToken`、`cloudProgress`、`streamerUp`
 
