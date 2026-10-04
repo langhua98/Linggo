@@ -1,13 +1,21 @@
-"""改 MediaCrawler 的 config/base_config.py：不连本机 Chrome（CDP），用 Playwright 自带的 Chromium；
-有界面（服务器上跑在 Xvfb 虚拟屏幕里，云电脑上跑在网页桌面里）；不抓评论；保存登录状态。
+"""改 MediaCrawler（参数是它的目录）：
 
-  python mc_patch.py <MediaCrawler>/config/base_config.py
+1. config/base_config.py：不连本机 Chrome（CDP），用 Playwright 自带的 Chromium；有界面（服务器上跑在 Xvfb 虚拟屏幕里，
+   云电脑上跑在网页桌面里）；不抓评论；保存登录状态。
+2. store/douyin/__init__.py：作品记录里多存作者的 sec_uid 和昵称（它默认把昵称打码、作者只存散列）——
+   关键词搜索出来的作品要交频道主审核，他得认得出是不是自己小号发的。
+
+  python mc_patch.py <MediaCrawler 目录>
 """
 
+import os
 import re
 import sys
 
 SETTINGS = {'ENABLE_CDP_MODE': 'False', 'HEADLESS': 'False', 'ENABLE_GET_COMMENTS': 'False', 'SAVE_LOGIN_STATE': 'True'}
+STORE_ANCHOR = '"source_keyword": source_keyword_var.get(),'
+STORE_EXTRA = ('"author_sec_uid": user_info.get("sec_uid", ""),  # 小橘视频：审核时认账号\n'
+               '        "author_nickname": user_info.get("nickname", ""),')
 
 
 def patch(text):
@@ -18,9 +26,22 @@ def patch(text):
     return text
 
 
+def patch_store(text):
+    if 'author_sec_uid' in text:
+        return text
+    if text.count(STORE_ANCHOR) != 1:
+        raise SystemExit('MediaCrawler 的抖音存储里找不到 source_keyword 那一行（上游改了格式？）')
+    return text.replace(STORE_ANCHOR, STORE_ANCHOR + '\n        ' + STORE_EXTRA)
+
+
+def apply(mc_dir):
+    for rel, fn in (('config/base_config.py', patch), ('store/douyin/__init__.py', patch_store)):
+        path = os.path.join(mc_dir, rel)
+        with open(path, encoding='utf-8') as f:
+            text = f.read()
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(fn(text))
+
+
 if __name__ == '__main__':
-    path = sys.argv[1]
-    with open(path, encoding='utf-8') as f:
-        text = f.read()
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(patch(text))
+    apply(sys.argv[1])

@@ -20,7 +20,7 @@ install() {
   if [ ! -d "$MC/.git" ]; then git clone -q "$MC_REPO" "$MC"; fi
   git -C "$MC" fetch -q origin && git -C "$MC" checkout -q "$MC_REV"
   # 不连本机 Chrome（CDP），用 Playwright 自带的 Chromium；不抓评论（和流式服务共用一份补丁）
-  python3 "$HERE/../streamer/mc_patch.py" "$MC/config/base_config.py"
+  python3 "$HERE/../streamer/mc_patch.py" "$MC"
   (cd "$MC" && uv sync && uv run playwright install --with-deps chromium)
 }
 

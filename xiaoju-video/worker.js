@@ -207,6 +207,8 @@ const HELP = `我是小橘视频的管理助手 🍊
 • 登录抖音：云电脑打开抖音登录页，把二维码发给你，用抖音 App 扫一下就行。抖音要再验证时，我把页面截图和能选的验证方式发给你：
   点「刷脸验证」我就把刷脸用的二维码发过来；选短信就把验证码数字发给我；「截图」看页面现在的样子；「取消登录」不登了
 • 同步作品：云电脑（MediaCrawler）抓你登录账号自己主页的全部作品，新的交审核机器人 @xiaojuverify_bot
+• 搜索 关键词：按关键词搜抖音（多个关键词用逗号隔开，每个最多 50 条），交审核机器人逐条审核。
+  搜出来的也有别人的作品：审核消息里有作者和主页链接，是你小号的才通过；通过过的号会记住，下次标出来、可以一键通过
 • 直接发抖音分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
 • 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
 • 重试失败：把失败的作品重新排队
@@ -214,7 +216,7 @@ const HELP = `我是小橘视频的管理助手 🍊
 • 帮助：显示这段说明`;
 
 const OWNER_KEYBOARD = {
-  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '进度' }, { text: '重试失败' }], [{ text: '帮助' }]],
+  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '搜索' }, { text: '进度' }], [{ text: '重试失败' }, { text: '帮助' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -264,6 +266,14 @@ async function botUpdate(env, update, origin, ctx) {
   if (t === '进度' || t === '/status') return await say(env, chat, await progressText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '云电脑' || t === '/cloud') return await cloudInfo(env, chat, origin);
   if (t === '登录抖音' || t === '/login') return await douyinLogin(env, chat);
+  const search = /^(?:搜索|\/search)(?:\s+([\s\S]*))?$/.exec(t);
+  if (search) {
+    const words = String(search[1] || '').split(/[,，、;；\n]+/).map(w => w.trim()).filter(Boolean).slice(0, 5);
+    if (!words.length) return await say(env, chat, '发「搜索 关键词」，比如「搜索 坏脾气小橘」；多个关键词用逗号隔开。');
+    const session = await dySession(env);
+    if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
+    return await startCrawl(env, chat, { mode: 'search', targets: words, session });
+  }
   if (t === '同步作品' || t === '/sync') {
     const session = await dySession(env);
     if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
@@ -403,18 +413,55 @@ function randomToken() {
 
 const KIND = { video: '视频', images: '图文' };
 
-function reviewText(item) {
+const SRC = { cloud: '云电脑同步', link: '私聊链接', search: '关键词搜索' };
+
+// mine：频道主通过过的账号（sec_uid 列表），搜出来的作品要标出是不是这些号发的
+function reviewText(item, mine = []) {
+  const known = item.author_sec_uid && mine.includes(item.author_sec_uid);
   return [
-    `待审核 · 抖音${KIND[item.type] || '作品'}（${item.src === 'cloud' ? '云电脑同步' : '私聊链接'}）`,
+    `待审核 · 抖音${KIND[item.type] || '作品'}（${SRC[item.src] || '私聊链接'}）`,
     item.desc ? item.desc.slice(0, 300) : '（没有文字）',
-    item.author ? `作者：${item.author}` : '',
+    item.author || item.author_sec_uid ? `作者：${item.author || '（没有昵称）'}${known ? '  ✓ 你通过过这个号的作品' : ''}` : '',
+    item.author_sec_uid ? `作者主页：https://www.douyin.com/user/${item.author_sec_uid}` : '',
     item.url,
+    item.src === 'search' && !known ? '⚠️ 搜出来的，可能是别人的作品：认得出是你小号的才通过' : '',
   ].filter(Boolean).join('\n');
 }
 
-async function sendReview(env, owner, item) {
+async function myAccounts(env) {
+  return JSON.parse((await lib(env).getConfig('myAccounts')) || '[]');
+}
+
+// 频道主通过了搜出来的一条：记住这个号是他的
+async function rememberAccount(env, item) {
+  if (!item || item.src !== 'search' || !item.author_sec_uid) return;
+  const mine = await myAccounts(env);
+  if (mine.includes(item.author_sec_uid)) return;
+  mine.push(item.author_sec_uid);
+  await lib(env).setConfig('myAccounts', JSON.stringify(mine.slice(-500)));
+}
+
+// 待审核的搜索结果里，作者是频道主通过过的号的那些
+async function searchMine(env) {
+  const mine = await myAccounts(env);
+  return (await lib(env).listItems('review', 10000, 'search')).filter(i => i.author_sec_uid && mine.includes(i.author_sec_uid));
+}
+
+// 搜出来一批：先发一条汇总。没有「全部通过」：别人的作品混在里面，只能逐条看，或者一键通过认过的号的
+async function announceSearch(env, n) {
+  const owner = await ownerId(env);
   if (!owner) return;
-  await verifySay(env, owner, reviewText(item), [[
+  const total = (await lib(env).counts()).searchReview || n;
+  const known = (await searchMine(env)).length;
+  const buttons = [[{ text: '👀 逐条审核', callback_data: 'search-each' }, { text: `❌ 全部不转（${total}）`, callback_data: 'search-no' }]];
+  if (known) buttons.unshift([{ text: `✅ 通过你认过的号的（${known}）`, callback_data: 'search-mine' }]);
+  await verifySay(env, owner, `关键词搜索新找到 ${n} 条作品，现在一共 ${total} 条搜索结果等你审核` +
+    (known ? `，其中 ${known} 条是你通过过的号发的` : '') + '。\n搜出来的也有别人的作品：逐条看作者，是你小号的才通过。', buttons);
+}
+
+async function sendReview(env, owner, item, mine) {
+  if (!owner) return;
+  await verifySay(env, owner, reviewText(item, mine || await myAccounts(env)), [[
     { text: '✅ 通过', callback_data: `ok:${item.aweme}` },
     { text: '❌ 不转', callback_data: `no:${item.aweme}` },
   ]]);
@@ -462,7 +509,8 @@ async function reviewButton(env, cb, ctx) {
     const n = await L.review([one[2]], to);
     const item = await L.getItem(one[2]);
     await answer(n ? (to === 'queued' ? '已通过，排队转发' : '不转了') : '这条已经审过了');
-    if (item) await edit(`${to === 'queued' ? '✅ 已通过' : '❌ 不转'}\n${reviewText(item)}`);
+    if (n && to === 'queued') await rememberAccount(env, item);
+    if (item) await edit(`${to === 'queued' ? '✅ 已通过' : '❌ 不转'}\n${reviewText(item, await myAccounts(env))}`);
     if (n && to === 'queued') await dispatch(env);
     return;
   }
@@ -474,10 +522,22 @@ async function reviewButton(env, cb, ctx) {
     if (n && to === 'queued') await dispatch(env);
     return;
   }
-  if (data === 'cloud-each' || data === 'pending') {
-    const items = await L.listItems('review', REVIEW_PAGE, data === 'cloud-each' ? 'cloud' : '');
+  if (data === 'search-mine' || data === 'search-no') {
+    const ids = data === 'search-mine' ? (await searchMine(env)).map(i => i.aweme)
+      : (await L.listItems('review', 10000, 'search')).map(i => i.aweme);
+    const to = data === 'search-mine' ? 'queued' : 'rejected';
+    const n = await L.review(ids, to);
+    await answer(`${n} 条${to === 'queued' ? '已通过' : '不转了'}`);
+    await edit(data === 'search-mine' ? `你认过的号发的 ${n} 条：✅ 通过，排队转发` : `搜索结果 ${n} 条：❌ 全部不转`);
+    if (n && to === 'queued') await dispatch(env);
+    return;
+  }
+  if (data === 'cloud-each' || data === 'search-each' || data === 'pending') {
+    const src = { 'cloud-each': 'cloud', 'search-each': 'search' }[data] || '';
+    const items = await L.listItems('review', REVIEW_PAGE, src);
     await answer(items.length ? '' : '没有待审核的了');
-    for (const item of items) await sendReview(env, owner, item);
+    const mine = await myAccounts(env);
+    for (const item of items) await sendReview(env, owner, item, mine);
     const left = (await L.counts()).review - items.length;
     if (left > 0) await verifySay(env, owner, `还有 ${left} 条。`, [[{ text: `👀 再来 ${Math.min(left, REVIEW_PAGE)} 条`, callback_data: 'pending' }]]);
     return;
@@ -624,6 +684,7 @@ async function importItems(env, raw, src) {
   const fresh = await lib(env).addItems(items, src);
   if (fresh.length) {
     if (src === 'link') await reviewEach(env, items.filter(i => fresh.includes(i.aweme)));
+    else if (src === 'search') await announceSearch(env, fresh.length);
     else await announceCloud(env, fresh.length);
   }
   return { added: fresh.length, skipped: items.length - fresh.length, invalid: list.length - items.length };
@@ -677,7 +738,7 @@ async function handleEvent(env, ev) {
   } else if (ev.kind === 'progress') {
     await saveProgress(env, ev);
   } else if (ev.kind === 'import') {
-    const r = await importItems(env, (ev.items || []).slice(0, 10000), ev.src === 'link' ? 'link' : 'cloud');
+    const r = await importItems(env, (ev.items || []).slice(0, 10000), ['link', 'search'].includes(ev.src) ? ev.src : 'cloud');
     const total = r.added + r.skipped;
     await saveProgress(env, { stage: '完成', done: r.added, total, note: `新送 ${r.added} 条，已有 ${r.skipped} 条` });
     await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过，新的 ${r.added} 条已交审核机器人 @xiaojuverify_bot。`);
@@ -739,6 +800,7 @@ function normalizeItem(x) {
   if (type === 'video' && HTTPS.test(x.video_url || '')) item.video_url = x.video_url;
   if (type === 'images') item.images = (Array.isArray(x.images) ? x.images : []).filter(u => HTTPS.test(u || '')).slice(0, 35);
   if (HTTPS.test(x.cover || '')) item.cover = x.cover;
+  if (/^MS4wLjABAAAA[\w-]{10,200}$/.test(String(x.author_sec_uid || ''))) item.author_sec_uid = x.author_sec_uid;
   return item;
 }
 
@@ -1135,6 +1197,7 @@ export class Library extends DurableObject {
     const c = { videos: this.sql.exec('SELECT COUNT(*) AS n FROM videos').toArray()[0].n };
     for (const r of this.sql.exec('SELECT status, COUNT(*) AS n FROM items GROUP BY status').toArray()) c[r.status] = r.n;
     c.cloudReview = this.sql.exec("SELECT COUNT(*) AS n FROM items WHERE status = 'review' AND src = 'cloud'").toArray()[0].n;
+    c.searchReview = this.sql.exec("SELECT COUNT(*) AS n FROM items WHERE status = 'review' AND src = 'search'").toArray()[0].n;
     return c;
   }
 

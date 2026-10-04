@@ -500,15 +500,16 @@ async def douyin_login_input(request: Request):
 
 @app.post('/douyin/crawl')
 async def douyin_crawl(request: Request):
-    """mode=creator：抓登录账号自己的主页（地址由 session 里的 sec_uid 拼）；mode=detail：抓 targets 里的作品"""
+    """mode=creator：抓登录账号自己的主页（地址由 session 里的 sec_uid 拼）；detail：抓 targets 里的作品；
+    search：按 targets 里的关键词搜（搜出来的交频道主逐条审核）"""
     check_key(request)
     body = await request.json()
     mode = body.get('mode')
-    if mode not in ('creator', 'detail') or not isinstance(body.get('session'), dict):
+    if mode not in ('creator', 'detail', 'search') or not isinstance(body.get('session'), dict):
         raise HTTPException(400)
     try:
         jobs.crawl(int(body['chat_id']), body['session'], mode, body.get('targets') or [],
-                   'cloud' if mode == 'creator' else 'link')
+                   {'creator': 'cloud', 'search': 'search'}.get(mode, 'link'))
     except jobs_mod.Busy as e:
         return busy(e)
     except ValueError as e:

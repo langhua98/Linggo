@@ -657,6 +657,65 @@ await test('带按钮的话：键盘临时换成登录页的选项；登录结�
   assert.deepEqual(done.reply_markup.keyboard[0].map(b => b.text), ['登录抖音', '同步作品']);
 });
 
+// ── 关键词搜索：搜出来的有别人的作品，逐条审核；通过过的号记住 ──
+await test('「搜索 关键词」交给流式服务；没给关键词说用法', async () => {
+  jobCalls.length = 0;
+  await dm(OWNER, '搜索 坏脾气小橘，小橘 猫咪、第三个');
+  assert.equal(jobCalls[0][0], '/douyin/crawl');
+  assert.equal(jobCalls[0][1].mode, 'search');
+  assert.deepEqual(jobCalls[0][1].targets, ['坏脾气小橘', '小橘 猫咪', '第三个']);
+  assert.ok(jobCalls[0][1].session.sec_uid);
+  await dm(OWNER, '搜索');
+  assert.match(last('bot').text, /发「搜索 关键词」/);
+});
+
+const ALT = 'MS4wLjABAAAAmyaltaccount0001', OTHER = 'MS4wLjABAAAAsomeoneelse0001';
+const sitem = (n, author, sec) => ({ aweme: `73000000000000005${n}`, type: 'video', desc: `搜到的${n}`, author, author_sec_uid: sec, video_url: `https://cdn.example/s${n}.mp4` });
+await test('搜索结果：汇总没有「全部通过」；审核消息有作者主页和提醒', async () => {
+  reset();
+  await importBatch([sitem(1, '小号一', ALT), sitem(2, '路人', OTHER)]);
+  const ann = sent.verify.find(m => /关键词搜索新找到 2 条/.test(m.text));
+  assert.ok(ann);
+  const datas = ann.reply_markup.inline_keyboard.flat().map(b => b.callback_data);
+  assert.deepEqual(datas, ['search-each', 'search-no']); // 还没认过任何号：没有一键通过
+  reset();
+  await press(OWNER, 'search-each');
+  const msgs = sent.verify.filter(m => m.method === 'sendMessage' && /搜到的/.test(m.text));
+  assert.equal(msgs.length, 2);
+  assert.match(msgs[0].text, /作者：小号一/);
+  assert.match(msgs[0].text, new RegExp(`作者主页：https://www.douyin.com/user/${ALT}`));
+  assert.match(msgs[0].text, /可能是别人的作品/);
+});
+
+await test('通过一条：记住这个号；下次这个号的作品标出来，可以一键通过，别人的还要逐条看', async () => {
+  await press(OWNER, 'ok:730000000000000051');
+  assert.deepEqual(JSON.parse(await L.getConfig('myAccounts')), [ALT]);
+  await press(OWNER, 'no:730000000000000052');
+  assert.deepEqual(JSON.parse(await L.getConfig('myAccounts')), [ALT]); // 不转的不记
+  reset();
+  await importBatch([sitem(3, '小号一', ALT), sitem(4, '路人', OTHER), sitem(5, '小号一', ALT)]);
+  const ann = sent.verify.find(m => /关键词搜索新找到 3 条/.test(m.text));
+  assert.match(ann.text, /其中 2 条是你通过过的号发的/);
+  assert.equal(ann.reply_markup.inline_keyboard[0][0].callback_data, 'search-mine');
+  reset();
+  await press(OWNER, 'search-each');
+  const m3 = sent.verify.find(m => /搜到的3/.test(m.text));
+  assert.match(m3.text, /✓ 你通过过这个号的作品/);
+  assert.doesNotMatch(m3.text, /可能是别人的作品/);
+  await press(OWNER, 'search-mine');
+  assert.equal((await L.getItem('730000000000000053')).status === 'review', false);
+  assert.equal((await L.getItem('730000000000000055')).status === 'review', false);
+  assert.equal((await L.getItem('730000000000000054')).status, 'review'); // 路人的还在等
+  await press(OWNER, 'search-no');
+  assert.equal((await L.getItem('730000000000000054')).status, 'rejected');
+});
+
+async function importBatch(items) {
+  const seq = (Number(await L.getConfig('outboxSeq')) || 0) + 1;
+  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [{ seq, kind: 'import', chat_id: OWNER, src: 'search', what: '关键词', items }] };
+  await L.alarm();
+}
+
 await test('网页', async () => {
   for (const p of ['/', '/video', '/admin']) {
     const r = await call(p);

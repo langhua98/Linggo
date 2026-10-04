@@ -397,3 +397,23 @@ def test_follow_reads_whole_lines_until_done(tmp_path):
         await asyncio.wait_for(t, 1)
         assert got == ['{"event": "qr"}', '{"event": "status"}']
     asyncio.run(go())
+
+
+def test_crawl_search_keywords():
+    async def go():
+        w = World()
+        r = row('7300000000000000777')
+        r.update(author_sec_uid='MS4wLjABAAAAalt0123456789', author_nickname='小号一')
+        j = w.jobs(mc_writes([r]))
+        j.crawl(9, {'sec_uid': SEC, 'cookies': []}, 'search', ['小橘 猫', '小橘 猫', '', 'a,b', 'x' * 40, '6', '7', '8'], 'search')
+        await settle(j)
+        argv = w.spawned[0][0]
+        assert argv[argv.index('--type') + 1] == 'search'
+        assert argv[argv.index('--keywords') + 1] == '小橘 猫,a b,' + 'x' * 20 + ',6,7'  # 去重、去逗号、截短、最多 5 个
+        assert argv[argv.index('--crawler_max_notes_count') + 1] == '50'
+        imp = [b for k, b in w.calls if k == 'import'][0]
+        assert imp['src'] == 'search' and imp['items'][0]['author'] == '小号一'
+        assert imp['items'][0]['author_sec_uid'] == 'MS4wLjABAAAAalt0123456789'
+        with pytest.raises(ValueError, match='没有关键词'):
+            j.crawl(9, {'sec_uid': SEC}, 'search', [' ', ','], 'search')
+    asyncio.run(go())

@@ -45,3 +45,15 @@ def test_cookie_header_only_douyin():
                {'name': 'ttwid', 'value': 't', 'domain': 'www.douyin.com'},
                {'name': 'x', 'value': 'y', 'domain': '.example.com'}, 'junk']
     assert cookie_header(cookies) == 'sessionid=s1; ttwid=t'
+
+
+def test_search_args_and_author():
+    a = mc_args('search', '小橘,猫', '/d', cookies='a=b', max_notes=50)
+    assert a[a.index('--type') + 1] == 'search' and a[a.index('--keywords') + 1] == '小橘,猫'
+    assert a[a.index('--crawler_max_notes_count') + 1] == '50' and '--creator_id' not in a
+    r = row('7300000000000000009', video='https://v.douyinvod.com/9')
+    r.update(author_sec_uid='MS4wLjABAAAAalt0123456789', author_nickname='小橘的小号')
+    it = item_from_row(r)
+    assert it['author_sec_uid'] == 'MS4wLjABAAAAalt0123456789' and it['author'] == '小橘的小号'
+    r['author_sec_uid'] = 'bad'
+    assert 'author_sec_uid' not in item_from_row(r)

@@ -1,7 +1,8 @@
 """MediaCrawler（NanmiCoder/MediaCrawler）的命令行和结果：流式服务、云电脑（cloud/mc_sync.py）共用。
 
 MediaCrawler 抓到的作品写成 jsonl（store/douyin 的 update_douyin_aweme 那些字段），这里转成 Worker 要的作品。
-只用 creator（指定主页）和 detail（指定作品）两种模式，不做关键词搜索，不抓评论。
+用 creator（指定主页）、detail（指定作品）、search（关键词搜索）三种模式，不抓评论。
+搜出来的作品要交频道主逐条审核（认得出是自己小号的才通过），所以作品里带上作者（mc_patch.py 让它多存的）。
 """
 
 import glob
@@ -30,6 +31,11 @@ def item_from_row(row):
     images = [u for u in images if HTTPS.match(u)]
     item = {'aweme': aweme, 'desc': str(row.get('desc') or row.get('title') or '').strip(),
             'create_time': int(row.get('create_time') or 0)}
+    sec = str(row.get('author_sec_uid') or '')
+    if re.fullmatch(r'MS4wLjABAAAA[\w-]{10,200}', sec):
+        item['author_sec_uid'] = sec
+    if row.get('author_nickname'):
+        item['author'] = str(row['author_nickname'])[:100]
     cover = https(row.get('cover_url'))
     if HTTPS.match(cover):
         item['cover'] = cover
@@ -68,13 +74,14 @@ def items_from(rows):
     return items
 
 
-def mc_args(mode, target, data_dir, cookies=''):
+def mc_args(mode, target, data_dir, cookies='', max_notes=100000):
     """MediaCrawler 的命令行参数（不含前面的 python main.py）：只抓作品本身，不抓评论。
-    cookies 不为空就用 cookie 登录（浏览器档案里的登录状态丢了时，用存在 Worker 里的那份补上）。"""
+    cookies 不为空就用 cookie 登录（浏览器档案里的登录状态丢了时，用存在 Worker 里的那份补上）。
+    search 模式 target 是逗号隔开的关键词，max_notes 是每个关键词最多要几条"""
     args = ['--platform', 'dy', '--type', mode, '--get_comment', 'no', '--headless', 'no',
-            '--save_data_option', 'jsonl', '--save_data_path', data_dir, '--crawler_max_notes_count', '100000']
+            '--save_data_option', 'jsonl', '--save_data_path', data_dir, '--crawler_max_notes_count', str(max_notes)]
     args += ['--lt', 'cookie', '--cookies', cookies] if cookies else ['--lt', 'qrcode']
-    args += ['--creator_id', target] if mode == 'creator' else ['--specified_id', target]
+    args += {'creator': ['--creator_id', target], 'search': ['--keywords', target]}.get(mode, ['--specified_id', target])
     return args
 
 

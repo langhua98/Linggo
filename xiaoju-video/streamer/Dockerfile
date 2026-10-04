@@ -16,7 +16,7 @@ ARG MC_REV=bf28178082bc69989954f65a13a17bc129b9aa6e
 RUN git init -q $MC_DIR && git -C $MC_DIR remote add origin https://github.com/NanmiCoder/MediaCrawler.git \
     && git -C $MC_DIR fetch -q --depth 1 origin $MC_REV && git -C $MC_DIR checkout -q FETCH_HEAD
 COPY mc_patch.py /tmp/mc_patch.py
-RUN python /tmp/mc_patch.py $MC_DIR/config/base_config.py \
+RUN python /tmp/mc_patch.py $MC_DIR \
     && python -m venv /opt/mc-venv \
     && /opt/mc-venv/bin/pip install --no-cache-dir -r $MC_DIR/requirements.txt \
     && /opt/mc-venv/bin/playwright install --with-deps chromium \

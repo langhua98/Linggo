@@ -29,6 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LOGIN_TIMEOUT = 12 * 60
 CRAWL_TIMEOUT = 60 * 60
 SEC_UID = re.compile(r'^MS4wLjABAAAA[\w-]{10,200}$')
+# 关键词搜索：一次最多几个关键词、每个最多要几条（都要频道主逐条审核，太多审不过来）
+SEARCH_KEYWORDS = 5
+SEARCH_PER_KEYWORD = 50
 DETAIL = re.compile(r'^(?:https://(?:v\.|www\.|m\.)?douyin\.com/\S{1,300}|\d{6,25})$')
 
 QR_TEXT = ('用抖音 App 扫这个二维码登录你自己的账号（首页左上角「≡」或「我」→ 右上角扫一扫）。'
@@ -248,26 +251,38 @@ class Jobs:
 
     def crawl(self, chat_id, session, mode, targets, src):
         cookies = cookie_header((session or {}).get('cookies'))
+        max_notes = 100000
         if mode == 'creator':
             sec_uid = (session or {}).get('sec_uid') or ''
             if not SEC_UID.match(sec_uid):
                 raise ValueError('还没登录抖音')
             # 只抓登录的那个账号自己的主页：主页地址由登录时认出的 sec_uid 拼出来，不接受外面传进来的
             target, what = f'https://www.douyin.com/user/{sec_uid}', '主页'
+        elif mode == 'search':
+            words = []
+            for t in targets or []:
+                w = re.sub(r'[,，\s]+', ' ', str(t)).strip()[:20]
+                if w and w not in words:
+                    words.append(w)
+            words = words[:SEARCH_KEYWORDS]
+            if not words:
+                raise ValueError('没有关键词')
+            target, what, max_notes = ','.join(words), '关键词「' + '」「'.join(words) + '」', SEARCH_PER_KEYWORD
         else:
             links = [t for t in targets or [] if DETAIL.match(str(t))][:20]
             if not links:
                 raise ValueError('没有认得的抖音链接')
             target, what = ','.join(links), f'{len(links)} 条链接'
-        name = '同步作品' if mode == 'creator' else '抓链接'
-        self._start(name, chat_id, lambda: asyncio.wait_for(self._crawl(chat_id, mode, target, cookies, src, what), CRAWL_TIMEOUT))
+        name = {'creator': '同步作品', 'search': '搜索'}.get(mode, '抓链接')
+        self._start(name, chat_id, lambda: asyncio.wait_for(
+            self._crawl(chat_id, mode, target, cookies, src, what, max_notes), CRAWL_TIMEOUT))
 
-    async def _crawl(self, chat_id, mode, target, cookies, src, what):
+    async def _crawl(self, chat_id, mode, target, cookies, src, what, max_notes=100000):
         data_dir = tempfile.mkdtemp(prefix='mc-')
         try:
             self.emit('progress', stage=f'抓{what}')
             self._say(chat_id, f'开始抓{what}（MediaCrawler），抓完把新的交给审核机器人。作品多的话要好一会儿。')
-            argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mode, target, data_dir, cookies)
+            argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mode, target, data_dir, cookies, max_notes)
             unlock_profile(self.mc_dir)
             proc = await self.spawn(argv, self.mc_dir)
             self.current['proc'] = proc

@@ -126,6 +126,11 @@ done
    发分享链接 → detail 模式抓那几条。读 jsonl，问 Worker 哪些收过，新的送 `/dy-import`：主页同步的发一条汇总，链接抓的逐条交审核。
 4. 一次只干一件（登录 / 同步 / 抓链接），忙的时候机器人会说正在干什么。
 
+**关键词搜索**：机器人里发「搜索 关键词」（多个用逗号隔开，最多 5 个，每个最多 50 条）→ MediaCrawler search 模式。
+搜出来的作品里有别人的：交审核机器人时**没有「全部通过」**，审核消息带作者昵称、作者主页链接，没认过的号标「可能是别人的作品」。
+频道主通过某条，就把那个作者记进「你的号」（config `myAccounts`）；之后搜到这些号的作品会标出来，可以「通过你认过的号的」一键通过，
+别的仍要逐条看。作者信息是 `mc_patch.py` 让 MediaCrawler 多存的（它默认把昵称打码、作者只存散列）。
+
 **备用：自己的 GitHub Codespaces**（会话里的 GitHub 权限建不了 Codespace，要频道主自己建）：
 一键链接 https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json ，
 `run.sh login` 在端口 6080 的网页桌面里扫码，机器人发「云电脑」拿令牌后 `run.sh setup <Worker> <令牌> <主页链接>`、`run.sh sync`。
