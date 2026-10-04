@@ -27,7 +27,8 @@ RUN useradd -m -u 1000 user && chown -R user:user $MC_DIR
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py douyin.py mc.py jobs.py dy_login.py ./
+# 测试文件不进镜像；新加模块记得在这里列上（漏了会 ModuleNotFoundError 起不来）
+COPY app.py douyin.py mc.py jobs.py dy_login.py outbox.py ./
 USER user
 
 EXPOSE 7860
