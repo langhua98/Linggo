@@ -63,6 +63,10 @@ const MSG = {
 // 都只活在单个 isolate 里，丢了无妨
 const filePaths = new Map(); // file_id -> { path, exp }
 let listCache = null;        // { body, exp }
+const filling = new Set();   // 正在往边缘缓存里放的视频（消息号）
+// 视频放一次就整个存进 Cloudflare 边缘缓存：再看、拖进度条都不用再绕 Telegram（每次要 1～2 秒才出第一个字节）
+const EDGE_CACHE_MAX = 60 * 1024 * 1024;
+const EDGE_CACHE_TTL_S = 30 * 86400;
 
 class HttpError extends Error {
   constructor(status, message, headers) {
@@ -105,7 +109,7 @@ export default {
       if (path === '/admin') return html(ADMIN_PAGE, method, { 'X-Robots-Tag': 'noindex' });
       if (path === '/api/videos') return await videoList(env);
       const f = path.match(/^\/vf\/(\d{1,10})(?:\.mp4)?$/);
-      if (f) return await videoFile(request, env, Number(f[1]));
+      if (f) return await videoFile(request, env, Number(f[1]), ctx);
       const p = path.match(/^\/vp\/(\d{1,10})$/);
       if (p) return await poster(env, Number(p[1]), method);
       return text('Not Found', 404);
@@ -1192,9 +1196,11 @@ async function videoList(env) {
   });
 }
 
-async function videoFile(request, env, id) {
+async function videoFile(request, env, id, ctx) {
   const rec = await lib(env).getVideo(id);
   if (!rec) throw new HttpError(404, '没有这个视频');
+  const cached = await fromEdgeCache(request, env, rec, ctx);
+  if (cached) return cached;
   // 翻历史补进来的没有 Bot API 的 file_id：和大视频一样走流式服务（按消息号取）
   const big = !rec.file_id || !rec.size || rec.size > BOT_DOWNLOAD_LIMIT;
   if (big && !streamerOn(env)) throw new HttpError(503, MSG.noStreamer);
@@ -1246,6 +1252,41 @@ function upstreamRange(rec, range) {
 function bodyMatches(res, want, range) {
   const len = res.headers.get('Content-Length');
   return res.status === (want ? 206 : 200) && (len === null || Number(len) === range.end - range.start + 1);
+}
+
+function edgeKey(request, id) {
+  return new URL(`/__video-cache/${id}`, request.url).toString();
+}
+
+// 边缘缓存里有就直接给（它自己会按 Range 切成 206）；没有就在后台整个取一份放进去，这次照常从源头给
+async function fromEdgeCache(request, env, rec, ctx) {
+  if (typeof caches === 'undefined' || request.method !== 'GET' || !rec.size || rec.size > EDGE_CACHE_MAX) return null;
+  const key = edgeKey(request, rec.id);
+  const range = request.headers.get('Range');
+  const hit = await caches.default.match(new Request(key, { headers: range ? { Range: range } : {} })).catch(() => null);
+  if (hit && (hit.status === 200 || hit.status === 206)) {
+    const headers = cors({ 'Content-Type': rec.mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400', 'X-Edge-Cache': 'hit' });
+    for (const h of ['Content-Length', 'Content-Range']) if (hit.headers.get(h)) headers[h] = hit.headers.get(h);
+    return new Response(hit.body, { status: hit.status, headers });
+  }
+  if (hit && hit.body) hit.body.cancel();
+  if (ctx && !filling.has(rec.id) && (rec.file_id || streamerOn(env))) {
+    filling.add(rec.id);
+    ctx.waitUntil(fillEdgeCache(env, rec, key).catch(() => {}).finally(() => filling.delete(rec.id)));
+  }
+  return null;
+}
+
+async function fillEdgeCache(env, rec, key) {
+  const viaBot = rec.file_id && rec.size <= BOT_DOWNLOAD_LIMIT;
+  const res = viaBot ? await fetchFile(env, rec.file_id, null) : await fromStreamer(env, rec, null, null);
+  if (res.status !== 200 || Number(res.headers.get('Content-Length') || rec.size) !== rec.size) {
+    if (res.body) res.body.cancel();
+    return;
+  }
+  await caches.default.put(key, new Response(res.body, {
+    headers: { 'Content-Type': rec.mime, 'Content-Length': String(rec.size), 'Cache-Control': `public, max-age=${EDGE_CACHE_TTL_S}` },
+  }));
 }
 
 async function fromBotApi(env, rec, range) {

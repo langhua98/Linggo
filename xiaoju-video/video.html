@@ -54,7 +54,11 @@
   let muted = true;
   let videos = [];
   let current = -1;
-  const KEEP = 1; // 当前这条前后各留几条的视频地址，其余的卸掉省流量
+  const loaded = new Set(); // 装了视频地址的几条
+  // 当前这条往前留 1 条、往后留 2 条的视频地址，其余的卸掉省流量；下一条提前缓冲，滑过去就能放
+  const BEHIND = 1, AHEAD = 2;
+  // 封面只给附近的几条装：两千多条一起要封面，浏览器和流式服务都会被堵住，正在看的视频反而排在后面
+  const COVERS = 4;
 
   function fmtDate(sec) {
     if (!sec) return '';
@@ -68,7 +72,6 @@
       const s = document.createElement('section');
       s.className = 'slide';
       s.dataset.i = i;
-      s.style.backgroundImage = `url(/vp/${v.id})`;
       const video = document.createElement('video');
       video.playsInline = true;
       video.loop = true;
@@ -135,23 +138,35 @@
   function activate(i) {
     if (i === current) return;
     current = i;
-    [...feed.children].forEach((s, j) => {
-      const video = s.querySelector('video');
-      if (Math.abs(j - i) <= KEEP) {
-        if (!video.getAttribute('src')) video.src = `/vf/${videos[j].id}`;
-        video.preload = j === i ? 'auto' : 'metadata';
-      } else if (video.getAttribute('src')) {
-        video.pause();
-        video.removeAttribute('src');
-        video.load();
-      }
+    // 只动附近的和上次装过地址的，不用每次把两千多条全走一遍
+    for (let j = Math.max(0, i - COVERS); j <= Math.min(videos.length - 1, i + COVERS); j++) {
+      const s = feed.children[j];
+      if (!s.style.backgroundImage) s.style.backgroundImage = `url(/vp/${videos[j].id})`;
+    }
+    for (const j of [...loaded]) {
+      if (j >= i - BEHIND && j <= i + AHEAD) continue;
+      const video = feed.children[j].querySelector('video');
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      loaded.delete(j);
+    }
+    const order = [i];
+    for (let k = 1; k <= AHEAD; k++) order.push(i + k);
+    for (let k = 1; k <= BEHIND; k++) order.push(i - k);
+    for (const j of order.filter(j => j >= 0 && j < videos.length)) {
+      const video = feed.children[j].querySelector('video');
+      // 先给当前这条地址，再给后面的：浏览器按顺序开始下载
+      video.preload = j === i || j === i + 1 ? 'auto' : 'metadata';
+      if (!video.getAttribute('src')) video.src = `/vf/${videos[j].id}`;
+      loaded.add(j);
       if (j === i) {
         video.muted = muted;
         video.play().catch(() => {});
       } else {
         video.pause();
       }
-    });
+    }
     try { history.replaceState(null, '', `#${videos[i].id}`); } catch {}
   }
 

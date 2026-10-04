@@ -39,6 +39,7 @@ async function makeLibrary(env) {
 
 // ── 模拟 Telegram 和流式服务 ──
 const files = new Map(); // file_id -> 字节
+const tgFiles = []; // 从 Telegram 下了哪些文件
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
 const sent = { bot: [], verify: [] };
 const toStreamer = [];
@@ -78,6 +79,7 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({ ok: true, result: { message_id: 1 } });
   }
   if ((m = url.match(/^https:\/\/api\.telegram\.org\/file\/bot[^/]+\/videos\/(\w+)$/))) {
+    tgFiles.push(m[1]);
     return files.has(m[1]) ? serve(files.get(m[1]), headers.get('Range')) : new Response('nope', { status: 404 });
   }
   if (url.startsWith(STREAMER)) {
@@ -231,6 +233,38 @@ await test('小视频走 Bot API，支持 Range', async () => {
   r = await call('/vf/10', { method: 'HEAD' });
   assert.equal(r.headers.get('Content-Length'), String(small.length));
   assert.equal((await call('/vf/99')).status, 404);
+});
+
+await test('边缘缓存：第一次照常从 Telegram 给、后台整个存一份；之后按 Range 从缓存给，不再找 Telegram', async () => {
+  // 假的 Cloudflare 缓存：存整份，取的时候按 Range 切
+  const store = new Map();
+  globalThis.caches = { default: {
+    async match(req) {
+      const b = store.get(req.url);
+      if (!b) return undefined;
+      const m = /bytes=(\d+)-(\d*)/.exec(req.headers.get('Range') || '');
+      if (!m) return new Response(b, { headers: { 'Content-Length': String(b.length) } });
+      const end = m[2] ? Number(m[2]) : b.length - 1;
+      return new Response(b.slice(Number(m[1]), end + 1), { status: 206, headers: { 'Content-Range': `bytes ${m[1]}-${end}/${b.length}`, 'Content-Length': String(end - Number(m[1]) + 1) } });
+    },
+    async put(key, res) { store.set(key, new Uint8Array(await res.arrayBuffer())); },
+  } };
+  try {
+    let r = await call('/vf/10', { headers: { Range: 'bytes=0-99' } });
+    assert.equal(r.status, 206);
+    assert.equal(r.headers.get('X-Edge-Cache'), null);
+    assert.deepEqual(new Uint8Array(await r.arrayBuffer()), small.slice(0, 100));
+    assert.equal(store.size, 1); // 后台存好了整份
+    tgFiles.length = 0;
+    r = await call('/vf/10', { headers: { Range: 'bytes=1000-1999' } });
+    assert.equal(r.status, 206);
+    assert.equal(r.headers.get('X-Edge-Cache'), 'hit');
+    assert.equal(r.headers.get('Content-Range'), `bytes 1000-1999/${small.length}`);
+    assert.deepEqual(new Uint8Array(await r.arrayBuffer()), small.slice(1000, 2000));
+    assert.equal(tgFiles.length, 0); // 没再找 Telegram
+  } finally {
+    delete globalThis.caches;
+  }
 });
 
 await test('大视频走流式服务；休眠时 503 + Retry-After', async () => {
