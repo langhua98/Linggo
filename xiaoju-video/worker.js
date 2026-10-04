@@ -756,6 +756,8 @@ async function adminApi(request, env, ctx, url) {
       progress: JSON.parse((await L.getConfig('cloudProgress')) || 'null'),
       streamerUp: Number(await L.getConfig('streamerUp')) || 0,
       streamer: streamerOn(env),
+      // 抖音登录的是哪个账号（cookie 不给）
+      douyin: await dySession(env).then(x => x && { nickname: x.nickname, sec_uid: x.sec_uid, at: x.at, cookies: x.cookies.length }),
       items: await L.listItems(status, 100, ''),
     });
   }
