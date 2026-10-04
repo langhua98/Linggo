@@ -493,12 +493,26 @@ async function sendSheet(env, id) {
   if (r && r.result && r.result.message_id) await L.setBatchMsg(id, r.result.message_id);
 }
 
+// 有审核单之前收的、还没审的作品：按来源各凑成一张审核单。返回新开的编号
+async function adoptOrphans(env) {
+  const L = lib(env);
+  const ids = [];
+  for (const src of await L.orphanSrcs()) {
+    const id = newBatchId();
+    await L.addBatch(id, src, batchTags(src, ''));
+    await L.adoptOrphans(id, src);
+    ids.push(id);
+  }
+  return ids;
+}
+
 async function verifyChat(env, msg) {
   const owner = await ownerId(env);
   if (!owner || msg.from.id !== owner) {
     await verifySay(env, msg.chat.id, '这是小橘视频的审核机器人，只有频道主能用。');
     return;
   }
+  await adoptOrphans(env);
   const open = await lib(env).openBatches(5);
   if (!open.length) return await verifySay(env, msg.chat.id, '现在没有待审核的审核单。');
   for (const b of open) await sendSheet(env, b.id);
@@ -560,6 +574,7 @@ async function tick(env) {
   const L = lib(env);
   const failed = await L.expireSending(Date.now() - SENDING_STALE_MS, MAX_ATTEMPTS);
   if (failed.length) await notifyFailed(env, failed);
+  for (const id of await adoptOrphans(env)) await sendSheet(env, id);
   await dispatch(env);
   // 有交出去还没回音的、或者最近让它干过活：去它的发件箱看看。闲着就不去，免得把休眠的 Space 一直叫醒
   if (!streamerOn(env)) return;
@@ -1174,6 +1189,14 @@ export class Library extends DurableObject {
 
   batchItems(id) {
     return this.sql.exec('SELECT * FROM items WHERE batch = ? ORDER BY created, aweme', id).toArray().map(r => this.row(r));
+  }
+
+  orphanSrcs() {
+    return this.sql.exec("SELECT DISTINCT src FROM items WHERE status = 'review' AND (batch IS NULL OR batch = '')").toArray().map(r => r.src);
+  }
+
+  adoptOrphans(id, src) {
+    this.sql.exec("UPDATE items SET batch = ? WHERE status = 'review' AND (batch IS NULL OR batch = '') AND src = ?", id, src);
   }
 
   openBatches(limit) {

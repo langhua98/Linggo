@@ -134,7 +134,7 @@ done
 审核机器人发一张：`🛂 审核单 <14 位编号>（#来源 #关键词… #批次数量N 条）`，下面是作者统计（通过过的号标 ✓）、前 5 条说明和
 「查看全部」链接（`GET /review/<编号>`，整批列表，每条带作者主页和抖音链接）。只有两个按钮：
 「✅ 审核通过」整批排队转发，并把这批的作者记进「你的号」（config `myAccounts`）；「❌ 审核失败」整批不转。
-私聊审核机器人会把没审的审核单再发一遍。
+私聊审核机器人会把没审的审核单再发一遍；有审核单之前收的待审作品，定时任务按来源凑成一张发过来。
 
 **备用：自己的 GitHub Codespaces**（会话里的 GitHub 权限建不了 Codespace，要频道主自己建）：
 一键链接 https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json ，

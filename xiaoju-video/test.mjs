@@ -449,11 +449,15 @@ await test('失败过的作品，云电脑再送来会用新地址重新待审�
 });
 
 // ── 审核机器人私聊、管理接口 ──
-await test('审核机器人私聊：把没审的审核单再发一遍', async () => {
+await test('审核机器人私聊：把没审的审核单再发一遍；有审核单之前的待审作品凑成一张', async () => {
+  await L.addItems([normalizeItem({ aweme: '7300000000000000006', type: 'video', desc: '老的待审' })], 'search');
   reset();
   await hook({ message: { chat: { id: OWNER, type: 'private' }, from: { id: OWNER }, text: '/start' } }, true);
   assert.equal(sheets().length, (await L.openBatches(5)).length);
   assert.ok(sheets().length >= 1);
+  const old = sheets().find(m => /老的待审/.test(m.text));
+  assert.match(old.text, /（#关键词搜索 #批次数量1 条）/);
+  await press(OWNER, `batch-no:${bidOf(old)}`);
   await hook({ message: { chat: { id: STRANGER, type: 'private' }, from: { id: STRANGER }, text: '/start' } }, true);
   assert.match(last('verify').text, /只有频道主/);
 });
