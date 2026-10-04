@@ -206,12 +206,15 @@ const HELP = `我是小橘视频的管理助手 🍊
 • 同步作品：云电脑（MediaCrawler）抓你登录账号自己主页的全部作品，新的交审核机器人 @xiaojuverify_bot
 • 搜索 关键词 数量：按关键词搜抖音，比如「搜索 坏脾气小橘 100」（多个关键词用逗号隔开；数量是每个关键词搜几条，不写是 50，最多 500），搜到的成审核单。
   搜出来的也有别人的作品：审核消息里有作者和主页链接，是你小号的才通过；通过过的号会记住，下次标出来、可以一键通过
-• 发小号的主页链接（抖音里点「分享主页」复制的链接，或者 www.douyin.com/user/… 地址）：记成你的小号，
+• 登录快手 / 重新登录快手：快手扫码登录（用快手 App 扫），之后快手的小号、链接、搜索就都能用
+• 快手搜索 关键词 数量：按关键词搜快手，和抖音的「搜索」一样
+• 发小号的主页链接（抖音、快手里点「分享主页」复制的链接，或者 www.douyin.com/user/…、www.kuaishou.com/profile/… 地址）：记成你的小号，
   云电脑马上抓它的全部作品，新的不用审核，直接转进视频频道
 • 小号：看加了哪些小号；「同步小号」现在把所有小号抓一遍；「删除小号 2」删第 2 个
 • 自动同步：每天定时把所有小号和你登录的账号抓一遍（小号的直接转，登录账号的交审核单）。
   「自动同步 8」改成每天 8 点（北京时间），「自动同步 关」关掉
-• 直接发抖音作品分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
+• 直接发抖音、快手的作品分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
+  （云电脑一次干一件，忙的时候发来的活排队，轮到了自动开始）
 • 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
 • 网页口令：给你一个带口令的网页链接，用它打开才有 💔 心碎按钮；点了删掉频道里的原帖（找不回来）
 • 心碎：看最近心碎删掉的视频
@@ -220,7 +223,8 @@ const HELP = `我是小橘视频的管理助手 🍊
 • 帮助：显示这段说明`;
 
 const OWNER_KEYBOARD = {
-  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '小号' }, { text: '搜索' }], [{ text: '进度' }, { text: '重试失败' }, { text: '帮助' }]],
+  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '登录快手' }, { text: '快手搜索' }],
+    [{ text: '小号' }, { text: '搜索' }], [{ text: '进度' }, { text: '重试失败' }, { text: '帮助' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -280,10 +284,18 @@ async function botUpdate(env, update, origin, ctx) {
     return await douyinLogin(env, chat);
   }
   if (t === '重新登录') return await douyinLogin(env, chat);
-  const search = /^(?:搜索|\/search)(?:\s+([\s\S]*))?$/.exec(t);
+  if (t === '登录快手') {
+    const s = await getSession(env, 'ks');
+    if (s) return await say(env, chat, `快手已经登录了「${s.nickname || s.sec_uid}」，不用再登录。`, { reply_markup: OWNER_KEYBOARD });
+    return await douyinLogin(env, chat, 'ks');
+  }
+  if (t === '重新登录快手') return await douyinLogin(env, chat, 'ks');
+  const search = /^(快手搜索|搜索|\/search)(?:\s+([\s\S]*))?$/.exec(t);
   if (search) {
+    const plat = search[1] === '快手搜索' ? 'ks' : 'dy';
+    const cmd = plat === 'ks' ? '快手搜索' : '搜索';
     // 结尾的数字是每个关键词要几条：「搜索 坏脾气小橘 100」「搜索 小橘，猫咪 30条」
-    let arg = String(search[1] || '').trim();
+    let arg = String(search[2] || '').trim();
     let count;
     const n = /(?:^|\s)(\d{1,4})\s*条?$/.exec(arg);
     if (n) {
@@ -291,10 +303,10 @@ async function botUpdate(env, update, origin, ctx) {
       arg = arg.slice(0, n.index).trim();
     }
     const words = arg.split(/[,，、;；\n]+/).map(w => w.trim()).filter(Boolean).slice(0, 5);
-    if (!words.length) return await say(env, chat, `发「搜索 关键词 数量」，比如「搜索 坏脾气小橘 100」；多个关键词用逗号隔开，不写数量每个搜 50 条，最多 ${SEARCH_MAX} 条。`);
-    const session = await dySession(env);
-    if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
-    return await startCrawl(env, chat, { mode: 'search', targets: words, session, ...(count ? { count } : {}) });
+    if (!words.length) return await say(env, chat, `发「${cmd} 关键词 数量」，比如「${cmd} 坏脾气小橘 100」；多个关键词用逗号隔开，不写数量每个搜 50 条，最多 ${SEARCH_MAX} 条。`);
+    const session = await getSession(env, plat);
+    if (!session) return await say(env, chat, `还没登录${PLATFORMS[plat].name}：先发「${PLATFORMS[plat].login}」扫码。`, { reply_markup: OWNER_KEYBOARD });
+    return await startCrawl(env, chat, { mode: 'search', platform: plat, targets: words, session, ...(count ? { count } : {}) });
   }
   if (t === '同步作品' || t === '/sync') {
     const session = await dySession(env);
@@ -303,11 +315,20 @@ async function botUpdate(env, update, origin, ctx) {
   }
   if (t === '小号' || t === '/alts') return await say(env, chat, await altsText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '同步小号') {
-    const session = await dySession(env);
-    if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
     const alts = await altAccounts(env);
     if (!alts.length) return await say(env, chat, '还没加小号：把小号的主页分享链接发给我。');
-    return await startCrawl(env, chat, { mode: 'accounts', targets: alts.map(a => a.sec), session });
+    let started = 0;
+    for (const plat of ['dy', 'ks']) {
+      const mine = alts.filter(a => (a.platform || 'dy') === plat).map(a => a.sec);
+      if (!mine.length) continue;
+      if (!(await getSession(env, plat))) {
+        await say(env, chat, `还没登录${PLATFORMS[plat].name}：先发「${PLATFORMS[plat].login}」扫码。`, { reply_markup: OWNER_KEYBOARD });
+        continue;
+      }
+      await startCrawl(env, chat, { mode: 'accounts', platform: plat, targets: mine });
+      started++;
+    }
+    return;
   }
   const del = /^删除小号\s*(\d+)$/.exec(t);
   if (del) {
@@ -411,7 +432,7 @@ async function trashText(env) {
 
 // 分享文字里的抖音链接：v.douyin.com 短链接、www.douyin.com/video|note/<号>、iesdouyin 分享页
 function douyinLinks(t) {
-  const found = String(t || '').match(/https?:\/\/(?:v\.douyin\.com|(?:www\.|m\.)?douyin\.com|(?:www\.)?iesdouyin\.com)\/[^\s，。！？、"'<>]*/gi) || [];
+  const found = String(t || '').match(/https?:\/\/(?:v\.douyin\.com|(?:www\.|m\.)?douyin\.com|(?:www\.)?iesdouyin\.com|(?:v\.|www\.|m\.)?kuaishou\.com|[\w.-]*\.chenzhongtech\.com|(?:www\.|m\.)?gifshow\.com)\/[^\s，。！？、"'<>]*/gi) || [];
   return [...new Set(found.map(u => u.replace(/[),.;!?]+$/, '')))].slice(0, 10);
 }
 
@@ -420,17 +441,33 @@ function douyinLinks(t) {
 async function submitLinks(env, chat, links) {
   if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务，暂时认不了链接');
   const session = await dySession(env);
-  const { accounts, works } = await sortLinks(env, links, !!session);
-  if (accounts.length) {
-    if (!session) return await say(env, chat, '要抓小号的作品得先登录抖音：发「登录抖音」扫码，再把主页链接发一次。', { reply_markup: OWNER_KEYBOARD });
-    const fresh = await addAlts(env, accounts);
-    await say(env, chat, (fresh ? `加了 ${fresh} 个小号` : '这个小号以前加过了') +
-      `，现在去抓它的全部作品，新的直接转进视频频道。` +
-      (works.length ? `\n一起发来的 ${works.length} 条作品链接，等这次抓完再发一次。` : ''));
-    return await startCrawl(env, chat, { mode: 'accounts', targets: accounts, session });
+  const ksSession = await getSession(env, 'ks');
+  const { accounts, works } = await sortLinks(env, links, !!(session || ksSession));
+  // 要干的活：小号（每个平台一件）、作品链接（每个平台一件）。云电脑一次干一件，其余排队
+  const todo = [];
+  const notes = [];
+  for (const plat of ['dy', 'ks']) {
+    const P = PLATFORMS[plat];
+    const mine = accounts.filter(a => a.platform === plat).map(a => a.sec);
+    if (!mine.length) continue;
+    if (!(await getSession(env, plat))) {
+      notes.push(`要抓${P.name}小号得先登录${P.name}：发「${P.login}」扫码，再把主页链接发一次。`);
+      continue;
+    }
+    const fresh = await addAlts(env, mine, plat);
+    notes.push((plat === 'ks' ? '快手：' : '') + (fresh ? `加了 ${fresh} 个小号` : '这个小号以前加过了') +
+      '，现在去抓它的全部作品，新的直接转进视频频道。');
+    todo.push({ mode: 'accounts', platform: plat, targets: mine });
   }
-  links = works;
-  if (session) return await startCrawl(env, chat, { mode: 'detail', targets: works, session });
+  if (works.ks.length) {
+    if (ksSession) todo.push({ mode: 'detail', platform: 'ks', targets: works.ks.slice(0, 20) });
+    else notes.push(`${works.ks.length} 条快手链接：先发「登录快手」扫码，再发一次。`);
+  }
+  links = works.dy;
+  if (session && links.length) todo.push({ mode: 'detail', platform: 'dy', targets: links });
+  if (notes.length) await say(env, chat, notes.join('\n'), { reply_markup: OWNER_KEYBOARD });
+  for (const job of todo) await startCrawl(env, chat, job);
+  if (session || !links.length) return;
   const items = [];
   const bad = [];
   for (const link of links) {
@@ -452,28 +489,45 @@ async function submitLinks(env, chat, links) {
 
 const SEARCH_MAX = 500; // 每个关键词最多搜几条（流式服务那边也是这个上限）
 
-// 分出哪些是个人主页（小号）、哪些是作品。www.douyin.com/user/… 一看就知道；短链接要流式服务跳一次才知道
+// 两个平台：抖音作品号是纯数字，快手的是 ks_<快手作品号>；账号号码抖音是 sec_uid，快手是用户 id
 const SEC_RE = /^MS4wLjABAAAA[\w-]{10,200}$/;
+const KS_UID_RE = /^[0-9A-Za-z_-]{3,40}$/;
+const ITEM_ID_RE = /^(?:\d{6,25}|ks_[0-9A-Za-z_-]{6,40})$/;
+const PLATFORMS = {
+  dy: { name: '抖音', session: 'dySession', login: '登录抖音', id: SEC_RE, profile: id => `https://www.douyin.com/user/${id}` },
+  ks: { name: '快手', session: 'ksSession', login: '登录快手', id: KS_UID_RE, profile: id => `https://www.kuaishou.com/profile/${id}` },
+};
+const platOfItem = item => (String(item.aweme || '').startsWith('ks_') ? 'ks' : 'dy');
+const isKsLink = l => /^https?:\/\/([\w.-]*\.)?(kuaishou\.com|chenzhongtech\.com|gifshow\.com)\//i.test(l);
+
+// 分出哪些是个人主页（小号）、哪些是作品，各是哪个平台。www.douyin.com/user/…、www.kuaishou.com/profile/… 一看就知道；
+// 短链接要流式服务跳一次才知道。返回 { accounts: [{ sec, platform }], works: { dy: [链接], ks: [链接] } }
 async function sortLinks(env, links, expand) {
   const accounts = [];
-  const works = [];
+  const works = { dy: [], ks: [] };
   const short = [];
   for (const l of links) {
-    const m = /douyin\.com\/(?:share\/)?user\/(MS4wLjABAAAA[\w-]{10,200})/.exec(l);
-    if (m) accounts.push(m[1]);
-    else if (expand && /v\.douyin\.com/.test(l)) short.push(l);
-    else works.push(l);
+    const dy = /douyin\.com\/(?:share\/)?user\/(MS4wLjABAAAA[\w-]{10,200})/.exec(l);
+    const ks = /kuaishou\.com\/profile\/([0-9A-Za-z_-]{3,40})/.exec(l);
+    if (dy) accounts.push({ sec: dy[1], platform: 'dy' });
+    else if (ks) accounts.push({ sec: ks[1], platform: 'ks' });
+    else if (/kuaishou\.com\/short-video\/[0-9A-Za-z_-]{6,40}/.test(l)) works.ks.push(l);
+    else if (expand && (/v\.douyin\.com/.test(l) || isKsLink(l))) short.push(l);
+    else works[isKsLink(l) ? 'ks' : 'dy'].push(l);
   }
   if (short.length) {
     const r = await streamerCall(env, '/douyin/expand', { urls: short }).catch(() => null);
     const res = r && r.status === 200 && Array.isArray(r.data.results) ? r.data.results : [];
     for (const l of short) {
-      const x = res.find(y => y && y.url === l);
-      if (x && SEC_RE.test(String(x.sec_uid || ''))) accounts.push(x.sec_uid);
-      else works.push(l); // 认不出就当作品链接，交给 MediaCrawler 去认
+      const x = res.find(y => y && y.url === l) || {};
+      if (SEC_RE.test(String(x.sec_uid || ''))) accounts.push({ sec: x.sec_uid, platform: 'dy' });
+      else if (KS_UID_RE.test(String(x.ks_user || ''))) accounts.push({ sec: x.ks_user, platform: 'ks' });
+      else if (/^https:\/\/www\.kuaishou\.com\/short-video\//.test(String(x.canonical || ''))) works.ks.push(x.canonical);
+      else works[isKsLink(l) ? 'ks' : 'dy'].push(l); // 认不出就当作品链接，交给 MediaCrawler 去认
     }
   }
-  return { accounts: [...new Set(accounts)], works };
+  const seen = new Set();
+  return { accounts: accounts.filter(a => !seen.has(a.platform + a.sec) && seen.add(a.platform + a.sec)), works };
 }
 
 // 小号：[{ sec, name, at }]。频道主亲手加的，抓到的作品不用审核
@@ -481,12 +535,12 @@ async function altAccounts(env) {
   return JSON.parse((await lib(env).getConfig('altAccounts')) || '[]');
 }
 
-async function addAlts(env, secs) {
+async function addAlts(env, secs, platform = 'dy') {
   const alts = await altAccounts(env);
   let fresh = 0;
   for (const sec of secs) {
     if (alts.some(a => a.sec === sec)) continue;
-    alts.push({ sec, name: '', at: Date.now() });
+    alts.push({ sec, name: '', at: Date.now(), ...(platform === 'dy' ? {} : { platform }) });
     fresh++;
   }
   await lib(env).setConfig('altAccounts', JSON.stringify(alts.slice(-100)));
@@ -499,9 +553,9 @@ async function altLines(env, alts) {
   return alts.map((x, i) => {
     const c = stats[x.sec] || {};
     const total = Object.values(c).reduce((m, n) => m + n, 0);
-    return `${i + 1}. ${x.name || '（还没抓过，不知道昵称）'}\n` +
+    return `${i + 1}. ${x.platform === 'ks' ? '[快手] ' : ''}${x.name || '（还没抓过，不知道昵称）'}\n` +
       (total ? `   收了 ${total} 条：${countLine(c)}${c.review ? ` · 待审 ${c.review}` : ''}${c.rejected ? ` · 不转 ${c.rejected}` : ''}` : '   还没收到作品') +
-      (x.last ? `；上次抓 ${ago(x.last)}` : '') + `\n   https://www.douyin.com/user/${x.sec}`;
+      (x.last ? `；上次抓 ${ago(x.last)}` : '') + `\n   ${PLATFORMS[x.platform || 'dy'].profile(x.sec)}`;
   });
 }
 
@@ -571,33 +625,45 @@ async function maybeAutoSync(env, now = Date.now()) {
   const bj = new Date(now + 8 * 3600 * 1000);
   const day = bj.toISOString().slice(0, 10);
   if (!a.on || bj.getUTCHours() !== a.hour || a.day === day || !streamerOn(env)) return;
-  const session = await dySession(env);
   const owner = await ownerId(env);
-  if (!session || !owner) return;
-  const targets = [...new Set([...(await altAccounts(env)).map(x => x.sec), session.sec_uid])].filter(x => SEC_RE.test(x));
-  const r = await streamerCall(env, '/douyin/crawl', { chat_id: owner, mode: 'accounts', targets, session }).catch(() => null);
-  if (!r || r.status !== 200) return;
+  if (!owner) return;
+  const alts = await altAccounts(env);
+  const jobs = [];
+  const dy = await dySession(env);
+  if (dy) {
+    const targets = [...new Set([...alts.filter(x => (x.platform || 'dy') === 'dy').map(x => x.sec), dy.sec_uid])].filter(x => SEC_RE.test(x));
+    jobs.push({ chat: owner, mode: 'accounts', platform: 'dy', targets });
+  }
+  const ksAlts = alts.filter(x => x.platform === 'ks').map(x => x.sec);
+  if (ksAlts.length && (await getSession(env, 'ks'))) jobs.push({ chat: owner, mode: 'accounts', platform: 'ks', targets: ksAlts });
+  if (!jobs.length) return;
+  for (const job of jobs) await enqueue(env, 0, job, '');
   a.day = day;
   a.last = now;
   await lib(env).setConfig('autoSync', JSON.stringify(a));
-  await jobStarted(env);
+  await startQueued(env);
 }
 
 // 抖音登录状态（流式服务登录成功后存进来的 cookie、sec_uid、昵称）；没有返回 null
 async function dySession(env) {
-  const raw = await lib(env).getConfig('dySession');
+  return await getSession(env, 'dy');
+}
+
+async function getSession(env, platform) {
+  const raw = await lib(env).getConfig(PLATFORMS[platform].session);
   const s = raw ? JSON.parse(raw) : null;
   return s && s.sec_uid ? s : null;
 }
 
-async function douyinLogin(env, chat) {
+async function douyinLogin(env, chat, platform = 'dy') {
+  const P = PLATFORMS[platform];
   if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务');
-  const r = await streamerCall(env, '/douyin/login', { chat_id: chat }).catch(() => null);
-  if (!r) return await say(env, chat, '云电脑没响应（可能在休眠），1 分钟后再发一次「登录抖音」。');
+  const r = await streamerCall(env, '/douyin/login', { chat_id: chat, ...(platform === 'dy' ? {} : { platform }) }).catch(() => null);
+  if (!r) return await say(env, chat, `云电脑没响应（可能在休眠），1 分钟后再发一次「${P.login}」。`);
   if (r.status === 409) return await say(env, chat, `云电脑正在「${r.data.busy}」，等它干完再发。`);
   if (r.status !== 200) return await say(env, chat, `云电脑没接：${(r.data && r.data.error) || r.status}`);
   await jobStarted(env);
-  await say(env, chat, '正在打开抖音登录页，二维码大约半分钟后发过来…');
+  await say(env, chat, `正在打开${P.name}登录页，二维码大约半分钟后发过来…`);
 }
 
 // 交给流式服务一件活：记下时间，开始轮询它的发件箱（二维码、结果都从那里来）
@@ -608,12 +674,55 @@ async function jobStarted(env) {
 }
 
 // 交给云电脑抓：它自己会把「开始抓」「抓到几条」发给频道主，这里只处理没交出去的情况
+// 云电脑一次只干一件：忙着、在睡，就排进队（config crawlQueue）；它闲下来（发件箱说不忙了）、定时任务时接着交
 async function startCrawl(env, chat, body) {
-  const r = await streamerCall(env, '/douyin/crawl', { chat_id: chat, ...body }).catch(() => null);
-  if (!r) return await say(env, chat, '云电脑没响应（可能在休眠），1 分钟后再发一次。');
-  if (r.status === 409) return await say(env, chat, `云电脑正在「${r.data.busy}」，等它干完再发。`);
-  if (r.status !== 200) return await say(env, chat, `云电脑没接：${(r.data && r.data.error) || r.status}`);
+  const job = { chat, mode: body.mode, platform: body.platform || 'dy', targets: body.targets || [], ...(body.count ? { count: body.count } : {}) };
+  if ((await crawlQueue(env)).length) return await enqueue(env, chat, job, '前面还有活');
+  const r = await sendCrawl(env, job, body.session);
+  if (r.ok) return;
+  if (r.busy || r.down) return await enqueue(env, chat, job, r.busy ? `云电脑正在「${r.busy}」` : '云电脑没响应（可能在休眠）');
+  await say(env, chat, `云电脑没接：${r.error}`);
+}
+
+// 交一件活；返回 { ok } / { busy: 在干什么 } / { down } / { error }
+async function sendCrawl(env, job, session) {
+  const P = PLATFORMS[job.platform] || PLATFORMS.dy;
+  const s = session || (await getSession(env, job.platform));
+  if (!s) return { error: `还没登录${P.name}（发「${P.login}」）` };
+  const body = { chat_id: job.chat, mode: job.mode, targets: job.targets, session: s };
+  if (job.platform === 'ks') body.platform = 'ks';
+  if (job.count) body.count = job.count;
+  const r = await streamerCall(env, '/douyin/crawl', body).catch(() => null);
+  if (!r) return { down: true };
+  if (r.status === 409) return { busy: (r.data && r.data.busy) || '别的活' };
+  if (r.status !== 200) return { error: (r.data && r.data.error) || String(r.status) };
   await jobStarted(env);
+  return { ok: true };
+}
+
+async function crawlQueue(env) {
+  return JSON.parse((await lib(env).getConfig('crawlQueue')) || '[]');
+}
+
+async function enqueue(env, chat, job, why) {
+  const queue = await crawlQueue(env);
+  const key = j => JSON.stringify([j.platform, j.mode, j.targets, j.count || 0]);
+  if (!queue.some(j => key(j) === key(job))) queue.push(job);
+  await lib(env).setConfig('crawlQueue', JSON.stringify(queue.slice(-20)));
+  await lib(env).kick();
+  if (chat && why) await say(env, chat, `${why}，这件排上队了（队里 ${queue.length} 件），轮到了自动开始。`);
+}
+
+// 云电脑闲着：交队里的下一件。忙、在睡就留着下次再试；交不了的（比如没登录）扔掉、告诉频道主
+async function startQueued(env) {
+  const queue = await crawlQueue(env);
+  if (!queue.length || !streamerOn(env)) return;
+  const job = queue[0];
+  const r = await sendCrawl(env, job);
+  if (r.busy || r.down) return;
+  queue.shift();
+  await lib(env).setConfig('crawlQueue', JSON.stringify(queue));
+  if (r.error && job.chat) await say(env, job.chat, `排队的活没交出去：${r.error}`);
 }
 
 async function progressText(env) {
@@ -628,6 +737,10 @@ async function progressText(env) {
   ];
   const s = await dySession(env);
   lines.push(s ? `抖音账号：${s.nickname || s.sec_uid}（${ago(s.at)}登录）` : '抖音：还没登录（发「登录抖音」）');
+  const ks = await getSession(env, 'ks');
+  lines.push(ks ? `快手账号：${ks.nickname || ks.sec_uid}（${ago(ks.at)}登录）` : '快手：还没登录（发「登录快手」）');
+  const queue = await crawlQueue(env);
+  if (queue.length) lines.push(`排队的活：${queue.length} 件（云电脑闲下来自动开始）`);
   if (p) lines.push(`云电脑：${p.stage || ''} ${p.done || 0}/${p.total || 0}${p.note ? ' · ' + p.note : ''}（${ago(p.at)}）`);
   const alts = await altAccounts(env);
   if (alts.length) {
@@ -683,7 +796,7 @@ function reviewText(item, mine = []) {
     `抖音${KIND[item.type] || '作品'}（${SRC[item.src] || '私聊链接'}）`,
     item.desc ? item.desc.slice(0, 300) : '（没有文字）',
     item.author || item.author_sec_uid ? `作者：${item.author || '（没有昵称）'}${known ? '  ✓ 你通过过这个号的作品' : ''}` : '',
-    item.author_sec_uid ? `作者主页：https://www.douyin.com/user/${item.author_sec_uid}` : '',
+    item.author_sec_uid ? `作者主页：${PLATFORMS[platOfItem(item)].profile(item.author_sec_uid)}` : '',
     item.url,
   ].filter(Boolean).join('\n');
 }
@@ -710,7 +823,7 @@ function newBatchId() {
 // 标签：来源 + 搜的关键词（「橘猫」「猫」→ #橘猫 #猫）
 function batchTags(src, what) {
   const words = [...String(what || '').matchAll(/「([^」]+)」/g)].map(m => '#' + m[1].replace(/\s+/g, ''));
-  return [SRC_TAG[src] || '#私聊链接', ...words].slice(0, 8);
+  return [SRC_TAG[src] || '#私聊链接', ...(/^快手/.test(String(what || '')) ? ['#快手'] : []), ...words].slice(0, 8);
 }
 
 function sheetHeader(b) {
@@ -842,6 +955,7 @@ async function tick(env) {
   const failed = await L.expireSending(Date.now() - SENDING_STALE_MS, MAX_ATTEMPTS);
   if (failed.length) await notifyFailed(env, failed);
   await maybeAutoSync(env);
+  await startQueued(env).catch(() => {});
   await scanChannel(env, 2).catch(() => {});
   await retryDeletes(env).catch(() => {});
   await refreshCards(env).catch(() => {});
@@ -880,7 +994,7 @@ async function streamerApi(request, env, ctx, path) {
     return json({ ok: r === 'ok', error: r === 'ok' ? undefined : r }, r === 'ok' ? 200 : r === 'only the owner' ? 403 : 502);
   }
   const aweme = String(body.aweme || '');
-  if (!/^\d{6,25}$/.test(aweme)) return json({ error: 'bad aweme' }, 400);
+  if (!ITEM_ID_RE.test(aweme)) return json({ error: 'bad aweme' }, 400);
   const res = await itemDone(env, body);
   return json({ ok: true, status: res });
 }
@@ -931,10 +1045,11 @@ async function saveSession(env, body) {
   const cookies = (Array.isArray(body.cookies) ? body.cookies : [])
     .filter(c => c && typeof c.name === 'string' && typeof c.value === 'string').slice(0, 200);
   const sec = String(body.sec_uid || '');
-  if (!/^MS4wLjABAAAA[\w-]{10,200}$/.test(sec)) return 'bad sec_uid';
+  const P = PLATFORMS[body.platform === 'ks' ? 'ks' : 'dy'];
+  if (!P.id.test(sec)) return 'bad sec_uid';
   const session = { cookies, sec_uid: sec, nickname: String(body.nickname || '').slice(0, 60), at: Date.now() };
   if (JSON.stringify(session).length > 64 * 1024) return 'too big';
-  await lib(env).setConfig('dySession', JSON.stringify(session));
+  await lib(env).setConfig(P.session, JSON.stringify(session));
   return '';
 }
 
@@ -1023,12 +1138,16 @@ async function pollStreamer(env, waitS) {
     await L.setConfig('outboxSeq', String(ev.seq));
   }
   if (events.some(e => e.kind === 'done')) await refreshCards(env).catch(() => {});
+  if (!data.busy && (await crawlQueue(env)).length) {
+    await startQueued(env).catch(() => {});
+    return { busy: true, more: events.length > 0 }; // 刚交了（或者还在排）：接着轮询
+  }
   return { busy: !!data.busy, more: events.length > 0 };
 }
 
 async function handleEvent(env, ev) {
   if (ev.kind === 'done') {
-    if (/^\d{6,25}$/.test(String(ev.aweme || ''))) await itemDone(env, ev);
+    if (ITEM_ID_RE.test(String(ev.aweme || ''))) await itemDone(env, ev);
   } else if (ev.kind === 'say') {
     await sendToOwner(env, ev.chat_id, ev.text, ev.png, { buttons: ev.buttons, menu: ev.menu });
   } else if (ev.kind === 'session') {
@@ -1166,7 +1285,7 @@ async function cloudApi(request, env, ctx, path) {
     return err ? json({ error: err }, err === 'too big' ? 413 : 400) : json({ ok: true });
   }
   if (path === '/dy-known') {
-    const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => /^\d{6,25}$/.test(x)).slice(0, 1000);
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => ITEM_ID_RE.test(x)).slice(0, 1000);
     return json({ known: await L.knownAwemes(ids) });
   }
   if (path === '/dy-import') {
@@ -1188,7 +1307,8 @@ const HTTPS = /^https:\/\/[^\s]{4,2000}$/;
 function normalizeItem(x) {
   if (!x || typeof x !== 'object') return null;
   const aweme = String(x.aweme || '');
-  if (!/^\d{6,25}$/.test(aweme)) return null;
+  if (!ITEM_ID_RE.test(aweme)) return null;
+  const ks = aweme.startsWith('ks_');
   const type = x.type === 'images' ? 'images' : x.type === 'video' ? 'video' : '';
   if (!type) return null;
   const item = {
@@ -1196,12 +1316,14 @@ function normalizeItem(x) {
     desc: String(x.desc || '').slice(0, 1000),
     author: String(x.author || '').slice(0, 100),
     create_time: Number(x.create_time) || 0,
-    url: HTTPS.test(x.url || '') ? x.url : `https://www.douyin.com/${type === 'images' ? 'note' : 'video'}/${aweme}`,
+    url: HTTPS.test(x.url || '') ? x.url
+      : ks ? `https://www.kuaishou.com/short-video/${aweme.slice(3)}` : `https://www.douyin.com/${type === 'images' ? 'note' : 'video'}/${aweme}`,
   };
+  if (ks) item.platform = 'ks';
   if (type === 'video' && HTTPS.test(x.video_url || '')) item.video_url = x.video_url;
   if (type === 'images') item.images = (Array.isArray(x.images) ? x.images : []).filter(u => HTTPS.test(u || '')).slice(0, 35);
   if (HTTPS.test(x.cover || '')) item.cover = x.cover;
-  if (/^MS4wLjABAAAA[\w-]{10,200}$/.test(String(x.author_sec_uid || ''))) item.author_sec_uid = x.author_sec_uid;
+  if ((ks ? KS_UID_RE : SEC_RE).test(String(x.author_sec_uid || ''))) item.author_sec_uid = x.author_sec_uid;
   return item;
 }
 
@@ -1241,7 +1363,7 @@ async function adminApi(request, env, ctx, url) {
     return json({ ok: true, n });
   }
   if (action === 'review') {
-    const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => /^\d{6,25}$/.test(x));
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => ITEM_ID_RE.test(x));
     const to = body.to === 'queued' ? 'queued' : body.to === 'rejected' ? 'rejected' : '';
     if (!to) return json({ error: 'bad to' }, 400);
     const n = await L.review(ids, to);
@@ -1855,7 +1977,7 @@ async function reviewPage(env, id, method) {
   const state = { review: '待审核', queued: '排队', sending: '在转', posted: '已转', failed: '失败', rejected: '不转' };
   const rows = items.map((i, n) => `<li><div class="d">${esc(i.desc || '（没有文字）')}</div>
 <div class="m">${n + 1}. ${KIND[i.type] || '作品'} · ${esc(state[i.status] || i.status)} ·
-${i.author_sec_uid ? `<a href="https://www.douyin.com/user/${esc(i.author_sec_uid)}" target="_blank" rel="noopener">${esc(i.author || '作者主页')}</a>` : esc(i.author || '（没有作者信息）')}
+${i.author_sec_uid ? `<a href="${esc(PLATFORMS[platOfItem(i)].profile(i.author_sec_uid))}" target="_blank" rel="noopener">${esc(i.author || '作者主页')}</a>` : esc(i.author || '（没有作者信息）')}
 ${i.author_sec_uid && mine.includes(i.author_sec_uid) ? '<b>✓ 认过的号</b>' : ''} ·
 <a href="${esc(i.url)}" target="_blank" rel="noopener">抖音上看</a></div></li>`).join('\n');
   const page = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

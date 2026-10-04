@@ -27,5 +27,5 @@ def test_dockerfile_copies_every_local_module():
     for line in open(os.path.join(HERE, 'Dockerfile'), encoding='utf-8'):
         if line.startswith('COPY ') and line.rstrip().endswith('./'):
             copied |= set(re.findall(r'(\w+)\.py', line))
-    needed = local_imports(os.path.join(HERE, 'app.py')) | {'app', 'dy_login'}
+    needed = local_imports(os.path.join(HERE, 'app.py')) | {'app', 'dy_login', 'ks_login'}  # 登录脚本是子进程跑的，不在 import 里
     assert needed <= copied, f'Dockerfile 漏拷：{sorted(needed - copied)}'

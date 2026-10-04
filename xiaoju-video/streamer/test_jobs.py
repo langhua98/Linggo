@@ -510,3 +510,42 @@ def test_crawl_preempts_waiting_login():
         assert [k for k, _ in w.calls if k == 'import']
         assert not await j.stop_login()  # 没在登录：什么也不做
     asyncio.run(go())
+
+
+def test_kuaishou_login_and_crawl():
+    async def go():
+        w = World()
+        j = w.jobs(lambda argv: FakeProc([ev('qr', png=PNG), ev('ok', cookies=[{'name': 'passToken', 'value': 'p', 'domain': '.kuaishou.com'}],
+                                                       sec_uid='2771234567', nickname='快手号'), None]))
+        j.login(5, 'ks')
+        assert j.current['kind'] == '登录快手'
+        await settle(j)
+        argv = w.spawned[0][0]
+        assert argv[3].endswith('ks_login.py')
+        assert '快手 App' in w.said[0][1]
+        assert w.calls == [('session', {'cookies': [{'name': 'passToken', 'value': 'p', 'domain': '.kuaishou.com'}],
+                                        'sec_uid': '2771234567', 'nickname': '快手号', 'platform': 'ks'})]
+        assert '快手登录好了：快手号' in w.said[-1][1]
+
+        ks_row = {'video_id': '3x3zxz4mjrsc8ke', 'title': 't', 'create_time': 1700000000000, 'video_play_url': 'https://v.ks/a.mp4',
+                  'author_id': '3x84qugg4ch9zhs', 'author_nickname': '小号'}
+        j = w.jobs(mc_writes([ks_row]))
+        session = {'sec_uid': '2771234567', 'cookies': [{'name': 'passToken', 'value': 'p', 'domain': '.kuaishou.com'},
+                                                        {'name': 'sessionid', 'value': 's', 'domain': '.douyin.com'}]}
+        j.crawl(5, session, 'accounts', ['3x84qugg4ch9zhs', 'bad id!'], 'alt', None, 'ks')
+        assert j.current['kind'] == '快手同步小号'
+        await settle(j)
+        argv = w.spawned[-1][0]
+        assert argv[argv.index('--platform') + 1] == 'ks' and argv[argv.index('--type') + 1] == 'creator'
+        assert argv[argv.index('--creator_id') + 1] == 'https://www.kuaishou.com/profile/3x84qugg4ch9zhs'
+        assert argv[argv.index('--cookies') + 1] == 'passToken=p'
+        imp = [b for k, b in w.calls if k == 'import'][-1]
+        assert imp['what'] == '快手小号主页' and imp['items'][0]['aweme'] == 'ks_3x3zxz4mjrsc8ke'
+        # 快手作品链接；快手不抓「自己主页」
+        j.crawl(5, session, 'detail', ['https://www.kuaishou.com/short-video/3x3zxz4mjrsc8ke', 'https://v.douyin.com/x/'], 'link', None, 'ks')
+        await settle(j)
+        argv = w.spawned[-1][0]
+        assert argv[argv.index('--specified_id') + 1] == 'https://www.kuaishou.com/short-video/3x3zxz4mjrsc8ke'
+        with pytest.raises(ValueError, match='快手不抓'):
+            j.crawl(5, session, 'creator', [], 'cloud', None, 'ks')
+    asyncio.run(go())

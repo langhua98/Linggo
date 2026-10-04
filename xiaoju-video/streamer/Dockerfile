@@ -28,7 +28,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # 测试文件不进镜像；新加模块记得在这里列上（漏了会 ModuleNotFoundError 起不来）
-COPY app.py douyin.py mc.py jobs.py dy_login.py outbox.py ./
+COPY app.py douyin.py mc.py jobs.py dy_login.py ks_login.py outbox.py ./
 USER user
 
 EXPOSE 7860

@@ -15,13 +15,13 @@ pinned: false
 | 接口 | 作用 |
 |---|---|
 | `GET /` | 健康检查：机器人、频道主账号是否登录，频道名，转作品队列 |
-| `POST /douyin/login` `{chat_id}` | 云电脑：扫码登录抖音（`dy_login.py`），二维码、验证截图由机器人发给 `chat_id`；登录好了 cookie 和 `sec_uid` 存进 Worker `/dy-session` |
+| `POST /douyin/login` `{chat_id, platform?}` | 云电脑：扫码登录抖音（`dy_login.py`）或快手（`platform: "ks"`，`ks_login.py`），二维码、验证截图由机器人发给 `chat_id`；登录好了 cookie 和 `sec_uid` 存进 Worker `/dy-session` |
 | `POST /douyin/login/input` `{text}` | 登录进行中频道主发给机器人的话交给登录页：短信验证码、点哪个验证方式（如「刷脸验证」）、「截图」、「取消登录」 |
-| `POST /douyin/crawl` `{chat_id, session, mode, targets}` | 云电脑：MediaCrawler 抓作品（`creator` 只抓 `session.sec_uid` 那个主页，`accounts` 抓 `targets` 里的小号主页（sec_uid，最多 30 个，结果标 `src=alt`），`detail` 抓 `targets` 里的链接，`search` 按 `targets` 里的关键词搜，每个 `count` 条（默认 50，最多 500）），边抓边交：每 15 秒把新抓到的作为一段放进发件箱（同一个 `job`，最后一段 `final`） |
+| `POST /douyin/crawl` `{chat_id, session, mode, targets, platform?}` | 云电脑：MediaCrawler 抓作品（`creator` 只抓 `session.sec_uid` 那个主页，`accounts` 抓 `targets` 里的小号主页（sec_uid，最多 30 个，结果标 `src=alt`），`detail` 抓 `targets` 里的链接，`search` 按 `targets` 里的关键词搜，每个 `count` 条（默认 50，最多 500）），边抓边交：每 15 秒把新抓到的作为一段放进发件箱（同一个 `job`，最后一段 `final`） |
 | `GET /douyin/jobs` | 云电脑正在干什么（一次只干一件，忙时上面两个接口回 409） |
 | `POST /channel/videos` `{after, limit}` | 用频道主账号翻频道历史，补全视频池：只回视频帖的消息号、大小、时长、尺寸、日期（不回说明、标签） |
 | `POST /channel/delete` `{id}` | 心碎：用频道主账号删频道里的一条帖子（机器人删不了时 Worker 才来） |
-| `POST /douyin/expand` `{urls}` | 分享短链接跳一次，认出是个人主页（`sec_uid`）还是作品（`aweme`），Worker 据此决定加小号还是抓作品 |
+| `POST /douyin/expand` `{urls}` | 分享短链接（抖音、快手）跳一次，认出是个人主页（`sec_uid`）还是作品（`aweme`），Worker 据此决定加小号还是抓作品 |
 | `POST /douyin/resolve` `{url}` | 不登录的分享页解析（备用；海外机房拿不到作品数据） |
 | `POST /douyin/post` `{items}` | 审核通过的作品排进队列：下载 → ffmpeg 挪 moov（不重编码）→ 用频道主账号发进视频频道，说明里带 `#dy<作品号>`；每条转完的结果放进发件箱 |
 | `GET /douyin/status` | 队列状态 |

@@ -57,3 +57,21 @@ def test_search_args_and_author():
     assert it['author_sec_uid'] == 'MS4wLjABAAAAalt0123456789' and it['author'] == '小橘的小号'
     r['author_sec_uid'] = 'bad'
     assert 'author_sec_uid' not in item_from_row(r)
+
+
+def test_kuaishou_rows():
+    from mc import item_from_row, mc_args, cookie_header
+    row = {'video_id': '3x3zxz4mjrsc8ke', 'title': '快手作品', 'desc': '快手作品', 'create_time': 1700000000123,
+           'video_play_url': 'http://v.ks/low.mp4', 'best_play_url': 'https://v.ks/1080.mp4',
+           'video_cover_url': 'https://p.ks/c.jpg', 'author_id': '3x84qugg4ch9zhs', 'author_nickname': '快手小号'}
+    assert item_from_row(row) == {
+        'aweme': 'ks_3x3zxz4mjrsc8ke', 'platform': 'ks', 'type': 'video', 'video_url': 'https://v.ks/1080.mp4',
+        'url': 'https://www.kuaishou.com/short-video/3x3zxz4mjrsc8ke', 'desc': '快手作品', 'create_time': 1700000000,
+        'author_sec_uid': '3x84qugg4ch9zhs', 'author': '快手小号', 'cover': 'https://p.ks/c.jpg'}
+    assert item_from_row({**row, 'best_play_url': ''})['video_url'] == 'https://v.ks/low.mp4'  # 没挑出来用原来的
+    assert item_from_row({**row, 'video_id': 'a/b'}) is None
+    assert item_from_row({**row, 'best_play_url': '', 'video_play_url': ''}) is None
+    args = mc_args('creator', 'https://www.kuaishou.com/profile/3x84', '/d', 'a=b', platform='ks')
+    assert args[args.index('--platform') + 1] == 'ks'
+    cookies = [{'name': 'passToken', 'value': 'p', 'domain': '.kuaishou.com'}, {'name': 'x', 'value': 'y', 'domain': '.douyin.com'}]
+    assert cookie_header(cookies, 'kuaishou.com') == 'passToken=p'

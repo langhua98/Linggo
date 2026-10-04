@@ -33,7 +33,8 @@ def test_patch_real_mediacrawler(tmp_path):
     if not os.path.isdir(src):
         pytest.skip('没装 MediaCrawler')
     for rel in ('config/base_config.py', 'store/douyin/__init__.py', 'media_platform/douyin/core.py', 'main.py',
-                'media_platform/douyin/login.py', 'media_platform/douyin/client.py', 'media_platform/douyin/media.py'):
+                'media_platform/douyin/login.py', 'media_platform/douyin/client.py', 'media_platform/douyin/media.py',
+                'store/kuaishou/__init__.py', 'media_platform/kuaishou/core.py'):
         os.makedirs(tmp_path / os.path.dirname(rel), exist_ok=True)
         shutil.copy(os.path.join(src, rel), tmp_path / rel)
     apply(str(tmp_path))
@@ -58,6 +59,13 @@ def test_patch_real_mediacrawler(tmp_path):
     compile((tmp_path / 'xiaoju_retry.py').read_text(encoding='utf-8'), 'retry', 'exec')
     media = (tmp_path / 'media_platform/douyin/media.py').read_text(encoding='utf-8')
     assert media.count('_xiaoju_best') == 2
+    ks = (tmp_path / 'store/kuaishou/__init__.py').read_text(encoding='utf-8')
+    compile(ks, 'ks', 'exec')
+    assert '"best_play_url": _xiaoju_best_url(photo_info)' in ks and '"author_id"' in ks
+    check_ks_best(ks)
+    ks_core = (tmp_path / 'media_platform/kuaishou/core.py').read_text(encoding='utf-8')
+    compile(ks_core, 'ks_core', 'exec')
+    assert ks_core.count('wait_until="domcontentloaded"') == 2
     import sys
     sys.path.insert(0, src)  # media.py 要 import MediaCrawler 自己的模块
     try:
@@ -121,3 +129,41 @@ def build_media_items(aweme_item):
     check_best_quality(out)
     with pytest.raises(SystemExit):
         patch_media('def something(): pass\n')
+
+
+def check_ks_best(store_src):
+    """打过补丁的快手存储：_xiaoju_best_url 挑出最高清的一档"""
+    start = store_src.index('def _xiaoju_best_url')
+    end = store_src.index('\n\n\n', start) if '\n\n\n' in store_src[start:] else len(store_src)
+    ns = {}
+    exec(store_src[start:end], ns)
+    best = ns['_xiaoju_best_url']
+    rep = lambda url, w, h, rate: {'url': url, 'width': w, 'height': h, 'avgBitrate': rate}
+    photo = {
+        'photoUrl': 'https://v/default.mp4',
+        'videoResource': {
+            'h264': {'adaptationSet': [{'representation': [rep('https://v/h264_720', 720, 1280, 900), rep('https://v/h264_1080', 1080, 1920, 2000)]}]},
+            'hevc': {'adaptationSet': [{'representation': [rep('https://v/hevc_1080', 1080, 1920, 1500)]}]},
+        },
+    }
+    assert best(photo) == 'https://v/h264_1080'  # 一样 1080，先要 H.264
+    photo['videoResource']['hevc']['adaptationSet'][0]['representation'].append(rep('https://v/hevc_4k', 2160, 3840, 8000))
+    assert best(photo) == 'https://v/hevc_4k'  # 分辨率优先
+    assert best({'photoUrl': 'https://v/default.mp4'}) == 'https://v/default.mp4'
+    assert best({'manifest': {'adaptationSet': [{'codecs': 'hvc1', 'representation': [rep('https://v/m', 1, 1, 1)]}]}}) == 'https://v/m'
+    assert best(None) == ''
+
+
+def test_patch_ks_store():
+    from mc_patch import patch_ks_store, patch_ks_goto
+    src = ('from ._store_impl import *\n\n\nasync def update_kuaishou_video(video_item):\n'
+           '    photo_info = video_item.get("photo", {})\n    user_info = video_item.get("author", {})\n'
+           '    save = {\n        "source_keyword": source_keyword_var.get(),\n    }\n')
+    out = patch_ks_store(src)
+    assert patch_ks_store(out) == out
+    compile(out, 'ks', 'exec')
+    check_ks_best(out)
+    with pytest.raises(SystemExit):
+        patch_ks_store('nothing')
+    g = patch_ks_goto('            await self.context_page.goto(f"{self.index_url}?isHome=1")\n')
+    assert 'domcontentloaded' in g and patch_ks_goto(g) == g

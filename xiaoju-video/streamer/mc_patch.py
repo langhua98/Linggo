@@ -16,6 +16,9 @@
 6. media_platform/douyin/media.py：视频地址挑最高清的一档。它原来先拿 play_addr_h264（默认播放档，常常不是最高清），
    bit_rate（各档清晰度的列表）只在前面都没有时才兜底。改成先从 bit_rate 里挑：分辨率最高；一样高的先要 H.264
    （哪里都能播），再比码率。bit_rate 里没有能用的再按它原来的顺序。
+7. 快手（store/kuaishou/__init__.py）：作品记录里多存作者 id、昵称（认小号用），和最高清那档的视频地址 best_play_url
+   （它原来只存 photoUrl，默认档）——从 videoResource.h264/hevc、manifest 的各档里挑分辨率最高的，一样高先要 H.264。
+   media_platform/kuaishou/core.py：打开快手首页只等页面骨架（domcontentloaded），最多 60 秒，免得一直加载视频等到超时。
 
   python mc_patch.py <MediaCrawler 目录>
 """
@@ -75,6 +78,62 @@ def patch_media(text):
         raise SystemExit('MediaCrawler 的抖音 media.py 里找不到挑视频地址的地方（上游改了格式？）')
     text = text.replace(MEDIA_FUNC_ANCHOR, MEDIA_BEST + MEDIA_FUNC_ANCHOR)
     return text.replace(MEDIA_ANCHOR, MEDIA_USE + MEDIA_ANCHOR)
+
+
+KS_STORE_ANCHOR = '"source_keyword": source_keyword_var.get(),'
+KS_STORE_EXTRA = ('"author_id": str(user_info.get("id", "")),  # 小橘视频：认小号\n'
+                  '        "author_nickname": user_info.get("name", ""),\n'
+                  '        "best_play_url": _xiaoju_best_url(photo_info),')
+KS_IMPORT_ANCHOR = 'from ._store_impl import *\n'
+KS_BEST = '''
+
+def _xiaoju_best_url(photo):
+    """小橘视频：快手作品各档清晰度里挑最高的——分辨率最高；一样高先要 H.264（哪里都能播），再比码率"""
+    if not isinstance(photo, dict):
+        return ""
+    best, best_key = "", None
+    resource = photo.get("videoResource") if isinstance(photo.get("videoResource"), dict) else {}
+    sets = [(resource.get("h264"), False), (resource.get("hevc"), True), (photo.get("manifest"), None)]
+    for res, hevc in sets:
+        if not isinstance(res, dict):
+            continue
+        for adaptation in res.get("adaptationSet") or []:
+            if not isinstance(adaptation, dict):
+                continue
+            codec = str(adaptation.get("codecs") or "").lower()
+            is_hevc = hevc if hevc is not None else ("hev" in codec or "hvc" in codec)
+            for rep in adaptation.get("representation") or []:
+                if not isinstance(rep, dict) or not isinstance(rep.get("url"), str) or not rep["url"]:
+                    continue
+                try:
+                    pixels = int(rep.get("width") or 0) * int(rep.get("height") or 0)
+                    rate = int(rep.get("avgBitrate") or rep.get("maxBitrate") or 0)
+                except (TypeError, ValueError):
+                    continue
+                key = (pixels, not is_hevc, rate)
+                if best_key is None or key > best_key:
+                    best, best_key = rep["url"], key
+    return best or photo.get("photoUrl") or photo.get("photoH265Url") or ""
+'''
+KS_GOTO_OLD = 'await self.context_page.goto(f"{self.index_url}?isHome=1")'
+KS_GOTO_NEW = 'await self.context_page.goto(f"{self.index_url}?isHome=1", wait_until="domcontentloaded", timeout=60000)'
+
+
+def patch_ks_store(text):
+    if '_xiaoju_best_url' in text:
+        return text
+    if text.count(KS_STORE_ANCHOR) != 1 or text.count(KS_IMPORT_ANCHOR) != 1:
+        raise SystemExit('MediaCrawler 的快手存储里找不到要改的地方（上游改了格式？）')
+    text = text.replace(KS_IMPORT_ANCHOR, KS_IMPORT_ANCHOR + KS_BEST)
+    return text.replace(KS_STORE_ANCHOR, KS_STORE_ANCHOR + '\n        ' + KS_STORE_EXTRA)
+
+
+def patch_ks_goto(text):
+    if KS_GOTO_NEW in text:
+        return text
+    if KS_GOTO_OLD not in text:
+        raise SystemExit('MediaCrawler 的快手 core.py 里找不到打开首页那一行（上游改了格式？）')
+    return text.replace(KS_GOTO_OLD, KS_GOTO_NEW)
 
 
 def patch_store(text):
@@ -177,7 +236,8 @@ def apply(mc_dir):
     for rel, fn in (('config/base_config.py', patch), ('media_platform/douyin/core.py', patch_goto), ('main.py', patch_main),
                     ('media_platform/douyin/login.py', patch_login_click),
                     ('media_platform/douyin/login.py', patch_login_state), ('media_platform/douyin/client.py', patch_login_state),
-                    ('store/douyin/__init__.py', patch_store), ('media_platform/douyin/media.py', patch_media)):
+                    ('store/douyin/__init__.py', patch_store), ('media_platform/douyin/media.py', patch_media),
+                    ('store/kuaishou/__init__.py', patch_ks_store), ('media_platform/kuaishou/core.py', patch_ks_goto)):
         path = os.path.join(mc_dir, rel)
         with open(path, encoding='utf-8') as f:
             text = f.read()

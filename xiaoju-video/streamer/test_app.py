@@ -360,3 +360,40 @@ def test_channel_delete_endpoint():
     assert calls == [5, 6]
     appmod.channel_delete = None
     assert c.post('/channel/delete', json={'id': 5}, headers=h).status_code == 503
+
+
+def test_expand_kuaishou_links():
+    appmod.douyin = Douyin(FakeHttp({
+        'https://v.kuaishou.com/abc': (302, '', 'https://www.kuaishou.com/f/X9Idt15MQb9L2cv'),
+        'https://www.kuaishou.com/f/X9Idt15MQb9L2cv': (302, '', '/short-video/3x3zxz4mjrsc8ke?authorId=3x84'),
+        'https://v.kuaishou.com/usr': (302, '', 'https://v.m.chenzhongtech.com/fw/user/3x84qugg4ch9zhs?cc=share'),
+    }))
+    c = TestClient(appmod.app)
+    res = c.post('/douyin/expand', json={'urls': ['https://v.kuaishou.com/abc', 'https://v.kuaishou.com/usr',
+                                                   'https://www.kuaishou.com/profile/3xabcdef', 'https://v.kuaishou.com/dead']},
+                 headers={'X-Key': 'k'}).json()['results']
+    assert res[0]['ks_video'] == '3x3zxz4mjrsc8ke' and res[0]['canonical'] == 'https://www.kuaishou.com/short-video/3x3zxz4mjrsc8ke'
+    assert res[1]['ks_user'] == '3x84qugg4ch9zhs' and res[1]['platform'] == 'ks'
+    assert res[2]['ks_user'] == '3xabcdef'
+    assert res[3]['error'] == '认不出这个快手链接'
+
+
+def test_caption_and_download_referer_for_kuaishou():
+    assert appmod.caption_for({'aweme': 'ks_3x3zxz', 'desc': 'd'}) == 'd\n\n#ks3x3zxz'
+    assert appmod.caption_for({'aweme': '7300', 'desc': ''}) == '#dy7300'
+    seen = []
+
+    class H:
+        def stream(self, method, url, headers=None, **kw):
+            seen.append(headers['Referer'])
+
+            class R:
+                status_code = 403
+                async def __aenter__(s): return s
+                async def __aexit__(s, *a): return False
+            return R()
+
+    for u in ('https://v2.kwaicdn.com/x.mp4', 'https://v26-web.douyinvod.com/x.mp4'):
+        with pytest.raises(Exception):
+            asyncio.run(appmod.http_download(H(), u, '/tmp/x'))
+    assert seen == ['https://www.kuaishou.com/', 'https://www.douyin.com/']

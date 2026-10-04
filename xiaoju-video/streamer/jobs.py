@@ -43,6 +43,18 @@ VERIFY_TEXT = ('抖音要再验证一次（{word}，见截图）。点下面的�
                '你用抖音 App 扫、在手机上刷脸；选短信的话，收到验证码后直接把数字发给我。')
 VERIFY_QR_TEXT = '用抖音 App 扫这个二维码，在手机上完成刷脸验证。过期了再点一次「{text}」。'
 EXTRA_BUTTONS = ['截图', '取消登录']
+KS_ID = re.compile(r'^[0-9A-Za-z_-]{3,40}$')
+KS_DETAIL = re.compile(r'^https://(?:www\.|v\.|m\.)?kuaishou\.com/\S{1,300}$')
+# 两个平台：登录脚本、二维码说明、账号号码的样子、主页地址、cookie 的域名
+PLATFORMS = {
+    'dy': {'name': '抖音', 'login': '登录抖音', 'script': 'dy_login.py', 'qr': QR_TEXT, 'id': SEC_UID, 'domain': 'douyin.com',
+           'profile': 'https://www.douyin.com/user/{}', 'detail': DETAIL, 'done': '发「同步作品」就开始抓你主页的全部作品。'},
+    'ks': {'name': '快手', 'login': '登录快手', 'script': 'ks_login.py', 'domain': 'kuaishou.com', 'id': KS_ID,
+           'qr': '用快手 App 扫这个二维码登录（App 左上角「≡」→ 扫一扫）。二维码一两分钟会失效，失效了我会再发新的。',
+           'profile': 'https://www.kuaishou.com/profile/{}', 'detail': KS_DETAIL,
+           'done': '把快手小号的主页链接发给我，就开始抓它的作品；「快手搜索 关键词」按关键词搜。'},
+}
+LOGIN_KINDS = {p['login'] for p in PLATFORMS.values()}
 
 
 class Busy(Exception):
@@ -166,13 +178,14 @@ class Jobs:
 
     # ── 登录 ──
 
-    def login(self, chat_id):
-        self._start('登录抖音', chat_id, lambda: asyncio.wait_for(self._login(chat_id), LOGIN_TIMEOUT))
+    def login(self, chat_id, platform='dy'):
+        p = PLATFORMS[platform]
+        self._start(p['login'], chat_id, lambda: asyncio.wait_for(self._login(chat_id, platform), LOGIN_TIMEOUT))
 
     async def stop_login(self, chat_id=None, wait=10):
         """正在登录（多半是在等扫码）：停掉，等它收完尾。频道主发了别的活就让给别的活"""
         c = self.current
-        if not c or c['kind'] != '登录抖音':
+        if not c or c['kind'] not in LOGIN_KINDS:
             return False
         c['preempted'] = True
         self.input('取消登录')
@@ -185,7 +198,7 @@ class Jobs:
     def input(self, text):
         """登录进行中频道主发来的话交给登录页（验证码、选哪种验证、截图）；「取消登录」就停掉。没有在登录返回 False"""
         c = self.current
-        if not c or c['kind'] != '登录抖音' or not c.get('proc'):
+        if not c or c['kind'] not in LOGIN_KINDS or not c.get('proc'):
             return False
         text = re.sub(r'[\r\n]+', ' ', str(text or '')).strip()[:40]
         if text == '取消登录':
@@ -195,21 +208,22 @@ class Jobs:
             c['proc'].write(text + '\n')
         return True
 
-    async def _login(self, chat_id):
+    async def _login(self, chat_id, platform='dy'):
         unlock_profile(self.mc_dir)
         # 登录页的事件写进单独的文件（见 dy_login.py 的 emit）：标准输出被 xvfb-run 和浏览器的日志并在一起，还会被设成非阻塞
         fd, events_path = tempfile.mkstemp(prefix='dy-login-', suffix='.jsonl')
         os.close(fd)
         try:
-            await self._login_run(chat_id, events_path)
+            await self._login_run(chat_id, events_path, platform)
         finally:
             try:
                 os.remove(events_path)
             except OSError:
                 pass
 
-    async def _login_run(self, chat_id, events_path):
-        proc = await self.spawn(self.xvfb + [self.mc_py, os.path.join(HERE, 'dy_login.py')], self.mc_dir,
+    async def _login_run(self, chat_id, events_path, platform='dy'):
+        p = PLATFORMS[platform]
+        proc = await self.spawn(self.xvfb + [self.mc_py, os.path.join(HERE, p['script'])], self.mc_dir,
                                 env_extra={'DY_LOGIN_EVENTS': events_path})
         self.current['proc'] = proc
         tail = collections.deque(maxlen=12)
@@ -232,26 +246,26 @@ class Jobs:
                 self.debug.append(ev)
                 continue
             if kind == 'qr':
-                self._say(chat_id, QR_TEXT, png)
+                self._say(chat_id, p['qr'], png)
             elif kind == 'verify':
                 self._say(chat_id, VERIFY_TEXT.format(word=ev.get('text') or '验证'), png, buttons=opts + EXTRA_BUTTONS)
             elif kind == 'verify_qr':
                 self._say(chat_id, VERIFY_QR_TEXT.format(text=ev.get('text') or '刷脸验证'), png)
             elif kind == 'shot':
-                self._say(chat_id, ev.get('text') or '抖音登录页现在的样子：', png, buttons=opts + EXTRA_BUTTONS)
+                self._say(chat_id, ev.get('text') or f'{p["name"]}登录页现在的样子：', png, buttons=opts + EXTRA_BUTTONS)
             elif kind == 'status':
                 self._say(chat_id, ev.get('text') or '')
             elif kind == 'ok':
-                if not SEC_UID.match(ev.get('sec_uid') or ''):
-                    self._say(chat_id, '登录好了，但认出来的账号号码不对，没存。再发一次「登录抖音」试试。', menu=True)
+                if not p['id'].match(ev.get('sec_uid') or ''):
+                    self._say(chat_id, f'登录好了，但认出来的账号号码不对，没存。再发一次「{p["login"]}」试试。', menu=True)
                 else:
+                    extra = {'platform': platform} if platform != 'dy' else {}
                     self.emit('session', cookies=ev.get('cookies') or [], sec_uid=ev['sec_uid'],
-                              nickname=ev.get('nickname') or '')
-                    self._say(chat_id, f'✓ 抖音登录好了：{ev.get("nickname") or ev["sec_uid"]}。'
-                                       '发「同步作品」就开始抓你主页的全部作品。', menu=True)
+                              nickname=ev.get('nickname') or '', **extra)
+                    self._say(chat_id, f'✓ {p["name"]}登录好了：{ev.get("nickname") or ev["sec_uid"]}。' + p['done'], menu=True)
                 finished = True
             elif kind == 'error':
-                self._say(chat_id, '抖音登录没成功：' + (ev.get('text') or ''), png, menu=True)
+                self._say(chat_id, f'{p["name"]}登录没成功：' + (ev.get('text') or ''), png, menu=True)
                 finished = True
         code = await exited
         try:
@@ -263,13 +277,16 @@ class Jobs:
         elif self.current and self.current.get('cancelled'):
             self._say(chat_id, '好，不登录了。', menu=True)
         elif not finished:
-            self._say(chat_id, f'抖音登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail), menu=True)
+            self._say(chat_id, f'{p["name"]}登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail), menu=True)
 
     # ── 抓作品 ──
 
-    def crawl(self, chat_id, session, mode, targets, src, count=None):
-        cookies = cookie_header((session or {}).get('cookies'))
+    def crawl(self, chat_id, session, mode, targets, src, count=None, platform='dy'):
+        p = PLATFORMS[platform]
+        cookies = cookie_header((session or {}).get('cookies'), p['domain'])
         max_notes = 100000
+        if platform != 'dy' and mode == 'creator':
+            raise ValueError(f'{p["name"]}不抓自己主页：把主页链接当小号发')
         if mode == 'creator':
             sec_uid = (session or {}).get('sec_uid') or ''
             if not SEC_UID.match(sec_uid):
@@ -280,12 +297,12 @@ class Jobs:
             # 频道主加过的小号（Worker 记着的 sec_uid 列表），主页地址由 sec_uid 拼
             secs = []
             for t in targets or []:
-                if SEC_UID.match(str(t)) and t not in secs:
+                if p['id'].match(str(t)) and t not in secs:
                     secs.append(t)
             secs = secs[:ACCOUNTS_MAX]
             if not secs:
                 raise ValueError('没有认得的账号')
-            target = ','.join(f'https://www.douyin.com/user/{x}' for x in secs)
+            target = ','.join(p['profile'].format(x) for x in secs)
             what = '小号主页' if len(secs) == 1 else f'{len(secs)} 个账号的主页'
         elif mode == 'search':
             words = []
@@ -301,15 +318,17 @@ class Jobs:
                 per = min(count, SEARCH_MAX_PER_KEYWORD)
             target, what, max_notes = ','.join(words), '关键词「' + '」「'.join(words) + f'」各 {per} 条', per
         else:
-            links = [t for t in targets or [] if DETAIL.match(str(t))][:20]
+            links = [t for t in targets or [] if p['detail'].match(str(t))][:20]
             if not links:
-                raise ValueError('没有认得的抖音链接')
+                raise ValueError(f'没有认得的{p["name"]}链接')
             target, what = ','.join(links), f'{len(links)} 条链接'
         name = {'creator': '同步作品', 'accounts': '同步小号', 'search': '搜索'}.get(mode, '抓链接')
+        if platform != 'dy':
+            name, what = p['name'] + name, p['name'] + what
         self._start(name, chat_id, lambda: asyncio.wait_for(
-            self._crawl(chat_id, mode, target, cookies, src, what, max_notes), CRAWL_TIMEOUT))
+            self._crawl(chat_id, mode, target, cookies, src, what, max_notes, platform), CRAWL_TIMEOUT))
 
-    async def _crawl(self, chat_id, mode, target, cookies, src, what, max_notes=100000):
+    async def _crawl(self, chat_id, mode, target, cookies, src, what, max_notes=100000, platform='dy'):
         """边抓边交：MediaCrawler 抓到一条就往 jsonl 里追加一行，这里每隔 FLUSH_EVERY 秒把新出现的交给 Worker
         （同一个 job 号），抓完再交最后一批（final）。中途出错、超时，已经交出去的照常转/审"""
         data_dir = tempfile.mkdtemp(prefix='mc-')
@@ -334,7 +353,7 @@ class Jobs:
             then = '抓到的新作品边抓边排队转进频道' if src == 'alt' else '抓到的边抓边交给审核机器人'
             self._say(chat_id, f'开始抓{what}（MediaCrawler），{then}。作品多的话要好一会儿。')
             mc_mode = 'creator' if mode == 'accounts' else mode
-            argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mc_mode, target, data_dir, cookies, max_notes)
+            argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mc_mode, target, data_dir, cookies, max_notes, platform)
             unlock_profile(self.mc_dir)
             proc = await self.spawn(argv, self.mc_dir)
             self.current['proc'] = proc

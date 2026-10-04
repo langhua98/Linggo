@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 
 import httpx
@@ -76,7 +77,8 @@ def parse_range(header, total):
 
 
 def caption_for(item):
-    tag = f'#dy{item["aweme"]}'
+    aweme = str(item['aweme'])
+    tag = f'#ks{aweme[3:]}' if aweme.startswith('ks_') else f'#dy{aweme}'
     desc = (item.get('desc') or '').strip()
     room = CAPTION_LIMIT - len(tag) - 2
     if len(desc) > room:
@@ -235,7 +237,9 @@ class Poster:
                 if not item.get('video_url'):
                     raise DouyinError('没有视频地址')
                 await self.download(item['video_url'], src)
-            except Exception as first:  # noqa: BLE001 — 地址多半过期了，按作品号重新取一次
+            except Exception as first:  # noqa: BLE001 — 地址多半过期了，按作品号重新取一次（快手的没有这条路）
+                if str(item['aweme']).startswith('ks_'):
+                    raise
                 log.info('aweme %s: %s, refetching share page', item['aweme'], first)
                 fresh = await self.douyin.by_id(item['aweme'])
                 if fresh.get('type') == 'images':
@@ -248,8 +252,10 @@ class Poster:
 
 
 async def http_download(http, url, path):
-    """下载到文件；抖音的视频地址要带 Referer，不然 403"""
-    headers = {'User-Agent': DESKTOP_UA, 'Referer': 'https://www.douyin.com/'}
+    """下载到文件；抖音、快手的视频地址都要带各自的 Referer，不然 403"""
+    host = urllib.parse.urlsplit(url).hostname or ''
+    ks = re.search(r'(kwai|kwimgs|kuaishou|yximgs|gifshow)', host)
+    headers = {'User-Agent': DESKTOP_UA, 'Referer': 'https://www.kuaishou.com/' if ks else 'https://www.douyin.com/'}
     async with http.stream('GET', url, headers=headers, follow_redirects=True, timeout=DOWNLOAD_TIMEOUT) as r:
         if r.status_code != 200:
             raise DouyinError(f'下载回 {r.status_code}')
@@ -522,6 +528,43 @@ async def channel_delete_post(request: Request):
     return {'deleted': await channel_delete(message_id)}
 
 
+KS_HOST = re.compile(r'^https?://([\w.-]*\.)?(kuaishou\.com|chenzhongtech\.com|gifshow\.com)/', re.I)
+KS_VIDEO = re.compile(r'(?:/short-video/|/fw/photo/|[?&]photoId=)([0-9A-Za-z_-]{6,40})')
+KS_USER = re.compile(r'(?:/profile/|/fw/user/|/u/)([0-9A-Za-z_-]{3,40})')
+
+
+def ks_parse(url):
+    """快手的真地址里认出作品号或用户 id"""
+    m = KS_VIDEO.search(url)
+    if m:
+        return {'ks_video': m.group(1), 'canonical': f'https://www.kuaishou.com/short-video/{m.group(1)}'}
+    m = KS_USER.search(url)
+    if m:
+        return {'ks_user': m.group(1)}
+    return {}
+
+
+async def ks_expand(url):
+    """快手的分享链接（v.kuaishou.com/…、www.kuaishou.com/f/…）跟着跳几次，认出是作品还是主页"""
+    r = {'url': url, 'platform': 'ks'}
+    cur = url
+    try:
+        for _ in range(4):
+            found = ks_parse(cur)
+            if found:
+                return {**r, 'final': cur, **found}
+            res = await douyin.http.get(cur, headers={'User-Agent': DESKTOP_UA}, follow_redirects=False)
+            loc = res.headers.get('location')
+            if res.status_code not in (301, 302, 303, 307, 308) or not loc:
+                break
+            cur = urllib.parse.urljoin(cur, loc)
+        r['final'] = cur
+        r['error'] = '认不出这个快手链接'
+    except httpx.HTTPError as e:
+        r['error'] = str(e) or type(e).__name__
+    return r
+
+
 @app.post('/douyin/expand')
 async def expand(request: Request):
     """把分享链接展开成真地址，认出是个人主页（sec_uid）还是作品（作品号）：Worker 据此决定加小号还是抓作品"""
@@ -533,6 +576,9 @@ async def expand(request: Request):
     out = []
     for u in [str(x) for x in urls][:10]:
         r = {'url': u}
+        if KS_HOST.search(u):
+            out.append(await ks_expand(u))
+            continue
         try:
             final = await douyin.expand(u)
             r['final'] = final
@@ -574,7 +620,7 @@ async def douyin_login(request: Request):
     check_key(request)
     body = await request.json()
     try:
-        jobs.login(int(body['chat_id']))
+        jobs.login(int(body['chat_id']), 'ks' if body.get('platform') == 'ks' else 'dy')
     except jobs_mod.Busy as e:
         return busy(e)
     except (KeyError, TypeError, ValueError):
@@ -606,7 +652,7 @@ async def douyin_crawl(request: Request):
     try:
         jobs.crawl(int(body['chat_id']), body['session'], mode, body.get('targets') or [],
                    {'creator': 'cloud', 'accounts': 'alt', 'search': 'search'}.get(mode, 'link'),
-                   body.get('count'))
+                   body.get('count'), 'ks' if body.get('platform') == 'ks' else 'dy')
     except jobs_mod.Busy as e:
         return busy(e)
     except ValueError as e:
