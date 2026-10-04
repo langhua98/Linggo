@@ -102,6 +102,10 @@ export default {
         return await streamerApi(request, env, ctx, path);
       }
       if (path.startsWith('/admin/api/')) return await adminApi(request, env, ctx, url);
+      if (path === '/api/heartbreak') {
+        if (method !== 'POST') return text('Method Not Allowed', 405);
+        return await heartbreak(request, env);
+      }
       if (method !== 'GET' && method !== 'HEAD') return text('Method Not Allowed', 405);
       if (path === '/' || path === '/video') return html(PAGE, method);
       const rv = path.match(/^\/review\/([a-z0-9]{14})$/);
@@ -209,6 +213,7 @@ const HELP = `我是小橘视频的管理助手 🍊
   「自动同步 8」改成每天 8 点（北京时间），「自动同步 关」关掉
 • 直接发抖音作品分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
 • 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
+• 心碎：网页上点 💔 删掉的视频（我每删一条都会告诉你，消息下面有「↩️ 恢复」）
 • 重试失败：把失败的作品重新排队
 • 云电脑：（备用）在你自己的 GitHub Codespaces 里跑 MediaCrawler 要用的令牌和命令
 • 帮助：显示这段说明`;
@@ -249,8 +254,9 @@ async function ownerId(env) {
 }
 
 async function botUpdate(env, update, origin, ctx) {
+  if (update.callback_query) return await botButton(env, update.callback_query);
   const msg = update.message;
-  if (!msg) return; // 这个机器人没有按钮
+  if (!msg) return;
   const chat = msg.chat.id;
   const owner = await ownerId(env);
   if (!owner || msg.from.id !== owner) {
@@ -309,6 +315,7 @@ async function botUpdate(env, update, origin, ctx) {
   }
   const auto = /^自动同步(?:\s*(关|开|\d{1,2})点?)?$/.exec(t);
   if (auto) return await autoSyncSetting(env, chat, auto[1]);
+  if (t === '心碎' || t === '心碎记录') return await say(env, chat, await trashText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '重试失败' || t === '/retry') {
     const n = await lib(env).retryFailed();
     await say(env, chat, n ? `已把 ${n} 条失败的作品重新排队` : '没有失败的作品');
@@ -324,6 +331,60 @@ async function botUpdate(env, update, origin, ctx) {
     }
   }
   await say(env, chat, '没看懂。发抖音分享链接，或者点下面的按钮。', { reply_markup: OWNER_KEYBOARD });
+}
+
+// ── 心碎：网页上点 💔，视频从视频池删掉，告诉频道主，可以恢复 ──
+
+const HEARTBREAK_PER_HOUR = 60; // 网页是公开的：一小时最多删这么多，删了的都能恢复
+
+function channelLink(env, id) {
+  const c = String(env.VIDEO_CHANNEL_ID || '').replace(/^-100/, '');
+  return /^\d+$/.test(c) ? `https://t.me/c/${c}/${id}` : '';
+}
+
+function fmtDuration(s) {
+  s = Number(s) || 0;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function heartbreak(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const id = Number(body && body.id);
+  if (!Number.isInteger(id) || id <= 0) return json({ error: 'bad id' }, 400);
+  const L = lib(env);
+  if (await L.trashedSince(Date.now() - 3600 * 1000) >= HEARTBREAK_PER_HOUR) return json({ error: '点得太多了，过一会儿再点' }, 429);
+  const rec = await L.getVideo(id);
+  if (!rec || !(await L.trashVideo(id))) return json({ ok: true, gone: true }); // 已经删过了
+  listCache = null;
+  const owner = await ownerId(env);
+  if (owner) {
+    const link = channelLink(env, id);
+    await say(env, owner, `💔 心碎：视频 #${id}（${fmtDuration(rec.duration)}，${rec.width}×${rec.height}）已从视频池删掉。频道里的帖子没动。` +
+      (link ? `\n原帖：${link}` : ''), { reply_markup: { inline_keyboard: [[{ text: '↩️ 恢复', callback_data: `restore:${id}` }]] } });
+  }
+  return json({ ok: true });
+}
+
+async function botButton(env, cb) {
+  const answer = t => tg(env.TG_BOT_TOKEN, 'answerCallbackQuery', { callback_query_id: cb.id, text: t || '' });
+  const owner = await ownerId(env);
+  if (!owner || cb.from.id !== owner) return await answer('只有频道主能用');
+  const m = /^restore:(\d{1,10})$/.exec(String(cb.data || ''));
+  if (!m) return await answer();
+  const ok = await lib(env).restoreVideo(Number(m[1]));
+  listCache = null;
+  await answer(ok ? '恢复了' : '已经恢复过了');
+  if (cb.message) {
+    await tg(env.TG_BOT_TOKEN, 'editMessageText', { chat_id: cb.message.chat.id, message_id: cb.message.message_id,
+      text: `↩️ 视频 #${m[1]} 已恢复到视频池。`, disable_web_page_preview: true });
+  }
+}
+
+async function trashText(env) {
+  const list = await lib(env).listTrash(20);
+  if (!list.length) return '还没有心碎过的视频。';
+  return ['最近心碎删掉的视频（点链接看原帖；要恢复点那条消息下面的「↩️ 恢复」）：',
+    ...list.map(r => `#${r.id}  ${ago(r.at)}  ${channelLink(env, r.id)}`)].join('\n');
 }
 
 // 分享文字里的抖音链接：v.douyin.com 短链接、www.douyin.com/video|note/<号>、iesdouyin 分享页
@@ -1431,6 +1492,8 @@ export class Library extends DurableObject {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, src TEXT NOT NULL, tags TEXT NOT NULL,
         created INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'review', msg INTEGER NOT NULL DEFAULT 0)`);
       this.sql.exec('CREATE TABLE IF NOT EXISTS config (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
+      // 心碎：网页上点了 💔 的视频从视频池挪到这里（不删频道里的帖子），频道主在机器人里可以恢复
+      this.sql.exec('CREATE TABLE IF NOT EXISTS trash (id INTEGER PRIMARY KEY, rec TEXT NOT NULL, at INTEGER NOT NULL)');
     });
   }
 
@@ -1487,7 +1550,7 @@ export class Library extends DurableObject {
   addScannedVideos(list) {
     let n = 0;
     for (const v of list) {
-      if (this.sql.exec('SELECT 1 FROM videos WHERE id = ?', v.id).toArray().length) continue;
+      if (this.sql.exec('SELECT 1 FROM videos WHERE id = ?', v.id).toArray().length || this.isTrashed(v.id)) continue;
       this.sql.exec('INSERT INTO videos (id, rec, date) VALUES (?, ?, ?)', v.id, JSON.stringify(v), v.date || 0);
       n++;
     }
@@ -1495,10 +1558,41 @@ export class Library extends DurableObject {
   }
 
   upsertVideo(rec) {
+    if (this.isTrashed(rec.id)) return false; // 心碎过的：频道里编辑这条帖子也不回到视频池
     const fresh = !this.sql.exec('SELECT 1 FROM videos WHERE id = ?', rec.id).toArray().length;
     this.sql.exec('INSERT INTO videos (id, rec, date) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET rec = excluded.rec, date = excluded.date',
       rec.id, JSON.stringify(rec), rec.date || 0);
     return fresh;
+  }
+
+  // 心碎：挪进 trash（缩略图留着，恢复时还用得上）。没有这条返回 false
+  trashVideo(id) {
+    const r = this.sql.exec('SELECT rec FROM videos WHERE id = ?', id).toArray()[0];
+    if (!r) return false;
+    this.sql.exec('INSERT OR REPLACE INTO trash (id, rec, at) VALUES (?, ?, ?)', id, r.rec, Date.now());
+    this.sql.exec('DELETE FROM videos WHERE id = ?', id);
+    return true;
+  }
+
+  restoreVideo(id) {
+    const r = this.sql.exec('SELECT rec FROM trash WHERE id = ?', id).toArray()[0];
+    if (!r) return false;
+    const rec = JSON.parse(r.rec);
+    this.sql.exec('INSERT OR REPLACE INTO videos (id, rec, date) VALUES (?, ?, ?)', id, r.rec, rec.date || 0);
+    this.sql.exec('DELETE FROM trash WHERE id = ?', id);
+    return true;
+  }
+
+  isTrashed(id) {
+    return this.sql.exec('SELECT 1 FROM trash WHERE id = ?', id).toArray().length > 0;
+  }
+
+  trashedSince(ms) {
+    return this.sql.exec('SELECT COUNT(*) AS n FROM trash WHERE at > ?', ms).toArray()[0].n;
+  }
+
+  listTrash(limit) {
+    return this.sql.exec('SELECT id, at FROM trash ORDER BY at DESC LIMIT ?', limit).toArray();
   }
 
   removeVideo(id) {
