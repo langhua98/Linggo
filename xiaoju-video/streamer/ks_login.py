@@ -256,18 +256,31 @@ def net_diag():
     return '\n'.join(lines)
 
 
+async def page_ready(page):
+    """快手首页能用了没有：页面上有「登录」按钮，或者已经登录（有头像、用户菜单）"""
+    try:
+        return await page.evaluate(r"""() => !!document.body && /登录|快手/.test(document.body.innerText || '')""")
+    except Exception:  # noqa: BLE001 — 页面在跳转
+        return False
+
+
 async def open_index(page):
-    """打开快手首页；超时多试两次（偶尔抽风）。都不行抛出去，带上网络诊断"""
+    """打开快手首页。不等「整页加载完」：快手首页上有些资源一直加载不完，浏览器最后报 ERR_TIMED_OUT，
+    但页面其实早就能用了。所以只等服务器开始回页面（commit），然后看页面上出没出来「登录」这些字。
+    真打不开（页面一直是空的）才抛出去，带上网络诊断"""
     last = None
     for _ in range(3):
         try:
-            await page.goto(INDEX, wait_until='domcontentloaded', timeout=45000)
-            return
-        except Exception as e:  # noqa: BLE001
+            await page.goto(INDEX, wait_until='commit', timeout=45000)
+        except Exception as e:  # noqa: BLE001 — 报错了也看看页面是不是其实出来了
             last = e
-            await page.wait_for_timeout(3000)
+        for _ in range(30):
+            if await page_ready(page):
+                return
+            await page.wait_for_timeout(1000)
     diag = await asyncio.to_thread(net_diag)
-    raise RuntimeError(f'打不开快手首页（试了 3 次）：{str(last).splitlines()[0][:120]}\n网络诊断：\n{diag}')
+    why = str(last).splitlines()[0][:120] if last else '页面一直是空的'
+    raise RuntimeError(f'打不开快手首页（试了 3 次）：{why}\n网络诊断：\n{diag}')
 
 
 async def logged_in(ctx):

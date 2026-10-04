@@ -1,4 +1,5 @@
 """ks_login.py 的冒烟测试：假的快手首页在虚拟屏幕里真跑一遍——
+页面底下有个一直加载不完的脚本（真快手首页就是这样，浏览器最后报 ERR_TIMED_OUT），
 先弹拼图滑块（在 iframe 里，拼图块走得比按钮快 1.1 倍，差 4 像素以上不算过）→ 点「登录」→ 二维码 → 过期刷新 → 扫码成功写 cookie。
 
   python smoke_ks_login.py <有 Playwright 和 OpenCV 的 python>
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QR = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
@@ -32,7 +34,8 @@ document.getElementById('login').onclick = () => {
     setTimeout(() => { document.cookie = 'passToken=pt; path=/'; document.cookie = 'userId=2771234567; path=/'; }, 3000);
   };
 };
-</script>""" % QR
+</script>
+<script src="/hang"></script>""" % QR
 
 
 def puzzle():
@@ -86,6 +89,9 @@ addEventListener('mouseup', () => { if (x0 === null) return; x0 = null;
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?')[0]
+        if path == '/hang':  # 一直不回
+            time.sleep(300)
+            return
         body, ctype = {'/bg.png': (BG, 'image/png'), '/piece.png': (PIECE, 'image/png'),
                        '/captcha': (CAPTCHA.replace('%TOL%', '-1' if IMPOSSIBLE else '4').encode(), 'text/html; charset=utf-8')}.get(path, (PAGE.encode(), 'text/html; charset=utf-8'))
         self.send_response(200)
