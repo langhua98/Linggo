@@ -674,7 +674,8 @@ async def debug_net(request: Request):
     import socket
     check_key(request)
     out = {}
-    for host in ('xiaoju-video.langhua98.workers.dev', 'api.telegram.org', 'www.douyin.com', 'huggingface.co'):
+    for host in ('xiaoju-video.langhua98.workers.dev', 'api.telegram.org', 'www.douyin.com', 'huggingface.co',
+                 'www.kuaishou.com', 'v.kuaishou.com', 'id.kuaishou.com'):
         r = {}
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
@@ -688,6 +689,41 @@ async def debug_net(request: Request):
         except Exception as e:  # noqa: BLE001
             r['https'] = f'{type(e).__name__}: {e}'[:200]
         out[host] = r
+    return out
+
+
+@app.get('/debug/tls')
+async def debug_tls(request: Request):
+    """排查是按域名挡（TLS 握手时看 SNI）还是按 IP 挡：分别试 TCP 直连、用不同的 SNI 握手（要 X-Key）"""
+    import socket
+    import ssl
+    check_key(request)
+
+    def probe(ip, sni):
+        r = {}
+        try:
+            sock = socket.create_connection((ip, 443), timeout=8)
+            r['tcp'] = 'ok'
+        except Exception as e:  # noqa: BLE001
+            return {'tcp': f'{type(e).__name__}: {e}'[:120]}
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False  # 只看握手过不过，不看证书对不对
+            ctx.verify_mode = ssl.CERT_NONE
+            with ctx.wrap_socket(sock, server_hostname=sni) as t:
+                t.settimeout(8)
+                t.sendall(f'GET / HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n'.encode())
+                r['tls'] = 'ok'
+                r['status'] = t.recv(64).decode('latin1').split('\r\n')[0]
+        except Exception as e:  # noqa: BLE001
+            r['tls'] = f'{type(e).__name__}: {e}'[:120]
+        return r
+
+    tests = [('103.102.202.106', 'www.kuaishou.com'), ('103.102.202.106', 'id.kuaishou.com'),
+             ('103.102.202.108', 'www.kuaishou.com'), ('103.102.202.108', 'id.kuaishou.com')]
+    out = {}
+    for ip, sni in tests:
+        out[f'{ip} sni={sni}'] = await asyncio.to_thread(probe, ip, sni)
     return out
 
 
