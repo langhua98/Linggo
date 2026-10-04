@@ -32,9 +32,11 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 - **视频池只读视频直链，不读频道帖的说明和标签**（频道主的要求）：登记视频帖只存播放要用的（`file_id`、大小、时长、尺寸、封面），
   作品记「已转」只靠流式服务的回报。以前存过的说明和作品号，Library 启动时清掉。
 - **网页的历史、喜欢、心碎**：浏览历史和喜欢存在看的人自己的浏览器里（localStorage `xj_history`、`xj_likes`）。
-  点 💔 → `POST /api/heartbreak {id}`：视频从视频池挪进 `trash` 表（频道里的帖子不动），小橘视频机器人告诉频道主
-  （消息号、原帖链接、「↩️ 恢复」按钮）；挪进 trash 的，编辑帖子、翻历史都不会再回到视频池。网页是公开的，所以一小时最多删 60 条。
-  机器人里发「心碎」看最近删掉的。
+  💔 心碎**删掉频道原帖**，找不回来，所以只有频道主能点：机器人里发「网页口令」拿 `…/video#key=<口令>`，打开一次浏览器就记住
+  （localStorage `xj_key`，地址栏里的口令随即抹掉），有口令才显示 💔；再发一次「网页口令」旧的就作废。
+  `POST /api/heartbreak {id, key}`：先从视频池挪进 `trash`（编辑帖子、翻历史都不会再回来），再删原帖——机器人 `deleteMessage`，
+  删不了让流式服务用频道主账号删（`POST /channel/delete`），都不行记进 config `pendingDeletes`，定时任务接着删。
+  删完小橘视频机器人告诉频道主；一小时最多删 60 条（口令万一漏了）。机器人里发「心碎」看最近删掉的。
 - **补全视频池**：机器人只收得到它进频道以后的新帖。以前的视频由流式服务用频道主账号翻历史（`POST /channel/videos`），
   只回视频帖的播放字段（消息号、大小、时长、尺寸、日期），不回说明、标签；Worker 存成没有 `file_id` 的记录，播放一律走流式服务。
   定时任务每次翻 2×500 条，翻完告诉频道主（config `channelScan`）；`POST /admin/api/scan-channel {reset:true}` 从头再翻。
@@ -56,7 +58,7 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 | `GET /vp/<消息号>` | 网页 | 封面，取一次就存进数据库 |
 | `POST /tg-webhook` | 小橘视频机器人 | 频道新帖登记、私聊 |
 | `POST /verify-webhook` | 审核机器人 | 审核单的两个按钮、私聊 |
-| `POST /api/heartbreak` | 网页 | 💔 心碎：从视频池删掉、告诉频道主（可以恢复） |
+| `POST /api/heartbreak` | 网页（要网页口令） | 💔 心碎：删掉频道原帖、拿出视频池、告诉频道主 |
 | `GET /review/<编号>` | 频道主 | 审核单整批列表（编号就是凭证，页面 noindex） |
 | `POST /dy-known` `/dy-import` `/dy-progress` | 云电脑（`X-Token`） | 哪些已收过、送作品（一次 ≤200 条）、报进度 |
 | `POST /streamer-up` `/streamer-done` `/streamer-say` | 流式服务（`X-Key`） | 推送用的老接口：HF 机房连不上 `*.workers.dev`，实际由 Worker 轮询发件箱 |

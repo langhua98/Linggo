@@ -341,3 +341,22 @@ def test_channel_videos_endpoint():
     assert c.post('/channel/videos', json={}).status_code == 403
     appmod.channel_scan = None
     assert c.post('/channel/videos', json={}, headers=h).status_code == 503
+
+
+def test_channel_delete_endpoint():
+    calls = []
+
+    async def delete(mid):
+        calls.append(mid)
+        return mid == 5
+
+    appmod.channel_delete = delete
+    c = TestClient(appmod.app)
+    h = {'X-Key': 'k'}
+    assert c.post('/channel/delete', json={'id': 5}, headers=h).json() == {'deleted': True}
+    assert c.post('/channel/delete', json={'id': 6}, headers=h).json() == {'deleted': False}
+    assert c.post('/channel/delete', json={'id': 'x'}, headers=h).status_code == 400
+    assert c.post('/channel/delete', json={'id': 5}).status_code == 403
+    assert calls == [5, 6]
+    appmod.channel_delete = None
+    assert c.post('/channel/delete', json={'id': 5}, headers=h).status_code == 503

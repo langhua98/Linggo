@@ -87,6 +87,13 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
   };
   const HISTORY_MAX = 500;
+  // 网页口令：频道主在机器人里拿的链接 /video#key=… 打开一次就记住；有口令才显示 💔（会删掉频道原帖）
+  let ownerKey = '';
+  try {
+    const m = /^#key=([0-9a-f]{48})$/.exec(location.hash);
+    if (m) { localStorage.setItem('xj_key', m[1]); history.replaceState(null, '', location.pathname); }
+    ownerKey = localStorage.getItem('xj_key') || '';
+  } catch {}
   let seen = store.get('xj_history');
   let likes = new Set(store.get('xj_likes'));
   const toastEl = document.getElementById('toast');
@@ -156,13 +163,15 @@
       });
       const hb = document.createElement('button');
       hb.type = 'button';
+      hb.className = 'hb';
       hb.innerHTML = '<span>💔</span>心碎';
-      hb.setAttribute('aria-label', '心碎：从视频池删掉这条');
+      hb.setAttribute('aria-label', '心碎：删掉这条视频的频道原帖');
       hb.addEventListener('click', e => {
         e.stopPropagation();
         heartbreak(i);
       });
-      acts.append(like, hb);
+      acts.append(like);
+      if (ownerKey) acts.append(hb);
       s.append(info, bar, note, acts);
       video.addEventListener('timeupdate', () => {
         if (video.duration) bar.firstChild.style.width = (video.currentTime / video.duration * 100) + '%';
@@ -199,13 +208,21 @@
     }, 10000);
   }
 
-  // 心碎：告诉 Worker 删掉（它会发给机器人，频道主可以恢复），这里马上藏起来、跳到下一条
+  // 心碎：确认后让 Worker 删掉频道原帖（它会告诉机器人），这里马上藏起来、跳到下一条
   function heartbreak(i) {
     const v = videos[i];
     if (!v || v.gone) return;
-    fetch('/api/heartbreak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: v.id }) })
-      .then(r => r.json().then(j => ({ ok: r.ok, j })))
-      .then(({ ok, j }) => {
+    if (!confirm('删掉这条视频？频道里的原帖也会删掉，找不回来。')) return;
+    fetch('/api/heartbreak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: v.id, key: ownerKey }) })
+      .then(r => r.json().then(j => ({ status: r.status, ok: r.ok, j })))
+      .then(({ status, ok, j }) => {
+        if (status === 403) {
+          // 口令换过了：收起所有 💔，要用就去机器人拿新链接
+          try { localStorage.removeItem('xj_key'); } catch {}
+          ownerKey = '';
+          document.querySelectorAll('.acts .hb').forEach(b => b.remove());
+          return toast('口令过期了：在机器人里发「网页口令」拿新链接');
+        }
         if (!ok) return toast(j.error || '没删成，稍后再试');
         v.gone = true;
         likes.delete(v.id);
@@ -223,7 +240,7 @@
           feed.children[next].scrollIntoView();
           activate(next);
         }
-        toast('💔 已从视频池删掉，机器人那边可以恢复');
+        toast(j.deleted === false ? '💔 已从视频池拿掉，原帖稍后自动删' : '💔 已删掉，频道原帖也删了');
       })
       .catch(() => toast('没删成，检查网络后再试'));
   }

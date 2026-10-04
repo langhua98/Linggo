@@ -213,7 +213,8 @@ const HELP = `我是小橘视频的管理助手 🍊
   「自动同步 8」改成每天 8 点（北京时间），「自动同步 关」关掉
 • 直接发抖音作品分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
 • 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
-• 心碎：网页上点 💔 删掉的视频（我每删一条都会告诉你，消息下面有「↩️ 恢复」）
+• 网页口令：给你一个带口令的网页链接，用它打开才有 💔 心碎按钮；点了删掉频道里的原帖（找不回来）
+• 心碎：看最近心碎删掉的视频
 • 重试失败：把失败的作品重新排队
 • 云电脑：（备用）在你自己的 GitHub Codespaces 里跑 MediaCrawler 要用的令牌和命令
 • 帮助：显示这段说明`;
@@ -254,7 +255,10 @@ async function ownerId(env) {
 }
 
 async function botUpdate(env, update, origin, ctx) {
-  if (update.callback_query) return await botButton(env, update.callback_query);
+  if (update.callback_query) {
+    await tg(env.TG_BOT_TOKEN, 'answerCallbackQuery', { callback_query_id: update.callback_query.id, text: '这个按钮已经不用了' });
+    return;
+  }
   const msg = update.message;
   if (!msg) return;
   const chat = msg.chat.id;
@@ -315,6 +319,7 @@ async function botUpdate(env, update, origin, ctx) {
   }
   const auto = /^自动同步(?:\s*(关|开|\d{1,2})点?)?$/.exec(t);
   if (auto) return await autoSyncSetting(env, chat, auto[1]);
+  if (t === '网页口令' || t === '/key') return await pageLink(env, chat, origin);
   if (t === '心碎' || t === '心碎记录') return await say(env, chat, await trashText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '重试失败' || t === '/retry') {
     const n = await lib(env).retryFailed();
@@ -333,13 +338,18 @@ async function botUpdate(env, update, origin, ctx) {
   await say(env, chat, '没看懂。发抖音分享链接，或者点下面的按钮。', { reply_markup: OWNER_KEYBOARD });
 }
 
-// ── 心碎：网页上点 💔，视频从视频池删掉，告诉频道主，可以恢复 ──
+// ── 心碎：频道主在网页上点 💔 → 删掉频道里的原帖、从视频池拿掉 ──
+// 网页是公开的，删原帖又找不回来：只有拿着「网页口令」的才能删（机器人里发「网页口令」拿一个带口令的链接）
 
-const HEARTBREAK_PER_HOUR = 60; // 网页是公开的：一小时最多删这么多，删了的都能恢复
+const HEARTBREAK_PER_HOUR = 60; // 口令万一漏了：一小时最多删这么多
 
-function channelLink(env, id) {
-  const c = String(env.VIDEO_CHANNEL_ID || '').replace(/^-100/, '');
-  return /^\d+$/.test(c) ? `https://t.me/c/${c}/${id}` : '';
+async function pageLink(env, chat, origin) {
+  const key = randomToken();
+  await lib(env).setConfig('pageKey', key);
+  await say(env, chat, `你的网页链接（带口令，用它打开的手机/浏览器才有 💔 心碎按钮；点了会删掉频道里的原帖，找不回来）：
+${origin}/video#key=${key}
+
+别发给别人。每发一次「网页口令」就换一个新的，旧链接打开的立刻没有删除权限。`);
 }
 
 function fmtDuration(s) {
@@ -352,39 +362,51 @@ async function heartbreak(request, env) {
   const id = Number(body && body.id);
   if (!Number.isInteger(id) || id <= 0) return json({ error: 'bad id' }, 400);
   const L = lib(env);
-  if (await L.trashedSince(Date.now() - 3600 * 1000) >= HEARTBREAK_PER_HOUR) return json({ error: '点得太多了，过一会儿再点' }, 429);
+  const want = await L.getConfig('pageKey');
+  if (!want || !sameString(String(body.key || ''), want)) return json({ error: '口令不对：在机器人里发「网页口令」拿新链接' }, 403);
+  if (await L.trashedSince(Date.now() - 3600 * 1000) >= HEARTBREAK_PER_HOUR) return json({ error: '一小时最多删 60 条，过一会儿再删' }, 429);
   const rec = await L.getVideo(id);
   if (!rec || !(await L.trashVideo(id))) return json({ ok: true, gone: true }); // 已经删过了
   listCache = null;
+  const deleted = await deleteChannelPost(env, id);
+  if (!deleted) await L.setConfig('pendingDeletes', JSON.stringify([...new Set([...(await pendingDeletes(env)), id])].slice(-500)));
   const owner = await ownerId(env);
   if (owner) {
-    const link = channelLink(env, id);
-    await say(env, owner, `💔 心碎：视频 #${id}（${fmtDuration(rec.duration)}，${rec.width}×${rec.height}）已从视频池删掉。频道里的帖子没动。` +
-      (link ? `\n原帖：${link}` : ''), { reply_markup: { inline_keyboard: [[{ text: '↩️ 恢复', callback_data: `restore:${id}` }]] } });
+    await say(env, owner, deleted
+      ? `💔 心碎：已删掉频道原帖 #${id}（${fmtDuration(rec.duration)}，${rec.width}×${rec.height}），视频池也拿掉了。`
+      : `💔 心碎：视频 #${id} 已从视频池拿掉；频道原帖这会儿没删成，定时任务会接着删。`);
   }
-  return json({ ok: true });
+  return json({ ok: true, deleted });
 }
 
-async function botButton(env, cb) {
-  const answer = t => tg(env.TG_BOT_TOKEN, 'answerCallbackQuery', { callback_query_id: cb.id, text: t || '' });
-  const owner = await ownerId(env);
-  if (!owner || cb.from.id !== owner) return await answer('只有频道主能用');
-  const m = /^restore:(\d{1,10})$/.exec(String(cb.data || ''));
-  if (!m) return await answer();
-  const ok = await lib(env).restoreVideo(Number(m[1]));
-  listCache = null;
-  await answer(ok ? '恢复了' : '已经恢复过了');
-  if (cb.message) {
-    await tg(env.TG_BOT_TOKEN, 'editMessageText', { chat_id: cb.message.chat.id, message_id: cb.message.message_id,
-      text: `↩️ 视频 #${m[1]} 已恢复到视频池。`, disable_web_page_preview: true });
-  }
+async function pendingDeletes(env) {
+  return JSON.parse((await lib(env).getConfig('pendingDeletes')) || '[]');
+}
+
+// 先让机器人删（它是频道管理员）；删不了（比如没有删帖权限）再让流式服务用频道主账号删
+async function deleteChannelPost(env, id) {
+  const r = await tg(env.TG_BOT_TOKEN, 'deleteMessage', { chat_id: env.VIDEO_CHANNEL_ID, message_id: id }).catch(() => null);
+  if (r && r.ok) return true;
+  if (r && /message to delete not found/i.test(r.description || '')) return true; // 已经没了
+  if (!streamerOn(env)) return false;
+  const s = await streamerCall(env, '/channel/delete', { id }).catch(() => null);
+  return !!(s && s.status === 200 && s.data && s.data.deleted);
+}
+
+// 定时任务：上次没删成的原帖再删一次
+async function retryDeletes(env) {
+  const list = await pendingDeletes(env);
+  if (!list.length) return;
+  const left = [];
+  for (const id of list) if (!(await deleteChannelPost(env, id))) left.push(id);
+  await lib(env).setConfig('pendingDeletes', JSON.stringify(left));
 }
 
 async function trashText(env) {
   const list = await lib(env).listTrash(20);
-  if (!list.length) return '还没有心碎过的视频。';
-  return ['最近心碎删掉的视频（点链接看原帖；要恢复点那条消息下面的「↩️ 恢复」）：',
-    ...list.map(r => `#${r.id}  ${ago(r.at)}  ${channelLink(env, r.id)}`)].join('\n');
+  const pending = new Set(await pendingDeletes(env));
+  if (!list.length) return '还没有心碎删掉的视频。';
+  return ['最近心碎删掉的视频：', ...list.map(r => `#${r.id}  ${ago(r.at)}${pending.has(r.id) ? '  （原帖还没删成，会接着删）' : ''}`)].join('\n');
 }
 
 // 分享文字里的抖音链接：v.douyin.com 短链接、www.douyin.com/video|note/<号>、iesdouyin 分享页
@@ -821,6 +843,7 @@ async function tick(env) {
   if (failed.length) await notifyFailed(env, failed);
   await maybeAutoSync(env);
   await scanChannel(env, 2).catch(() => {});
+  await retryDeletes(env).catch(() => {});
   await refreshCards(env).catch(() => {});
   for (const id of await adoptOrphans(env)) await sendSheet(env, id);
   await dispatch(env);

@@ -44,6 +44,7 @@ const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到
 const sent = { bot: [], verify: [] };
 const toStreamer = [];
 const channelCalls = [];
+const userDeletes = [];
 const state = { streamer: 'ok', resolve: {}, expand: {}, channel: [], busy: '', outbox: { boot: 'B1', events: [], busy: false } };
 const outboxCalls = []; // Worker 来取发件箱时带的 boot、after
 const jobCalls = []; // 交给流式服务的云电脑活：[路径, 请求体]
@@ -76,6 +77,7 @@ globalThis.fetch = async (input, init = {}) => {
       return Response.json(files.has(id) ? { ok: true, result: { file_path: 'videos/' + id } } : { ok: false });
     }
     sent[who].push({ method, ...body });
+    if (method === 'deleteMessage' && state.botDelete === 'fail') return Response.json({ ok: false, description: "Bad Request: message can't be deleted" });
     return Response.json({ ok: true, result: { message_id: 1 } });
   }
   if ((m = url.match(/^https:\/\/api\.telegram\.org\/file\/bot[^/]+\/videos\/(\w+)$/))) {
@@ -95,6 +97,10 @@ globalThis.fetch = async (input, init = {}) => {
     if (path === '/douyin/resolve') {
       const item = state.resolve[body.url];
       return item ? Response.json({ item }) : Response.json({ error: '认不出这个链接' }, { status: 400 });
+    }
+    if (path === '/channel/delete') {
+      userDeletes.push(body.id);
+      return Response.json({ deleted: state.userDelete !== false });
     }
     if (path === '/channel/videos') {
       channelCalls.push(body);
@@ -993,44 +999,62 @@ await test('补全视频池：翻频道历史，只收视频的播放字段；�
   for (const v of [...state.channel, { id: 5 }, { id: 6 }, { id: 40 }]) await L.removeVideo(v.id);
 });
 
-await test('心碎：网页上点 💔 从视频池删掉、告诉频道主；频道主可以恢复；删了的翻历史、编辑帖子都不回来', async () => {
-  await channelPost({ message_id: 50, video: { file_id: 'V50', file_size: 100, duration: 75, width: 720, height: 1280, mime_type: 'video/mp4' } });
+await test('心碎：要网页口令；删掉频道原帖、拿出视频池、告诉频道主；机器人删不了让频道主账号删；都不行定时再删', async () => {
+  const vid = (id) => channelPost({ message_id: id, video: { file_id: 'V' + id, file_size: 100, duration: 75, width: 720, height: 1280, mime_type: 'video/mp4' } });
+  await vid(50);
+  // 拿口令：每次换新的
+  await dm(OWNER, '网页口令');
+  const key1 = /#key=([0-9a-f]{48})/.exec(last('bot').text)[1];
+  assert.match(last('bot').text, new RegExp(`${ORIGIN}/video#key=`));
+  await dm(OWNER, '网页口令');
+  const key = /#key=([0-9a-f]{48})/.exec(last('bot').text)[1];
+  assert.notEqual(key, key1);
+  // 没口令、旧口令：不删
+  assert.equal((await post('/api/heartbreak', { id: 50 })).status, 403);
+  assert.equal((await post('/api/heartbreak', { id: 50, key: key1 })).status, 403);
+  assert.ok(await L.getVideo(50));
+  // 机器人删得了
   reset();
-  let r = await post('/api/heartbreak', { id: 50 });
-  assert.deepEqual(await r.json(), { ok: true });
-  assert.ok(!(await (await call('/api/videos')).json()).videos.some(v => v.id === 50));
-  assert.equal((await call('/vf/50')).status, 404);
-  const m = last('bot');
-  assert.equal(m.chat_id, OWNER);
-  assert.match(m.text, /💔 心碎：视频 #50（1:15，720×1280）已从视频池删掉/);
-  assert.match(m.text, /原帖：https:\/\/t\.me\/c\/\d+\/50/);
-  assert.deepEqual(m.reply_markup.inline_keyboard, [[{ text: '↩️ 恢复', callback_data: 'restore:50' }]]);
-  // 再点一次：已经删了
-  assert.deepEqual(await (await post('/api/heartbreak', { id: 50 })).json(), { ok: true, gone: true });
-  assert.equal((await post('/api/heartbreak', { id: 'x' })).status, 400);
-  // 删了的：编辑帖子、翻历史都不回来
-  await channelPost({ message_id: 50, video: { file_id: 'V50b', file_size: 100, duration: 75, width: 720, height: 1280, mime_type: 'video/mp4' } }, true);
+  let r = await post('/api/heartbreak', { id: 50, key });
+  assert.deepEqual(await r.json(), { ok: true, deleted: true });
+  assert.deepEqual(sent.bot.filter(m => m.method === 'deleteMessage').map(m => [m.chat_id, m.message_id]), [[String(CHANNEL), 50]]);
+  assert.equal(await L.getVideo(50), null);
+  assert.match(last('bot').text, /💔 心碎：已删掉频道原帖 #50（1:15，720×1280）/);
+  assert.deepEqual(await (await post('/api/heartbreak', { id: 50, key })).json(), { ok: true, gone: true });
+  // 编辑帖子、翻历史都不回来
+  await vid(50);
   assert.equal(await L.getVideo(50), null);
   assert.equal(await L.addScannedVideos([{ id: 50, file_id: '', size: 1, date: 1 }]), 0);
-  // 「心碎」看记录
+  // 机器人删不了：频道主账号删
+  await vid(51);
+  state.botDelete = 'fail';
+  userDeletes.length = 0;
+  r = await post('/api/heartbreak', { id: 51, key });
+  assert.equal((await r.json()).deleted, true);
+  assert.deepEqual(userDeletes, [51]);
+  // 都删不了：先拿出视频池，定时任务再删
+  await vid(52);
+  state.userDelete = false;
+  r = await post('/api/heartbreak', { id: 52, key });
+  assert.equal((await r.json()).deleted, false);
+  assert.equal(await L.getVideo(52), null);
+  assert.match(last('bot').text, /频道原帖这会儿没删成，定时任务会接着删/);
   await dm(OWNER, '心碎');
-  assert.match(last('bot').text, /#50 /);
-  // 别人按恢复不行；频道主按了恢复
-  const mainPress = (from, data) => hook({ update_id: 7, callback_query: { id: 'cb2', from: { id: from }, data, message: { message_id: 33, chat: { id: from } } } });
-  await mainPress(STRANGER, 'restore:50');
-  assert.match(last('bot').text, /只有频道主/);
-  assert.equal(await L.getVideo(50), null);
-  await mainPress(OWNER, 'restore:50');
-  assert.equal((await L.getVideo(50)).file_id, 'V50');
-  assert.ok(sent.bot.some(x => x.method === 'editMessageText' && /已恢复到视频池/.test(x.text)));
-  assert.ok((await (await call('/api/videos')).json()).videos.some(v => v.id === 50));
+  assert.match(last('bot').text, /#52 .*原帖还没删成/);
+  assert.match(last('bot').text, /#51 /);
+  state.userDelete = true;
+  await cron();
+  assert.deepEqual(JSON.parse(await L.getConfig('pendingDeletes')), []);
+  state.botDelete = 'ok';
   // 一小时最多删 60 条
-  for (let i = 0; i < 60; i++) await L.upsertVideo({ id: 1000 + i, file_id: 'F', size: 1, date: 1, mime: 'video/mp4' });
-  for (let i = 0; i < 60; i++) await post('/api/heartbreak', { id: 1000 + i });
-  assert.equal((await post('/api/heartbreak', { id: 50 })).status, 429);
-  assert.ok(await L.getVideo(50));
-  for (let i = 0; i < 60; i++) { await L.restoreVideo(1000 + i); await L.removeVideo(1000 + i); }
-  await L.removeVideo(50);
+  for (let i = 0; i < 57; i++) { await L.upsertVideo({ id: 1000 + i, file_id: 'F', size: 1, date: 1, mime: 'video/mp4' }); await post('/api/heartbreak', { id: 1000 + i, key }); }
+  await vid(53);
+  assert.equal((await post('/api/heartbreak', { id: 53, key })).status, 429);
+  assert.ok(await L.getVideo(53));
+  await L.removeVideo(53);
+  // 旧的「恢复」按钮不再管用
+  await hook({ update_id: 7, callback_query: { id: 'cb2', from: { id: OWNER }, data: 'restore:50', message: { message_id: 33, chat: { id: OWNER } } } });
+  assert.match(last('bot').text, /已经不用了/);
 });
 
 await test('网页', async () => {

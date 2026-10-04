@@ -315,6 +315,7 @@ poster = None
 douyin = None
 jobs = None
 channel_scan = None  # (after, limit) → 频道里的视频帖（只有播放要用的字段）
+channel_delete = None  # (message_id) → 删掉了没有
 outbox = Outbox()
 state = {'bot': False, 'user': False, 'channel': None, 'channel_id': None}
 
@@ -328,7 +329,7 @@ def check_key(request):
 
 @asynccontextmanager
 async def lifespan(app):
-    global streamer, poster, douyin, jobs, channel_scan
+    global streamer, poster, douyin, jobs, channel_scan, channel_delete
     from telethon import TelegramClient
     from telethon.sessions import StringSession
     from telethon.tl.types import DocumentAttributeVideo, PeerChannel
@@ -384,6 +385,13 @@ async def lifespan(app):
         return {'videos': found, 'last': last, 'done': seen < limit}
 
     channel_scan = scan
+
+    async def delete(message_id):
+        # 心碎：频道主账号删频道里的帖子（机器人删不了的时候 Worker 才来找这里）
+        done = await user.delete_messages(channel, [message_id])
+        return any(getattr(r, 'pts_count', 0) for r in (done or []))
+
+    channel_delete = delete
 
     async def send_video(info, caption):
         sent = await user.send_file(
@@ -498,6 +506,20 @@ async def channel_videos(request: Request):
     if not channel_scan:
         return JSONResponse({'error': '还没连上 Telegram'}, status_code=503)
     return await channel_scan(after, limit)
+
+
+@app.post('/channel/delete')
+async def channel_delete_post(request: Request):
+    """心碎：删频道里的一条帖子（频道主在网页上确认过的）"""
+    check_key(request)
+    body = await request.json()
+    try:
+        message_id = int(body.get('id'))
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(400)
+    if not channel_delete:
+        return JSONResponse({'error': '还没连上 Telegram'}, status_code=503)
+    return {'deleted': await channel_delete(message_id)}
 
 
 @app.post('/douyin/expand')
