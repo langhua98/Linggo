@@ -757,7 +757,11 @@ async function adminApi(request, env, ctx, url) {
       streamerUp: Number(await L.getConfig('streamerUp')) || 0,
       streamer: streamerOn(env),
       // 抖音登录的是哪个账号（cookie 不给）
-      douyin: await dySession(env).then(x => x && { nickname: x.nickname, sec_uid: x.sec_uid, at: x.at, cookies: x.cookies.length }),
+      douyin: await dySession(env).then(x => x && {
+        nickname: x.nickname, sec_uid: x.sec_uid, at: x.at,
+        // 只给名字、域名、过期时间，值不给
+        cookies: x.cookies.map(c => ({ name: c.name, domain: c.domain, expires: c.expires, httpOnly: c.httpOnly })),
+      }),
       items: await L.listItems(status, 100, ''),
     });
   }
