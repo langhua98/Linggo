@@ -471,6 +471,13 @@ def test_crawl_search_keywords():
         assert imp['items'][0]['author_sec_uid'] == 'MS4wLjABAAAAalt0123456789'
         with pytest.raises(ValueError, match='没有关键词'):
             j.crawl(9, {'sec_uid': SEC}, 'search', [' ', ','], 'search')
+        # 频道主说了要几条：照办，最多 500
+        for count, want in ((120, '120'), (9999, '500'), ('30', '50'), (0, '50')):
+            j.crawl(9, {'sec_uid': SEC, 'cookies': []}, 'search', ['小橘'], 'search', count)
+            await settle(j)
+            argv = w.spawned[-1][0]
+            assert argv[argv.index('--crawler_max_notes_count') + 1] == want
+        assert [b for k, b in w.calls if k == 'import'][-1]['what'] == '关键词「小橘」各 50 条'
     asyncio.run(go())
 
 

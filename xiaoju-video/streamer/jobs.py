@@ -32,7 +32,8 @@ FLUSH_EVERY = 15  # 边抓边交：每隔几秒把新抓到的交给 Worker
 SEC_UID = re.compile(r'^MS4wLjABAAAA[\w-]{10,200}$')
 # 关键词搜索：一次最多几个关键词、每个最多要几条（都要频道主逐条审核，太多审不过来）
 SEARCH_KEYWORDS = 5
-SEARCH_PER_KEYWORD = 50
+SEARCH_PER_KEYWORD = 50  # 没说要几条时
+SEARCH_MAX_PER_KEYWORD = 500
 ACCOUNTS_MAX = 30
 DETAIL = re.compile(r'^(?:https://(?:v\.|www\.|m\.)?douyin\.com/\S{1,300}|\d{6,25})$')
 
@@ -266,7 +267,7 @@ class Jobs:
 
     # ── 抓作品 ──
 
-    def crawl(self, chat_id, session, mode, targets, src):
+    def crawl(self, chat_id, session, mode, targets, src, count=None):
         cookies = cookie_header((session or {}).get('cookies'))
         max_notes = 100000
         if mode == 'creator':
@@ -295,7 +296,10 @@ class Jobs:
             words = words[:SEARCH_KEYWORDS]
             if not words:
                 raise ValueError('没有关键词')
-            target, what, max_notes = ','.join(words), '关键词「' + '」「'.join(words) + '」', SEARCH_PER_KEYWORD
+            per = SEARCH_PER_KEYWORD
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                per = min(count, SEARCH_MAX_PER_KEYWORD)
+            target, what, max_notes = ','.join(words), '关键词「' + '」「'.join(words) + f'」各 {per} 条', per
         else:
             links = [t for t in targets or [] if DETAIL.match(str(t))][:20]
             if not links:

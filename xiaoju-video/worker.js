@@ -207,7 +207,7 @@ const HELP = `我是小橘视频的管理助手 🍊
 • 登录抖音：云电脑打开抖音登录页，把二维码发给你，用抖音 App 扫一下就行。抖音要再验证时，我把页面截图和能选的验证方式发给你：
   点「刷脸验证」我就把刷脸用的二维码发过来；选短信就把验证码数字发给我；「截图」看页面现在的样子；「取消登录」不登了
 • 同步作品：云电脑（MediaCrawler）抓你登录账号自己主页的全部作品，新的交审核机器人 @xiaojuverify_bot
-• 搜索 关键词：按关键词搜抖音（多个关键词用逗号隔开，每个最多 50 条），交审核机器人逐条审核。
+• 搜索 关键词 数量：按关键词搜抖音，比如「搜索 坏脾气小橘 100」（多个关键词用逗号隔开；数量是每个关键词搜几条，不写是 50，最多 500），搜到的成审核单。
   搜出来的也有别人的作品：审核消息里有作者和主页链接，是你小号的才通过；通过过的号会记住，下次标出来、可以一键通过
 • 发小号的主页链接（抖音里点「分享主页」复制的链接，或者 www.douyin.com/user/… 地址）：记成你的小号，
   云电脑马上抓它的全部作品，新的不用审核，直接转进视频频道
@@ -279,11 +279,19 @@ async function botUpdate(env, update, origin, ctx) {
   if (t === '重新登录') return await douyinLogin(env, chat);
   const search = /^(?:搜索|\/search)(?:\s+([\s\S]*))?$/.exec(t);
   if (search) {
-    const words = String(search[1] || '').split(/[,，、;；\n]+/).map(w => w.trim()).filter(Boolean).slice(0, 5);
-    if (!words.length) return await say(env, chat, '发「搜索 关键词」，比如「搜索 坏脾气小橘」；多个关键词用逗号隔开。');
+    // 结尾的数字是每个关键词要几条：「搜索 坏脾气小橘 100」「搜索 小橘，猫咪 30条」
+    let arg = String(search[1] || '').trim();
+    let count;
+    const n = /(?:^|\s)(\d{1,4})\s*条?$/.exec(arg);
+    if (n) {
+      count = Math.min(Math.max(Number(n[1]), 1), SEARCH_MAX);
+      arg = arg.slice(0, n.index).trim();
+    }
+    const words = arg.split(/[,，、;；\n]+/).map(w => w.trim()).filter(Boolean).slice(0, 5);
+    if (!words.length) return await say(env, chat, `发「搜索 关键词 数量」，比如「搜索 坏脾气小橘 100」；多个关键词用逗号隔开，不写数量每个搜 50 条，最多 ${SEARCH_MAX} 条。`);
     const session = await dySession(env);
     if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
-    return await startCrawl(env, chat, { mode: 'search', targets: words, session });
+    return await startCrawl(env, chat, { mode: 'search', targets: words, session, ...(count ? { count } : {}) });
   }
   if (t === '同步作品' || t === '/sync') {
     const session = await dySession(env);
@@ -366,6 +374,8 @@ async function submitLinks(env, chat, links) {
   await say(env, chat, parts.join('\n'));
 }
 
+const SEARCH_MAX = 500; // 每个关键词最多搜几条（流式服务那边也是这个上限）
+
 // 分出哪些是个人主页（小号）、哪些是作品。www.douyin.com/user/… 一看就知道；短链接要流式服务跳一次才知道
 const SEC_RE = /^MS4wLjABAAAA[\w-]{10,200}$/;
 async function sortLinks(env, links, expand) {
@@ -407,11 +417,23 @@ async function addAlts(env, secs) {
   return fresh;
 }
 
+// 每个小号一行：昵称、收了几条、转了几条、排队几条、失败几条、上次抓是什么时候
+async function altLines(env, alts) {
+  const stats = await lib(env).authorStats(alts.map(a => a.sec));
+  return alts.map((x, i) => {
+    const c = stats[x.sec] || {};
+    const total = Object.values(c).reduce((m, n) => m + n, 0);
+    return `${i + 1}. ${x.name || '（还没抓过，不知道昵称）'}\n` +
+      (total ? `   收了 ${total} 条：${countLine(c)}${c.review ? ` · 待审 ${c.review}` : ''}${c.rejected ? ` · 不转 ${c.rejected}` : ''}` : '   还没收到作品') +
+      (x.last ? `；上次抓 ${ago(x.last)}` : '') + `\n   https://www.douyin.com/user/${x.sec}`;
+  });
+}
+
 async function altsText(env) {
   const alts = await altAccounts(env);
   const a = await autoSync(env);
   const lines = alts.length
-    ? ['你的小号（抓到的作品直接转进频道）：', ...alts.map((x, i) => `${i + 1}. ${x.name || '（还没抓过，不知道昵称）'}  https://www.douyin.com/user/${x.sec}`)]
+    ? ['你的小号（抓到的作品直接转进频道）：', ...await altLines(env, alts)]
     : ['还没加小号。把小号的主页分享链接发给我就加上。'];
   lines.push('', a.on ? `自动同步：每天 ${a.hour} 点（北京时间）${a.last ? `，上次 ${ago(a.last)}` : ''}` : '自动同步：关着',
     '「同步小号」现在抓一遍；「删除小号 2」删第 2 个；「自动同步 8」改时间，「自动同步 关」关掉');
@@ -501,6 +523,13 @@ async function progressText(env) {
   const s = await dySession(env);
   lines.push(s ? `抖音账号：${s.nickname || s.sec_uid}（${ago(s.at)}登录）` : '抖音：还没登录（发「登录抖音」）');
   if (p) lines.push(`云电脑：${p.stage || ''} ${p.done || 0}/${p.total || 0}${p.note ? ' · ' + p.note : ''}（${ago(p.at)}）`);
+  const alts = await altAccounts(env);
+  if (alts.length) {
+    const stats = await L.authorStats(alts.map(a => a.sec));
+    const sum = {};
+    for (const c of Object.values(stats)) for (const [k, n] of Object.entries(c)) sum[k] = (sum[k] || 0) + n;
+    lines.push(`小号 ${alts.length} 个：${countLine(sum)}（发「小号」看每个号的）`);
+  }
   return lines.join('\n');
 }
 
@@ -671,6 +700,7 @@ async function reviewButton(env, cb, ctx) {
     await rememberAccounts(env, items);
     await dispatch(env);
   }
+  if (n) await refreshCards(env).catch(() => {});
 }
 
 // ── 交给流式服务 ──────────────────────────────────────────────────
@@ -706,6 +736,7 @@ async function tick(env) {
   const failed = await L.expireSending(Date.now() - SENDING_STALE_MS, MAX_ATTEMPTS);
   if (failed.length) await notifyFailed(env, failed);
   await maybeAutoSync(env);
+  await refreshCards(env).catch(() => {});
   for (const id of await adoptOrphans(env)) await sendSheet(env, id);
   await dispatch(env);
   // 有交出去还没回音的、或者最近让它干过活：去它的发件箱看看。闲着就不去，免得把休眠的 Space 一直叫醒
@@ -819,6 +850,7 @@ async function importItems(env, raw, src, what = '', into = {}) {
     for (const a of alts) {
       const one = items.find(i => i.author_sec_uid === a.sec && i.author);
       if (one) a.name = one.author.slice(0, 50);
+      if (items.some(i => i.author_sec_uid === a.sec)) a.last = Date.now();
     }
     await L.setConfig('altAccounts', JSON.stringify(alts));
     const secs = new Set(alts.map(a => a.sec));
@@ -882,6 +914,7 @@ async function pollStreamer(env, waitS) {
     }
     await L.setConfig('outboxSeq', String(ev.seq));
   }
+  if (events.some(e => e.kind === 'done')) await refreshCards(env).catch(() => {});
   return { busy: !!data.busy, more: events.length > 0 };
 }
 
@@ -900,12 +933,23 @@ async function handleEvent(env, ev) {
 }
 
 // 云电脑边抓边交：同一次抓取（job）分好几段送来，最后一段带 final。
-// 小号的每段一到就排队转发；要审的并进同一张审核单；条数攒着，最后一段到了才发汇总。没有 job 的当成一次送完
+// 小号的每段一到就排队转发；要审的并进同一张审核单。每次抓取给频道主一张「进度卡」，原地更新：
+// 抓到几条、新的几条，小号的转了几条、排队几条、失败几条。抓完发汇总，全部转完再说一声。
+// 没有 job 的（Codespaces 的 /dy-import、老版本）当成一次送完，只发汇总
 async function importEvent(env, ev) {
   const L = lib(env);
   const job = /^[0-9a-f]{6,32}$/.test(String(ev.job || '')) ? String(ev.job) : '';
-  let st = JSON.parse((await L.getConfig('crawlJob')) || '{}');
-  if (!job || st.job !== job) st = { job, added: 0, skipped: 0, auto: 0, batch: '', autoBatch: '' };
+  const cards = await crawlCards(env);
+  let st = job && cards.find(c => c.job === job);
+  if (!st) {
+    // 上一版只记一个 crawlJob：换版本时正在抓的那次，接着它的条数和批次算
+    const prev = JSON.parse((await L.getConfig('crawlJob')) || '{}');
+    const carry = job && prev.job === job ? prev : {};
+    st = { job, chat: Number(ev.chat_id) || 0, what: String(ev.what || '').slice(0, 80), src: ev.src, at: Date.now(),
+      added: carry.added || 0, skipped: carry.skipped || 0, auto: carry.auto || 0, batch: carry.batch || '', autoBatch: carry.autoBatch || '',
+      final: false, msg: 0, text: '', closed: false };
+    if (job) cards.push(st);
+  }
   const src = ['link', 'search', 'alt'].includes(ev.src) ? ev.src : 'cloud';
   const r = await importItems(env, (ev.items || []).slice(0, 10000), src, ev.what, st);
   st.added += r.added;
@@ -913,18 +957,85 @@ async function importEvent(env, ev) {
   st.auto += r.auto || 0;
   st.batch = r.batch || st.batch;
   st.autoBatch = r.autoBatch || st.autoBatch;
+  st.final = !job || ev.final !== false;
+  if (st.final) st.end = Date.now();
   const total = st.added + st.skipped + st.auto;
-  if (job && ev.final === false) {
-    await L.setConfig('crawlJob', JSON.stringify(st));
-    await saveProgress(env, { stage: `抓${ev.what || ''}`, done: total, note: `边抓边交：新的 ${st.added + st.auto} 条，已有 ${st.skipped} 条` });
-    return;
+  await saveProgress(env, st.final
+    ? { stage: '完成', done: st.added + st.auto, total, note: `新的 ${st.added + st.auto} 条，已有 ${st.skipped} 条` }
+    : { stage: `抓${ev.what || ''}`, done: total, note: `边抓边交：新的 ${st.added + st.auto} 条，已有 ${st.skipped} 条` });
+  if (job) {
+    await saveCards(env, cards);
+    await refreshCards(env);
   }
-  await L.setConfig('crawlJob', '{}');
-  await saveProgress(env, { stage: '完成', done: st.added + st.auto, total, note: `新的 ${st.added + st.auto} 条，已有 ${st.skipped} 条` });
+  if (!st.final) return;
   const parts = [];
   if (st.auto) parts.push(`新的 ${st.auto} 条是小号的作品，已经排队转进频道`);
   if (st.added) parts.push(`新的 ${st.added} 条在审核单 ${st.batch}，去审核机器人 @xiaojuverify_bot 审`);
-  await sendToOwner(env, ev.chat_id, `抓完了：一共 ${total} 条，${st.skipped} 条以前收过` + (parts.length ? `，${parts.join('；')}。` : '，没有新的。'));
+  await sendToOwner(env, ev.chat_id, `抓完了：一共 ${total} 条，${st.skipped} 条以前收过` + (parts.length ? `，${parts.join('；')}。` : '，没有新的。') +
+    (st.auto ? '\n转发进度看上面的进度卡，全部转完我再告诉你。' : ''));
+}
+
+async function crawlCards(env) {
+  return JSON.parse((await lib(env).getConfig('crawlCards')) || '[]');
+}
+
+async function saveCards(env, cards) {
+  await lib(env).setConfig('crawlCards', JSON.stringify(cards.slice(-5)));
+}
+
+function countLine(c) {
+  const busy = (c.queued || 0) + (c.sending || 0);
+  return `✅ 已转 ${c.posted || 0} · ⏳ 排队/在转 ${busy} · ❌ 失败 ${c.failed || 0}`;
+}
+
+// 进度卡的文字
+async function cardText(env, st) {
+  const L = lib(env);
+  const total = st.added + st.skipped + st.auto;
+  const mins = Math.max(1, Math.round(((st.end || Date.now()) - st.at) / 60000));
+  const lines = [
+    `📥 抓取进度：${st.what || '抖音作品'}`,
+    st.final ? `✅ 抓完了（用了 ${mins} 分钟）` : `⏳ 正在抓…（已经 ${mins} 分钟，边抓边转）`,
+    `抓到 ${total} 条：新的 ${st.added + st.auto} 条，以前收过 ${st.skipped} 条`,
+  ];
+  const a = st.autoBatch && (await L.getBatch(st.autoBatch));
+  if (a) lines.push(`小号的作品 ${a.total} 条：${countLine(a.counts)}`);
+  const b = st.batch && (await L.getBatch(st.batch));
+  if (b) {
+    const state = { review: '等你审核', approved: '已通过', rejected: '审核失败，不转' }[b.status] || b.status;
+    lines.push(`要审核的 ${b.total} 条（审核单 ${b.id}，${state}）` + (b.status === 'approved' ? `：${countLine(b.counts)}` : ''));
+  }
+  return { text: lines.join('\n'), a, b };
+}
+
+// 更新还没结束的进度卡：文字变了才改。抓完、该转的都转完（排队、在转的都没了），发一句「全部转完」就不再管它
+async function refreshCards(env) {
+  const cards = await crawlCards(env);
+  const open = cards.filter(c => !c.closed);
+  if (!open.length) return;
+  for (const st of open) {
+    const { text, a, b } = await cardText(env, st);
+    if (text !== st.text) {
+      if (st.msg) {
+        await tg(env.TG_BOT_TOKEN, 'editMessageText', { chat_id: st.chat, message_id: st.msg, text, disable_web_page_preview: true });
+      } else {
+        const r = await say(env, st.chat, text);
+        st.msg = (r && r.result && r.result.message_id) || 0;
+      }
+      st.text = text;
+    }
+    const moving = x => x && ((x.counts.queued || 0) + (x.counts.sending || 0));
+    if (st.final && !moving(a) && !moving(b) && !(b && b.status === 'review')) {
+      st.closed = true;
+      const posted = ((a && a.counts.posted) || 0) + ((b && b.counts.posted) || 0);
+      const failed = ((a && a.counts.failed) || 0) + ((b && b.counts.failed) || 0);
+      if (posted || failed) {
+        await say(env, st.chat, `🎉 「${st.what || '这次抓的'}」全部转完了：成功 ${posted} 条` +
+          (failed ? `，失败 ${failed} 条（发「重试失败」再试一次）` : '') + '。');
+      }
+    }
+  }
+  await saveCards(env, cards);
 }
 
 // ── 云电脑 ────────────────────────────────────────────────────────
@@ -1371,6 +1482,16 @@ export class Library extends DurableObject {
 
   batchItems(id) {
     return this.sql.exec('SELECT * FROM items WHERE batch = ? ORDER BY created, aweme', id).toArray().map(r => this.row(r));
+  }
+
+  // 按作者统计作品各状态的条数：{ sec_uid: { posted: 3, queued: 1, … } }
+  authorStats(secs) {
+    const out = {};
+    if (!secs.length) return out;
+    const rows = this.sql.exec(`SELECT json_extract(data, '$.author_sec_uid') AS sec, status, COUNT(*) AS n FROM items
+      WHERE json_extract(data, '$.author_sec_uid') IN (${secs.map(() => '?').join(',')}) GROUP BY sec, status`, ...secs).toArray();
+    for (const r of rows) (out[r.sec] = out[r.sec] || {})[r.status] = r.n;
+    return out;
   }
 
   orphanSrcs() {

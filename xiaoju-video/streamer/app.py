@@ -536,7 +536,8 @@ async def douyin_crawl(request: Request):
     await jobs.stop_login()  # 正在等扫码的登录让给这件活
     try:
         jobs.crawl(int(body['chat_id']), body['session'], mode, body.get('targets') or [],
-                   {'creator': 'cloud', 'accounts': 'alt', 'search': 'search'}.get(mode, 'link'))
+                   {'creator': 'cloud', 'accounts': 'alt', 'search': 'search'}.get(mode, 'link'),
+                   body.get('count'))
     except jobs_mod.Busy as e:
         return busy(e)
     except ValueError as e:

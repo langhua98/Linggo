@@ -692,8 +692,16 @@ await test('「搜索 关键词」交给流式服务；没给关键词说用法'
   assert.equal(jobCalls[0][1].mode, 'search');
   assert.deepEqual(jobCalls[0][1].targets, ['坏脾气小橘', '小橘 猫咪', '第三个']);
   assert.ok(jobCalls[0][1].session.sec_uid);
+  assert.equal(jobCalls[0][1].count, undefined); // 没写数量：流式服务按默认的 50
+  await dm(OWNER, '搜索 坏脾气小橘，猫咪 120条');
+  assert.deepEqual(jobCalls[1][1].targets, ['坏脾气小橘', '猫咪']);
+  assert.equal(jobCalls[1][1].count, 120);
+  await dm(OWNER, '搜索 小橘 9999');
+  assert.equal(jobCalls[2][1].count, 500);
+  await dm(OWNER, '搜索 2024');
+  assert.match(last('bot').text, /发「搜索 关键词 数量」/); // 只有数字：没关键词
   await dm(OWNER, '搜索');
-  assert.match(last('bot').text, /发「搜索 关键词」/);
+  assert.match(last('bot').text, /发「搜索 关键词 数量」/);
 });
 
 const ALT = 'MS4wLjABAAAAmyaltaccount0001', OTHER = 'MS4wLjABAAAAsomeoneelse0001';
@@ -801,6 +809,12 @@ await test('边抓边交：小号的每段一到就转；要审的并进同一�
   assert.equal(sheets().length, 1);
   assert.match(sheets()[0].text, /#批次数量1 条/);
   assert.ok(!sent.bot.some(m => /抓完了/.test(m.text || ''))); // 还没发汇总
+  // 进度卡：第一段到了就发，之后原地改
+  const card = sent.bot.find(m => m.method === 'sendMessage' && /📥 抓取进度：小号主页/.test(m.text));
+  assert.match(card.text, /⏳ 正在抓/);
+  assert.match(card.text, /抓到 2 条：新的 2 条/);
+  assert.match(card.text, /小号的作品 1 条：✅ 已转 0 · ⏳ 排队\/在转 1 · ❌ 失败 0/);
+  assert.match(card.text, /要审核的 1 条（审核单 [a-z0-9]{14}，等你审核）/);
   assert.match(JSON.parse(await L.getConfig('cloudProgress')).note, /边抓边交：新的 2 条/);
   await send([{ final: false, items: [it(3, own), it(4, ALT2)] }, { final: true, items: [it(5, own)] }]);
   assert.equal(sheets().length, 1); // 没发新单子
@@ -808,9 +822,29 @@ await test('边抓边交：小号的每段一到就转；要审的并进同一�
   assert.match(edits[edits.length - 1].text, /#批次数量3 条/);
   assert.deepEqual(edits[edits.length - 1].reply_markup.inline_keyboard[0].map(b => b.callback_data), [`batch-ok:${bidOf(sheets()[0])}`, `batch-no:${bidOf(sheets()[0])}`]);
   assert.equal((await L.getItem('730000000000000074')).status === 'review', false);
-  const sum = sent.bot.filter(m => /抓完了/.test(m.text || ''));
+  const sum = sent.bot.filter(m => /^抓完了/.test(m.text || ''));
   assert.equal(sum.length, 1);
   assert.match(sum[0].text, /一共 5 条，0 条以前收过，新的 2 条是小号的作品，已经排队转进频道；新的 3 条在审核单/);
+  const cardEdits = sent.bot.filter(m => m.method === 'editMessageText' && /📥/.test(m.text));
+  assert.match(cardEdits[cardEdits.length - 1].text, /✅ 抓完了/);
+  assert.match(cardEdits[cardEdits.length - 1].text, /抓到 5 条：新的 5 条/);
+  // 转完一条改一次卡；审核单审完、小号的都转完：说一声全部转完
+  let seq = Number(await L.getConfig('outboxSeq'));
+  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [
+    { seq: ++seq, kind: 'done', aweme: '730000000000000071', ok: true, message_id: 801 },
+    { seq: ++seq, kind: 'done', aweme: '730000000000000074', ok: false, error: '下载 403', idle: true },
+  ] };
+  for (let i = 0; i < 2; i++) await L.itemDone('730000000000000074', false, 0, 'x', 3); // 满次数记失败
+  await L.alarm();
+  const latest = sent.bot.filter(m => m.method === 'editMessageText' && /📥/.test(m.text)).pop();
+  assert.match(latest.text, /小号的作品 2 条：✅ 已转 1 · ⏳ 排队\/在转 0 · ❌ 失败 1/);
+  assert.ok(!sent.bot.some(m => /🎉.*全部转完/.test(m.text || ''))); // 审核单还没审
+  await press(OWNER, `batch-no:${bidOf(sheets()[0])}`);
+  const done = sent.bot.filter(m => /🎉.*全部转完/.test(m.text || ''));
+  assert.equal(done.length, 1);
+  assert.match(done[0].text, /成功 1 条，失败 1 条（发「重试失败」再试一次）/);
+  await L.alarm();
+  assert.equal(sent.bot.filter(m => /🎉.*全部转完/.test(m.text || '')).length, 1); // 只说一次
   // 中途审过了：后面送来的另开一张
   reset();
   await send([{ job: 'def456def456', final: false, items: [it(6, own)] }]);
@@ -826,6 +860,11 @@ await test('「小号」列表、「同步小号」、「删除小号」', async
   await L.setConfig('altAccounts', JSON.stringify([...JSON.parse(await L.getConfig('altAccounts')), { sec: ALT3, name: '', at: 1 }]));
   await dm(OWNER, '小号');
   assert.match(last('bot').text, /1\. 小号二/);
+  assert.match(last('bot').text, /1\. 小号二\n   收了 \d+ 条：✅ 已转 1 · ⏳ 排队\/在转 \d+ · ❌ 失败 1；上次抓 \d+ 秒前\n   https:\/\/www\.douyin\.com\/user\//);
+  assert.match(last('bot').text, /2\. （还没抓过，不知道昵称）\n   还没收到作品/);
+  await dm(OWNER, '进度');
+  assert.match(last('bot').text, /小号 2 个：✅ 已转 1 · ⏳ 排队\/在转 \d+ · ❌ 失败 1（发「小号」看每个号的）/);
+  await dm(OWNER, '小号');
   assert.match(last('bot').text, /2\. （还没抓过/);
   assert.match(last('bot').text, /自动同步：每天 4 点/);
   jobCalls.length = 0;
