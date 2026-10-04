@@ -1,0 +1,28 @@
+# 一次性探测：GitHub 的机器（微软 Azure，Codespaces 也是这里）连不连得上快手。只在这个分支上跑
+name: ks-probe
+on:
+  push:
+    branches: [claude/ks-probe]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: probe
+        run: |
+          curl -sS -m 10 https://api.ipify.org; echo
+          for h in www.kuaishou.com id.kuaishou.com v.kuaishou.com www.douyin.com; do
+            printf '%s ' $h; curl -sS -m 15 -o /dev/null -w '%{http_code} %{time_total}s\n' https://$h/ || echo fail
+          done
+          python3 - <<'PY'
+          import socket, ssl
+          for ip in [a[4][0] for a in socket.getaddrinfo('www.kuaishou.com', 443, socket.AF_INET)][:2]:
+              s = socket.create_connection((ip, 443), timeout=8)
+              c = ssl.create_default_context()
+              try:
+                  with c.wrap_socket(s, server_hostname='www.kuaishou.com') as t:
+                      t.settimeout(8); t.sendall(b'GET /?isHome=1 HTTP/1.1\r\nHost: www.kuaishou.com\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n')
+                      print(ip, 'tls ok', t.recv(64).split(b'\r\n')[0])
+              except Exception as e:
+                  print(ip, 'tls fail', type(e).__name__, e)
+          PY
