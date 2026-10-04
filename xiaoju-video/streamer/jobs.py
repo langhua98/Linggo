@@ -166,6 +166,19 @@ class Jobs:
     def login(self, chat_id):
         self._start('登录抖音', chat_id, lambda: asyncio.wait_for(self._login(chat_id), LOGIN_TIMEOUT))
 
+    async def stop_login(self, chat_id=None, wait=10):
+        """正在登录（多半是在等扫码）：停掉，等它收完尾。频道主发了别的活就让给别的活"""
+        c = self.current
+        if not c or c['kind'] != '登录抖音':
+            return False
+        c['preempted'] = True
+        self.input('取消登录')
+        try:
+            await asyncio.wait_for(asyncio.shield(self.task), wait)
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            pass
+        return self.current is None
+
     def input(self, text):
         """登录进行中频道主发来的话交给登录页（验证码、选哪种验证、截图）；「取消登录」就停掉。没有在登录返回 False"""
         c = self.current
@@ -242,7 +255,9 @@ class Jobs:
             await asyncio.wait_for(logs, 5)
         except asyncio.TimeoutError:
             logs.cancel()
-        if self.current and self.current.get('cancelled'):
+        if self.current and self.current.get('preempted'):
+            self._say(chat_id, '登录先停了，去干你刚发的活。')
+        elif self.current and self.current.get('cancelled'):
             self._say(chat_id, '好，不登录了。', menu=True)
         elif not finished:
             self._say(chat_id, f'抖音登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail), menu=True)

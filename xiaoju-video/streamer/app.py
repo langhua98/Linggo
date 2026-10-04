@@ -507,6 +507,7 @@ async def douyin_crawl(request: Request):
     mode = body.get('mode')
     if mode not in ('creator', 'detail', 'search') or not isinstance(body.get('session'), dict):
         raise HTTPException(400)
+    await jobs.stop_login()  # 正在等扫码的登录让给这件活
     try:
         jobs.crawl(int(body['chat_id']), body['session'], mode, body.get('targets') or [],
                    {'creator': 'cloud', 'search': 'search'}.get(mode, 'link'))

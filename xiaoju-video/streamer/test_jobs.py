@@ -417,3 +417,34 @@ def test_crawl_search_keywords():
         with pytest.raises(ValueError, match='没有关键词'):
             j.crawl(9, {'sec_uid': SEC}, 'search', [' ', ','], 'search')
     asyncio.run(go())
+
+
+def test_crawl_preempts_waiting_login():
+    async def go():
+        w = World()
+        procs = []
+
+        def make(argv):
+            if 'main.py' in argv:
+                return mc_writes([row('7300000000000000888')])(argv)
+            p = FakeProc([ev('qr', png=PNG)])
+            orig = p.kill
+
+            def kill():
+                orig()
+                p.close()
+            p.kill = kill
+            procs.append(p)
+            return p
+
+        j = w.jobs(make)
+        j.login(1)
+        await until(lambda: len(w.said) >= 1)
+        assert await j.stop_login()
+        assert procs[0].killed and j.current is None
+        assert '登录先停了' in w.said[-1][1]
+        j.crawl(1, {'sec_uid': SEC, 'cookies': []}, 'search', ['小橘'], 'search')
+        await settle(j)
+        assert [k for k, _ in w.calls if k == 'import']
+        assert not await j.stop_login()  # 没在登录：什么也不做
+    asyncio.run(go())

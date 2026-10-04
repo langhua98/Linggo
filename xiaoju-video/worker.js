@@ -265,7 +265,17 @@ async function botUpdate(env, update, origin, ctx) {
   if (t === '/start' || t === '帮助' || t === '/help') return await say(env, chat, HELP, { reply_markup: OWNER_KEYBOARD });
   if (t === '进度' || t === '/status') return await say(env, chat, await progressText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '云电脑' || t === '/cloud') return await cloudInfo(env, chat, origin);
-  if (t === '登录抖音' || t === '/login') return await douyinLogin(env, chat);
+  if (t === '登录抖音' || t === '/login') {
+    // 已经登录了：先问一句，误点不会开一轮扫码（一轮最长占着云电脑 10 分钟）
+    const s = await dySession(env);
+    if (s) {
+      return await say(env, chat, `已经登录了「${s.nickname || s.sec_uid}」（${ago(s.at)}），要重新登录吗？`,
+        { reply_markup: { keyboard: [[{ text: '重新登录' }, { text: '不用了' }]], resize_keyboard: true, one_time_keyboard: true } });
+    }
+    return await douyinLogin(env, chat);
+  }
+  if (t === '重新登录') return await douyinLogin(env, chat);
+  if (t === '不用了') return await say(env, chat, '好，不重新登录。', { reply_markup: OWNER_KEYBOARD });
   const search = /^(?:搜索|\/search)(?:\s+([\s\S]*))?$/.exec(t);
   if (search) {
     const words = String(search[1] || '').split(/[,，、;；\n]+/).map(w => w.trim()).filter(Boolean).slice(0, 5);
