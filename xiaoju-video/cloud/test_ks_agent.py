@@ -103,3 +103,24 @@ def test_bad_jobs_reported_not_crash():
     texts = [e['text'] for e in a.events]
     assert '快手云电脑正在「快手搜索」' in texts[0]
     assert '快手不抓自己主页' in texts[1]
+
+
+def test_post_sends_user_agent_and_tells_cloudflare_block_from_bad_token(monkeypatch):
+    """Cloudflare 拦 Python 默认 User-Agent（1010）不能当成令牌不对"""
+    import io
+    import urllib.error
+    import pytest
+    seen = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.get_header('User-agent'))
+        raise urllib.error.HTTPError(req.full_url, 403, 'x', {}, io.BytesIO(fake_urlopen.body))
+    monkeypatch.setattr(A.urllib.request, 'urlopen', fake_urlopen)
+    a = A.Agent('https://w.example/', 'tok', '/mc', '/mc/py', xvfb=())
+    fake_urlopen.body = b'error code: 1010\n'
+    with pytest.raises(RuntimeError, match='1010'):
+        a.post({})
+    fake_urlopen.body = b'{"error":"forbidden"}'
+    with pytest.raises(A.Forbidden):
+        a.post({})
+    assert seen == ['xiaoju-video-ks-agent'] * 2

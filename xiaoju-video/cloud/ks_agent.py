@@ -45,15 +45,18 @@ class Agent:
         self.events.append({'kind': kind, **data})
 
     def post(self, body):
-        req = urllib.request.Request(f'{self.worker}/ks-agent/poll', data=json.dumps(body).encode(),
-                                     headers={'Content-Type': 'application/json', 'X-Token': self.token}, method='POST')
+        # 要带自己的 User-Agent：Cloudflare 见到 Python 默认的「Python-urllib」直接回 403（error code: 1010），到不了 Worker
+        req = urllib.request.Request(f'{self.worker}/ks-agent/poll', data=json.dumps(body).encode(), method='POST',
+                                     headers={'Content-Type': 'application/json', 'X-Token': self.token,
+                                              'User-Agent': 'xiaoju-video-ks-agent'})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read() or b'{}')
         except urllib.error.HTTPError as e:
-            if e.code == 403:
+            text = e.read()[:200]
+            if e.code == 403 and b'forbidden' in text:  # Worker 说令牌不对
                 raise Forbidden() from e
-            raise
+            raise RuntimeError(f'Worker 回 {e.code}：{text.decode(errors="replace").strip()}') from e
 
     def busy(self):
         return (self.jobs.current or {}).get('kind') or ''
