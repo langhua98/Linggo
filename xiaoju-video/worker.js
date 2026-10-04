@@ -1458,6 +1458,14 @@ async function adminApi(request, env, ctx, url) {
         // 只给名字、域名、过期时间，值不给
         cookies: x.cookies.map(c => ({ name: c.name, domain: c.domain, expires: c.expires, httpOnly: c.httpOnly })),
       }),
+      // 快手：登录的是哪个账号（cookie 只给名字）、快手云电脑开着没有、在干什么、排着几件
+      kuaishou: await getSession(env, 'ks').then(x => x && {
+        nickname: x.nickname, sec_uid: x.sec_uid, at: x.at, cookies: x.cookies.map(c => c.name),
+      }),
+      ksAgent: {
+        at: Number(await L.getConfig('ksAgentAt')) || 0, busy: (await L.getConfig('ksAgentBusy')) || '',
+        queue: JSON.parse((await L.getConfig('ksQueue')) || '[]').length,
+      },
       items: await L.listItems(status, 100, ''),
     });
   }
