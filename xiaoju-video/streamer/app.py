@@ -2,7 +2,9 @@
 
 Worker 管登记、审核和网页；这里干 Worker 干不了的重活：
 
-1. 认抖音分享链接（POST /douyin/resolve）：返回作品信息，Worker 拿去交审核机器人；
+1. 云电脑（MediaCrawler，见 jobs.py）：扫码登录频道主的抖音（POST /douyin/login，二维码由机器人发给频道主）、
+   抓他自己主页的全部作品或指定作品（POST /douyin/crawl），新的送 Worker 交审核机器人；
+   不登录的分享页解析（POST /douyin/resolve）在海外机房拿不到作品数据，只作备用；
 2. 转作品（POST /douyin/post）：审核通过的作品排进队列，一条条下载、ffmpeg 整理成网页能边下边播的 mp4，
    用频道主的账号发进视频频道（说明里带「#dy<作品号>」），每条转完 POST Worker 的 /streamer-done 报结果；
 3. 大视频流（GET /stream/<消息号>）：Bot API 只能下 20 MB 以内的文件，更大的由这里走 MTProto 按 Range 现取现传；
@@ -17,6 +19,7 @@ Worker 管登记、审核和网页；这里干 Worker 干不了的重活：
   VIDEO_CHANNEL_ID          视频频道的数字 id（-100 开头），或私有频道的邀请链接
   STREAMER_KEY              和 Worker 之间的密钥（X-Key 请求头）
   WORKER_URL                Worker 地址，报到、报结果用
+  MC_DIR / MC_PY            MediaCrawler 的目录和它的 Python（Dockerfile 里装好，默认 /opt/MediaCrawler、/opt/mc-venv/bin/python）
 """
 
 import asyncio
@@ -35,6 +38,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+import jobs as jobs_mod
 from douyin import DESKTOP_UA, Douyin, DouyinError
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -288,6 +292,7 @@ def ffmpeg_prepare(src, work):
 streamer = None
 poster = None
 douyin = None
+jobs = None
 state = {'bot': False, 'user': False, 'channel': None, 'channel_id': None}
 
 
@@ -301,14 +306,27 @@ def check_key(request):
 async def worker_post(http, path, body):
     base = os.environ.get('WORKER_URL', '').rstrip('/')
     if not base:
-        return
+        return {}
     r = await http.post(base + path, json=body, headers={'X-Key': os.environ['STREAMER_KEY']}, timeout=30)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+async def tg_send(http, chat_id, text, png=None):
+    """用小橘视频机器人给频道主发消息、图片（二维码、验证截图）"""
+    base = f'https://api.telegram.org/bot{os.environ["TG_BOT_TOKEN"]}'
+    if png:
+        r = await http.post(base + '/sendPhoto', data={'chat_id': str(chat_id), 'caption': text[:1000]},
+                            files={'photo': ('douyin.png', png, 'image/png')}, timeout=60)
+    else:
+        r = await http.post(base + '/sendMessage', json={'chat_id': chat_id, 'text': text[:4000] or '…',
+                                                         'disable_web_page_preview': True}, timeout=30)
     r.raise_for_status()
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global streamer, poster, douyin
+    global streamer, poster, douyin, jobs
     from telethon import TelegramClient
     from telethon.sessions import StringSession
     from telethon.tl.types import DocumentAttributeVideo, PeerChannel
@@ -316,6 +334,9 @@ async def lifespan(app):
     env = os.environ
     http = httpx.AsyncClient(http2=False)
     douyin = Douyin(http)
+    jobs = jobs_mod.Jobs(spawn=jobs_mod.spawn, tg=lambda chat, text, png=None: tg_send(http, chat, text, png),
+                         worker=lambda path, body: worker_post(http, path, body),
+                         mc_dir=env.get('MC_DIR', '/opt/MediaCrawler'), mc_py=env.get('MC_PY', '/opt/mc-venv/bin/python'))
     api_id, api_hash = int(env['TG_API_ID']), env['TG_API_HASH']
     # receive_updates=False：只调用、不订阅推送。机器人同时挂在官方 Bot API 上收 webhook，
     # 这里要是订阅了，频道新帖的推送可能被它接走，Worker 就漏登记新视频
@@ -408,7 +429,7 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 @app.get('/')
 async def health():
-    return {'ok': True, **state, 'poster': poster.status() if poster else None}
+    return {'ok': True, **state, 'poster': poster.status() if poster else None, 'jobs': jobs.status() if jobs else None}
 
 
 @app.get('/stream/{message_id}')
@@ -465,3 +486,57 @@ async def post_items(request: Request):
 async def post_status(request: Request):
     check_key(request)
     return poster.status()
+
+
+# ── 云电脑（MediaCrawler）：都要 X-Key，由 Worker 转过来 ──────────────────────
+
+def busy(e):
+    return JSONResponse({'busy': str(e)}, status_code=409)
+
+
+@app.post('/douyin/login')
+async def douyin_login(request: Request):
+    check_key(request)
+    body = await request.json()
+    try:
+        jobs.login(int(body['chat_id']))
+    except jobs_mod.Busy as e:
+        return busy(e)
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400)
+    return {'ok': True}
+
+
+@app.post('/douyin/login/code')
+async def douyin_login_code(request: Request):
+    check_key(request)
+    body = await request.json()
+    if not jobs.code(str(body.get('code', ''))):
+        return JSONResponse({'error': 'no login waiting for a code'}, status_code=409)
+    return {'ok': True}
+
+
+@app.post('/douyin/crawl')
+async def douyin_crawl(request: Request):
+    """mode=creator：抓登录账号自己的主页（地址由 session 里的 sec_uid 拼）；mode=detail：抓 targets 里的作品"""
+    check_key(request)
+    body = await request.json()
+    mode = body.get('mode')
+    if mode not in ('creator', 'detail') or not isinstance(body.get('session'), dict):
+        raise HTTPException(400)
+    try:
+        jobs.crawl(int(body['chat_id']), body['session'], mode, body.get('targets') or [],
+                   'cloud' if mode == 'creator' else 'link')
+    except jobs_mod.Busy as e:
+        return busy(e)
+    except ValueError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except (KeyError, TypeError):
+        raise HTTPException(400)
+    return {'ok': True}
+
+
+@app.get('/douyin/jobs')
+async def douyin_jobs(request: Request):
+    check_key(request)
+    return jobs.status()

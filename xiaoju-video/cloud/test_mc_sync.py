@@ -10,17 +10,6 @@ def row(aid, video='', notes='', desc='x'):
             'video_download_url': video, 'note_download_url': notes, 'nickname': '小*'}
 
 
-def test_item_from_row():
-    v = m.item_from_row(row('7300000000000000001', video='http://v26.douyinvod.com/abc'))
-    assert v == {'aweme': '7300000000000000001', 'desc': 'x', 'create_time': 1700000000,
-                 'cover': 'https://p3.douyinpic.com/c.jpeg', 'type': 'video',
-                 'video_url': 'https://v26.douyinvod.com/abc', 'url': 'https://www.douyin.com/video/7300000000000000001'}
-    i = m.item_from_row(row('7300000000000000002', notes='https://p3.douyinpic.com/1.webp,//p3.douyinpic.com/2.webp,'))
-    assert i['type'] == 'images' and i['images'] == ['https://p3.douyinpic.com/1.webp', 'https://p3.douyinpic.com/2.webp']
-    assert m.item_from_row(row('7300000000000000003')) is None  # 没有视频地址
-    assert m.item_from_row(row('abc', video='https://v.douyinvod.com/x')) is None
-
-
 def test_read_rows_and_dedup(tmp_path):
     d = tmp_path / 'dy' / 'jsonl'
     d.mkdir(parents=True)
@@ -36,6 +25,7 @@ def test_read_rows_and_dedup(tmp_path):
 def test_mc_args_only_works_no_comments():
     a = m.mc_args('creator', 'https://www.douyin.com/user/MS4wLjABAAAAx', '/tmp/d')
     assert a[:4] == ['uv', 'run', 'main.py', '--platform'] and 'dy' in a
+    assert a[a.index('--lt') + 1] == 'qrcode'
     assert a[a.index('--get_comment') + 1] == 'no'
     assert a[a.index('--creator_id') + 1] == 'https://www.douyin.com/user/MS4wLjABAAAAx'
     assert '--keywords' not in a

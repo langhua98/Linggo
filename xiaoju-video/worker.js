@@ -194,14 +194,16 @@ function toRecord(post) {
 
 const HELP = `我是小橘视频的管理助手 🍊
 
-• 直接发抖音分享链接（整段分享文字也行）：先去审核机器人 @xiaojuverify_bot 过审，通过后转进视频频道
-• 云电脑：拿云电脑的上传令牌和命令，用来同步你自己抖音账号的全部作品
-• 进度：看排队、在转、已转、失败各多少
+• 登录抖音：云电脑打开抖音登录页，把二维码发给你，用抖音 App 扫一下就行（抖音要短信验证码时，直接把验证码数字发给我）
+• 同步作品：云电脑（MediaCrawler）抓你登录账号自己主页的全部作品，新的交审核机器人 @xiaojuverify_bot
+• 直接发抖音分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
+• 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
 • 重试失败：把失败的作品重新排队
+• 云电脑：（备用）在你自己的 GitHub Codespaces 里跑 MediaCrawler 要用的令牌和命令
 • 帮助：显示这段说明`;
 
 const OWNER_KEYBOARD = {
-  keyboard: [[{ text: '进度' }, { text: '云电脑' }], [{ text: '重试失败' }, { text: '帮助' }]],
+  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '进度' }, { text: '重试失败' }], [{ text: '帮助' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -250,6 +252,17 @@ async function botUpdate(env, update, origin, ctx) {
   if (t === '/start' || t === '帮助' || t === '/help') return await say(env, chat, HELP, { reply_markup: OWNER_KEYBOARD });
   if (t === '进度' || t === '/status') return await say(env, chat, await progressText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '云电脑' || t === '/cloud') return await cloudInfo(env, chat, origin);
+  if (t === '登录抖音' || t === '/login') return await douyinLogin(env, chat);
+  if (t === '同步作品' || t === '/sync') {
+    const session = await dySession(env);
+    if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
+    return await startCrawl(env, chat, { mode: 'creator', session });
+  }
+  // 纯数字：抖音登录要的短信验证码
+  if (/^\d{4,8}$/.test(t)) {
+    const r = await streamerCall(env, '/douyin/login/code', { code: t }).catch(() => null);
+    return await say(env, chat, r && r.status === 200 ? '验证码已经填进抖音登录页，等结果…' : '现在没有在等验证码的抖音登录。');
+  }
   if (t === '重试失败' || t === '/retry') {
     const n = await lib(env).retryFailed();
     await say(env, chat, n ? `已把 ${n} 条失败的作品重新排队` : '没有失败的作品');
@@ -265,8 +278,12 @@ function douyinLinks(t) {
   return [...new Set(found.map(u => u.replace(/[),.;!?]+$/, '')))].slice(0, 10);
 }
 
+// 登录过抖音：链接交给云电脑（MediaCrawler）抓，抓到的逐条交审核机器人。
+// 没登录：退回不登录的分享页解析（流式服务在海外机房，多半拿不到作品数据）
 async function submitLinks(env, chat, links) {
   if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务，暂时认不了链接');
+  const session = await dySession(env);
+  if (session) return await startCrawl(env, chat, { mode: 'detail', targets: links, session });
   const L = lib(env);
   const owner = await ownerId(env);
   let added = 0, dup = 0;
@@ -286,8 +303,32 @@ async function submitLinks(env, chat, links) {
   const parts = [];
   if (added) parts.push(`${added} 条已交审核机器人 @xiaojuverify_bot，去那里点「通过」`);
   if (dup) parts.push(`${dup} 条以前已经收过`);
-  if (bad.length) parts.push(`${bad.length} 条认不出：${bad.join('；')}`);
+  if (bad.length) parts.push(`${bad.length} 条认不出：${bad.join('；')}\n先发「登录抖音」扫码，之后链接改由云电脑（MediaCrawler）抓。`);
   await say(env, chat, parts.join('\n'));
+}
+
+// 抖音登录状态（流式服务登录成功后存进来的 cookie、sec_uid、昵称）；没有返回 null
+async function dySession(env) {
+  const raw = await lib(env).getConfig('dySession');
+  const s = raw ? JSON.parse(raw) : null;
+  return s && s.sec_uid ? s : null;
+}
+
+async function douyinLogin(env, chat) {
+  if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务');
+  const r = await streamerCall(env, '/douyin/login', { chat_id: chat }).catch(() => null);
+  if (!r) return await say(env, chat, '云电脑没响应（可能在休眠），1 分钟后再发一次「登录抖音」。');
+  if (r.status === 409) return await say(env, chat, `云电脑正在「${r.data.busy}」，等它干完再发。`);
+  if (r.status !== 200) return await say(env, chat, `云电脑没接：${(r.data && r.data.error) || r.status}`);
+  await say(env, chat, '正在打开抖音登录页，二维码大约半分钟后发过来…');
+}
+
+// 交给云电脑抓：它自己会把「开始抓」「抓到几条」发给频道主，这里只处理没交出去的情况
+async function startCrawl(env, chat, body) {
+  const r = await streamerCall(env, '/douyin/crawl', { chat_id: chat, ...body }).catch(() => null);
+  if (!r) return await say(env, chat, '云电脑没响应（可能在休眠），1 分钟后再发一次。');
+  if (r.status === 409) return await say(env, chat, `云电脑正在「${r.data.busy}」，等它干完再发。`);
+  if (r.status !== 200) return await say(env, chat, `云电脑没接：${(r.data && r.data.error) || r.status}`);
 }
 
 async function progressText(env) {
@@ -300,6 +341,8 @@ async function progressText(env) {
     `作品：待审核 ${c.review || 0} · 排队 ${c.queued || 0} · 在转 ${c.sending || 0} · 已转 ${c.posted || 0} · 失败 ${c.failed || 0} · 不转 ${c.rejected || 0}`,
     `流式服务：${!streamerOn(env) ? '没配置' : up ? '上次报到 ' + ago(up) : '还没报到过'}`,
   ];
+  const s = await dySession(env);
+  lines.push(s ? `抖音账号：${s.nickname || s.sec_uid}（${ago(s.at)}登录）` : '抖音：还没登录（发「登录抖音」）');
   if (p) lines.push(`云电脑：${p.stage || ''} ${p.done || 0}/${p.total || 0}${p.note ? ' · ' + p.note : ''}（${ago(p.at)}）`);
   return lines.join('\n');
 }
@@ -352,6 +395,11 @@ async function sendReview(env, owner, item) {
     { text: '✅ 通过', callback_data: `ok:${item.aweme}` },
     { text: '❌ 不转', callback_data: `no:${item.aweme}` },
   ]]);
+}
+
+async function reviewEach(env, items) {
+  const owner = await ownerId(env);
+  for (const item of items) await sendReview(env, owner, { ...item, src: 'link' });
 }
 
 // 云电脑一次送来很多条：先发一条汇总，频道主可以全部通过、逐条看、或全部不转
@@ -483,12 +531,29 @@ async function streamerApi(request, env, ctx, path) {
 
 // ── 云电脑 ────────────────────────────────────────────────────────
 
+// 两种来路：Codespaces 里的云电脑（X-Token，机器人「云电脑」发的令牌）、流式服务里的 MediaCrawler（X-Key）
 async function cloudApi(request, env, ctx, path) {
   const L = lib(env);
-  const want = await L.getConfig('cloudToken');
-  const got = request.headers.get('X-Token') || '';
-  if (!want || !sameString(got, want)) return json({ error: 'forbidden' }, 403);
+  const key = request.headers.get('X-Key') || '';
+  const viaStreamer = !!env.STREAMER_KEY && sameString(key, env.STREAMER_KEY);
+  if (!viaStreamer) {
+    const want = await L.getConfig('cloudToken');
+    const got = request.headers.get('X-Token') || '';
+    if (!want || !sameString(got, want)) return json({ error: 'forbidden' }, 403);
+  }
   const body = await request.json().catch(() => ({}));
+  if (path === '/dy-session') {
+    // 抖音登录状态只收流式服务的：Codespaces 那边自己存在浏览器档案里
+    if (!viaStreamer) return json({ error: 'forbidden' }, 403);
+    const cookies = (Array.isArray(body.cookies) ? body.cookies : [])
+      .filter(c => c && typeof c.name === 'string' && typeof c.value === 'string').slice(0, 200);
+    const sec = String(body.sec_uid || '');
+    if (!/^MS4wLjABAAAA[\w-]{10,200}$/.test(sec)) return json({ error: 'bad sec_uid' }, 400);
+    const session = { cookies, sec_uid: sec, nickname: String(body.nickname || '').slice(0, 60), at: Date.now() };
+    if (JSON.stringify(session).length > 64 * 1024) return json({ error: 'too big' }, 413);
+    await L.setConfig('dySession', JSON.stringify(session));
+    return json({ ok: true });
+  }
   if (path === '/dy-known') {
     const ids = (Array.isArray(body.ids) ? body.ids : []).map(String).filter(x => /^\d{6,25}$/.test(x)).slice(0, 1000);
     return json({ known: await L.knownAwemes(ids) });
@@ -497,9 +562,11 @@ async function cloudApi(request, env, ctx, path) {
     const raw = Array.isArray(body.items) ? body.items : [];
     if (raw.length > IMPORT_MAX) return json({ error: `一次最多 ${IMPORT_MAX} 条` }, 413);
     const items = raw.map(normalizeItem).filter(Boolean);
-    const fresh = await L.addItems(items, 'cloud');
+    // 链接抓来的逐条交审核；主页同步来的先发一条汇总
+    const src = viaStreamer && body.src === 'link' ? 'link' : 'cloud';
+    const fresh = await L.addItems(items, src);
     if (fresh.length) {
-      const p = announceCloud(env, fresh.length).catch(() => {});
+      const p = (src === 'link' ? reviewEach(env, items.filter(i => fresh.includes(i.aweme))) : announceCloud(env, fresh.length)).catch(() => {});
       if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
     }
     return json({ ok: true, added: fresh.length, skipped: items.length - fresh.length, invalid: raw.length - items.length });

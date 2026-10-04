@@ -11,7 +11,6 @@
 MediaCrawler 只按 setup 时填的那一个主页抓（creator），不做关键词搜索，也不抓评论。
 """
 
-import glob
 import json
 import os
 import re
@@ -21,11 +20,13 @@ import tempfile
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'streamer'))
+from mc import items_from, mc_args as _mc_args, read_rows  # noqa: E402,F401  解析和流式服务共用
+
 HOME = os.path.expanduser('~/.xiaoju-video')
 CONFIG = os.path.join(HOME, 'config.json')
 MC_DIR = os.path.join(HOME, 'MediaCrawler')
 BATCH = 100
-HTTPS = re.compile(r'^https://\S{4,2000}$')
 HOMEPAGE = re.compile(r'^https://(?:www\.)?douyin\.com/user/MS4wLjABAAAA[\w-]+')
 
 
@@ -50,60 +51,6 @@ def worker_call(cfg, path, body):
         raise
 
 
-def https(u):
-    u = (u or '').strip()
-    if u.startswith('//'):
-        u = 'https:' + u
-    return u.replace('http://', 'https://', 1)
-
-
-def item_from_row(row):
-    """MediaCrawler 的作品行（store/douyin update_douyin_aweme 写的字段）→ Worker 要的作品；认不出返回 None"""
-    aweme = str(row.get('aweme_id') or '')
-    if not re.fullmatch(r'\d{6,25}', aweme):
-        return None
-    images = [https(u) for u in str(row.get('note_download_url') or '').split(',') if u.strip()]
-    images = [u for u in images if HTTPS.match(u)]
-    item = {'aweme': aweme, 'desc': str(row.get('desc') or row.get('title') or '').strip(),
-            'create_time': int(row.get('create_time') or 0)}
-    cover = https(row.get('cover_url'))
-    if HTTPS.match(cover):
-        item['cover'] = cover
-    if images:
-        item.update(type='images', images=images[:35], url=f'https://www.douyin.com/note/{aweme}')
-        return item
-    video = https(row.get('video_download_url'))
-    if not HTTPS.match(video):
-        return None
-    item.update(type='video', video_url=video, url=f'https://www.douyin.com/video/{aweme}')
-    return item
-
-
-def read_rows(data_dir):
-    """data_dir 下 MediaCrawler 写的所有作品 jsonl（文件名形如 creator_contents_2026-10-04.jsonl）"""
-    rows = []
-    for path in sorted(glob.glob(os.path.join(data_dir, '**', '*_contents_*.jsonl'), recursive=True)):
-        with open(path, encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        continue
-    return rows
-
-
-def items_from(rows):
-    seen, items = set(), []
-    for row in rows:
-        item = item_from_row(row)
-        if item and item['aweme'] not in seen:
-            seen.add(item['aweme'])
-            items.append(item)
-    return items
-
-
 def push(cfg, items, report=print):
     """问 Worker 哪些收过，新的分批送过去；返回被收下的条数"""
     total = len(items)
@@ -123,12 +70,8 @@ def push(cfg, items, report=print):
 
 
 def mc_args(mode, target, data_dir):
-    """MediaCrawler 的命令行：只抓作品本身，不抓评论；窗口开在网页桌面里，方便扫码、看验证码"""
-    args = ['uv', 'run', 'main.py', '--platform', 'dy', '--lt', 'qrcode', '--type', mode,
-            '--get_comment', 'no', '--headless', 'no', '--save_data_option', 'jsonl',
-            '--save_data_path', data_dir, '--crawler_max_notes_count', '100000']
-    args += ['--creator_id', target] if mode == 'creator' else ['--specified_id', target]
-    return args
+    """云电脑上用 uv 跑 MediaCrawler；登录状态在它的浏览器档案里（run.sh login 扫的码）"""
+    return ['uv', 'run', 'main.py'] + _mc_args(mode, target, data_dir)
 
 
 def run_mc(mode, target):

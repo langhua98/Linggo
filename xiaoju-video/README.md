@@ -18,7 +18,7 @@
 | 小橘视频机器人 | `TG_BOT_TOKEN` | 频道主私聊：发分享链接、「进度」「云电脑」「重试失败」；它是视频频道管理员，频道新帖由它的 webhook 登记 |
 | 审核机器人 | @xiaojuverify_bot（`VERIFY_BOT_TOKEN`） | 每条作品转之前在这里点「通过 / 不转」；云电脑一次来很多条时可以「全部通过」 |
 | 流式服务 | `streamer/`（HF Space `langhua1998/douyin-proxy`，原小橘音乐的流式服务改建，`https://langhua1998-douyin-proxy.hf.space`） | 认分享链接、下载、ffmpeg、用频道主账号发帖；超过 20 MB 的视频按 Range 走 MTProto 现取现传。详见 `streamer/README.md` |
-| 云电脑 | `cloud/`（MediaCrawler + `mc_sync.py`）+ 仓库根的 `.devcontainer/xiaoju-video/` | Codespaces 里用 MediaCrawler 扫码登录你自己的抖音，抓你主页的作品送给 Worker |
+| 云电脑 | 流式服务里的 MediaCrawler（`streamer/jobs.py`、`dy_login.py`）；备用：`cloud/` + `.devcontainer/xiaoju-video/`（Codespaces） | 「登录抖音」把二维码发给频道主扫；「同步作品」抓登录账号自己主页的全部作品；发链接抓那几条。新的送 Worker 交审核 |
 
 ### 一条作品怎么走
 
@@ -106,16 +106,23 @@ done
 
 ## 云电脑（MediaCrawler）
 
-爬虫用的是 [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)（NON-COMMERCIAL LEARNING LICENSE 1.1，只能非商业使用），
-`run.sh install` 把它装进 Codespace 的 `~/.xiaoju-video/MediaCrawler`，固定在验证过的版本 `bf28178`，并改配置：不连本机 Chrome（CDP）、
-有界面（在网页桌面里扫码、看验证码）、不抓评论、保存登录状态。它在浏览器里登录、自己算接口签名，所以不受「海外 IP 打开分享页没有作品数据」的限制。
+爬虫是 [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)（NON-COMMERCIAL LEARNING LICENSE 1.1，只能非商业使用），
+固定在验证过的版本 `bf28178`（`streamer/mc.py` 的 `MC_REV`、`streamer/Dockerfile`、`cloud/run.sh` 三处要一致）。
+`streamer/mc_patch.py` 改它的配置：不连本机 Chrome（CDP）、有界面、不抓评论、保存登录状态。
 
-1. 在 GitHub 上用 `.devcontainer/xiaoju-video` 这个配置建 Codespace（Python 3.11 + Node 20 + 网页桌面；建好会自动跑 `run.sh install`）。
-   一键链接：https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json
-   只想先登录抖音：`bash xiaoju-video/cloud/run.sh login`，在端口 6080 的网页桌面里扫码（最多等 10 分钟），登录状态存进 MediaCrawler 的浏览器档案。
-2. 在小橘视频机器人里发「云电脑」，把它给的命令粘进终端，末尾换成**你自己的**抖音主页链接（`https://www.douyin.com/user/MS4wLjABAAAA…`）。
-3. `bash xiaoju-video/cloud/run.sh sync`：MediaCrawler 的 creator 模式只抓这一个主页的作品（不搜关键词、不抓评论），
-   第一次要在端口 6080 的网页桌面（密码 `vscode`）里 60 秒内扫码。抓完 `mc_sync.py` 读 jsonl，问 Worker 哪些收过，新的送过去，再去 @xiaojuverify_bot 审核。
-4. `bash xiaoju-video/cloud/run.sh link <链接>...`：只抓这几条（detail 模式），用于你自己的或有授权的作品。
+**主用：装在流式服务（HF Space `douyin-proxy`）里**，频道主全程只在 Telegram 里操作：
 
-抓到的视频地址几个小时后过期：审核拖太久，流式服务下载会失败，满 3 次记成失败；再跑一次 sync，失败的会带着新地址重新待审核。
+1. 小橘视频机器人里发「登录抖音」→ 流式服务用 `xvfb-run` 在虚拟屏幕上开 MediaCrawler 的浏览器档案（`browser_data/dy_user_data_dir`），
+   `dy_login.py` 打开抖音登录页、截二维码，机器人发给频道主，用抖音 App 扫；二维码过期自动换新的再发（最多 5 次、6 分钟）。
+   抖音弹滑块就用 MediaCrawler 自带的滑块处理；要短信验证码就把页面截图发过去，频道主把验证码数字发给机器人，Worker 转给登录页。
+2. 登录好了：打开自己的主页，从作品列表接口认出 `sec_uid` 和昵称，连同 cookie 存进 Worker（`/dy-session`，只收 `X-Key`）。
+   Space 重启后浏览器档案没了，抓作品时 Worker 把存着的 cookie 带过去，MediaCrawler 用 cookie 登录。
+3. 「同步作品」→ MediaCrawler creator 模式**只抓登录账号自己的主页**（地址由 `sec_uid` 拼，不接受外面给的），
+   发分享链接 → detail 模式抓那几条。读 jsonl，问 Worker 哪些收过，新的送 `/dy-import`：主页同步的发一条汇总，链接抓的逐条交审核。
+4. 一次只干一件（登录 / 同步 / 抓链接），忙的时候机器人会说正在干什么。
+
+**备用：自己的 GitHub Codespaces**（会话里的 GitHub 权限建不了 Codespace，要频道主自己建）：
+一键链接 https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json ，
+`run.sh login` 在端口 6080 的网页桌面里扫码，机器人发「云电脑」拿令牌后 `run.sh setup <Worker> <令牌> <主页链接>`、`run.sh sync`。
+
+抓到的视频地址几个小时后过期：审核拖太久，流式服务下载会失败，满 3 次记成失败；再同步一次，失败的会带着新地址重新待审核。

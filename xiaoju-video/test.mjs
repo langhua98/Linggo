@@ -36,7 +36,8 @@ const files = new Map(); // file_id -> 字节
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
 const sent = { bot: [], verify: [] };
 const toStreamer = [];
-const state = { streamer: 'ok', resolve: {} };
+const state = { streamer: 'ok', resolve: {}, busy: '' };
+const jobCalls = []; // 交给流式服务的云电脑活：[路径, 请求体]
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed) & 255; return b; };
 
 function serve(bytes, range) {
@@ -89,6 +90,14 @@ globalThis.fetch = async (input, init = {}) => {
       toStreamer.push(...body.items);
       return Response.json({ ok: true });
     }
+    if (path === '/douyin/login' || path === '/douyin/crawl') {
+      jobCalls.push([path, body]);
+      return state.busy ? Response.json({ busy: state.busy }, { status: 409 }) : Response.json({ ok: true });
+    }
+    if (path === '/douyin/login/code') {
+      jobCalls.push([path, body]);
+      return state.busy === '登录抖音' ? Response.json({ ok: true }) : Response.json({ error: 'no' }, { status: 409 });
+    }
   }
   throw new Error('unexpected fetch ' + url);
 };
@@ -100,7 +109,13 @@ const env = {
 const L = await makeLibrary(env);
 env.LIB = { idFromName: () => 'id', get: () => L };
 
-const call = (path, init = {}) => worker.fetch(new Request(ORIGIN + path, init), env, { waitUntil() {} });
+// 和线上一样：响应先回，waitUntil 里的活在后台跑完；测试等它们跑完再断言
+const call = async (path, init = {}) => {
+  const pending = [];
+  const res = await worker.fetch(new Request(ORIGIN + path, init), env, { waitUntil: p => pending.push(p) });
+  await Promise.all(pending);
+  return res;
+};
 const post = (path, body, headers = {}) => call(path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 const hook = (update, verify = false) => post(verify ? '/verify-webhook' : '/tg-webhook', update, { 'X-Telegram-Bot-Api-Secret-Token': HOOK });
 const dm = (from, text) => hook({ update_id: 1, message: { message_id: 5, chat: { id: from, type: 'private' }, from: { id: from }, text } });
@@ -421,6 +436,74 @@ await test('管理接口', async () => {
   assert.equal(r.status, 200);
   assert.deepEqual((await (await call('/api/videos')).json()).videos, []);
   assert.equal((await post('/admin/api/review', { ids: [], to: 'x' }, A)).status, 400);
+});
+
+// ── 云电脑（流式服务里的 MediaCrawler）──
+const SEC = 'MS4wLjABAAAAabcdefghijklmnop';
+await test('「登录抖音」交给流式服务；忙的时候如实说', async () => {
+  jobCalls.length = 0;
+  await dm(OWNER, '登录抖音');
+  assert.deepEqual(jobCalls, [['/douyin/login', { chat_id: OWNER }]]);
+  assert.match(last('bot').text, /二维码大约半分钟后发过来/);
+  state.busy = '同步作品';
+  await dm(OWNER, '登录抖音');
+  assert.match(last('bot').text, /正在「同步作品」/);
+  state.busy = '';
+  state.streamer = 'down';
+  await dm(OWNER, '登录抖音');
+  assert.match(last('bot').text, /没响应/);
+  state.streamer = 'ok';
+});
+
+await test('纯数字转给登录页当验证码', async () => {
+  jobCalls.length = 0;
+  state.busy = '登录抖音';
+  await dm(OWNER, '123456');
+  assert.deepEqual(jobCalls, [['/douyin/login/code', { code: '123456' }]]);
+  assert.match(last('bot').text, /验证码已经填进/);
+  state.busy = '';
+  await dm(OWNER, '654321');
+  assert.match(last('bot').text, /没有在等验证码/);
+});
+
+await test('/dy-session 只收流式服务的', async () => {
+  const body = { cookies: [{ name: 'sessionid', value: 's', domain: '.douyin.com' }, { bad: 1 }], sec_uid: SEC, nickname: '小橘' };
+  assert.equal((await post('/dy-session', body, { 'X-Token': token })).status, 403);
+  assert.equal((await post('/dy-session', { ...body, sec_uid: 'self' }, { 'X-Key': SKEY })).status, 400);
+  assert.equal((await post('/dy-session', body, { 'X-Key': SKEY })).status, 200);
+  const saved = JSON.parse(await L.getConfig('dySession'));
+  assert.deepEqual(saved.cookies, [{ name: 'sessionid', value: 's', domain: '.douyin.com' }]);
+  await dm(OWNER, '进度');
+  assert.match(last('bot').text, /抖音账号：小橘/);
+});
+
+await test('「同步作品」带着登录状态交给流式服务；链接也交给它抓', async () => {
+  jobCalls.length = 0;
+  await dm(OWNER, '同步作品');
+  assert.equal(jobCalls[0][0], '/douyin/crawl');
+  assert.equal(jobCalls[0][1].mode, 'creator');
+  assert.equal(jobCalls[0][1].chat_id, OWNER);
+  assert.equal(jobCalls[0][1].session.sec_uid, SEC);
+  await dm(OWNER, '看看 https://v.douyin.com/new1/ 和 https://v.douyin.com/new2/');
+  assert.deepEqual(jobCalls[1][1].targets, ['https://v.douyin.com/new1/', 'https://v.douyin.com/new2/']);
+  assert.equal(jobCalls[1][1].mode, 'detail');
+});
+
+await test('流式服务送来链接抓的作品：逐条交审核；主页同步的发汇总', async () => {
+  reset();
+  const K = { 'X-Key': SKEY };
+  let r = await post('/dy-import', { src: 'link', items: [{ aweme: '7300000000000000201', type: 'video', desc: '链接作品', video_url: 'https://cdn.example/201.mp4' }] }, K);
+  assert.equal((await r.json()).added, 1);
+  assert.equal(sent.verify.length, 1);
+  assert.match(sent.verify[0].text, /私聊链接/);
+  assert.deepEqual(sent.verify[0].reply_markup.inline_keyboard[0].map(b => b.callback_data), ['ok:7300000000000000201', 'no:7300000000000000201']);
+  reset();
+  r = await post('/dy-import', { src: 'cloud', items: [{ aweme: '7300000000000000202', type: 'video', video_url: 'https://cdn.example/202.mp4' }] }, K);
+  assert.match(sent.verify[0].text, /新同步来 1 条/);
+  // Codespaces 的令牌送不了 link：一律当主页同步
+  reset();
+  await post('/dy-import', { src: 'link', items: [{ aweme: '7300000000000000203', type: 'video', video_url: 'https://cdn.example/203.mp4' }] }, { 'X-Token': token });
+  assert.match(sent.verify[0].text, /新同步来 1 条/);
 });
 
 await test('网页', async () => {

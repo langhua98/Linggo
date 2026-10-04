@@ -15,13 +15,21 @@ pinned: false
 | 接口 | 作用 |
 |---|---|
 | `GET /` | 健康检查：机器人、频道主账号是否登录，频道名，转作品队列 |
-| `POST /douyin/resolve` `{url}` | 认抖音分享链接，返回作品信息（不登录的分享页 `iesdouyin.com/share/...` 里解析） |
+| `POST /douyin/login` `{chat_id}` | 云电脑：扫码登录抖音（`dy_login.py`），二维码、验证截图由机器人发给 `chat_id`；登录好了 cookie 和 `sec_uid` 存进 Worker `/dy-session` |
+| `POST /douyin/login/code` `{code}` | 抖音要短信验证码时，把频道主发给机器人的验证码交给登录页 |
+| `POST /douyin/crawl` `{chat_id, session, mode, targets}` | 云电脑：MediaCrawler 抓作品（`creator` 只抓 `session.sec_uid` 那个主页，`detail` 抓 `targets` 里的链接），新的送 Worker `/dy-import` |
+| `GET /douyin/jobs` | 云电脑正在干什么（一次只干一件，忙时上面两个接口回 409） |
+| `POST /douyin/resolve` `{url}` | 不登录的分享页解析（备用；海外机房拿不到作品数据） |
 | `POST /douyin/post` `{items}` | 审核通过的作品排进队列：下载 → ffmpeg 挪 moov（不重编码）→ 用频道主账号发进视频频道，说明里带 `#dy<作品号>`；每条转完 POST Worker `/streamer-done` |
 | `GET /douyin/status` | 队列状态 |
 | `GET /stream/<消息号>` | 超过 20 MB 的视频按 Range 走 MTProto 现取现传 |
 | `GET /thumb/<消息号>` | 视频自带的封面 |
 
 除 `/` 外都要 `X-Key` 请求头（= `STREAMER_KEY`）。
+
+镜像里另装了 MediaCrawler（`/opt/MediaCrawler`，自己的 venv `/opt/mc-venv`，固定版本见 `mc.py` 的 `MC_REV`）、
+Playwright Chromium、Node（它算抖音接口签名）、Xvfb（有界面的浏览器跑在虚拟屏幕上）、中文字体。
+起子进程时不把 Telegram、Worker 的密钥传给它们。
 
 刚起来时 POST Worker 的 `/streamer-up` 报到，Worker 把之前交过来、还没转完的作品再交一次（Space 重启、休眠后队列就丢了）。
 防重复发：这次运行里发过的作品直接报回那条消息号；重启后靠 Worker 的作品状态（已转的不会再交过来）。
@@ -46,5 +54,5 @@ pinned: false
 
 ```bash
 pip install -r requirements.txt pytest
-python -m pytest -q
+python -m pytest -q        # 不用装 MediaCrawler：子进程、Telegram、Worker 都是假的
 ```

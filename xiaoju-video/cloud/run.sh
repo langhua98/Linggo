@@ -12,21 +12,15 @@ HOME_DIR="$HOME/.xiaoju-video"
 MC="$HOME_DIR/MediaCrawler"
 # 固定在验证过的版本，上游改了接口不会突然坏掉；要升级改这里
 MC_REPO=https://github.com/NanmiCoder/MediaCrawler.git
-MC_REV=bf28178
+MC_REV=bf28178082bc69989954f65a13a17bc129b9aa6e   # 和 streamer/mc.py、Dockerfile 一致
 
 install() {
   mkdir -p "$HOME_DIR"
   command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; }
   if [ ! -d "$MC/.git" ]; then git clone -q "$MC_REPO" "$MC"; fi
   git -C "$MC" fetch -q origin && git -C "$MC" checkout -q "$MC_REV"
-  # 不连本机 Chrome（CDP），用 Playwright 自带的 Chromium；不抓评论
-  python3 - "$MC/config/base_config.py" <<'PY'
-import re, sys
-p = sys.argv[1]; s = open(p, encoding='utf-8').read()
-for k, v in {'ENABLE_CDP_MODE': 'False', 'HEADLESS': 'False', 'ENABLE_GET_COMMENTS': 'False', 'SAVE_LOGIN_STATE': 'True'}.items():
-    s = re.sub(rf'^{k} = .*$', f'{k} = {v}', s, flags=re.M)
-open(p, 'w', encoding='utf-8').write(s)
-PY
+  # 不连本机 Chrome（CDP），用 Playwright 自带的 Chromium；不抓评论（和流式服务共用一份补丁）
+  python3 "$HERE/../streamer/mc_patch.py" "$MC/config/base_config.py"
   (cd "$MC" && uv sync && uv run playwright install --with-deps chromium)
 }
 
