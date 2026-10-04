@@ -255,6 +255,66 @@ def debug(what, **kw):
          popups=[x for x in TRACE['popups'] if x['t'] >= since], **kw)
 
 
+# 抖音的验证组件不理「瞬移过去一点」的点击：一种点不动就换下一种，点完看弹窗里的字变没变
+CLICK_JS = r"""
+([x, y, how]) => {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return false;
+  const item = el.closest('[class*=list_item]') || el;
+  if (how === 'js') { item.click(); return true; }
+  if (how === 'events') {
+    const o = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window, button: 0, buttons: 1, pointerType: 'mouse', isPrimary: true };
+    for (const [T, t] of [[PointerEvent, 'pointerover'], [MouseEvent, 'mouseover'], [PointerEvent, 'pointerenter'], [MouseEvent, 'mouseenter'],
+                          [PointerEvent, 'pointermove'], [MouseEvent, 'mousemove'], [PointerEvent, 'pointerdown'], [MouseEvent, 'mousedown'],
+                          [PointerEvent, 'pointerup'], [MouseEvent, 'mouseup'], [MouseEvent, 'click']])
+      el.dispatchEvent(new T(t, o));
+    return true;
+  }
+  if (how === 'focus') { item.setAttribute('tabindex', '0'); item.focus(); return true; }
+  return false;
+}
+"""
+
+
+async def human_click(page, x, y):
+    """像人一样：窗口切到前台，鼠标分几步挪过去、停一下、按下、停一下、松开"""
+    await page.bring_to_front()
+    await page.mouse.move(x - 120, y + 60)
+    await page.mouse.move(x, y, steps=12)
+    await asyncio.sleep(0.3)
+    await page.mouse.down()
+    await asyncio.sleep(0.12)
+    await page.mouse.up()
+
+
+async def click_hard(page, pos, before):
+    """一种种试，返回点动了的那种的名字；都不行返回空"""
+    x, y = pos['x'], pos['y']
+    for how in ('human', 'js', 'events', 'focus'):
+        try:
+            if how == 'human':
+                await human_click(page, x, y)
+            else:
+                await page.evaluate(CLICK_JS, [x, y, how])
+                if how == 'focus':
+                    await page.keyboard.press('Enter')
+        except Exception:  # noqa: BLE001
+            continue
+        for _ in range(6):
+            await asyncio.sleep(0.5)
+            if await dialog_text(page) != before or await find_qr(page):
+                LAST_CLICK['worked'] = how
+                return how
+        try:  # 这种没点动：再取一次坐标（列表可能挪了）
+            p2 = await page.evaluate(OPTIONS_JS, pos['text'])
+            if p2:
+                x, y = p2['x'], p2['y']
+        except Exception:  # noqa: BLE001
+            pass
+    LAST_CLICK['worked'] = ''
+    return ''
+
+
 async def click_option(page, text):
     """点弹窗里的一个选项：找到那张能点的卡片，滚到看得见，拿真鼠标点它正中间。返回点中的那项的字，没找到返回空"""
     try:
@@ -267,7 +327,8 @@ async def click_option(page, text):
         except Exception:  # noqa: BLE001
             hit = None
         LAST_CLICK.update(pos=pos, hit=hit)
-        await page.mouse.click(pos['x'], pos['y'])
+        await asyncio.sleep(0.4)  # 滚动停稳
+        await click_hard(page, pos, await dialog_text(page))
         return pos['text']
     try:  # 退回：按字找看得见的那一处点
         await page.get_by_text(text, exact=True).filter(visible=True).first.click(timeout=3000)
