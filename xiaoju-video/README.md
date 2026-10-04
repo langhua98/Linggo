@@ -117,7 +117,9 @@ done
 
 1. 小橘视频机器人里发「登录抖音」→ 流式服务用 `xvfb-run` 在虚拟屏幕上开 MediaCrawler 的浏览器档案（`browser_data/dy_user_data_dir`），
    `dy_login.py` 打开抖音登录页、截二维码，机器人发给频道主，用抖音 App 扫；二维码过期自动换新的再发（最多 5 次、6 分钟）。
-   抖音弹滑块就用 MediaCrawler 自带的滑块处理；要短信验证码就把页面截图发过去，频道主把验证码数字发给机器人，Worker 转给登录页。
+   抖音弹滑块就用 MediaCrawler 自带的滑块处理。扫码后要二次验证时，把整页截图和弹窗里能点的选项发过去（机器人键盘临时换成这些按钮），
+   频道主点「刷脸验证」就把刷脸用的二维码单独截下来发过去，用抖音 App 扫、在手机上刷脸；选短信就把验证码数字发给机器人。
+   登录进行中（发起后 15 分钟内）频道主发的别的话，Worker 都先交给登录页（`/douyin/login/input`）；「截图」「取消登录」随时可用。
 2. 登录好了：打开自己的主页，从作品列表接口认出 `sec_uid` 和昵称，连同 cookie 存进 Worker（`/dy-session`，只收 `X-Key`）。
    Space 重启后浏览器档案没了，抓作品时 Worker 把存着的 cookie 带过去，MediaCrawler 用 cookie 登录。
 3. 「同步作品」→ MediaCrawler creator 模式**只抓登录账号自己的主页**（地址由 `sec_uid` 拼，不接受外面给的），

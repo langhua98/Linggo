@@ -26,14 +26,17 @@ from mc import cookie_header, items_from, mc_args, read_rows
 log = logging.getLogger('jobs')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOGIN_TIMEOUT = 8 * 60
+LOGIN_TIMEOUT = 12 * 60
 CRAWL_TIMEOUT = 60 * 60
 SEC_UID = re.compile(r'^MS4wLjABAAAA[\w-]{10,200}$')
 DETAIL = re.compile(r'^(?:https://(?:v\.|www\.|m\.)?douyin\.com/\S{1,300}|\d{6,25})$')
 
 QR_TEXT = ('用抖音 App 扫这个二维码登录你自己的账号（首页左上角「≡」或「我」→ 右上角扫一扫）。'
            '二维码一两分钟会失效，失效了我会再发新的。')
-VERIFY_TEXT = '抖音要再验证一次（{word}，见截图）。收到短信验证码后，直接把验证码数字发给我。'
+VERIFY_TEXT = ('抖音要再验证一次（{word}，见截图）。点下面的按钮选验证方式：选刷脸的话，我把刷脸用的二维码发过来，'
+               '你用抖音 App 扫、在手机上刷脸；选短信的话，收到验证码后直接把数字发给我。')
+VERIFY_QR_TEXT = '用抖音 App 扫这个二维码，在手机上完成刷脸验证。过期了再点一次「{text}」。'
+EXTRA_BUTTONS = ['截图', '取消登录']
 
 
 class Busy(Exception):
@@ -114,7 +117,7 @@ class Jobs:
                 await work()
             except Exception as e:  # noqa: BLE001 — 告诉频道主，别让任务悄悄死掉
                 log.exception('%s failed', kind)
-                self._say(chat_id, f'{kind}出错了：{type(e).__name__}: {str(e)[:300]}')
+                self._say(chat_id, f'{kind}出错了：{type(e).__name__}: {str(e)[:300]}', menu=True)
             finally:
                 proc = self.current and self.current.get('proc')
                 if proc:
@@ -123,21 +126,27 @@ class Jobs:
 
         self.task = asyncio.create_task(runner())
 
-    def _say(self, chat_id, text, png=None):
-        """给频道主的话（png 是 base64 的截图）：Worker 取走后由小橘视频机器人发"""
-        self.emit('say', chat_id=chat_id, text=text, png=png or None)
+    def _say(self, chat_id, text, png=None, buttons=None, menu=False):
+        """给频道主的话（png 是 base64 的截图）：Worker 取走后由小橘视频机器人发。
+        buttons：机器人键盘上临时换成这几个按钮（点了就把字发回来）；menu：换回平时的菜单键盘"""
+        self.emit('say', chat_id=chat_id, text=text, png=png or None, buttons=buttons or None, menu=menu)
 
     # ── 登录 ──
 
     def login(self, chat_id):
         self._start('登录抖音', chat_id, lambda: asyncio.wait_for(self._login(chat_id), LOGIN_TIMEOUT))
 
-    def code(self, code):
-        """频道主发来的短信验证码交给登录页；没有在等验证码的登录返回 False"""
+    def input(self, text):
+        """登录进行中频道主发来的话交给登录页（验证码、选哪种验证、截图）；「取消登录」就停掉。没有在登录返回 False"""
         c = self.current
         if not c or c['kind'] != '登录抖音' or not c.get('proc'):
             return False
-        c['proc'].write(re.sub(r'\D', '', code) + '\n')
+        text = re.sub(r'[\r\n]+', ' ', str(text or '')).strip()[:40]
+        if text == '取消登录':
+            c['cancelled'] = True
+            c['proc'].kill()
+        elif text:
+            c['proc'].write(text + '\n')
         return True
 
     async def _login(self, chat_id):
@@ -153,27 +162,34 @@ class Jobs:
                 continue
             png = ev.get('png') or None
             kind = ev['event']
+            opts = [str(o)[:20] for o in (ev.get('options') or []) if o][:6]
             if kind == 'qr':
                 self._say(chat_id, QR_TEXT, png)
             elif kind == 'verify':
-                self._say(chat_id, VERIFY_TEXT.format(word=ev.get('text') or '验证'), png)
+                self._say(chat_id, VERIFY_TEXT.format(word=ev.get('text') or '验证'), png, buttons=opts + EXTRA_BUTTONS)
+            elif kind == 'verify_qr':
+                self._say(chat_id, VERIFY_QR_TEXT.format(text=ev.get('text') or '刷脸验证'), png)
+            elif kind == 'shot':
+                self._say(chat_id, '抖音登录页现在的样子：', png, buttons=opts + EXTRA_BUTTONS)
             elif kind == 'status':
                 self._say(chat_id, ev.get('text') or '')
             elif kind == 'ok':
                 if not SEC_UID.match(ev.get('sec_uid') or ''):
-                    self._say(chat_id, '登录好了，但认出来的账号号码不对，没存。再发一次「登录抖音」试试。')
+                    self._say(chat_id, '登录好了，但认出来的账号号码不对，没存。再发一次「登录抖音」试试。', menu=True)
                 else:
                     self.emit('session', cookies=ev.get('cookies') or [], sec_uid=ev['sec_uid'],
                               nickname=ev.get('nickname') or '')
                     self._say(chat_id, f'✓ 抖音登录好了：{ev.get("nickname") or ev["sec_uid"]}。'
-                                       '发「同步作品」就开始抓你主页的全部作品。')
+                                       '发「同步作品」就开始抓你主页的全部作品。', menu=True)
                 finished = True
             elif kind == 'error':
-                self._say(chat_id, '抖音登录没成功：' + (ev.get('text') or ''), png)
+                self._say(chat_id, '抖音登录没成功：' + (ev.get('text') or ''), png, menu=True)
                 finished = True
         code = await proc.wait()
-        if not finished:
-            self._say(chat_id, f'抖音登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail))
+        if self.current and self.current.get('cancelled'):
+            self._say(chat_id, '好，不登录了。', menu=True)
+        elif not finished:
+            self._say(chat_id, f'抖音登录页意外退出了（退出码 {code}）。最后几行：\n' + '\n'.join(tail), menu=True)
 
     # ── 抓作品 ──
 

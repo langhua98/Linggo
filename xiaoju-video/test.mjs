@@ -108,7 +108,7 @@ globalThis.fetch = async (input, init = {}) => {
       jobCalls.push([path, body]);
       return state.busy ? Response.json({ busy: state.busy }, { status: 409 }) : Response.json({ ok: true });
     }
-    if (path === '/douyin/login/code') {
+    if (path === '/douyin/login/input') {
       jobCalls.push([path, body]);
       return state.busy === '登录抖音' ? Response.json({ ok: true }) : Response.json({ error: 'no' }, { status: 409 });
     }
@@ -469,15 +469,25 @@ await test('「登录抖音」交给流式服务；忙的时候如实说', async
   state.streamer = 'ok';
 });
 
-await test('纯数字转给登录页当验证码', async () => {
+await test('登录进行中：验证码、验证方式、截图都转给登录页；没在登录就照常说没看懂', async () => {
   jobCalls.length = 0;
   state.busy = '登录抖音';
   await dm(OWNER, '123456');
-  assert.deepEqual(jobCalls, [['/douyin/login/code', { code: '123456' }]]);
-  assert.match(last('bot').text, /验证码已经填进/);
+  await dm(OWNER, '刷脸验证');
+  assert.deepEqual(jobCalls, [['/douyin/login/input', { text: '123456' }], ['/douyin/login/input', { text: '刷脸验证' }]]);
+  assert.match(last('bot').text, /已经交给抖音登录页/);
+  reset();
+  await dm(OWNER, '取消登录');
+  assert.equal(sent.bot.length, 0); // 流式服务自己会说「好，不登录了」
   state.busy = '';
   await dm(OWNER, '654321');
-  assert.match(last('bot').text, /没有在等验证码/);
+  assert.match(last('bot').text, /没看懂/);
+  // 发起登录超过 15 分钟：不再去问登录页
+  jobCalls.length = 0;
+  await L.setConfig('jobAt', String(Date.now() - 16 * 60 * 1000));
+  await dm(OWNER, '刷脸验证');
+  assert.deepEqual(jobCalls, []);
+  await L.setConfig('jobAt', String(Date.now()));
 });
 
 await test('/dy-session 只收流式服务的', async () => {
@@ -630,6 +640,21 @@ await test('管理接口：替频道主发起抖音登录、开始轮询', async
   assert.equal((await post('/admin/api/poll', {}, A)).status, 200);
   assert.ok(libStorage.alarm > 0);
   assert.equal((await post('/admin/api/douyin-login', {}, {})).status, 403);
+});
+
+await test('带按钮的话：键盘临时换成登录页的选项；登录结束换回菜单', async () => {
+  reset();
+  const png = Buffer.from('SHOT').toString('base64');
+  state.outbox = { boot: 'B2', busy: false, events: [
+    { seq: 2, kind: 'say', chat_id: OWNER, text: '要验证', png, buttons: ['刷脸验证', '短信验证', '截图', '取消登录'] },
+    { seq: 3, kind: 'say', chat_id: OWNER, text: '登录好了', png: null, buttons: null, menu: true },
+  ] };
+  await L.alarm();
+  const photo = sent.bot.find(m => m.method === 'sendPhoto');
+  assert.deepEqual(JSON.parse(photo.reply_markup).keyboard, [[{ text: '刷脸验证' }, { text: '短信验证' }], [{ text: '截图' }, { text: '取消登录' }]]);
+  assert.equal(JSON.parse(photo.reply_markup).one_time_keyboard, true);
+  const done = sent.bot.find(m => m.text === '登录好了');
+  assert.deepEqual(done.reply_markup.keyboard[0].map(b => b.text), ['登录抖音', '同步作品']);
 });
 
 await test('网页', async () => {

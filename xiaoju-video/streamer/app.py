@@ -488,12 +488,13 @@ async def douyin_login(request: Request):
     return {'ok': True}
 
 
-@app.post('/douyin/login/code')
-async def douyin_login_code(request: Request):
+@app.post('/douyin/login/input')
+async def douyin_login_input(request: Request):
+    """登录进行中频道主发来的话（短信验证码、选哪种验证、截图、取消登录），交给登录页"""
     check_key(request)
     body = await request.json()
-    if not jobs.code(str(body.get('code', ''))):
-        return JSONResponse({'error': 'no login waiting for a code'}, status_code=409)
+    if not jobs.input(str(body.get('text', ''))):
+        return JSONResponse({'error': 'no login running'}, status_code=409)
     return {'ok': True}
 
 

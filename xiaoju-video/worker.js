@@ -52,6 +52,8 @@ const POLL_WAIT_S = 20;
 const POLL_WINDOW_MS = 12 * 60 * 1000;
 // 交给流式服务的活（登录、抓作品）这么久以内，定时任务还会去问它
 const JOB_RECENT_MS = 2 * 3600 * 1000;
+// 发起登录后这么久以内，频道主发来认不出的话都先问问登录页要不要（验证码、选验证方式……）
+const LOGIN_INPUT_MS = 15 * 60 * 1000;
 
 const MSG = {
   unavailable: 'Telegram 暂时取不到这个视频，请稍后再试',
@@ -202,7 +204,8 @@ function toRecord(post) {
 
 const HELP = `我是小橘视频的管理助手 🍊
 
-• 登录抖音：云电脑打开抖音登录页，把二维码发给你，用抖音 App 扫一下就行（抖音要短信验证码时，直接把验证码数字发给我）
+• 登录抖音：云电脑打开抖音登录页，把二维码发给你，用抖音 App 扫一下就行。抖音要再验证时，我把页面截图和能选的验证方式发给你：
+  点「刷脸验证」我就把刷脸用的二维码发过来；选短信就把验证码数字发给我；「截图」看页面现在的样子；「取消登录」不登了
 • 同步作品：云电脑（MediaCrawler）抓你登录账号自己主页的全部作品，新的交审核机器人 @xiaojuverify_bot
 • 直接发抖音分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
 • 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
@@ -266,16 +269,19 @@ async function botUpdate(env, update, origin, ctx) {
     if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
     return await startCrawl(env, chat, { mode: 'creator', session });
   }
-  // 纯数字：抖音登录要的短信验证码
-  if (/^\d{4,8}$/.test(t)) {
-    const r = await streamerCall(env, '/douyin/login/code', { code: t }).catch(() => null);
-    return await say(env, chat, r && r.status === 200 ? '验证码已经填进抖音登录页，等结果…' : '现在没有在等验证码的抖音登录。');
-  }
   if (t === '重试失败' || t === '/retry') {
     const n = await lib(env).retryFailed();
     await say(env, chat, n ? `已把 ${n} 条失败的作品重新排队` : '没有失败的作品');
     if (n) await dispatch(env);
     return;
+  }
+  // 抖音登录进行中：别的话（短信验证码、选哪种验证、截图、取消登录）都交给登录页
+  if (t && t.length <= 40 && streamerOn(env) && Date.now() - (Number(await lib(env).getConfig('jobAt')) || 0) < LOGIN_INPUT_MS) {
+    const r = await streamerCall(env, '/douyin/login/input', { text: t }).catch(() => null);
+    if (r && r.status === 200) {
+      if (t !== '取消登录') await say(env, chat, '已经交给抖音登录页，等它的回音…');
+      return;
+    }
   }
   await say(env, chat, '没看懂。发抖音分享链接，或者点下面的按钮。', { reply_markup: OWNER_KEYBOARD });
 }
@@ -561,11 +567,14 @@ async function itemDone(env, body) {
 }
 
 // 流式服务要发给频道主的二维码、验证截图、进度（Hugging Face 的机房连不上 api.telegram.org，由这里代发）。只发给频道主；
-// 返回 'ok' 或出错原因
-async function sendToOwner(env, chatId, text, png) {
+// buttons：机器人键盘临时换成这几个按钮（抖音登录页上能点的选项，点了就把字发回来）；menu：换回平时的菜单。返回 'ok' 或出错原因
+async function sendToOwner(env, chatId, text, png, opts = {}) {
   const owner = await ownerId(env);
   const chat = Number(chatId);
   if (!owner || chat !== owner) return 'only the owner';
+  const buttons = (Array.isArray(opts.buttons) ? opts.buttons : []).map(b => String(b).slice(0, 20)).filter(Boolean).slice(0, 8);
+  const markup = buttons.length ? { keyboard: rows(buttons.map(text => ({ text })), 2), resize_keyboard: true, one_time_keyboard: true }
+    : opts.menu ? OWNER_KEYBOARD : null;
   let res;
   if (png) {
     const bytes = fromBase64(String(png));
@@ -573,12 +582,19 @@ async function sendToOwner(env, chatId, text, png) {
     const form = new FormData();
     form.append('chat_id', String(chat));
     form.append('caption', String(text || '').slice(0, 1000));
+    if (markup) form.append('reply_markup', JSON.stringify(markup));
     form.append('photo', new Blob([bytes], { type: 'image/png' }), 'douyin.png');
     res = await fetch(`${TG}/bot${env.TG_BOT_TOKEN}/sendPhoto`, { method: 'POST', body: form }).then(r => r.json()).catch(() => ({}));
   } else {
-    res = await say(env, chat, String(text || '').slice(0, 4000) || '…');
+    res = await say(env, chat, String(text || '').slice(0, 4000) || '…', markup ? { reply_markup: markup } : undefined);
   }
   return res.ok ? 'ok' : 'telegram failed';
+}
+
+function rows(buttons, per) {
+  const out = [];
+  for (let i = 0; i < buttons.length; i += per) out.push(buttons.slice(i, i + per));
+  return out;
 }
 
 // 抖音登录状态（流式服务登录成功后给的 cookie、sec_uid、昵称）；返回出错原因，存好了返回 ''
@@ -655,7 +671,7 @@ async function handleEvent(env, ev) {
   if (ev.kind === 'done') {
     if (/^\d{6,25}$/.test(String(ev.aweme || ''))) await itemDone(env, ev);
   } else if (ev.kind === 'say') {
-    await sendToOwner(env, ev.chat_id, ev.text, ev.png);
+    await sendToOwner(env, ev.chat_id, ev.text, ev.png, { buttons: ev.buttons, menu: ev.menu });
   } else if (ev.kind === 'session') {
     await saveSession(env, ev);
   } else if (ev.kind === 'progress') {

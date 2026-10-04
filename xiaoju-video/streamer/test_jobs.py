@@ -8,7 +8,7 @@ import os
 import pytest
 
 import jobs as J
-from dy_login import nickname_from_title, sec_uid_from_url
+from dy_login import nickname_from_title, sec_uid_from_url, sms_code
 
 SEC = 'MS4wLjABAAAAabcdefghijklmnop'
 PNG = base64.b64encode(b'\x89PNG fake').decode()
@@ -56,6 +56,7 @@ class World:
 
     def __init__(self):
         self.said = []
+        self.says = []  # say 的全部字段（按钮、换回菜单）
         self.calls = []
         self.spawned = []
         self.procs = []
@@ -63,6 +64,7 @@ class World:
     def emit(self, kind, **data):
         if kind == 'say':
             self.said.append((data['chat_id'], data['text'], data['png']))
+            self.says.append(data)
         else:
             self.calls.append((kind, data))
 
@@ -100,18 +102,19 @@ def test_login_qr_verify_code_ok():
             j.login(777)
         for _ in range(50):
             await asyncio.sleep(0)
-        assert j.code('12 34-56')
+        assert j.input('12 34-56')
         await settle(j)
         argv, cwd = w.spawned[0]
         assert argv[:2] == ['xvfb-run', '-a'] and argv[2] == '/venv/python' and argv[3].endswith('dy_login.py')
         assert cwd == '/mc'
-        assert w.procs[0].written == ['123456\n']
+        assert w.procs[0].written == ['12 34-56\n']  # 原样交给登录页，它认验证码
         assert [png for _, _, png in w.said[:3]] == [PNG, PNG, PNG]
         assert '扫这个二维码' in w.said[0][1] and '身份验证' in w.said[2][1]
         assert w.calls == [('session', {'cookies': [{'name': 'sessionid', 'value': 's', 'domain': '.douyin.com'}],
                                         'sec_uid': SEC, 'nickname': '小橘'})]
-        assert '登录好了：小橘' in w.said[-1][1]
-        assert j.current is None and not j.code('1')
+        assert '登录好了：小橘' in w.said[-1][1] and w.says[-1]['menu'] is True
+        assert w.says[2]['buttons'] == ['截图', '取消登录']  # 没认出选项也能截图、取消
+        assert j.current is None and not j.input('1')
     asyncio.run(go())
 
 
@@ -209,6 +212,7 @@ def test_parse_event_and_login_helpers():
     assert sec_uid_from_url(f'https://www.douyin.com/aweme/v1/web/aweme/post/?device_platform=webapp&sec_user_id={SEC}&count=18') == SEC
     assert sec_uid_from_url('https://www.douyin.com/aweme/v1/web/aweme/post/?sec_user_id=self') == ''
     assert nickname_from_title('小橘的抖音 - 抖音') == '小橘'
+    assert sms_code('12 34-56') == '123456' and sms_code('刷脸验证') == '' and sms_code('123') == ''
 
 
 def test_unlock_profile_removes_stale_locks(tmp_path):
@@ -244,4 +248,63 @@ def test_outbox_ack_batch_and_wait():
         o.put('done', aweme='1')
         await asyncio.wait_for(waiter, 1)  # 有新事立刻返回
         await asyncio.wait_for(Outbox().wait(0.05), 1)  # 没事等到超时
+    asyncio.run(go())
+
+
+def test_login_face_verification_buttons_and_qr():
+    async def go():
+        w = World()
+
+        def on_write(p, text):
+            if text == '刷脸验证\n':
+                p.queue.put_nowait(ev('verify_qr', text='刷脸验证', png=PNG))
+            elif text == '截图\n':
+                p.queue.put_nowait(ev('shot', options=['刷脸验证', '短信验证', '确定'], png=PNG))
+                p.queue.put_nowait(ev('ok', cookies=[], sec_uid=SEC, nickname='小橘'))
+                p.close()
+
+        j = w.jobs(lambda argv: FakeProc([
+            ev('qr', png=PNG),
+            ev('verify', text='身份验证', options=['刷脸验证', '短信验证'], png=PNG),
+        ], on_write=on_write))
+        j.login(5)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert w.says[1]['buttons'] == ['刷脸验证', '短信验证', '截图', '取消登录']
+        assert '选验证方式' in w.says[1]['text'] and w.says[1]['png'] == PNG
+        assert j.input('刷脸验证')
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert '完成刷脸验证' in w.says[2]['text'] and w.says[2]['png'] == PNG and not w.says[2]['buttons']
+        assert j.input('截图')
+        await settle(j)
+        assert w.says[3]['buttons'] == ['刷脸验证', '短信验证', '确定', '截图', '取消登录']
+        assert '登录好了' in w.says[-1]['text']
+    asyncio.run(go())
+
+
+def test_login_cancel():
+    async def go():
+        w = World()
+        procs = []
+
+        def make(argv):
+            p = FakeProc([ev('qr', png=PNG)])
+            orig = p.kill
+
+            def kill():
+                orig()
+                p.close()  # 杀掉以后输出就断了
+            p.kill = kill
+            procs.append(p)
+            return p
+
+        j = w.jobs(make)
+        j.login(5)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert j.input('取消登录')
+        await settle(j)
+        assert procs[0].killed and w.said[-1][1] == '好，不登录了。' and w.says[-1]['menu'] is True
+        assert j.current is None
     asyncio.run(go())

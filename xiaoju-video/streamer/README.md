@@ -16,7 +16,7 @@ pinned: false
 |---|---|
 | `GET /` | 健康检查：机器人、频道主账号是否登录，频道名，转作品队列 |
 | `POST /douyin/login` `{chat_id}` | 云电脑：扫码登录抖音（`dy_login.py`），二维码、验证截图由机器人发给 `chat_id`；登录好了 cookie 和 `sec_uid` 存进 Worker `/dy-session` |
-| `POST /douyin/login/code` `{code}` | 抖音要短信验证码时，把频道主发给机器人的验证码交给登录页 |
+| `POST /douyin/login/input` `{text}` | 登录进行中频道主发给机器人的话交给登录页：短信验证码、点哪个验证方式（如「刷脸验证」）、「截图」、「取消登录」 |
 | `POST /douyin/crawl` `{chat_id, session, mode, targets}` | 云电脑：MediaCrawler 抓作品（`creator` 只抓 `session.sec_uid` 那个主页，`detail` 抓 `targets` 里的链接），新的送 Worker `/dy-import` |
 | `GET /douyin/jobs` | 云电脑正在干什么（一次只干一件，忙时上面两个接口回 409） |
 | `POST /douyin/resolve` `{url}` | 不登录的分享页解析（备用；海外机房拿不到作品数据） |
@@ -50,6 +50,12 @@ Playwright Chromium、Node（它算抖音接口签名）、Xvfb（有界面的�
 | `VIDEO_CHANNEL_ID` | 视频频道的数字 id（`-100` 开头），或私有频道的邀请链接（`GET /` 会显示认出的数字 id） |
 | `STREAMER_KEY` | 和小橘视频 Worker 的 `STREAMER_KEY` 相同（视频自己的密钥，和小橘音乐的不是同一个） |
 
+## 二次验证（刷脸、短信）
+
+扫完码抖音常要再验证一次。`dy_login.py` 不事先认定页面长什么样：把整页截图和弹窗里能点的选项发给频道主（机器人键盘临时换成这些按钮，
+再加「截图」「取消登录」），他点哪个，登录页就点哪个；点了以后弹窗里出现二维码（刷脸用）就单独截下来发过去，他用抖音 App 扫、在手机上刷脸。
+选短信的话自动点「获取验证码」，他把数字发给机器人。一直盯着登录有没有成功，最多 10 分钟。
+
 ## 本地测试
 
 不联网，模拟 Telegram、抖音：
@@ -57,4 +63,6 @@ Playwright Chromium、Node（它算抖音接口签名）、Xvfb（有界面的�
 ```bash
 pip install -r requirements.txt pytest
 python -m pytest -q        # 不用装 MediaCrawler：子进程、Telegram、Worker 都是假的
+# 登录页真跑一遍（要装好 MediaCrawler 和 xvfb-run；假的抖音页：扫码 → 身份验证 → 刷脸二维码 → 登录成功）
+python smoke_login.py <MediaCrawler 目录> <MediaCrawler 的 python>
 ```
