@@ -58,6 +58,7 @@ review（待审核）──通过──▶ queued（排队）──交给流式�
 | `GET /vp/<消息号>` | 网页 | 封面，取一次就存进数据库 |
 | `POST /tg-webhook` | 小橘视频机器人 | 频道新帖登记、私聊 |
 | `POST /verify-webhook` | 审核机器人 | 审核单的两个按钮、私聊 |
+| `POST /ks-agent/poll` | 快手云电脑（X-Token） | 送事件、取快手的活和频道主的话 |
 | `POST /api/heartbreak` | 网页（要网页口令） | 💔 心碎：删掉频道原帖、拿出视频池、告诉频道主 |
 | `GET /review/<编号>` | 频道主 | 审核单整批列表（编号就是凭证，页面 noindex） |
 | `POST /dy-known` `/dy-import` `/dy-progress` | 云电脑（`X-Token`） | 哪些已收过、送作品（一次 ≤200 条）、报进度 |
@@ -157,8 +158,17 @@ done
 所有小号 + 登录账号抓一遍；云电脑在睡或在忙，这个小时里接着试。顺带每天叫醒一次 Space，免得它 48 小时没人访问就休眠。
 「自动同步 8」改时间，「自动同步 关 / 开」。
 
+**快手云电脑（频道主自己的 GitHub Codespace）**：快手按 IP 拦 Hugging Face 的机房（先弹拼图滑块，再连 www.kuaishou.com 的握手都不回；
+Space 重启换了出口 IP 有时又能连，靠不住），GitHub 的机器连得上，所以快手的登录、抓作品都在 Codespace 里跑：
+机器人里发「快手云电脑」拿令牌和步骤 → Codespace（`.devcontainer/xiaoju-video`）终端里 `bash xiaoju-video/cloud/run.sh ks <Worker> <令牌>`
+→ `cloud/ks_agent.py` 每 3 秒 `POST /ks-agent/poll`（X-Token，config `ksAgentToken`）：带上事件（和流式服务发件箱的一样，Worker 照样
+handleEvent；`done` 不收，转发只认流式服务），取走 config `ksQueue` 里的活和登录时频道主发的话（`ksInputs`）。
+干活的代码和流式服务同一份（streamer/jobs.py、ks_login.py、MediaCrawler + mc_patch.py）。60 秒没报到算没开；没开的时候快手的活排着，开了自动接着干。
+抓到的快手作品照样交流式服务下载转发（快手的视频 CDN 它连得上）。
+
 **快手**：和抖音一样走 MediaCrawler（`--platform ks`）。「登录快手」→ `streamer/ks_login.py` 打开快手首页截二维码发给频道主
-（快手 App 扫；要再验证也是截图遥控，用的是 dy_login.py 那套），登录状态存 config `ksSession`（账号号码是快手用户 id）。
+（快手 App 扫；先弹拼图滑块就自己拖：OpenCV 找缺口、按拼图块实际位置补，过不去报给频道主、页面结构记成 debug；
+要再验证也是截图遥控，用的是 dy_login.py 那套），登录状态存 config `ksSession`（账号号码是快手用户 id）。
 快手作品的号是 `ks_<快手作品号>`（和抖音的纯数字分开），作者主页 `www.kuaishou.com/profile/<id>`。
 发快手主页链接 → 快手小号（`altAccounts` 里带 `platform: 'ks'`），抓到的直接转；发快手作品链接 → 抓链接、交审核单；
 「快手搜索 关键词 数量」→ 搜索，审核单多打一个 `#快手`。快手短链接（v.kuaishou.com、/f/…）由流式服务 `/douyin/expand` 跟着跳认出来。

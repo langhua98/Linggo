@@ -93,6 +93,10 @@ export default {
         if (method !== 'POST') return text('Method Not Allowed', 405);
         return await webhook(request, env, ctx, path === '/verify-webhook');
       }
+      if (path === '/ks-agent/poll') {
+        if (method !== 'POST') return text('Method Not Allowed', 405);
+        return await ksAgentPoll(request, env);
+      }
       if (path.startsWith('/dy-')) {
         if (method !== 'POST') return text('Method Not Allowed', 405);
         return await cloudApi(request, env, ctx, path);
@@ -208,6 +212,7 @@ const HELP = `我是小橘视频的管理助手 🍊
   搜出来的也有别人的作品：审核消息里有作者和主页链接，是你小号的才通过；通过过的号会记住，下次标出来、可以一键通过
 • 登录快手 / 重新登录快手：快手扫码登录（用快手 App 扫），之后快手的小号、链接、搜索就都能用
 • 快手搜索 关键词 数量：按关键词搜快手，和抖音的「搜索」一样
+• 快手云电脑：快手的活在你自己的 GitHub Codespace 里跑（快手拦了流式服务的机房），发这个看怎么开
 • 发小号的主页链接（抖音、快手里点「分享主页」复制的链接，或者 www.douyin.com/user/…、www.kuaishou.com/profile/… 地址）：记成你的小号，
   云电脑马上抓它的全部作品，新的不用审核，直接转进视频频道
 • 小号：看加了哪些小号；「同步小号」现在把所有小号抓一遍；「删除小号 2」删第 2 个
@@ -341,11 +346,18 @@ async function botUpdate(env, update, origin, ctx) {
   const auto = /^自动同步(?:\s*(关|开|\d{1,2})点?)?$/.exec(t);
   if (auto) return await autoSyncSetting(env, chat, auto[1]);
   if (t === '网页口令' || t === '/key') return await pageLink(env, chat, origin);
+  if (t === '快手云电脑') return await ksAgentInfo(env, chat, origin);
   if (t === '心碎' || t === '心碎记录') return await say(env, chat, await trashText(env), { reply_markup: OWNER_KEYBOARD });
   if (t === '重试失败' || t === '/retry') {
     const n = await lib(env).retryFailed();
     await say(env, chat, n ? `已把 ${n} 条失败的作品重新排队` : '没有失败的作品');
     if (n) await dispatch(env);
+    return;
+  }
+  // 快手登录进行中（在快手云电脑上）：别的话都交给它的登录页
+  if (t && t.length <= 40 && /^登录快手/.test(await lib(env).getConfig('ksAgentBusy') || '') && (await ksAgentOnline(env))) {
+    await ksPush(env, 'ksInputs', t);
+    if (t !== '取消登录') await say(env, chat, '已经交给快手登录页，等它的回音…');
     return;
   }
   // 抖音登录进行中：别的话（短信验证码、选哪种验证、截图、取消登录）都交给登录页
@@ -488,6 +500,98 @@ async function submitLinks(env, chat, links) {
 }
 
 const SEARCH_MAX = 500; // 每个关键词最多搜几条（流式服务那边也是这个上限）
+
+// ── 快手云电脑：频道主自己的 GitHub Codespace ──
+// 快手拦了流式服务所在的 Hugging Face 机房（www.kuaishou.com 的握手直接不回），GitHub 的机器连得上。
+// Codespace 里跑 cloud/ks_agent.py：每隔几秒 POST /ks-agent/poll（X-Token），带上它那边的事件（话、截图、登录状态、
+// 抓到的作品……跟流式服务发件箱里的一样，照样 handleEvent），拿走给它的活（ksQueue）和登录时频道主发的话（ksInputs）。
+// 抓到的快手作品还是交流式服务转发进频道。
+
+const KS_AGENT_ONLINE_MS = 60 * 1000;
+
+async function ksAgentOnline(env) {
+  return Date.now() - (Number(await lib(env).getConfig('ksAgentAt')) || 0) < KS_AGENT_ONLINE_MS;
+}
+
+async function ksPush(env, key, value, max = 20) {
+  const L = lib(env);
+  const list = JSON.parse((await L.getConfig(key)) || '[]');
+  list.push(value);
+  await L.setConfig(key, JSON.stringify(list.slice(-max)));
+  return list.length;
+}
+
+async function ksAgentJob(env, chat, job, okText) {
+  const n = await ksPush(env, 'ksQueue', { ...job, chat });
+  if (!chat) return;
+  if (await ksAgentOnline(env)) {
+    const busy = await lib(env).getConfig('ksAgentBusy');
+    await say(env, chat, busy ? `快手云电脑正在「${busy}」，这件排上队了（队里 ${n} 件），轮到了自动开始。` : okText || '交给快手云电脑了，马上开始。');
+  } else {
+    await say(env, chat, `快手云电脑（你的 GitHub Codespace）现在没开，这件先排着（队里 ${n} 件）。开起来就自动开始——发「快手云电脑」看怎么开。`);
+  }
+}
+
+async function ksAgentInfo(env, chat, origin) {
+  const token = randomToken();
+  await lib(env).setConfig('ksAgentToken', token);
+  await say(env, chat, `快手云电脑 = 你自己的 GitHub Codespace（快手拦了流式服务的机房，GitHub 的机器连得上）。
+
+1. 打开 https://codespaces.new/langhua98/Linggo?devcontainer_path=.devcontainer/xiaoju-video/devcontainer.json ，点「Create codespace」。第一次要装几分钟。
+2. 装好后在下面的终端里粘贴（新令牌，旧的作废了）：
+bash xiaoju-video/cloud/run.sh ks ${origin} ${token}
+3. 看到「快手云电脑开着了」就行，终端别关。排着的快手的活会自动开始。
+
+Codespace 没人操作 30 分钟会自己停：GitHub 头像 → Settings → Codespaces → Default idle timeout 改成 240 分钟。停了以后要用再打开，再跑第 2 步那行（令牌不变）。
+令牌只发这一次，别给别人。`, { reply_markup: OWNER_KEYBOARD });
+}
+
+async function ksAgentPoll(request, env) {
+  const L = lib(env);
+  const want = await L.getConfig('ksAgentToken');
+  if (!want || !sameString(request.headers.get('X-Token') || '', want)) return json({ error: 'forbidden' }, 403);
+  const body = await request.json().catch(() => ({}));
+  const wasOnline = await ksAgentOnline(env);
+  const busy = String(body.busy || '').slice(0, 40);
+  await L.setConfig('ksAgentAt', String(Date.now()));
+  await L.setConfig('ksAgentBusy', busy);
+  for (const ev of (Array.isArray(body.events) ? body.events : []).slice(0, 200)) {
+    if (!ev || typeof ev !== 'object') continue;
+    if (ev.kind === 'done') continue; // 快手云电脑不转发，转发是流式服务的事
+    if (ev.kind === 'session') ev.platform = 'ks'; // 这里来的登录状态只能是快手的
+    try {
+      await handleEvent(env, ev);
+    } catch {
+      // 一条出错不卡住后面的
+    }
+  }
+  const owner = await ownerId(env);
+  if (!wasOnline && owner && body.hello) await say(env, owner, '✓ 快手云电脑开着了。');
+  const out = { jobs: [], inputs: JSON.parse((await L.getConfig('ksInputs')) || '[]') };
+  if (out.inputs.length) await L.setConfig('ksInputs', '[]');
+  const queue = JSON.parse((await L.getConfig('ksQueue')) || '[]');
+  if (!busy && queue.length) {
+    const job = queue.shift();
+    await L.setConfig('ksQueue', JSON.stringify(queue));
+    if (job.type === 'crawl') {
+      const session = await getSession(env, 'ks');
+      if (!session) {
+        if (job.chat) await say(env, job.chat, '快手还没登录：先发「登录快手」。');
+      } else {
+        out.jobs.push({ ...job, session });
+      }
+    } else {
+      await L.setConfig('ksInputs', '[]');
+      out.jobs.push(job);
+    }
+    // 交出去了就算它在忙（名字和 jobs.py 里的一样），不等它下次报到
+    if (out.jobs.length) {
+      const label = job.type === 'login' ? '登录快手' : '快手' + ({ accounts: '同步小号', search: '搜索' }[job.mode] || '抓链接');
+      await L.setConfig('ksAgentBusy', label);
+    }
+  }
+  return json(out);
+}
 
 // 两个平台：抖音作品号是纯数字，快手的是 ks_<快手作品号>；账号号码抖音是 sec_uid，快手是用户 id
 const SEC_RE = /^MS4wLjABAAAA[\w-]{10,200}$/;
@@ -635,9 +739,10 @@ async function maybeAutoSync(env, now = Date.now()) {
     jobs.push({ chat: owner, mode: 'accounts', platform: 'dy', targets });
   }
   const ksAlts = alts.filter(x => x.platform === 'ks').map(x => x.sec);
-  if (ksAlts.length && (await getSession(env, 'ks'))) jobs.push({ chat: owner, mode: 'accounts', platform: 'ks', targets: ksAlts });
-  if (!jobs.length) return;
+  const ksJob = ksAlts.length && (await getSession(env, 'ks')) ? { type: 'crawl', chat: owner, mode: 'accounts', platform: 'ks', targets: ksAlts } : null;
+  if (!jobs.length && !ksJob) return;
   for (const job of jobs) await enqueue(env, 0, job, '');
+  if (ksJob) await ksAgentJob(env, 0, ksJob, '');
   a.day = day;
   a.last = now;
   await lib(env).setConfig('autoSync', JSON.stringify(a));
@@ -656,6 +761,7 @@ async function getSession(env, platform) {
 }
 
 async function douyinLogin(env, chat, platform = 'dy') {
+  if (platform === 'ks') return await ksAgentJob(env, chat, { type: 'login' }, '正在打开快手登录页，二维码大约半分钟后发过来…');
   const P = PLATFORMS[platform];
   if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务');
   const r = await streamerCall(env, '/douyin/login', { chat_id: chat, ...(platform === 'dy' ? {} : { platform }) }).catch(() => null);
@@ -677,6 +783,7 @@ async function jobStarted(env) {
 // 云电脑一次只干一件：忙着、在睡，就排进队（config crawlQueue）；它闲下来（发件箱说不忙了）、定时任务时接着交
 async function startCrawl(env, chat, body) {
   const job = { chat, mode: body.mode, platform: body.platform || 'dy', targets: body.targets || [], ...(body.count ? { count: body.count } : {}) };
+  if (job.platform === 'ks') return await ksAgentJob(env, chat, { type: 'crawl', ...job }, '');
   if ((await crawlQueue(env)).length) return await enqueue(env, chat, job, '前面还有活');
   const r = await sendCrawl(env, job, body.session);
   if (r.ok) return;
@@ -739,6 +846,10 @@ async function progressText(env) {
   lines.push(s ? `抖音账号：${s.nickname || s.sec_uid}（${ago(s.at)}登录）` : '抖音：还没登录（发「登录抖音」）');
   const ks = await getSession(env, 'ks');
   lines.push(ks ? `快手账号：${ks.nickname || ks.sec_uid}（${ago(ks.at)}登录）` : '快手：还没登录（发「登录快手」）');
+  const ksAt = Number(await L.getConfig('ksAgentAt')) || 0;
+  const ksQ = JSON.parse((await L.getConfig('ksQueue')) || '[]');
+  lines.push(`快手云电脑（Codespace）：${(await ksAgentOnline(env)) ? `开着${(await L.getConfig('ksAgentBusy')) ? `，在「${await L.getConfig('ksAgentBusy')}」` : ''}` : ksAt ? `没开（上次 ${ago(ksAt)}）` : '还没开过（发「快手云电脑」看怎么开）'}` +
+    (ksQ.length ? `；等它的活 ${ksQ.length} 件` : ''));
   const queue = await crawlQueue(env);
   if (queue.length) lines.push(`排队的活：${queue.length} 件（云电脑闲下来自动开始）`);
   if (p) lines.push(`云电脑：${p.stage || ''} ${p.done || 0}/${p.total || 0}${p.note ? ' · ' + p.note : ''}（${ago(p.at)}）`);

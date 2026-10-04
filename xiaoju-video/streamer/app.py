@@ -675,7 +675,9 @@ async def debug_net(request: Request):
     check_key(request)
     out = {}
     for host in ('xiaoju-video.langhua98.workers.dev', 'api.telegram.org', 'www.douyin.com', 'huggingface.co',
-                 'www.kuaishou.com', 'v.kuaishou.com', 'id.kuaishou.com'):
+                 'www.kuaishou.com', 'v.kuaishou.com', 'id.kuaishou.com',
+                 # 快手视频的 CDN：快手的作品由这里下载转发，要连得上
+                 'v1.kwaicdn.com', 'v2.kwaicdn.com', 'txmov2.a.kwimgs.com', 'alimov2.a.kwimgs.com'):
         r = {}
         try:
             infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)

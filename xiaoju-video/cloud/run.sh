@@ -5,6 +5,8 @@
 #   bash xiaoju-video/cloud/run.sh setup <Worker 地址> <令牌> <你的抖音主页链接>   令牌在小橘视频机器人里发「云电脑」拿
 #   bash xiaoju-video/cloud/run.sh sync                                     抓你主页的全部作品，新的送 Worker
 #   bash xiaoju-video/cloud/run.sh link <链接>...                            只抓这几条（你自己的或有授权的）
+#   bash xiaoju-video/cloud/run.sh ks <Worker 地址> <令牌>                   快手云电脑：等机器人派快手的活（令牌在机器人里发「快手云电脑」拿）
+#   bash xiaoju-video/cloud/run.sh ks                                       用上次的地址和令牌再开
 # 第一次 sync / link 要扫码：打开端口 6080 的网页桌面（密码 vscode），60 秒内用抖音 App 扫浏览器里的二维码。
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -22,6 +24,23 @@ install() {
   # 不连本机 Chrome（CDP），用 Playwright 自带的 Chromium；不抓评论（和流式服务共用一份补丁）
   python3 "$HERE/../streamer/mc_patch.py" "$MC"
   (cd "$MC" && uv sync && uv run playwright install --with-deps chromium)
+  # 快手登录过拼图滑块用 OpenCV（要 libGL）；没桌面的时候用虚拟屏幕
+  sudo apt-get install -y -q libgl1 xvfb >/dev/null 2>&1 || true
+}
+
+ks() {
+  local cfg="$HOME_DIR/ks.json"
+  if [ $# -ge 2 ]; then
+    printf '{"worker": "%s", "token": "%s"}\n' "$1" "$2" > "$cfg"
+    chmod 600 "$cfg"
+  fi
+  [ -f "$cfg" ] || { echo "第一次要带上地址和令牌：run.sh ks <Worker 地址> <令牌>（令牌在机器人里发「快手云电脑」拿）"; exit 1; }
+  local worker token
+  worker=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['worker'])" "$cfg")
+  token=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['token'])" "$cfg")
+  # 装过的 MediaCrawler 打上最新的补丁（快手的那几处）
+  python3 "$HERE/../streamer/mc_patch.py" "$MC"
+  exec python3 "$HERE/ks_agent.py" "$worker" "$token" "$MC" "$MC/.venv/bin/python"
 }
 
 export PATH="$HOME/.local/bin:$PATH"
@@ -31,4 +50,5 @@ if [ "$cmd" = install ]; then install; exit 0; fi
 # 网页桌面（desktop-lite）的显示器是 :1
 if [ -z "${DISPLAY:-}" ] && [ -S /tmp/.X11-unix/X1 ]; then export DISPLAY=:1; fi
 if [ "$cmd" = login ]; then cd "$MC" && exec uv run python "$HERE/login.py"; fi
+if [ "$cmd" = ks ]; then shift; ks "$@"; fi
 exec python3 "$HERE/mc_sync.py" "$@"

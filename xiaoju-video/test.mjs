@@ -978,77 +978,103 @@ await test('自动同步：到点抓小号和登录账号，一天一次；可�
   assert.match(last('bot').text, /0 到 23/);
 });
 
-// ── 快手 ──
+// ── 快手：活交给频道主自己的 Codespace（快手云电脑）──
 const KSU = '3x84qugg4ch9zhs';
-await test('快手：登录、发快手小号链接自动转、快手作品链接和快手搜索交审核', async () => {
-  // 没登录快手：小号链接、搜索都先请他登录
-  await dm(OWNER, `https://www.kuaishou.com/profile/${KSU}`);
-  assert.match(last('bot').text, /要抓快手小号得先登录快手：发「登录快手」/);
-  await dm(OWNER, '快手搜索 小橘');
-  assert.match(last('bot').text, /还没登录快手/);
-  // 登录快手
+let ksToken;
+const agent = async (body = {}) => {
+  const r = await post('/ks-agent/poll', { busy: '', events: [], ...body }, { 'X-Token': ksToken });
+  return r.status === 200 ? await r.json() : r.status;
+};
+await test('快手云电脑：拿令牌；没开的时候活排着；开了取走活、送回事件；登录时频道主的话转过去', async () => {
+  await dm(OWNER, '快手云电脑');
+  ksToken = /run\.sh ks \S+ ([0-9a-f]{48})/.exec(last('bot').text)[1];
+  assert.match(last('bot').text, /codespaces\.new\/langhua98\/Linggo/);
+  assert.equal(await post('/ks-agent/poll', {}, { 'X-Token': 'nope' }).then(r => r.status), 403);
+  // 没开：「登录快手」先排着
   jobCalls.length = 0;
   await dm(OWNER, '登录快手');
-  assert.deepEqual(jobCalls, [['/douyin/login', { chat_id: OWNER, platform: 'ks' }]]);
-  assert.match(last('bot').text, /正在打开快手登录页/);
-  let seq = Number(await L.getConfig('outboxSeq'));
-  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [
-    { seq: ++seq, kind: 'session', platform: 'ks', cookies: [{ name: 'passToken', value: 'p', domain: '.kuaishou.com' }], sec_uid: '2771234567', nickname: '快手橘' },
-  ] };
-  await L.alarm();
+  assert.deepEqual(jobCalls, []); // 不找流式服务
+  assert.match(last('bot').text, /快手云电脑（你的 GitHub Codespace）现在没开，这件先排着（队里 1 件）/);
+  await dm(OWNER, '进度');
+  assert.match(last('bot').text, /快手云电脑（Codespace）：还没开过.*等它的活 1 件/);
+  // 开了：第一次报到说一声，取走登录的活
+  reset();
+  let r = await agent({ hello: true });
+  assert.deepEqual(r.jobs, [{ type: 'login', chat: OWNER }]);
+  assert.match(last('bot').text, /✓ 快手云电脑开着了/);
+  // 登录进行中：频道主发的话转给它（不找流式服务）
+  r = await agent({ busy: '登录快手', events: [{ kind: 'say', chat_id: OWNER, text: '用快手 App 扫这个二维码', png: Buffer.from('QR').toString('base64') }] });
+  assert.equal(sent.bot.find(m => m.method === 'sendPhoto').caption, '用快手 App 扫这个二维码');
+  jobCalls.length = 0;
+  await dm(OWNER, '截图');
+  assert.match(last('bot').text, /已经交给快手登录页/);
+  assert.deepEqual(jobCalls, []);
+  r = await agent({ busy: '登录快手' });
+  assert.deepEqual(r.inputs, ['截图']);
+  assert.deepEqual((await agent({ busy: '登录快手' })).inputs, []); // 取走了就没了
+  // 登录好了：存成快手的登录状态（抖音的不动）
+  await agent({ events: [{ kind: 'session', cookies: [{ name: 'passToken', value: 'p', domain: '.kuaishou.com' }], sec_uid: '2771234567', nickname: '快手橘' }] });
   assert.equal(JSON.parse(await L.getConfig('ksSession')).nickname, '快手橘');
-  assert.equal(JSON.parse(await L.getConfig('dySession')).nickname, '新号'); // 抖音的不动
+  assert.equal(JSON.parse(await L.getConfig('dySession')).nickname, '新号');
   await dm(OWNER, '登录快手');
   assert.match(last('bot').text, /快手已经登录了「快手橘」/);
   await dm(OWNER, '进度');
   assert.match(last('bot').text, /快手账号：快手橘/);
-  // 快手小号短链接 → 流式服务认出是主页 → 记成快手小号，抓它
+  assert.match(last('bot').text, /快手云电脑（Codespace）：开着/);
+});
+
+await test('快手：小号链接自动转（经快手云电脑抓、流式服务转）、作品链接和快手搜索交审核', async () => {
+  // 快手小号短链接 → 流式服务认出是主页 → 记成快手小号，活交给快手云电脑
   jobCalls.length = 0;
   state.expand['https://v.kuaishou.com/kalt'] = { platform: 'ks', ks_user: KSU };
   await dm(OWNER, '快手分享 https://v.kuaishou.com/kalt');
-  const alt = JSON.parse(await L.getConfig('altAccounts')).find(a => a.sec === KSU);
-  assert.equal(alt.platform, 'ks');
-  assert.deepEqual(jobCalls[0][1], { chat_id: OWNER, mode: 'accounts', targets: [KSU], session: jobCalls[0][1].session, platform: 'ks' });
-  assert.equal(jobCalls[0][1].session.nickname, '快手橘');
-  // 抓回来的快手小号作品：直接排队转
+  assert.equal(JSON.parse(await L.getConfig('altAccounts')).find(a => a.sec === KSU).platform, 'ks');
+  assert.deepEqual(jobCalls, []); // 抓快手不找流式服务
+  let r = await agent();
+  assert.equal(r.jobs.length, 1);
+  assert.deepEqual({ ...r.jobs[0], session: undefined }, { type: 'crawl', chat: OWNER, mode: 'accounts', platform: 'ks', targets: [KSU], session: undefined });
+  assert.equal(r.jobs[0].session.nickname, '快手橘');
+  // 它在忙：不给新活；新活排着
+  await dm(OWNER, 'https://www.kuaishou.com/short-video/3xabcdefgh1');
+  assert.match(last('bot').text, /快手云电脑正在「快手同步小号」，这件排上队了/);
+  assert.deepEqual((await agent({ busy: '快手同步小号' })).jobs, []);
+  // 抓回来的快手小号作品：直接排队、交流式服务转
   toStreamer.length = 0;
-  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [
-    { seq: ++seq, kind: 'import', chat_id: OWNER, src: 'alt', what: '快手小号主页', job: 'cafe00cafe00', final: true, items: [
-      { aweme: 'ks_3x3zxz4mjrsc8ke', platform: 'ks', type: 'video', desc: '快手作品', author: '快手小号', author_sec_uid: KSU,
-        video_url: 'https://v.ks/1080.mp4', url: 'https://www.kuaishou.com/short-video/3x3zxz4mjrsc8ke' },
-    ] },
-  ] };
-  await L.alarm();
+  r = await agent({ busy: '快手同步小号', events: [{ kind: 'import', chat_id: OWNER, src: 'alt', what: '快手小号主页', job: 'cafe00cafe00', final: true, items: [
+    { aweme: 'ks_3x3zxz4mjrsc8ke', platform: 'ks', type: 'video', desc: '快手作品', author: '快手小号', author_sec_uid: KSU,
+      video_url: 'https://v.ks/1080.mp4', url: 'https://www.kuaishou.com/short-video/3x3zxz4mjrsc8ke' },
+  ] }] });
   const it = await L.getItem('ks_3x3zxz4mjrsc8ke');
   assert.equal(it.status, 'sending');
-  assert.equal(it.platform, 'ks');
   assert.ok(toStreamer.some(i => i.aweme === 'ks_3x3zxz4mjrsc8ke'));
-  // 转完
+  assert.ok(sent.bot.some(m => /抓完了：一共 1 条.*新的 1 条是小号的作品/.test(m.text || '')));
+  // 流式服务转完
+  let seq = Number(await L.getConfig('outboxSeq'));
   state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [{ seq: ++seq, kind: 'done', aweme: 'ks_3x3zxz4mjrsc8ke', ok: true, message_id: 901, idle: true }] };
   await L.alarm();
   assert.equal((await L.getItem('ks_3x3zxz4mjrsc8ke')).status, 'posted');
   await dm(OWNER, '小号');
   assert.match(last('bot').text, /\[快手\] 快手小号/);
   assert.match(last('bot').text, new RegExp(`https://www\\.kuaishou\\.com/profile/${KSU}`));
-  // 快手作品链接 → 抓链接；快手搜索带数量
-  jobCalls.length = 0;
-  await dm(OWNER, 'https://www.kuaishou.com/short-video/3xabcdefgh1');
-  assert.deepEqual([jobCalls[0][1].mode, jobCalls[0][1].platform, jobCalls[0][1].targets], ['detail', 'ks', ['https://www.kuaishou.com/short-video/3xabcdefgh1']]);
+  // 闲下来：交排着的作品链接；快手搜索带数量
+  r = await agent();
+  assert.deepEqual([r.jobs[0].mode, r.jobs[0].targets], ['detail', ['https://www.kuaishou.com/short-video/3xabcdefgh1']]);
   await dm(OWNER, '快手搜索 小橘猫 80');
-  assert.deepEqual([jobCalls[1][1].mode, jobCalls[1][1].platform, jobCalls[1][1].targets, jobCalls[1][1].count], ['search', 'ks', ['小橘猫'], 80]);
+  r = await agent();
+  assert.deepEqual([r.jobs[0].mode, r.jobs[0].targets, r.jobs[0].count], ['search', ['小橘猫'], 80]);
   // 快手搜出来的：审核单打 #快手，作者主页是快手的
   reset();
-  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [
-    { seq: ++seq, kind: 'import', chat_id: OWNER, src: 'search', what: '快手关键词「小橘猫」各 80 条', items: [
-      { aweme: 'ks_3xsearch0001', platform: 'ks', type: 'video', desc: '搜到的快手', author: '路人', author_sec_uid: '3xpasserby1', video_url: 'https://v.ks/s.mp4' },
-    ] },
-  ] };
-  await L.alarm();
+  await agent({ events: [{ kind: 'import', chat_id: OWNER, src: 'search', what: '快手关键词「小橘猫」各 80 条', items: [
+    { aweme: 'ks_3xsearch0001', platform: 'ks', type: 'video', desc: '搜到的快手', author: '路人', author_sec_uid: '3xpasserby1', video_url: 'https://v.ks/s.mp4' },
+  ] }] });
   assert.match(sheets()[0].text, /（#关键词搜索 #快手 #小橘猫 #批次数量1 条）/);
   const page = await (await call(`/review/${bidOf(sheets()[0])}`)).text();
   assert.match(page, /https:\/\/www\.kuaishou\.com\/profile\/3xpasserby1/);
   assert.match(page, /https:\/\/www\.kuaishou\.com\/short-video\/3xsearch0001/);
   await press(OWNER, `batch-no:${bidOf(sheets()[0])}`);
+  // 「done」只认流式服务的，快手云电脑送来的不算
+  await agent({ events: [{ kind: 'done', aweme: 'ks_3xsearch0001', ok: true, message_id: 1 }] });
+  assert.equal((await L.getItem('ks_3xsearch0001')).status, 'rejected');
 });
 
 await test('补全视频池：翻频道历史，只收视频的播放字段；登记过的不动；翻完告诉频道主', async () => {
