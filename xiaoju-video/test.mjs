@@ -617,6 +617,21 @@ await test('定时任务：有交出去没回音的就去轮询，闲着不去',
   assert.equal(libStorage.alarm, null);
 });
 
+await test('管理接口：替频道主发起抖音登录、开始轮询', async () => {
+  const A = { Authorization: 'Bearer ' + ADMIN };
+  jobCalls.length = 0;
+  libStorage.alarm = null;
+  const r = await post('/admin/api/douyin-login', {}, A);
+  assert.equal(r.status, 200);
+  assert.deepEqual(jobCalls, [['/douyin/login', { chat_id: OWNER }]]);
+  assert.match(last('bot').text, /二维码大约半分钟后发过来/);
+  assert.ok(libStorage.alarm > 0);
+  libStorage.alarm = null;
+  assert.equal((await post('/admin/api/poll', {}, A)).status, 200);
+  assert.ok(libStorage.alarm > 0);
+  assert.equal((await post('/admin/api/douyin-login', {}, {})).status, 403);
+});
+
 await test('网页', async () => {
   for (const p of ['/', '/video', '/admin']) {
     const r = await call(p);

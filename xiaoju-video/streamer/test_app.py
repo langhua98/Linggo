@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault('STREAMER_KEY', 'k')
+os.environ['STREAMER_KEY'] = 'k'  # 强制：外面环境里的真密钥不能带进测试
 
 import app as appmod  # noqa: E402
 from app import CAPTION_LIMIT, Poster, Streamer, caption_for, parse_range  # noqa: E402

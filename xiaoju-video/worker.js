@@ -764,6 +764,17 @@ async function adminApi(request, env, ctx, url) {
     return json({ ok: true, n });
   }
   if (action === 'dispatch') return json({ ok: true, n: await dispatch(env) });
+  // 替频道主点「登录抖音」：二维码照样发到频道主和小橘视频机器人的私聊里
+  if (action === 'douyin-login') {
+    const owner = await ownerId(env);
+    if (!owner) return json({ error: 'no owner' }, 409);
+    await douyinLogin(env, owner);
+    return json({ ok: true });
+  }
+  if (action === 'poll') {
+    await L.kick();
+    return json({ ok: true });
+  }
   return json({ error: 'not found' }, 404);
 }
 
