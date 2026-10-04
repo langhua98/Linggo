@@ -23,6 +23,7 @@ Worker 管登记、审核和网页；这里干 Worker 干不了的重活：
 """
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -313,15 +314,12 @@ async def worker_post(http, path, body):
 
 
 async def tg_send(http, chat_id, text, png=None):
-    """用小橘视频机器人给频道主发消息、图片（二维码、验证截图）"""
-    base = f'https://api.telegram.org/bot{os.environ["TG_BOT_TOKEN"]}'
+    """给频道主发消息、图片（二维码、验证截图）。Hugging Face 的机房连不上 api.telegram.org（MTProto 能连），
+    所以交给 Worker 代发（/streamer-say，它只发给频道主）"""
+    body = {'chat_id': chat_id, 'text': text}
     if png:
-        r = await http.post(base + '/sendPhoto', data={'chat_id': str(chat_id), 'caption': text[:1000]},
-                            files={'photo': ('douyin.png', png, 'image/png')}, timeout=60)
-    else:
-        r = await http.post(base + '/sendMessage', json={'chat_id': chat_id, 'text': text[:4000] or '…',
-                                                         'disable_web_page_preview': True}, timeout=30)
-    r.raise_for_status()
+        body['png'] = base64.b64encode(png).decode()
+    await worker_post(http, '/streamer-say', body)
 
 
 @asynccontextmanager

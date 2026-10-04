@@ -52,7 +52,7 @@ function serve(bytes, range) {
 globalThis.fetch = async (input, init = {}) => {
   const url = String(input);
   const headers = new Headers(init.headers || {});
-  const body = init.body ? JSON.parse(init.body) : null;
+  const body = init.body instanceof FormData ? Object.fromEntries(init.body) : init.body ? JSON.parse(init.body) : null;
   let m;
   if ((m = url.match(/^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)(\?.*)?$/))) {
     const [, token, method, qs] = m;
@@ -504,6 +504,24 @@ await test('流式服务送来链接抓的作品：逐条交审核；主页同�
   reset();
   await post('/dy-import', { src: 'link', items: [{ aweme: '7300000000000000203', type: 'video', video_url: 'https://cdn.example/203.mp4' }] }, { 'X-Token': token });
   assert.match(sent.verify[0].text, /新同步来 1 条/);
+});
+
+await test('/streamer-say：流式服务托 Worker 给频道主发消息和图片，别人不发', async () => {
+  reset();
+  const K = { 'X-Key': SKEY };
+  assert.equal((await post('/streamer-say', { chat_id: OWNER, text: 'x' })).status, 403);
+  assert.equal((await post('/streamer-say', { chat_id: STRANGER, text: 'x' }, K)).status, 403);
+  let r = await post('/streamer-say', { chat_id: OWNER, text: '进度' }, K);
+  assert.equal(r.status, 200);
+  assert.equal(last('bot').method, 'sendMessage');
+  assert.equal(last('bot').text, '进度');
+  r = await post('/streamer-say', { chat_id: OWNER, text: '扫码', png: Buffer.from('PNGDATA').toString('base64') }, K);
+  assert.equal(r.status, 200);
+  const photo = last('bot');
+  assert.equal(photo.method, 'sendPhoto');
+  assert.equal(photo.chat_id, String(OWNER));
+  assert.equal(photo.caption, '扫码');
+  assert.equal(await photo.photo.text(), 'PNGDATA');
 });
 
 await test('网页', async () => {

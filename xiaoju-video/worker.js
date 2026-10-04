@@ -16,6 +16,7 @@
 //   POST /verify-webhook    审核机器人：频道主按「通过 / 不转」
 //   POST /dy-known、/dy-import、/dy-progress   云电脑用（X-Token 认人，令牌在机器人里发「云电脑」拿）
 //   POST /streamer-up、/streamer-done          流式服务报到、报结果（X-Key 认人）
+//   POST /streamer-say                         流式服务托 Worker 给频道主发消息、图片（HF 机房连不上 api.telegram.org）
 //   GET  /admin             管理页；/admin/api/...（Authorization: Bearer <ADMIN_KEY>）
 //
 // 数据在 Durable Object「Library」的 SQLite 里。
@@ -87,7 +88,7 @@ export default {
         if (method !== 'POST') return text('Method Not Allowed', 405);
         return await cloudApi(request, env, ctx, path);
       }
-      if (path === '/streamer-up' || path === '/streamer-done') {
+      if (path === '/streamer-up' || path === '/streamer-done' || path === '/streamer-say') {
         if (method !== 'POST') return text('Method Not Allowed', 405);
         return await streamerApi(request, env, ctx, path);
       }
@@ -517,6 +518,7 @@ async function streamerApi(request, env, ctx, path) {
     if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
     return json({ ok: true });
   }
+  if (path === '/streamer-say') return await relaySay(env, body);
   const aweme = String(body.aweme || '');
   if (!/^\d{6,25}$/.test(aweme)) return json({ error: 'bad aweme' }, 400);
   const res = await L.itemDone(aweme, !!body.ok, Number(body.message_id) || 0, String(body.error || '').slice(0, 300), MAX_ATTEMPTS);
@@ -527,6 +529,26 @@ async function streamerApi(request, env, ctx, path) {
     if (ctx && ctx.waitUntil) ctx.waitUntil(p); else await p;
   }
   return json({ ok: true, status: res });
+}
+
+// 流式服务要发给频道主的二维码、验证截图、进度：Hugging Face 的机房连不上 api.telegram.org，由这里代发。只发给频道主
+async function relaySay(env, body) {
+  const owner = await ownerId(env);
+  const chat = Number(body.chat_id);
+  if (!owner || chat !== owner) return json({ error: 'only the owner' }, 403);
+  let res;
+  if (body.png) {
+    const bytes = fromBase64(String(body.png));
+    if (bytes.length > 8 * 1024 * 1024) return json({ error: 'too big' }, 413);
+    const form = new FormData();
+    form.append('chat_id', String(chat));
+    form.append('caption', String(body.text || '').slice(0, 1000));
+    form.append('photo', new Blob([bytes], { type: 'image/png' }), 'douyin.png');
+    res = await fetch(`${TG}/bot${env.TG_BOT_TOKEN}/sendPhoto`, { method: 'POST', body: form }).then(r => r.json()).catch(() => ({}));
+  } else {
+    res = await say(env, chat, String(body.text || '').slice(0, 4000) || '…');
+  }
+  return json({ ok: !!res.ok }, res.ok ? 200 : 502);
 }
 
 // ── 云电脑 ────────────────────────────────────────────────────────
