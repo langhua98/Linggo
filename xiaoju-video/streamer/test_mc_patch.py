@@ -32,7 +32,8 @@ def test_patch_real_mediacrawler(tmp_path):
     src = os.path.expanduser(os.environ.get('MC_DIR_FOR_TEST', '~/.xiaoju-video/MediaCrawler'))
     if not os.path.isdir(src):
         pytest.skip('没装 MediaCrawler')
-    for rel in ('config/base_config.py', 'store/douyin/__init__.py', 'media_platform/douyin/core.py', 'main.py'):
+    for rel in ('config/base_config.py', 'store/douyin/__init__.py', 'media_platform/douyin/core.py', 'main.py',
+                'media_platform/douyin/login.py', 'media_platform/douyin/client.py'):
         os.makedirs(tmp_path / os.path.dirname(rel), exist_ok=True)
         shutil.copy(os.path.join(src, rel), tmp_path / rel)
     apply(str(tmp_path))
@@ -42,6 +43,16 @@ def test_patch_real_mediacrawler(tmp_path):
     core = (tmp_path / 'media_platform/douyin/core.py').read_text(encoding='utf-8')
     compile(core, 'core', 'exec')
     assert 'wait_until="domcontentloaded"' in core
+    assert core.index('add_cookies') < core.index('self.context_page = await self.browser_context.new_page()')
+    login = (tmp_path / 'media_platform/douyin/login.py').read_text(encoding='utf-8')
+    compile(login, 'login', 'exec')
+    assert 'click(timeout=5000)' in login
+    client = (tmp_path / 'media_platform/douyin/client.py').read_text(encoding='utf-8')
+    compile(client, 'client', 'exec')
+    for t in (login, client):
+        assert 'bool(cookie_dict.get("sessionid"))' in t
+    apply(str(tmp_path))  # 再打一次不变
+    assert (tmp_path / 'media_platform/douyin/core.py').read_text(encoding='utf-8') == core
     main = (tmp_path / 'main.py').read_text(encoding='utf-8')
     assert main.startswith('import xiaoju_retry') and main.count('xiaoju_retry') == 1
     compile((tmp_path / 'xiaoju_retry.py').read_text(encoding='utf-8'), 'retry', 'exec')

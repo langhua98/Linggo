@@ -6,7 +6,12 @@
    抖音首页一直在加载视频，30 秒等不到就超时退出（关键词搜索第一次就死在这）。
 3. main.py 最前面 import xiaoju_retry（这里写进去的）：页面在跳转时读页面（page.evaluate）会报「Execution context was
    destroyed」直接退出——抖音首页打开后自己还会再跳一次，MediaCrawler 读 localStorage、算签名的地方都会撞上。改成等新页面出来再读
-4. store/douyin/__init__.py：作品记录里多存作者的 sec_uid 和昵称（它默认把昵称打码、作者只存散列）——
+4. media_platform/douyin/core.py：用 cookie 登录时，打开抖音之前先把 cookie 放进浏览器。它原来是发现没登录才去点页面上的
+   「登录」按钮、弹出登录框后再塞 cookie；Space 重启后浏览器档案是空的，页面上又找不到那个按钮，等 30 秒就退出了。
+   media_platform/douyin/login.py：点不到「登录」按钮不再直接退出（cookie 已经放进去了）。
+   client.py、login.py 判断「已登录」：有 sessionid cookie 也算（它只认 LOGIN_STATUS=1 和 localStorage，
+   扫码登录存下的 cookie 里没有 LOGIN_STATUS，空的浏览器档案里也没有 localStorage）。
+5. store/douyin/__init__.py：作品记录里多存作者的 sec_uid 和昵称（它默认把昵称打码、作者只存散列）——
    关键词搜索出来的作品要交频道主审核，他得认得出是不是自己小号发的。
 
   python mc_patch.py <MediaCrawler 目录>
@@ -42,12 +47,54 @@ GOTO_OLD = 'await self.context_page.goto(self.index_url)'
 GOTO_NEW = 'await self.context_page.goto(self.index_url, wait_until="domcontentloaded", timeout=60000)'
 
 
-def patch_goto(text):
-    if GOTO_NEW in text:
+NEW_PAGE = '            self.context_page = await self.browser_context.new_page()\n'
+COOKIES_FIRST = (
+    '            if config.LOGIN_TYPE == "cookie" and config.COOKIES:  # 小橘视频：先把存着的登录 cookie 放进浏览器\n'
+    '                await self.browser_context.add_cookies([\n'
+    '                    {"name": k, "value": v, "domain": ".douyin.com", "path": "/"}\n'
+    '                    for k, v in utils.convert_str_cookie_to_dict(config.COOKIES).items()])\n')
+CLICK_OLD = '            await login_button_ele.click()\n'
+CLICK_NEW = ('            try:  # 小橘视频：点不到也不退出（用 cookie 登录时 cookie 已经放进去了）\n'
+             '                await login_button_ele.click(timeout=5000)\n'
+             '            except Exception as e:\n'
+             '                utils.logger.error(f"[DouYinLogin.popup_login_dialog] no login button: {e}")\n')
+
+
+def patch_login_click(text):
+    if 'click(timeout=5000)' in text:
         return text
-    if text.count(GOTO_OLD) != 1:
-        raise SystemExit('MediaCrawler 抖音 core.py 里找不到打开首页那一行（上游改了格式？）')
-    return text.replace(GOTO_OLD, GOTO_NEW)
+    if text.count(CLICK_OLD) != 1:
+        raise SystemExit('MediaCrawler 抖音 login.py 里找不到点「登录」那一行（上游改了格式？）')
+    return text.replace(CLICK_OLD, CLICK_NEW)
+
+
+def patch_login_state(text):
+    """client.py 的 pong 和 login.py 的 check_login_state：有 sessionid 也算登录了"""
+    if 'xiaoju: sessionid' in text:
+        return text
+    cond = 'cookie_dict.get("LOGIN_STATUS") == "1"'
+    wider = '(cookie_dict.get("LOGIN_STATUS") == "1" or bool(cookie_dict.get("sessionid")))'
+    n = 0
+    for old, new in ((f'return {cond}', f'return {wider}  # xiaoju: sessionid'),
+                     (f'if {cond}:', f'if {wider}:  # xiaoju: sessionid')):
+        if old in text:
+            text = text.replace(old, new)
+            n += 1
+    if not n:
+        raise SystemExit('MediaCrawler 里找不到判断 LOGIN_STATUS 那一行（上游改了格式？）')
+    return text
+
+
+def patch_goto(text):
+    if GOTO_NEW not in text:
+        if text.count(GOTO_OLD) != 1:
+            raise SystemExit('MediaCrawler 抖音 core.py 里找不到打开首页那一行（上游改了格式？）')
+        text = text.replace(GOTO_OLD, GOTO_NEW)
+    if COOKIES_FIRST not in text:
+        if text.count(NEW_PAGE) != 1:
+            raise SystemExit('MediaCrawler 抖音 core.py 里找不到新开页面那一行（上游改了格式？）')
+        text = text.replace(NEW_PAGE, COOKIES_FIRST + NEW_PAGE)
+    return text
 
 
 RETRY_MODULE = '''"""小橘视频加的：页面在跳转时 page.evaluate 等新页面出来再试（最多 5 次），不直接退出"""
@@ -86,6 +133,8 @@ def apply(mc_dir):
     with open(os.path.join(mc_dir, 'xiaoju_retry.py'), 'w', encoding='utf-8') as f:
         f.write(RETRY_MODULE)
     for rel, fn in (('config/base_config.py', patch), ('media_platform/douyin/core.py', patch_goto), ('main.py', patch_main),
+                    ('media_platform/douyin/login.py', patch_login_click),
+                    ('media_platform/douyin/login.py', patch_login_state), ('media_platform/douyin/client.py', patch_login_state),
                     ('store/douyin/__init__.py', patch_store)):
         path = os.path.join(mc_dir, rel)
         with open(path, encoding='utf-8') as f:
