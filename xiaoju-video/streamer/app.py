@@ -274,7 +274,11 @@ def run(cmd):
 def ffmpeg_prepare(src, work):
     """不重新编码，只把 moov 挪到文件头（网页才能边下边播）；再截一帧当封面、读出时长和尺寸"""
     out = os.path.join(work, 'video.mp4')
-    run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-map', '0', '-c', 'copy', '-movflags', '+faststart', out])
+    # 最高清那档常是 H.265：mp4 里标成 hvc1，苹果设备（Safari、iPhone 上的 Telegram）才认得出来、播得了
+    codec = json.loads(run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name',
+                            '-of', 'json', src])).get('streams') or [{}]
+    tag = ['-tag:v', 'hvc1'] if codec[0].get('codec_name') == 'hevc' else []
+    run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-map', '0', '-c', 'copy', *tag, '-movflags', '+faststart', out])
     probe = json.loads(run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries',
                             'stream=width,height:format=duration', '-of', 'json', out]))
     stream = (probe.get('streams') or [{}])[0]

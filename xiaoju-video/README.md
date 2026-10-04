@@ -113,6 +113,8 @@ done
 爬虫是 [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)（NON-COMMERCIAL LEARNING LICENSE 1.1，只能非商业使用），
 固定在验证过的版本 `bf28178`（`streamer/mc.py` 的 `MC_REV`、`streamer/Dockerfile`、`cloud/run.sh` 三处要一致）。
 `streamer/mc_patch.py` 改它的配置：不连本机 Chrome（CDP）、有界面、不抓评论、保存登录状态。
+**清晰度**：视频地址挑最高清的一档——它原来先拿 `play_addr_h264`（默认播放档），改成先从 `bit_rate`（各档列表）里挑
+分辨率最高的，一样高先要 H.264、再比码率（4K 只有 H.265 也要）。转发时不重新编码，H.265 的在 mp4 里标成 `hvc1`，苹果设备才播得了。
 
 **主用：装在流式服务（HF Space `douyin-proxy`）里**，频道主全程只在 Telegram 里操作：
 

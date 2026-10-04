@@ -288,3 +288,22 @@ def test_outbox_endpoint():
     assert r['events'] == []
     appmod.poster.add([{'aweme': AW, 'type': 'video'}])
     assert c.get('/outbox?boot=b1&after=2', headers=h).json()['busy'] is True
+
+
+def test_ffmpeg_prepare_tags_hevc_for_apple(tmp_path):
+    """H.265 的视频：不重新编码，mp4 里的标签改成 hvc1；H.264 的不动"""
+    import shutil
+    import subprocess
+    if not shutil.which('ffmpeg'):
+        pytest.skip('没装 ffmpeg')
+    for codec, want in (('libx265', 'hvc1'), ('libx264', 'avc1')):
+        src = str(tmp_path / f'{codec}.mp4')
+        extra = ['-tag:v', 'hev1'] if codec == 'libx265' else []  # 抖音给的常是 hev1，苹果不认
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10:duration=1',
+                        '-c:v', codec, *extra, src], check=True)
+        work = tmp_path / codec
+        work.mkdir()
+        info = appmod.ffmpeg_prepare(src, str(work))
+        tagged = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_tag_string',
+                                 '-of', 'csv=p=0', info['path']], capture_output=True, text=True).stdout.strip()
+        assert tagged == want and info['width'] == 320 and info['height'] == 240

@@ -13,6 +13,9 @@
    扫码登录存下的 cookie 里没有 LOGIN_STATUS，空的浏览器档案里也没有 localStorage）。
 5. store/douyin/__init__.py：作品记录里多存作者的 sec_uid 和昵称（它默认把昵称打码、作者只存散列）——
    关键词搜索出来的作品要交频道主审核，他得认得出是不是自己小号发的。
+6. media_platform/douyin/media.py：视频地址挑最高清的一档。它原来先拿 play_addr_h264（默认播放档，常常不是最高清），
+   bit_rate（各档清晰度的列表）只在前面都没有时才兜底。改成先从 bit_rate 里挑：分辨率最高；一样高的先要 H.264
+   （哪里都能播），再比码率。bit_rate 里没有能用的再按它原来的顺序。
 
   python mc_patch.py <MediaCrawler 目录>
 """
@@ -33,6 +36,45 @@ def patch(text):
         if n != 1:
             raise SystemExit(f'MediaCrawler 配置里找不到 {k}（上游改了格式？）')
     return text
+
+
+MEDIA_ANCHOR = '    for key in _VIDEO_ADDR_KEYS:\n'
+MEDIA_FUNC_ANCHOR = 'def extract_video_urls('
+MEDIA_BEST = '''def _xiaoju_best(video_item):
+    """小橘视频：bit_rate 里挑最高清的一档——分辨率最高；一样高的先要 H.264（哪里都能播），再比码率"""
+    best, best_key = [], None
+    for entry in video_item.get("bit_rate") or []:
+        if not isinstance(entry, dict):
+            continue
+        addr = entry.get("play_addr") if isinstance(entry.get("play_addr"), dict) else {}
+        urls = _url_list_of(addr)
+        if not urls or str(entry.get("format") or "mp4").lower() != "mp4":
+            continue
+        try:
+            pixels = int(addr.get("width") or 0) * int(addr.get("height") or 0)
+            rate = int(entry.get("bit_rate") or 0)
+        except (TypeError, ValueError):
+            continue
+        h265 = bool(entry.get("is_h265") or entry.get("is_bytevc1"))
+        key = (pixels, not h265, rate)
+        if best_key is None or key > best_key:
+            best, best_key = list(reversed(urls)), key
+    return best
+
+
+'''
+MEDIA_USE = ('    best = _xiaoju_best(video_item)  # 小橘视频：先挑最高清的一档\n'
+             '    if best:\n'
+             '        return best\n\n')
+
+
+def patch_media(text):
+    if '_xiaoju_best' in text:
+        return text
+    if text.count(MEDIA_ANCHOR) != 1 or text.count(MEDIA_FUNC_ANCHOR) != 1:
+        raise SystemExit('MediaCrawler 的抖音 media.py 里找不到挑视频地址的地方（上游改了格式？）')
+    text = text.replace(MEDIA_FUNC_ANCHOR, MEDIA_BEST + MEDIA_FUNC_ANCHOR)
+    return text.replace(MEDIA_ANCHOR, MEDIA_USE + MEDIA_ANCHOR)
 
 
 def patch_store(text):
@@ -135,7 +177,7 @@ def apply(mc_dir):
     for rel, fn in (('config/base_config.py', patch), ('media_platform/douyin/core.py', patch_goto), ('main.py', patch_main),
                     ('media_platform/douyin/login.py', patch_login_click),
                     ('media_platform/douyin/login.py', patch_login_state), ('media_platform/douyin/client.py', patch_login_state),
-                    ('store/douyin/__init__.py', patch_store)):
+                    ('store/douyin/__init__.py', patch_store), ('media_platform/douyin/media.py', patch_media)):
         path = os.path.join(mc_dir, rel)
         with open(path, encoding='utf-8') as f:
             text = f.read()
