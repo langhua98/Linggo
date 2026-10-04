@@ -8,11 +8,11 @@ MediaCrawler 自带的扫码登录把二维码弹在本机屏幕上，服务器�
 点了以后页面上出现二维码（刷脸用的）就把它单独截下来发过去，他用抖音 App 扫、在手机上刷脸。
 整个过程中一直看着登录有没有成功。
 
-标准输出一行一个 JSON 事件，流式服务转给频道主：
+一行一个 JSON 事件，写进环境变量 DY_LOGIN_EVENTS 给的文件（没给就写标准输出），流式服务转给频道主：
   {"event": "qr", "png": "<base64>"}                                   登录二维码（第一次，过期刷新后再发）
   {"event": "verify", "text": "…", "options": [...], "png": "<base64>"}  要再验证：整页截图 + 能点的选项
   {"event": "verify_qr", "text": "…", "png": "<base64>"}               点了验证方式以后出现的二维码（刷脸用）
-  {"event": "shot", "options": [...], "png": "<base64>"}               频道主要看的当前页面
+  {"event": "shot", "text": "…", "options": [...], "png": "<base64>"}  当前页面（频道主要看的、点了选项以后的）
   {"event": "status", "text": "…"}                                     进度
   {"event": "ok", "cookies": [...], "sec_uid": "…", "nickname": "…"}
   {"event": "error", "text": "…", "png": "<base64，可选>"}
@@ -38,45 +38,68 @@ QR_BOX = '#animate_qrcode_container'
 LOGIN_PANEL = "xpath=//div[@id='login-panel-new']"
 TOTAL_S = 10 * 60
 MAX_QR = 5
-VERIFY_WORDS = ('身份验证', '安全验证', '验证身份', '验证方式', '刷脸验证', '人脸验证', '扫脸', '短信验证',
-                '验证码中间页', '请输入验证码', '获取验证码')
+# 「要再验证」的字样：都是只在验证弹窗里才有的（登录面板里本来就有「验证码登录」，不能算）
+VERIFY_WORDS = ('身份验证', '安全验证', '验证身份', '验证方式', '刷脸验证', '人脸验证', '扫脸验证')
 
-# 页面上能点的选项：先在弹窗里找（验证一般是弹窗），没有弹窗就在全页面按关键字找
+# 页面上的弹窗（验证一般是弹窗）；嵌套匹配上的只要最外层。登录面板不算
+DIALOGS_JS = r"""
+const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
+  return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
+const sel = '[role=dialog],[class*=modal],[class*=Modal],[class*=dialog],[class*=Dialog],[class*=verify],[class*=Verify],[id*=verify],[class*=captcha],[id*=captcha]';
+const all = [...document.querySelectorAll(sel)].filter(vis).filter(d => !d.closest('#login-panel-new'));
+const tops = all.filter(d => !all.some(o => o !== d && o.contains(d)));
+"""
+
+# 弹窗里能点的选项。抖音的选项是一整行可点的卡片（标题 + 小字说明，cursor 是手形，会继承给里面的字），
+# 所以只要「最外层能点的」那一层，字取它的第一行（标题）。want 为空返回所有选项的字；
+# 给了 want 就把那一项滚到看得见的地方，返回它正中间的坐标（拿真鼠标去点）
 OPTIONS_JS = r"""
-() => {
-  const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0'; };
-  const sel = '[role=dialog],[class*=modal],[class*=Modal],[class*=dialog],[class*=Dialog],[class*=verify],[class*=Verify],[id*=verify],[class*=captcha],[id*=captcha]';
-  const dialogs = [...document.querySelectorAll(sel)].filter(vis).filter(d => !d.closest('#login-panel-new'));
-  const words = /(刷脸|人脸|扫脸|扫码|短信|验证|手机|确定|确认|下一步|重新|刷新|发送|换一种)/;
-  const out = [];
-  for (const root of (dialogs.length ? dialogs : [document.body])) {
-    for (const el of root.querySelectorAll('button,[role=button],[role=tab],a,li,div,span,p')) {
-      if (!vis(el)) continue;
-      const t = (el.innerText || '').trim();
-      if (t.length < 2 || t.length > 10 || t.includes('\n')) continue;
-      if ([...el.children].some(c => (c.innerText || '').trim() === t)) continue;  // 只要最里层那个
-      const clickable = ['BUTTON', 'A'].includes(el.tagName) || ['button', 'tab'].includes(el.getAttribute('role'))
-        || getComputedStyle(el).cursor === 'pointer';
-      if (!clickable) continue;                        // 说明文字不算，只要能点的
-      if (!dialogs.length && !words.test(t)) continue;  // 没有弹窗时全页面找：只要和验证有关的
-      if (!out.includes(t)) out.push(t);
-      if (out.length >= 6) return out;
+(want) => {
+""" + DIALOGS_JS + r"""
+  const clickable = el => !!el && (['BUTTON', 'A'].includes(el.tagName)
+    || ['button', 'tab', 'menuitem', 'option', 'radio'].includes(el.getAttribute('role'))
+    || getComputedStyle(el).cursor === 'pointer');
+  // 卡片的标题：第一行像样的字（跳过图标字符、箭头这种）
+  const firstLine = el => (el.innerText || '').split('\n').map(s => s.trim())
+    .find(s => s.length >= 2 && /[\p{L}\p{N}]/u.test(s)) || '';
+  const words = /(刷脸|人脸|扫脸|扫码|短信|验证|密码|手机|确定|确认|下一步|重新|刷新|发送|换一种|获取)/;
+  const found = [];
+  const add = (el, t) => { if (t.length >= 2 && t.length <= 12 && !found.some(f => f.t === t)) found.push({ el, t }); };
+  for (const root of (tops.length ? tops : [document.body])) {
+    for (const el of root.querySelectorAll('*')) {
+      if (!vis(el) || !clickable(el)) continue;
+      const parent = el.parentElement;
+      if (parent && parent !== root && root.contains(parent) && clickable(parent)) continue;  // 只要最外层能点的
+      const t = firstLine(el);
+      if (!tops.length && !words.test(t)) continue;  // 没有弹窗时全页面找：只要和验证有关的
+      add(el, t);
     }
   }
-  return out;
+  if (!found.length) {  // 整个弹窗都是手形之类：退回找最里层、和验证有关的字
+    for (const root of (tops.length ? tops : [document.body])) {
+      for (const el of root.querySelectorAll('*')) {
+        const t = (el.innerText || '').trim();
+        if (!vis(el) || !t || t.includes('\n') || /^H[1-6]$/.test(el.tagName)
+            || [...el.children].some(c => (c.innerText || '').trim() === t)) continue;
+        if (words.test(t)) add(el, t);
+      }
+    }
+  }
+  if (want == null) return found.slice(0, 8).map(f => f.t);
+  const hit = found.find(f => f.t === want) || found.find(f => f.t.includes(want) || want.includes(f.t));
+  if (!hit) return null;
+  hit.el.scrollIntoView({ block: 'center', inline: 'center' });
+  const r = hit.el.getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2, text: hit.t };
 }
 """
 
-# 点了验证方式以后出现的二维码：弹窗里最大的那个方形图片（登录二维码不算）
+# 点了验证方式以后出现的二维码（刷脸用）：弹窗里最大的那个方形图片；登录二维码、头像（小）不算
 QR_JS = r"""
 () => {
-  const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-  const sel = '[role=dialog],[class*=modal],[class*=Modal],[class*=dialog],[class*=Dialog],[class*=verify],[class*=Verify],[id*=verify]';
-  const roots = [...document.querySelectorAll(sel)].filter(vis);
+""" + DIALOGS_JS + r"""
   let best = null;
-  for (const root of (roots.length ? roots : [document.body])) {
+  for (const root of (tops.length ? tops : [document.body])) {
     for (const el of root.querySelectorAll('img,canvas,svg')) {
       if (!vis(el) || el.closest('#animate_qrcode_container')) continue;
       const r = el.getBoundingClientRect();
@@ -88,26 +111,29 @@ QR_JS = r"""
 }
 """
 
+# 弹窗里的字：点了以后看页面变没变
+DIALOG_TEXT_JS = r"""
+() => {
+""" + DIALOGS_JS + r"""
+  return tops.map(d => d.innerText || '').join('\n').slice(0, 2000);
+}
+"""
 
-_events = None
 
-
-def events_out():
-    """事件专用的输出：把原来的标准输出复制一份留给事件，标准输出本身改指到标准错误。
-    这样 Playwright、Chromium 往标准输出写的东西都去了标准错误，插不进事件中间
-    （一张截图的 base64 有几十万字，和别的进程同时写同一个管道，会被插断，流式服务就认不出这条事件）。
-    要在启动浏览器之前调：子进程是启动时继承输出的。"""
-    global _events
-    if _events is None:
-        _events = os.fdopen(os.dup(1), 'w', encoding='utf-8', buffering=1)
-        os.dup2(2, 1)
-    return _events
+# 事件写进单独的文件（流式服务通过环境变量 DY_LOGIN_EVENTS 给路径，一直读它新增的行）。不能走标准输出：
+# xvfb-run 会把标准错误并进标准输出，浏览器、Playwright 的日志会插进来；Playwright 的 Node 进程还会把这条
+# 共用的管道设成非阻塞，写一张大截图时管道一满就只写进去一半（BlockingIOError），流式服务就认不出这条事件
+EVENTS_PATH = os.environ.get('DY_LOGIN_EVENTS', '')
 
 
 def emit(event, **kw):
-    out = events_out()
-    out.write(json.dumps({'event': event, **kw}, ensure_ascii=False) + '\n')
-    out.flush()
+    line = json.dumps({'event': event, **kw}, ensure_ascii=False) + '\n'
+    if EVENTS_PATH:
+        with open(EVENTS_PATH, 'a', encoding='utf-8') as f:
+            f.write(line)
+    else:  # 手动跑的时候看得见
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def b64(png):
@@ -147,15 +173,16 @@ async def logged_in(ctx, page):
 
 async def is_visible(page, selector):
     try:
-        return await page.locator(selector).first.is_visible()
+        return await page.locator(selector).filter(visible=True).count() > 0
     except Exception:  # noqa: BLE001
         return False
 
 
 async def visible_text(page, words):
+    """页面上看得见的第一个字样（同样的字可能有好几处、有的藏着，只要有一处看得见就算）"""
     for w in words:
         try:
-            if await page.get_by_text(w, exact=False).first.is_visible(timeout=300):
+            if await page.get_by_text(w, exact=False).filter(visible=True).count():
                 return w
         except Exception:  # noqa: BLE001
             continue
@@ -164,9 +191,39 @@ async def visible_text(page, words):
 
 async def options(page):
     try:
-        return await page.evaluate(OPTIONS_JS)
+        return await page.evaluate(OPTIONS_JS, None)
     except Exception:  # noqa: BLE001
         return []
+
+
+async def dialog_text(page):
+    try:
+        return await page.evaluate(DIALOG_TEXT_JS)
+    except Exception:  # noqa: BLE001
+        return ''
+
+
+async def find_qr(page):
+    try:
+        return await page.evaluate(QR_JS)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def click_option(page, text):
+    """点弹窗里的一个选项：找到那张能点的卡片，滚到看得见，拿真鼠标点它正中间。返回点中的那项的字，没找到返回空"""
+    try:
+        pos = await page.evaluate(OPTIONS_JS, text)
+    except Exception:  # noqa: BLE001
+        pos = None
+    if pos:
+        await page.mouse.click(pos['x'], pos['y'])
+        return pos['text']
+    try:  # 退回：按字找看得见的那一处点
+        await page.get_by_text(text, exact=True).filter(visible=True).first.click(timeout=3000)
+        return text
+    except Exception:  # noqa: BLE001
+        return ''
 
 
 async def open_panel(page):
@@ -228,11 +285,15 @@ async def submit_code(page, code):
     emit('status', text='验证码已经填进去了，等结果…')
 
 
-async def show(page):
-    emit('shot', options=await options(page), png=b64(await page.screenshot()))
+async def show(page, text=''):
+    emit('shot', text=text, options=await options(page), png=b64(await page.screenshot()))
 
 
-async def handle_input(page, text):
+# 点了一个验证方式以后最多等多久看页面变化、二维码出来（刷脸的二维码要从服务器取，慢）
+CLICK_WAIT_S = 10
+
+
+async def handle_input(ctx, page, text):
     """频道主发来的一句话。返回 True 表示已经把页面现状发过去了（主循环就不用再报一次）"""
     text = (text or '').strip()
     if not text:
@@ -244,34 +305,41 @@ async def handle_input(page, text):
     if text == '截图':
         await show(page)
         return True
-    # 别的当成要点的字：验证方式（刷脸验证、短信验证……）、确定、下一步……
-    try:
-        await page.get_by_text(text, exact=True).first.click(timeout=3000)
-    except Exception:  # noqa: BLE001
-        emit('status', text=f'页面上没找到「{text}」，发「截图」看看现在的样子')
-        return False
-    await page.wait_for_timeout(2500)
-    if re.search('短信|验证码', text):
-        for w in ('获取验证码', '发送验证码'):
+    # 别的当成要点的字：验证方式（手机刷脸验证、接收短信验证码……）、确定、下一步……
+    pages_before = len(ctx.pages)
+    before = await dialog_text(page)
+    clicked = await click_option(page, text)
+    if not clicked:
+        await show(page, f'页面上没找到「{text}」，现在是这样：')
+        return True
+    view, changed = page, False
+    for _ in range(CLICK_WAIT_S * 2):
+        await asyncio.sleep(0.5)
+        if len(ctx.pages) > pages_before:  # 抖音新开了一个窗口：看新窗口
+            view = ctx.pages[-1]
+        box = await find_qr(view)
+        if box:
+            m = 12
+            clip = {'x': max(0, box['x'] - m), 'y': max(0, box['y'] - m),
+                    'width': box['width'] + 2 * m, 'height': box['height'] + 2 * m}
+            await asyncio.sleep(0.8)  # 二维码图片画完
+            emit('verify_qr', text=clicked, png=b64(await view.screenshot(clip=clip)))
+            return True
+        if view is not page or await dialog_text(page) != before:
+            changed = True
+            if re.search('短信|验证码', clicked):
+                break  # 短信：页面一变就去点「获取验证码」
+    if re.search('短信|验证码', clicked):
+        for w in ('获取验证码', '发送验证码', '获取短信验证码'):
             try:
-                await page.get_by_text(w).first.click(timeout=1500)
+                await view.get_by_text(w).filter(visible=True).first.click(timeout=1500)
                 break
             except Exception:  # noqa: BLE001
                 continue
-        emit('status', text='短信验证码应该发到你手机上了，收到后直接把数字发给我。')
-        return False
-    box = None
-    try:
-        box = await page.evaluate(QR_JS)
-    except Exception:  # noqa: BLE001
-        pass
-    if box:
-        m = 12
-        clip = {'x': max(0, box['x'] - m), 'y': max(0, box['y'] - m),
-                'width': box['width'] + 2 * m, 'height': box['height'] + 2 * m}
-        emit('verify_qr', text=text, png=b64(await page.screenshot(clip=clip)))
-    else:
-        await show(page)
+        await asyncio.sleep(1)
+        await show(view, '短信验证码应该发到你手机上了，收到后直接把数字发给我。现在是这样：')
+        return True
+    await show(view, f'点了「{clicked}」，' + ('现在是这样（没看到二维码）：' if changed else '页面没有变化：'))
     return True
 
 
@@ -323,11 +391,22 @@ async def wait_login(ctx, page, inputs):
             return False
         shown = False
         while not inputs.empty():
-            shown = await handle_input(page, inputs.get_nowait()) or shown
+            shown = await handle_input(ctx, page, inputs.get_nowait()) or shown
         await page.wait_for_timeout(2000)
         if await page.locator('#captcha-verify-image').count() or '验证码中间页' in (await page.title()):
             emit('status', text='抖音弹了滑块验证，正在自动处理…')
             await solve_slider(ctx, page)
+            continue
+        # 先看是不是要再验证（扫完码以后登录二维码那块可能还在页面上，不能拿它判断扫没扫）。页面变了（选项不一样了）才再报一次
+        word = await visible_text(page, VERIFY_WORDS)
+        if word:
+            opts = await options(page)
+            sig = word + '|' + ','.join(opts)
+            if shown:
+                announced = sig
+            elif sig != announced:
+                announced = sig
+                emit('verify', text=word, options=opts, png=b64(await page.screenshot()))
             continue
         if await is_visible(page, QR_BOX):
             # 登录二维码还在：还没扫。过期了就换一张再发
@@ -343,23 +422,10 @@ async def wait_login(ctx, page, inputs):
                         continue
                 await send_qr(page)
                 sent += 1
-            continue
-        # 登录二维码没了（扫过了）：看看是不是要再验证。页面变了（选项不一样了）才再报一次
-        word = await visible_text(page, VERIFY_WORDS)
-        if not word:
-            continue
-        opts = await options(page)
-        sig = word + '|' + ','.join(opts)
-        if shown:
-            announced = sig
-        elif sig != announced:
-            announced = sig
-            emit('verify', text=word, options=opts, png=b64(await page.screenshot()))
     return True
 
 
 async def main():
-    events_out()  # 先把输出分开，再启动浏览器
     from playwright.async_api import async_playwright
     inputs = asyncio.Queue()
     read_inputs(asyncio.get_running_loop(), inputs)

@@ -15,29 +15,43 @@ PNG = base64.b64encode(b'\x89PNG fake').decode()
 
 
 class FakeProc:
+    """假的子进程。lines 是它要写的事件（登录页：写进事件文件）或日志（MediaCrawler：标准输出），None 表示退出；
+    err_lines 是它自己的输出（浏览器、Playwright 的日志）"""
+
     def __init__(self, lines, on_write=None, code=0, err_lines=()):
         self.queue = asyncio.Queue()
-        self.err_lines = list(err_lines)
         for line in lines:
             self.queue.put_nowait(line)
+        self.logs = list(err_lines)
         self.on_write = on_write
         self.code = code
         self.written = []
         self.killed = False
-        self.closed = False
+        self.events_path = None
+        self.exited = asyncio.Event()
+
+    def start(self, events_path=None):
+        self.events_path = events_path
+        self.task = asyncio.create_task(self._pump())
+
+    async def _pump(self):
+        while True:
+            line = await self.queue.get()
+            if line is None:
+                break
+            if self.events_path:
+                with open(self.events_path, 'a', encoding='utf-8') as f:
+                    f.write(line + '\n')
+            else:
+                self.logs.append(line)
+        self.exited.set()
 
     def close(self):
         self.queue.put_nowait(None)
 
     async def lines(self):
-        while True:
-            line = await self.queue.get()
-            if line is None:
-                return
-            yield line
-
-    async def errors(self):
-        for line in self.err_lines:
+        await self.exited.wait()
+        for line in self.logs:
             yield line
 
     def write(self, text):
@@ -46,6 +60,7 @@ class FakeProc:
             self.on_write(self, text)
 
     async def wait(self):
+        await self.exited.wait()
         return self.code
 
     def kill(self):
@@ -74,13 +89,25 @@ class World:
             self.calls.append((kind, data))
 
     def jobs(self, make_proc):
-        async def spawn(argv, cwd, **kw):
+        async def spawn(argv, cwd, env_extra=None):
             self.spawned.append((argv, cwd))
-            self.spawn_kw = kw
+            self.env_extra = env_extra or {}
             p = make_proc(argv)
+            p.start(self.env_extra.get('DY_LOGIN_EVENTS'))
             self.procs.append(p)
             return p
-        return J.Jobs(spawn=spawn, emit=self.emit, mc_dir='/mc', mc_py='/venv/python')
+        j = J.Jobs(spawn=spawn, emit=self.emit, mc_dir='/mc', mc_py='/venv/python')
+        j.poll_interval = 0.005
+        return j
+
+
+async def until(cond, timeout=2):
+    """等到条件成立（登录页的事件是定时去文件里读的）"""
+    for _ in range(int(timeout / 0.005)):
+        if cond():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError('等不到')
 
 
 async def settle(j):
@@ -106,8 +133,7 @@ def test_login_qr_verify_code_ok():
         j.login(777)
         with pytest.raises(J.Busy):
             j.login(777)
-        for _ in range(50):
-            await asyncio.sleep(0)
+        await until(lambda: len(w.said) >= 3)
         assert j.input('12 34-56')
         await settle(j)
         argv, cwd = w.spawned[0]
@@ -131,7 +157,7 @@ def test_login_error_and_crash():
         j.login(1)
         await settle(j)
         assert w.said[-1][1] == '抖音登录没成功：6 分钟内没登录上' and w.calls == []
-        j = w.jobs(lambda argv: FakeProc(['Traceback: boom', None], code=1))
+        j = w.jobs(lambda argv: FakeProc([None], code=1, err_lines=['Traceback: boom']))  # 崩了：没写事件，输出里有报错
         j.login(1)
         await settle(j)
         assert '意外退出了（退出码 1）' in w.said[-1][1] and 'boom' in w.said[-1][1]
@@ -274,13 +300,11 @@ def test_login_face_verification_buttons_and_qr():
             ev('verify', text='身份验证', options=['刷脸验证', '短信验证'], png=PNG),
         ], on_write=on_write))
         j.login(5)
-        for _ in range(50):
-            await asyncio.sleep(0)
+        await until(lambda: len(w.says) >= 2)
         assert w.says[1]['buttons'] == ['刷脸验证', '短信验证', '截图', '取消登录']
         assert '选验证方式' in w.says[1]['text'] and w.says[1]['png'] == PNG
         assert j.input('刷脸验证')
-        for _ in range(50):
-            await asyncio.sleep(0)
+        await until(lambda: len(w.says) >= 3)
         assert '完成刷脸验证' in w.says[2]['text'] and w.says[2]['png'] == PNG and not w.says[2]['buttons']
         assert j.input('截图')
         await settle(j)
@@ -300,15 +324,14 @@ def test_login_cancel():
 
             def kill():
                 orig()
-                p.close()  # 杀掉以后输出就断了
+                p.close()  # 杀掉以后就退出了
             p.kill = kill
             procs.append(p)
             return p
 
         j = w.jobs(make)
         j.login(5)
-        for _ in range(50):
-            await asyncio.sleep(0)
+        await until(lambda: len(w.said) >= 1)
         assert j.input('取消登录')
         await settle(j)
         assert procs[0].killed and w.said[-1][1] == '好，不登录了。' and w.says[-1]['menu'] is True
@@ -323,23 +346,54 @@ def test_login_unreadable_event_is_not_dumped():
         j = w.jobs(lambda argv: FakeProc([broken, None], code=0, err_lines=['[0101/ERROR:chrome] something']))
         j.login(1)
         await settle(j)
-        assert w.spawn_kw == {'separate_stderr': True}  # 登录页：浏览器日志单独一路
+        path = w.env_extra['DY_LOGIN_EVENTS']  # 登录页的事件走单独的文件
+        assert not os.path.exists(path)  # 用完删掉
         msg = w.said[-1][1]
         assert '意外退出了' in msg and '有一条登录页的消息读不出来' in msg and 'something' in msg
         assert 'iVBOR' not in msg and len(msg) < 1000
     asyncio.run(go())
 
 
-def test_dy_login_events_not_mixed_with_child_output():
-    """dy_login 把标准输出留给事件：之后起的子进程（Playwright、Chromium）往标准输出写的都去标准错误"""
+def test_dy_login_events_go_to_file_not_stdout():
+    """dy_login 的事件写进 DY_LOGIN_EVENTS 给的文件：浏览器、子进程往标准输出写什么都混不进来，大截图也不会写一半"""
     import subprocess
     import sys
+    import tempfile
+    fd, path = tempfile.mkstemp()
+    os.close(fd)
     code = ("import subprocess, dy_login\n"
-            "dy_login.events_out()\n"
-            "subprocess.run(['sh', '-c', 'echo CHILD-STDOUT'])\n"
-            "dy_login.emit('qr', png='x' * 200000)\n")
-    r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30,
-                       cwd=os.path.dirname(os.path.abspath(__file__)))
-    lines = r.stdout.splitlines()
-    assert len(lines) == 1 and J.parse_event(lines[0])['png'] == 'x' * 200000
-    assert 'CHILD-STDOUT' in r.stderr
+            "subprocess.run(['sh', '-c', 'echo CHILD-STDOUT; echo CHILD-STDERR >&2'])\n"
+            "dy_login.emit('qr', png='x' * 3000000)\n"
+            "dy_login.emit('status', text='好')\n")
+    try:
+        r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=30,
+                           cwd=os.path.dirname(os.path.abspath(__file__)), env={**os.environ, 'DY_LOGIN_EVENTS': path})
+        lines = open(path, encoding='utf-8').read().splitlines()
+    finally:
+        os.remove(path)
+    assert [J.parse_event(x)['event'] for x in lines] == ['qr', 'status']
+    assert J.parse_event(lines[0])['png'] == 'x' * 3000000
+    assert 'CHILD-STDOUT' in r.stdout and '"event"' not in r.stdout
+
+
+def test_follow_reads_whole_lines_until_done(tmp_path):
+    async def go():
+        path = tmp_path / 'ev.jsonl'
+        done = asyncio.get_running_loop().create_future()
+        got = []
+
+        async def reader():
+            async for line in J.follow(str(path), done, interval=0.01):
+                got.append(line)
+        t = asyncio.create_task(reader())
+        await asyncio.sleep(0.03)
+        with open(path, 'a') as f:
+            f.write('{"event": "qr"}\n{"event": "st')  # 第二行写了一半
+        await asyncio.sleep(0.05)
+        assert got == ['{"event": "qr"}']
+        with open(path, 'a') as f:
+            f.write('atus"}\n')
+        done.set_result(0)
+        await asyncio.wait_for(t, 1)
+        assert got == ['{"event": "qr"}', '{"event": "status"}']
+    asyncio.run(go())

@@ -38,21 +38,33 @@ def data_url(b):
 def write_site(root):
     qr = data_url(png(60, 60, lambda x, y: (x * y) % 256))
     face = data_url(png(40, 40, lambda x, y: 255 if (x // 5 + y // 5) % 2 else 0))
-    # 8 秒后当作扫过码：登录面板没了，弹出身份验证；点「刷脸验证」出二维码，4 秒后登录成功
+    # 照真的抖音（2026-10 截的图）做：8 秒后当作扫过码，登录二维码那块还留在页面上，上面盖一层「身份验证」弹窗；
+    # 选项是一整行可点的卡片（标题 + 小字说明），页面别处藏着一份同名的字；点「手机刷脸验证」3 秒后才出二维码，再 4 秒登录成功
+    rows = [('接收短信验证码', ''), ('手机刷脸验证', '需**松本人操作'), ('验证登录密码', ''), ('发送短信验证', '')]
+    cards = ''.join(f'<div class="card" data-k="{t}"><span class="ico">□</span><div><div class="t">{t}</div>'
+                    f'<div class="sub">{sub}</div></div><span>›</span></div>' for t, sub in rows)
     with open(os.path.join(root, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(f'''<!doctype html><meta charset=utf-8><title>抖音</title>
-<style>#nav span{{cursor:pointer;margin:8px}}.modal{{position:fixed;top:120px;left:400px;width:360px;padding:20px;border:1px solid #333}}</style>
+<style>#nav span{{cursor:pointer;margin:8px}}
+.verify-modal-wrap{{position:fixed;inset:0;background:rgba(0,0,0,.6)}}
+.verify-modal{{position:fixed;top:120px;left:380px;width:520px;padding:20px;background:#fff;border-radius:16px}}
+.card{{cursor:pointer;display:flex;gap:10px;padding:14px;margin:8px 0;background:#f4f4f4;border-radius:8px}}
+.sub{{font-size:12px;color:#999}}</style>
 <div id="nav"><span>首页</span><span>推荐</span></div>
+<div style="display:none"><span>手机刷脸验证</span></div>
 <div id="login-panel-new"><div id="animate_qrcode_container" style="width:200px;height:200px"><img src="{qr}" width=180 height=180></div><p>验证码登录</p></div>
 <script>
 setTimeout(() => {{
-  document.getElementById('login-panel-new').remove();
-  const m = document.createElement('div'); m.className = 'modal'; m.setAttribute('role', 'dialog');
-  m.innerHTML = '<h3>身份验证</h3><p>请选择验证方式</p><button id=face>刷脸验证</button><button>短信验证</button>';
-  document.body.appendChild(m);
-  document.getElementById('face').onclick = () => {{
-    m.innerHTML = '<h3>身份验证</h3><img src="{face}" width=160 height=160><button>换一种方式</button>';
-    setTimeout(() => {{ document.cookie = 'sessionid=abc; path=/'; localStorage.setItem('HasUserLogin', '1'); m.remove(); }}, 4000);
+  const wrap = document.createElement('div'); wrap.className = 'verify-modal-wrap';
+  wrap.innerHTML = '<div class="verify-modal"><h3>身份验证</h3><p>为保障账号安全，请先完成身份验证，以确保为本人操作</p>{cards}</div>';
+  document.body.appendChild(wrap);
+  wrap.querySelector('[data-k="手机刷脸验证"]').onclick = () => {{
+    const m = wrap.querySelector('.verify-modal');
+    m.innerHTML = '<h3>手机刷脸验证</h3><p>正在生成二维码…</p>';
+    setTimeout(() => {{
+      m.innerHTML = '<h3>手机刷脸验证</h3><p>请使用抖音 App 扫码，完成刷脸</p><img src="{face}" width=180 height=180>';
+      setTimeout(() => {{ document.cookie = 'sessionid=abc; path=/'; localStorage.setItem('HasUserLogin', '1'); wrap.remove(); }}, 4000);
+    }}, 3000);
   }};
 }}, 8000);
 </script>''')
@@ -62,39 +74,44 @@ setTimeout(() => {{
 
 
 async def run(mc_dir, mc_py, base):
+    from jobs import follow, parse_event  # 和线上一样：事件走单独的文件，一直读它新增的行
     work = tempfile.mkdtemp(prefix='smoke-mc-')  # 用一份空的浏览器档案，不碰真的
     os.symlink(os.path.join(mc_dir, 'libs'), os.path.join(work, 'libs'))
-    env = {**os.environ, 'DY_LOGIN_INDEX': base + 'index.html', 'DY_LOGIN_SELF': base + 'self.html', 'PYTHONUNBUFFERED': '1'}
+    events = os.path.join(work, 'events.jsonl')
+    env = {**os.environ, 'DY_LOGIN_INDEX': base + 'index.html', 'DY_LOGIN_SELF': base + 'self.html',
+           'DY_LOGIN_EVENTS': events, 'PYTHONUNBUFFERED': '1'}
     p = await asyncio.create_subprocess_exec('xvfb-run', '-a', mc_py, os.path.join(HERE, 'dy_login.py'), cwd=work, env=env,
                                              stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                                             stderr=asyncio.subprocess.PIPE, limit=32 << 20)  # 和线上一样：浏览器日志单独一路
+                                             stderr=asyncio.subprocess.STDOUT, limit=4 << 20)
+    logs = []
 
     async def drain():
-        while await p.stderr.readline():
-            pass
-    errs = asyncio.create_task(drain())
+        while True:
+            line = await p.stdout.readline()
+            if not line:
+                return
+            logs.append(line.decode('utf-8', 'replace').rstrip())
+    drained = asyncio.create_task(drain())
+    exited = asyncio.create_task(p.wait())
     seen = []
     try:
-        while True:
-            line = await asyncio.wait_for(p.stdout.readline(), 90)
-            if not line:
-                break
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
+        async for line in follow(events, exited, 0.1):
+            ev = parse_event(line)
+            assert ev, f'读不出来的事件：{line[:200]}'
             seen.append(ev['event'])
-            print(ev['event'], {k: (f'<{len(v)} 字>' if k == 'png' else v) for k, v in ev.items() if k != 'event'})
+            print(ev['event'], {k: (f'<{len(v)} 字>' if k == 'png' and v else v) for k, v in ev.items() if k != 'event'})
             if ev['event'] == 'verify':
-                assert ev['options'] == ['刷脸验证', '短信验证'], ev['options']  # 只要弹窗里的，导航栏不算
-                p.stdin.write('刷脸验证\n'.encode())
+                # 只要弹窗里的卡片标题：导航栏、小字说明都不算
+                assert ev['options'] == ['接收短信验证码', '手机刷脸验证', '验证登录密码', '发送短信验证'], ev['options']
+                p.stdin.write('手机刷脸验证\n'.encode())
                 await p.stdin.drain()
             if ev['event'] == 'ok':
                 assert ev['sec_uid'] == SEC and ev['nickname'] == '冒烟号'
-        await p.wait()
-        await errs
+        await drained
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if seen != ['qr', 'verify', 'verify_qr', 'status', 'ok']:
+        print('\n'.join(logs[-30:]))
     assert seen == ['qr', 'verify', 'verify_qr', 'status', 'ok'], seen
     print('✓ 冒烟测试通过')
 
