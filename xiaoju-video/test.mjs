@@ -42,7 +42,7 @@ const files = new Map(); // file_id -> 字节
 const bigFiles = new Map(); // 消息号 -> 字节（只有流式服务取得到）
 const sent = { bot: [], verify: [] };
 const toStreamer = [];
-const state = { streamer: 'ok', resolve: {}, busy: '', outbox: { boot: 'B1', events: [], busy: false } };
+const state = { streamer: 'ok', resolve: {}, expand: {}, busy: '', outbox: { boot: 'B1', events: [], busy: false } };
 const outboxCalls = []; // Worker 来取发件箱时带的 boot、after
 const jobCalls = []; // 交给流式服务的云电脑活：[路径, 请求体]
 const bytesOf = (n, seed) => { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = (i * 7 + seed) & 255; return b; };
@@ -92,6 +92,9 @@ globalThis.fetch = async (input, init = {}) => {
     if (path === '/douyin/resolve') {
       const item = state.resolve[body.url];
       return item ? Response.json({ item }) : Response.json({ error: '认不出这个链接' }, { status: 400 });
+    }
+    if (path === '/douyin/expand') {
+      return Response.json({ results: body.urls.map(u => ({ url: u, ...(state.expand[u] || {}) })) });
     }
     if (path === '/douyin/post') {
       toStreamer.push(...body.items);
@@ -742,6 +745,93 @@ await test('已经登录了再点「登录抖音」：不登录；「重新登�
   assert.match(last('bot').text, /已经登录了「新号」，不用再登录/);
   await dm(OWNER, '重新登录');
   assert.deepEqual(jobCalls, [['/douyin/login', { chat_id: OWNER }]]);
+});
+
+// ── 小号：发主页链接就加上，抓到的直接转；每天定时自动同步 ──
+const ALT2 = 'MS4wLjABAAAAmyaltaccount0002', ALT3 = 'MS4wLjABAAAAmyaltaccount0003';
+await test('发小号主页短链接：记成小号，交云电脑抓它的主页；一起发的作品链接请他之后再发', async () => {
+  jobCalls.length = 0;
+  state.expand['https://v.douyin.com/alt2/'] = { sec_uid: ALT2 };
+  state.expand['https://v.douyin.com/work9/'] = { aweme: '7300000000000000900' };
+  await dm(OWNER, '长按复制此条消息，打开抖音搜索，查看TA的更多作品。 https://v.douyin.com/alt2/ https://v.douyin.com/work9/');
+  assert.deepEqual(JSON.parse(await L.getConfig('altAccounts')).map(a => a.sec), [ALT2]);
+  assert.equal(jobCalls[0][1].mode, 'accounts');
+  assert.deepEqual(jobCalls[0][1].targets, [ALT2]);
+  const said = sent.bot.map(m => m.text).join('\n');
+  assert.match(said, /加了 1 个小号/);
+  assert.match(said, /1 条作品链接，等这次抓完再发一次/);
+  // 长链接不用问流式服务；加过的不重复记
+  jobCalls.length = 0;
+  await dm(OWNER, `https://www.douyin.com/user/${ALT2}?from_tab_name=main`);
+  assert.match(last('bot').text, /以前加过了/);
+  assert.equal(JSON.parse(await L.getConfig('altAccounts')).length, 1);
+  assert.deepEqual(jobCalls[0][1].targets, [ALT2]);
+});
+
+await test('小号抓来的作品：小号的直接排队转发不用审；登录账号自己的照常成审核单', async () => {
+  reset();
+  const own = JSON.parse(await L.getConfig('dySession')).sec_uid;
+  const seq = (Number(await L.getConfig('outboxSeq')) || 0) + 1;
+  state.outbox = { boot: await L.getConfig('streamerBoot'), busy: false, events: [{ seq, kind: 'import', chat_id: OWNER, src: 'alt', what: '小号主页', items: [
+    { aweme: '7300000000000000601', type: 'video', desc: '小号作品', author: '小号二', author_sec_uid: ALT2, video_url: 'https://cdn.example/601.mp4' },
+    { aweme: '7300000000000000602', type: 'video', desc: '大号作品', author: '新号', author_sec_uid: own, video_url: 'https://cdn.example/602.mp4' },
+    { aweme: AW1, type: 'video', author_sec_uid: ALT2 },
+  ] }] };
+  await L.alarm();
+  assert.equal((await L.getItem('7300000000000000601')).status, 'sending');
+  assert.ok(toStreamer.some(i => i.aweme === '7300000000000000601'));
+  assert.equal((await L.getItem('7300000000000000602')).status, 'review');
+  assert.equal(sheets().length, 1);
+  assert.match(sheets()[0].text, /（#主页同步 #批次数量1 条）/);
+  assert.match(sent.bot.map(m => m.text).join('\n'), /抓到 3 条，1 条以前收过，新的 1 条是小号的作品，直接排队转进频道；新的 1 条成了审核单/);
+  assert.equal(JSON.parse(await L.getConfig('altAccounts'))[0].name, '小号二');
+});
+
+await test('「小号」列表、「同步小号」、「删除小号」', async () => {
+  await L.setConfig('altAccounts', JSON.stringify([...JSON.parse(await L.getConfig('altAccounts')), { sec: ALT3, name: '', at: 1 }]));
+  await dm(OWNER, '小号');
+  assert.match(last('bot').text, /1\. 小号二/);
+  assert.match(last('bot').text, /2\. （还没抓过/);
+  assert.match(last('bot').text, /自动同步：每天 4 点/);
+  jobCalls.length = 0;
+  await dm(OWNER, '同步小号');
+  assert.deepEqual(jobCalls[0][1], { chat_id: OWNER, mode: 'accounts', targets: [ALT2, ALT3], session: jobCalls[0][1].session });
+  await dm(OWNER, '删除小号 2');
+  assert.match(last('bot').text, /删掉了小号/);
+  assert.deepEqual(JSON.parse(await L.getConfig('altAccounts')).map(a => a.sec), [ALT2]);
+  await dm(OWNER, '删除小号 9');
+  assert.match(last('bot').text, /没有这个编号/);
+});
+
+await test('自动同步：到点抓小号和登录账号，一天一次；可以改时间、关掉', async () => {
+  const hour = new Date(Date.now() + 8 * 3600 * 1000).getUTCHours();
+  await dm(OWNER, `自动同步 ${(hour + 1) % 24}`);
+  assert.match(last('bot').text, new RegExp(`每天 ${(hour + 1) % 24} 点`));
+  jobCalls.length = 0;
+  await cron();
+  assert.deepEqual(jobCalls.filter(c => c[0] === '/douyin/crawl'), []); // 还没到点
+  await dm(OWNER, `自动同步 ${hour}`);
+  await cron();
+  const own = JSON.parse(await L.getConfig('dySession')).sec_uid;
+  const crawls = jobCalls.filter(c => c[0] === '/douyin/crawl');
+  assert.equal(crawls.length, 1);
+  assert.equal(crawls[0][1].mode, 'accounts');
+  assert.deepEqual(crawls[0][1].targets, [ALT2, own]);
+  await cron();
+  assert.equal(jobCalls.filter(c => c[0] === '/douyin/crawl').length, 1); // 今天发起过了
+  // 云电脑忙：这次不算，下个 5 分钟再试
+  await L.setConfig('autoSync', JSON.stringify({ on: true, hour, day: '' }));
+  state.busy = '搜索';
+  await cron();
+  state.busy = '';
+  assert.equal(JSON.parse(await L.getConfig('autoSync')).day, '');
+  await dm(OWNER, '自动同步 关');
+  jobCalls.length = 0;
+  await L.setConfig('autoSync', JSON.stringify({ ...JSON.parse(await L.getConfig('autoSync')), day: '' }));
+  await cron();
+  assert.deepEqual(jobCalls.filter(c => c[0] === '/douyin/crawl'), []);
+  await dm(OWNER, '自动同步 25');
+  assert.match(last('bot').text, /0 到 23/);
 });
 
 await test('网页', async () => {

@@ -40,7 +40,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import jobs as jobs_mod
-from douyin import DESKTOP_UA, Douyin, DouyinError
+from douyin import DESKTOP_UA, Douyin, DouyinError, aweme_of
 from outbox import Outbox
 
 # MTProto 每次最多取 512 KB；起点按它对齐，Telegram 才接受
@@ -453,6 +453,31 @@ async def resolve(request: Request):
     return {'item': item}
 
 
+@app.post('/douyin/expand')
+async def expand(request: Request):
+    """把分享链接展开成真地址，认出是个人主页（sec_uid）还是作品（作品号）：Worker 据此决定加小号还是抓作品"""
+    check_key(request)
+    body = await request.json()
+    urls = body.get('urls') if isinstance(body, dict) else None
+    if not isinstance(urls, list):
+        raise HTTPException(400)
+    out = []
+    for u in [str(x) for x in urls][:10]:
+        r = {'url': u}
+        try:
+            final = await douyin.expand(u)
+            r['final'] = final
+            m = re.search(r'(?:/user/|[?&]sec_uid=)(MS4wLjABAAAA[\w-]{10,200})', final)
+            if m:
+                r['sec_uid'] = m.group(1)
+            elif aweme_of(final):
+                r['aweme'] = aweme_of(final)
+        except (DouyinError, httpx.HTTPError) as e:
+            r['error'] = str(e) or type(e).__name__
+        out.append(r)
+    return {'results': out}
+
+
 @app.post('/douyin/post')
 async def post_items(request: Request):
     check_key(request)
@@ -501,16 +526,17 @@ async def douyin_login_input(request: Request):
 @app.post('/douyin/crawl')
 async def douyin_crawl(request: Request):
     """mode=creator：抓登录账号自己的主页（地址由 session 里的 sec_uid 拼）；detail：抓 targets 里的作品；
-    search：按 targets 里的关键词搜（搜出来的交频道主逐条审核）"""
+    accounts：抓 targets 里的小号主页（sec_uid 列表，抓到的 Worker 直接排队转发）；
+    search：按 targets 里的关键词搜（搜出来的交频道主审核）"""
     check_key(request)
     body = await request.json()
     mode = body.get('mode')
-    if mode not in ('creator', 'detail', 'search') or not isinstance(body.get('session'), dict):
+    if mode not in ('creator', 'accounts', 'detail', 'search') or not isinstance(body.get('session'), dict):
         raise HTTPException(400)
     await jobs.stop_login()  # 正在等扫码的登录让给这件活
     try:
         jobs.crawl(int(body['chat_id']), body['session'], mode, body.get('targets') or [],
-                   {'creator': 'cloud', 'search': 'search'}.get(mode, 'link'))
+                   {'creator': 'cloud', 'accounts': 'alt', 'search': 'search'}.get(mode, 'link'))
     except jobs_mod.Busy as e:
         return busy(e)
     except ValueError as e:

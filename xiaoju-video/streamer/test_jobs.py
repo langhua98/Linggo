@@ -214,6 +214,23 @@ def test_crawl_own_homepage_emits_whole_batch():
     asyncio.run(go())
 
 
+def test_crawl_alt_accounts():
+    async def go():
+        w = World()
+        j = w.jobs(mc_writes([row('7300000000000000001')]))
+        other = 'MS4wLjABAAAAanotheralt00001'
+        j.crawl(9, {'sec_uid': SEC, 'cookies': []}, 'accounts', [SEC, 'https://evil.example/', SEC, other], 'alt')
+        await settle(j)
+        argv = w.spawned[0][0]
+        assert argv[argv.index('--type') + 1] == 'creator'
+        assert argv[argv.index('--creator_id') + 1] == f'https://www.douyin.com/user/{SEC},https://www.douyin.com/user/{other}'
+        imports = [b for k, b in w.calls if k == 'import']
+        assert imports[0]['src'] == 'alt' and imports[0]['what'] == '2 个账号的主页'
+        with pytest.raises(ValueError, match='没有认得的账号'):
+            j.crawl(9, {'sec_uid': SEC}, 'accounts', ['junk'], 'alt')
+    asyncio.run(go())
+
+
 def test_crawl_requires_login_and_valid_links():
     w = World()
     j = w.jobs(mc_writes([]))

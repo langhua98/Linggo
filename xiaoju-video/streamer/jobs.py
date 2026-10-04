@@ -32,6 +32,7 @@ SEC_UID = re.compile(r'^MS4wLjABAAAA[\w-]{10,200}$')
 # 关键词搜索：一次最多几个关键词、每个最多要几条（都要频道主逐条审核，太多审不过来）
 SEARCH_KEYWORDS = 5
 SEARCH_PER_KEYWORD = 50
+ACCOUNTS_MAX = 30
 DETAIL = re.compile(r'^(?:https://(?:v\.|www\.|m\.)?douyin\.com/\S{1,300}|\d{6,25})$')
 
 QR_TEXT = ('用抖音 App 扫这个二维码登录你自己的账号（首页左上角「≡」或「我」→ 右上角扫一扫）。'
@@ -273,6 +274,17 @@ class Jobs:
                 raise ValueError('还没登录抖音')
             # 只抓登录的那个账号自己的主页：主页地址由登录时认出的 sec_uid 拼出来，不接受外面传进来的
             target, what = f'https://www.douyin.com/user/{sec_uid}', '主页'
+        elif mode == 'accounts':
+            # 频道主加过的小号（Worker 记着的 sec_uid 列表），主页地址由 sec_uid 拼
+            secs = []
+            for t in targets or []:
+                if SEC_UID.match(str(t)) and t not in secs:
+                    secs.append(t)
+            secs = secs[:ACCOUNTS_MAX]
+            if not secs:
+                raise ValueError('没有认得的账号')
+            target = ','.join(f'https://www.douyin.com/user/{x}' for x in secs)
+            what = '小号主页' if len(secs) == 1 else f'{len(secs)} 个账号的主页'
         elif mode == 'search':
             words = []
             for t in targets or []:
@@ -288,7 +300,7 @@ class Jobs:
             if not links:
                 raise ValueError('没有认得的抖音链接')
             target, what = ','.join(links), f'{len(links)} 条链接'
-        name = {'creator': '同步作品', 'search': '搜索'}.get(mode, '抓链接')
+        name = {'creator': '同步作品', 'accounts': '同步小号', 'search': '搜索'}.get(mode, '抓链接')
         self._start(name, chat_id, lambda: asyncio.wait_for(
             self._crawl(chat_id, mode, target, cookies, src, what, max_notes), CRAWL_TIMEOUT))
 
@@ -296,8 +308,10 @@ class Jobs:
         data_dir = tempfile.mkdtemp(prefix='mc-')
         try:
             self.emit('progress', stage=f'抓{what}')
-            self._say(chat_id, f'开始抓{what}（MediaCrawler），抓完把新的交给审核机器人。作品多的话要好一会儿。')
-            argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mode, target, data_dir, cookies, max_notes)
+            then = '抓完新的直接排队转进频道' if src == 'alt' else '抓完把新的交给审核机器人'
+            self._say(chat_id, f'开始抓{what}（MediaCrawler），{then}。作品多的话要好一会儿。')
+            mc_mode = 'creator' if mode == 'accounts' else mode
+            argv = self.xvfb + [self.mc_py, 'main.py'] + mc_args(mc_mode, target, data_dir, cookies, max_notes)
             unlock_profile(self.mc_dir)
             proc = await self.spawn(argv, self.mc_dir)
             self.current['proc'] = proc

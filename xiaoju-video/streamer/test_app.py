@@ -251,6 +251,25 @@ def test_post_and_resolve_endpoints():
     assert c.post('/douyin/resolve', json={'url': 'x'}).status_code == 403
 
 
+def test_expand_endpoint_tells_profile_from_work():
+    sec = 'MS4wLjABAAAAaltaccount000001'
+    appmod.douyin = Douyin(FakeHttp({
+        'https://v.douyin.com/user1/': (302, '', f'https://www.iesdouyin.com/share/user/{sec}?from_ssr=1'),
+        'https://v.douyin.com/vid1/': (302, '', 'https://www.iesdouyin.com/share/video/7300000000000000009/?x=1'),
+    }))
+    c = TestClient(appmod.app)
+    h = {'X-Key': 'k'}
+    r = c.post('/douyin/expand', json={'urls': ['https://v.douyin.com/user1/', 'https://v.douyin.com/vid1/',
+                                                'https://v.douyin.com/dead/', f'https://www.douyin.com/user/{sec}']}, headers=h)
+    res = r.json()['results']
+    assert res[0]['sec_uid'] == sec and 'aweme' not in res[0]
+    assert res[1]['aweme'] == '7300000000000000009' and 'sec_uid' not in res[1]
+    assert '短链接' in res[2]['error']
+    assert res[3]['sec_uid'] == sec  # 长链接不用跳
+    assert c.post('/douyin/expand', json={'urls': 'x'}, headers=h).status_code == 400
+    assert c.post('/douyin/expand', json={'urls': []}).status_code == 403
+
+
 def test_outbox_endpoint():
     from outbox import Outbox
     appmod.outbox = Outbox(boot='b1')

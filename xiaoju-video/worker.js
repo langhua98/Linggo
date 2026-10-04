@@ -209,14 +209,19 @@ const HELP = `我是小橘视频的管理助手 🍊
 • 同步作品：云电脑（MediaCrawler）抓你登录账号自己主页的全部作品，新的交审核机器人 @xiaojuverify_bot
 • 搜索 关键词：按关键词搜抖音（多个关键词用逗号隔开，每个最多 50 条），交审核机器人逐条审核。
   搜出来的也有别人的作品：审核消息里有作者和主页链接，是你小号的才通过；通过过的号会记住，下次标出来、可以一键通过
-• 直接发抖音分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
+• 发小号的主页链接（抖音里点「分享主页」复制的链接，或者 www.douyin.com/user/… 地址）：记成你的小号，
+  云电脑马上抓它的全部作品，新的不用审核，直接转进视频频道
+• 小号：看加了哪些小号；「同步小号」现在把所有小号抓一遍；「删除小号 2」删第 2 个
+• 自动同步：每天定时把所有小号和你登录的账号抓一遍（小号的直接转，登录账号的交审核单）。
+  「自动同步 8」改成每天 8 点（北京时间），「自动同步 关」关掉
+• 直接发抖音作品分享链接（整段分享文字也行）：云电脑抓这几条，交审核机器人过审，通过后转进视频频道
 • 进度：看排队、在转、已转、失败各多少，抖音登录的是哪个账号
 • 重试失败：把失败的作品重新排队
 • 云电脑：（备用）在你自己的 GitHub Codespaces 里跑 MediaCrawler 要用的令牌和命令
 • 帮助：显示这段说明`;
 
 const OWNER_KEYBOARD = {
-  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '搜索' }, { text: '进度' }], [{ text: '重试失败' }, { text: '帮助' }]],
+  keyboard: [[{ text: '登录抖音' }, { text: '同步作品' }], [{ text: '小号' }, { text: '搜索' }], [{ text: '进度' }, { text: '重试失败' }, { text: '帮助' }]],
   resize_keyboard: true,
   is_persistent: true,
 };
@@ -285,6 +290,24 @@ async function botUpdate(env, update, origin, ctx) {
     if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
     return await startCrawl(env, chat, { mode: 'creator', session });
   }
+  if (t === '小号' || t === '/alts') return await say(env, chat, await altsText(env), { reply_markup: OWNER_KEYBOARD });
+  if (t === '同步小号') {
+    const session = await dySession(env);
+    if (!session) return await say(env, chat, '还没登录抖音：先发「登录抖音」扫码。', { reply_markup: OWNER_KEYBOARD });
+    const alts = await altAccounts(env);
+    if (!alts.length) return await say(env, chat, '还没加小号：把小号的主页分享链接发给我。');
+    return await startCrawl(env, chat, { mode: 'accounts', targets: alts.map(a => a.sec), session });
+  }
+  const del = /^删除小号\s*(\d+)$/.exec(t);
+  if (del) {
+    const alts = await altAccounts(env);
+    const gone = alts.splice(Number(del[1]) - 1, 1)[0];
+    if (!gone) return await say(env, chat, '没有这个编号，发「小号」看列表。');
+    await lib(env).setConfig('altAccounts', JSON.stringify(alts));
+    return await say(env, chat, `删掉了小号「${gone.name || gone.sec}」，以后不再抓它。已经转进频道的不动。`);
+  }
+  const auto = /^自动同步(?:\s*(关|开|\d{1,2})点?)?$/.exec(t);
+  if (auto) return await autoSyncSetting(env, chat, auto[1]);
   if (t === '重试失败' || t === '/retry') {
     const n = await lib(env).retryFailed();
     await say(env, chat, n ? `已把 ${n} 条失败的作品重新排队` : '没有失败的作品');
@@ -313,7 +336,17 @@ function douyinLinks(t) {
 async function submitLinks(env, chat, links) {
   if (!streamerOn(env)) return await say(env, chat, '还没接上流式服务，暂时认不了链接');
   const session = await dySession(env);
-  if (session) return await startCrawl(env, chat, { mode: 'detail', targets: links, session });
+  const { accounts, works } = await sortLinks(env, links, !!session);
+  if (accounts.length) {
+    if (!session) return await say(env, chat, '要抓小号的作品得先登录抖音：发「登录抖音」扫码，再把主页链接发一次。', { reply_markup: OWNER_KEYBOARD });
+    const fresh = await addAlts(env, accounts);
+    await say(env, chat, (fresh ? `加了 ${fresh} 个小号` : '这个小号以前加过了') +
+      `，现在去抓它的全部作品，新的直接转进视频频道。` +
+      (works.length ? `\n一起发来的 ${works.length} 条作品链接，等这次抓完再发一次。` : ''));
+    return await startCrawl(env, chat, { mode: 'accounts', targets: accounts, session });
+  }
+  links = works;
+  if (session) return await startCrawl(env, chat, { mode: 'detail', targets: works, session });
   const items = [];
   const bad = [];
   for (const link of links) {
@@ -331,6 +364,95 @@ async function submitLinks(env, chat, links) {
   if (res.skipped) parts.push(`${res.skipped} 条以前已经收过`);
   if (bad.length) parts.push(`${bad.length} 条认不出：${bad.join('；')}\n先发「登录抖音」扫码，之后链接改由云电脑（MediaCrawler）抓。`);
   await say(env, chat, parts.join('\n'));
+}
+
+// 分出哪些是个人主页（小号）、哪些是作品。www.douyin.com/user/… 一看就知道；短链接要流式服务跳一次才知道
+const SEC_RE = /^MS4wLjABAAAA[\w-]{10,200}$/;
+async function sortLinks(env, links, expand) {
+  const accounts = [];
+  const works = [];
+  const short = [];
+  for (const l of links) {
+    const m = /douyin\.com\/(?:share\/)?user\/(MS4wLjABAAAA[\w-]{10,200})/.exec(l);
+    if (m) accounts.push(m[1]);
+    else if (expand && /v\.douyin\.com/.test(l)) short.push(l);
+    else works.push(l);
+  }
+  if (short.length) {
+    const r = await streamerCall(env, '/douyin/expand', { urls: short }).catch(() => null);
+    const res = r && r.status === 200 && Array.isArray(r.data.results) ? r.data.results : [];
+    for (const l of short) {
+      const x = res.find(y => y && y.url === l);
+      if (x && SEC_RE.test(String(x.sec_uid || ''))) accounts.push(x.sec_uid);
+      else works.push(l); // 认不出就当作品链接，交给 MediaCrawler 去认
+    }
+  }
+  return { accounts: [...new Set(accounts)], works };
+}
+
+// 小号：[{ sec, name, at }]。频道主亲手加的，抓到的作品不用审核
+async function altAccounts(env) {
+  return JSON.parse((await lib(env).getConfig('altAccounts')) || '[]');
+}
+
+async function addAlts(env, secs) {
+  const alts = await altAccounts(env);
+  let fresh = 0;
+  for (const sec of secs) {
+    if (alts.some(a => a.sec === sec)) continue;
+    alts.push({ sec, name: '', at: Date.now() });
+    fresh++;
+  }
+  await lib(env).setConfig('altAccounts', JSON.stringify(alts.slice(-100)));
+  return fresh;
+}
+
+async function altsText(env) {
+  const alts = await altAccounts(env);
+  const a = await autoSync(env);
+  const lines = alts.length
+    ? ['你的小号（抓到的作品直接转进频道）：', ...alts.map((x, i) => `${i + 1}. ${x.name || '（还没抓过，不知道昵称）'}  https://www.douyin.com/user/${x.sec}`)]
+    : ['还没加小号。把小号的主页分享链接发给我就加上。'];
+  lines.push('', a.on ? `自动同步：每天 ${a.hour} 点（北京时间）${a.last ? `，上次 ${ago(a.last)}` : ''}` : '自动同步：关着',
+    '「同步小号」现在抓一遍；「删除小号 2」删第 2 个；「自动同步 8」改时间，「自动同步 关」关掉');
+  return lines.join('\n');
+}
+
+// 自动同步设置：{ on, hour（北京时间）, last（上次发起的时间）, day（上次发起是哪天）}
+async function autoSync(env) {
+  return { on: true, hour: 4, last: 0, day: '', ...JSON.parse((await lib(env).getConfig('autoSync')) || '{}') };
+}
+
+async function autoSyncSetting(env, chat, arg) {
+  const a = await autoSync(env);
+  if (arg === '关') a.on = false;
+  else if (arg === '开') a.on = true;
+  else if (arg !== undefined) {
+    const h = Number(arg);
+    if (h > 23) return await say(env, chat, '点数是 0 到 23，比如「自动同步 8」。');
+    a.on = true;
+    a.hour = h;
+  }
+  await lib(env).setConfig('autoSync', JSON.stringify(a));
+  await say(env, chat, a.on ? `自动同步开着：每天 ${a.hour} 点（北京时间）把小号和登录账号抓一遍。` : '自动同步关了。', { reply_markup: OWNER_KEYBOARD });
+}
+
+// 定时任务里调：到了点、今天还没发起过，就交给云电脑抓。云电脑在睡或者在忙，这个小时里每 5 分钟再试
+async function maybeAutoSync(env, now = Date.now()) {
+  const a = await autoSync(env);
+  const bj = new Date(now + 8 * 3600 * 1000);
+  const day = bj.toISOString().slice(0, 10);
+  if (!a.on || bj.getUTCHours() !== a.hour || a.day === day || !streamerOn(env)) return;
+  const session = await dySession(env);
+  const owner = await ownerId(env);
+  if (!session || !owner) return;
+  const targets = [...new Set([...(await altAccounts(env)).map(x => x.sec), session.sec_uid])].filter(x => SEC_RE.test(x));
+  const r = await streamerCall(env, '/douyin/crawl', { chat_id: owner, mode: 'accounts', targets, session }).catch(() => null);
+  if (!r || r.status !== 200) return;
+  a.day = day;
+  a.last = now;
+  await lib(env).setConfig('autoSync', JSON.stringify(a));
+  await jobStarted(env);
 }
 
 // 抖音登录状态（流式服务登录成功后存进来的 cookie、sec_uid、昵称）；没有返回 null
@@ -415,8 +537,8 @@ function randomToken() {
 
 const KIND = { video: '视频', images: '图文' };
 
-const SRC = { cloud: '云电脑同步', link: '私聊链接', search: '关键词搜索' };
-const SRC_TAG = { cloud: '#主页同步', link: '#私聊链接', search: '#关键词搜索' };
+const SRC = { cloud: '云电脑同步', link: '私聊链接', search: '关键词搜索', alt: '小号同步' };
+const SRC_TAG = { cloud: '#主页同步', link: '#私聊链接', search: '#关键词搜索', alt: '#小号同步' };
 const PUBLIC_URL = 'https://xiaoju-video.langhua98.workers.dev';
 
 // mine：频道主通过过的账号（sec_uid 列表），作品要标出是不是这些号发的
@@ -574,6 +696,7 @@ async function tick(env) {
   const L = lib(env);
   const failed = await L.expireSending(Date.now() - SENDING_STALE_MS, MAX_ATTEMPTS);
   if (failed.length) await notifyFailed(env, failed);
+  await maybeAutoSync(env);
   for (const id of await adoptOrphans(env)) await sendSheet(env, id);
   await dispatch(env);
   // 有交出去还没回音的、或者最近让它干过活：去它的发件箱看看。闲着就不去，免得把休眠的 Space 一直叫醒
@@ -680,6 +803,28 @@ async function importItems(env, raw, src, what = '') {
   const list = Array.isArray(raw) ? raw : [];
   const items = list.map(normalizeItem).filter(Boolean);
   const L = lib(env);
+  if (src === 'alt') {
+    // 小号的作品：频道主加小号时就认过了，直接排队转发；别的（登录账号自己的、认不出作者的）照常成审核单
+    const alts = await altAccounts(env);
+    for (const a of alts) {
+      const one = items.find(i => i.author_sec_uid === a.sec && i.author);
+      if (one) a.name = one.author.slice(0, 50);
+    }
+    await L.setConfig('altAccounts', JSON.stringify(alts));
+    const secs = new Set(alts.map(a => a.sec));
+    const mine = items.filter(i => secs.has(i.author_sec_uid));
+    const batch = newBatchId();
+    const fresh = await L.addItems(mine, 'alt', batch);
+    let auto = 0;
+    if (fresh.length) {
+      await L.addBatch(batch, 'alt', ['#小号同步']);
+      auto = await L.reviewBatch(batch, 'queued');
+      await rememberAccounts(env, mine);
+      await dispatch(env);
+    }
+    const r = await importItems(env, items.filter(i => !secs.has(i.author_sec_uid)), 'cloud', what);
+    return { ...r, auto, skipped: r.skipped + mine.length - fresh.length, invalid: list.length - items.length };
+  }
   const batch = newBatchId();
   const fresh = await L.addItems(items, src, batch);
   if (fresh.length) {
@@ -737,11 +882,14 @@ async function handleEvent(env, ev) {
   } else if (ev.kind === 'progress') {
     await saveProgress(env, ev);
   } else if (ev.kind === 'import') {
-    const r = await importItems(env, (ev.items || []).slice(0, 10000), ['link', 'search'].includes(ev.src) ? ev.src : 'cloud', ev.what);
-    const total = r.added + r.skipped;
-    await saveProgress(env, { stage: '完成', done: r.added, total, note: `新送 ${r.added} 条，已有 ${r.skipped} 条` });
-    await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过` +
-      (r.added ? `，新的 ${r.added} 条成了审核单 ${r.batch}，去审核机器人 @xiaojuverify_bot 审。` : '，没有新的。'));
+    const r = await importItems(env, (ev.items || []).slice(0, 10000), ['link', 'search', 'alt'].includes(ev.src) ? ev.src : 'cloud', ev.what);
+    const auto = r.auto || 0;
+    const total = r.added + r.skipped + auto;
+    await saveProgress(env, { stage: '完成', done: r.added + auto, total, note: `新的 ${r.added + auto} 条，已有 ${r.skipped} 条` });
+    const parts = [];
+    if (auto) parts.push(`新的 ${auto} 条是小号的作品，直接排队转进频道`);
+    if (r.added) parts.push(`新的 ${r.added} 条成了审核单 ${r.batch}，去审核机器人 @xiaojuverify_bot 审`);
+    await sendToOwner(env, ev.chat_id, `抓到 ${total} 条，${r.skipped} 条以前收过` + (parts.length ? `，${parts.join('；')}。` : '，没有新的。'));
   }
 }
 
